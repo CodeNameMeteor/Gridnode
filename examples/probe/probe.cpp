@@ -306,7 +306,7 @@ void armDiff() {
     g_snap.spans.resize(g_snap.nodes.size(), 0);
     snapshot(g_snap.a);
     g_snap.stage = 1;
-    gn::log("diff: %llu objects watched; now hold Space for half a second, then let go", static_cast<unsigned long long>(g_snap.nodes.size()));
+    gn::log("diff: %llu objects watched; HOLD SPACE NOW for half a second, then let go", static_cast<unsigned long long>(g_snap.nodes.size()));
 }
 
 void diffTick() {
@@ -361,7 +361,10 @@ GN_MOD("probe") {
         was = down;
         static bool was10 = false;
         const bool down10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
-        if (down10 && !was10 && g_snap.stage == 0) armDiff();
+        if (down10 && !was10) {
+            gn::log("F10 pressed (diff stage %d)", g_snap.stage);
+            if (g_snap.stage == 0) armDiff();
+        }
         was10 = down10;
         if (g_snap.stage == 1 || g_snap.stage == 2) diffTick();
         static float t = -1.f; // seconds since Faith appeared (-1: not yet / not this level)
@@ -373,6 +376,7 @@ GN_MOD("probe") {
         const float before = t;
         t += dt;
         if (before < 5.f && t >= 5.f) deep("5 s after Faith appeared");
+        if (before < 10.f && t >= 10.f && g_snap.stage == 0) armDiff(); // no key needed
     });
     gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes");
     return true;
