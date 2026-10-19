@@ -4,6 +4,7 @@
 // raw chains into named GridNode findings. F9 runs it; it also runs once, 5 s after Faith appears.
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -407,6 +408,73 @@ void jumpTick() {
     }
 }
 
+// ---- F12: the EntryInputState (input actions by hash) -----------------------------------------------
+// Registry (0x1424aa1a0): hash map at +0x10 (buckets) / +0x18 (bucket count), nodes {u32 hash,
+// u32 index, next at +8}; +0x94 analog count, +0x98 first digital index, +0xa4 end. A state is
+// 0x530 bytes: analog floats at +0x350 + 4*index, digital bits at +0x4b8 (bit index - first digital).
+// ClientPlayer +0x14b0 / +0x14b8 / +0x14c0 hold states; +0x1520 flags (0x40: use +0x14c0).
+std::vector<std::pair<uint32_t, uint32_t>> g_actions; // hash, index
+int g_watch = 0;                                       // ticks left
+uint64_t g_lastBits[3] = {};
+uint32_t g_lastFlags = 0;
+
+void dumpRegistry() {
+    g_actions.clear();
+    uint64_t reg = 0;
+    if (!gn::read(reinterpret_cast<const void*>(gn::rva(0x1424aa1a0)), reg) || !reg) return gn::log("input: no registry");
+    uint64_t buckets = 0;
+    uint32_t count = 0, nums[6] = {};
+    gn::read(reinterpret_cast<const void*>(reg + 0x10), buckets);
+    gn::read(reinterpret_cast<const void*>(reg + 0x18), count);
+    gn::api().read(reinterpret_cast<const void*>(reg + 0x90), nums, sizeof(nums));
+    gn::log("input: registry %llx, %u buckets; counts %u analog %u, digital from %u, %u %u, end %u", (unsigned long long)reg, count,
+            nums[0], nums[1], nums[2], nums[3], nums[4], nums[5]);
+    uint64_t sentinel = 0;
+    gn::read(reinterpret_cast<const void*>(buckets + count * 8ull), sentinel);
+    for (uint32_t b = 0; b < count && b < 4096; ++b) {
+        uint64_t n = 0;
+        gn::read(reinterpret_cast<const void*>(buckets + b * 8ull), n);
+        for (int guard = 0; n && n != sentinel && guard < 64; ++guard) {
+            uint32_t hi[2] = {};
+            gn::api().read(reinterpret_cast<const void*>(n), hi, 8);
+            g_actions.push_back({hi[0], hi[1]});
+            gn::read(reinterpret_cast<const void*>(n + 8), n);
+        }
+    }
+    std::sort(g_actions.begin(), g_actions.end(), [](auto& a, auto& b) { return a.second < b.second; });
+    std::string line;
+    for (auto& a : g_actions) {
+        char t[32];
+        snprintf(t, sizeof(t), " %u:%08x", a.second, a.first);
+        line += t;
+        if (line.size() > 700) gn::log("input actions:%s", line.c_str()), line.clear();
+    }
+    if (!line.empty()) gn::log("input actions:%s", line.c_str());
+}
+
+void watchTick() {
+    if (g_watch <= 0) return;
+    --g_watch;
+    void* cf = gn::localClientCharacter();
+    uint64_t player = 0;
+    if (!cf || !gn::read(static_cast<char*>(cf) + 0x238, player) || !player) return;
+    uint32_t flags = 0;
+    gn::read(reinterpret_cast<const void*>(player + 0x1520), flags);
+    if (flags != g_lastFlags) gn::log("input: player flags %x -> %x", g_lastFlags, flags), g_lastFlags = flags;
+    const uint32_t offs[3] = {0x14b0, 0x14b8, 0x14c0};
+    for (int i = 0; i < 3; ++i) {
+        uint64_t st = 0, bits = 0;
+        if (!gn::read(reinterpret_cast<const void*>(player + offs[i]), st) || !st) continue;
+        gn::read(reinterpret_cast<const void*>(st + 0x4b8), bits);
+        if (bits != g_lastBits[i]) {
+            gn::log("input: state +%x (%llx) digital bits %llx -> %llx (Space %s)", offs[i], (unsigned long long)st,
+                    (unsigned long long)g_lastBits[i], (unsigned long long)bits, (GetAsyncKeyState(VK_SPACE) & 0x8000) ? "down" : "up");
+            g_lastBits[i] = bits;
+        }
+    }
+    if (g_watch == 0) gn::log("==== input watch done");
+}
+
 } // namespace
 
 GN_MOD("probe") {
@@ -432,6 +500,15 @@ GN_MOD("probe") {
         const float before = t;
         t += dt;
         (void)before; // nothing runs by itself any more: F9, F10, F11
+        static bool was12 = false;
+        const bool down12 = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+        if (down12 && !was12 && g_watch <= 0) {
+            dumpRegistry();
+            g_watch = 30 * 8; // about 8 s
+            gn::log("input watch: press Space a few times (and Shift, Ctrl, E) in the next 8 s");
+        }
+        was12 = down12;
+        watchTick();
         static bool was11 = false;
         const bool down11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
         if (down11 && !was11 && g_test < 0) {
@@ -442,6 +519,6 @@ GN_MOD("probe") {
         was11 = down11;
         jumpTick();
     });
-    gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes; F11 runs the jump tests");
+    gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes; F11 runs the jump tests; F12 watches the input actions");
     return true;
 }

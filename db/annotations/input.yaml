@@ -6,8 +6,68 @@ globals:
     va: 0x14256d7e0
     type: "void*"
     note: The game's XInputGetState, stored once by 0x1437ba6c0. Swapping it is a pointer hook.
+  - name: EntryInputActionRegistryPtr
+    va: 0x1424aa1a0
+    type: "EntryInputActionRegistry*"
+    confidence: inferred
+    sources: [gridnode]
 
 code:
   - name: XInputGetState_store
     va: 0x1437ba76f
     note: "mov [XInputGetStatePtr],rax"
+
+# Input actions (2026-10-20, Ghidra; probe F12 confirms the registry layout). The game turns keys
+# into actions in an EntryInputState; consumers read actions by a 32-bit hash, so an action is the
+# same whatever key the player bound to it.
+structs:
+  - name: EntryInputActionRegistry
+    size: 0xb0
+    opaque: true
+    confidence: inferred
+    sources: [gridnode]
+    note: Set by 0x1432fd340, which copies its counts into the globals at 0x1424aa1a8..0x1424aa1bc.
+    members:
+      - { offset: 0x10, name: buckets, type: "void*", note: "Hash map buckets; node {u32 hash, u32 index, next at +8}; the sentinel is buckets[bucketCount]." }
+      - { offset: 0x18, name: bucketCount, type: u32 }
+      - { offset: 0x94, name: analogCount, type: u32, note: "Indices below are analog (floats)." }
+      - { offset: 0x98, name: digitalFirst, type: u32, note: "Digital index i is bit (i - digitalFirst) of EntryInputState.digitalBits." }
+      - { offset: 0xa4, name: end, type: u32 }
+  - name: EntryInputState
+    size: 0x530
+    opaque: true
+    confidence: inferred
+    sources: [gridnode]
+    note: "Constructed by 0x1432f8aa0. Read an action: 0x1432fc490 (float) / 0x1432fc330 (digital); set: 0x143301620."
+    members:
+      - { offset: 0x350, name: analog, type: "f32[120]" }
+      - { offset: 0x4b8, name: digitalBits, type: u64 }
+
+functions:
+  - name: EntryInputState_getAnalog
+    va: 0x1432fc490
+    signature: "float(EntryInputState* state, u32 actionHash)"
+    confidence: inferred
+    sources: [gridnode]
+  - name: EntryInputState_getDigital
+    va: 0x1432fc330
+    signature: "bool(EntryInputState* state, u32 actionHash)"
+    confidence: inferred
+    sources: [gridnode]
+  - name: EntryInputState_set
+    va: 0x143301620
+    signature: "void(EntryInputState* state, u32 actionHash, float value)"
+    confidence: inferred
+    sources: [gridnode]
+    note: Digital actions are set when value >= 1.
+  - name: PamClientAntInputComponent_onInput
+    va: 0x143911c80
+    signature: "void(void* inputListener, EntryInputState* state, void* player)"
+    confidence: inferred
+    sources: [gridnode]
+    note: >-
+      inputListener is the component +0x38. Feeds the player's input to the animation system (ANT). Copies the state; when ClientPlayer
+      +0x1520 has flag 0x40 it uses ClientPlayer +0x14c0 (0x143203d50 makes it) instead. Per
+      character it calls 0x14391b970, which reads the movement actions: analog 0x1dcfd4cd/cc
+      (move), 0x436f6516/17 (look), digital 0x2884e120..0x2884e136, 0x578abcc, 0xb5adb0e5,
+      0xb5a0a981 (buttons, one of them jump) into the ANT input (0x142bc5540).
