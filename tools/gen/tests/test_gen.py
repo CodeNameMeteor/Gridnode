@@ -217,3 +217,12 @@ class Errors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameHashTest(unittest.TestCase):
+    def test_known_hashes(self):
+        from gridnode_gen.hashes import name_hash, parse_hash
+        self.assertEqual(name_hash("Visible"), 0x35BC69AB)            # PamClientCharacterEntity property
+        self.assertEqual(name_hash("ControllableTransform"), 0x7C46EA68)  # research.md's "Transform" id
+        self.assertEqual(parse_hash("-2024647575"), 0x87525469)       # Frosty shows ids signed
+        self.assertEqual(parse_hash("0x35bc69ab"), 0x35BC69AB)

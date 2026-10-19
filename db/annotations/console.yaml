@@ -42,7 +42,10 @@ structs:
       - { offset: 0x18, name: allocator, type: "void*" }
   - name: StaticCommand
     size: 0x20
-    note: Entries of ConsoleRegistry_getStaticCommands (a vector of pointers to these). Full name group.name.
+    note: >-
+      Entries of ConsoleRegistry_getStaticCommands (a vector of pointers to these). Full name
+      group.name. Settings fields bound to the console are added here too, by
+      ConsoleRegistry_addCommands, with fn = ConsoleFieldBinding_getOrSet (96 commands in game).
     members:
       - { offset: 0x00, name: fn, type: "void*" }
       - { offset: 0x08, name: name, type: "const i8*" }
@@ -74,11 +77,15 @@ functions:
   - name: ConsoleRegistry_getBoundCommands
     va: 0x142a92040
     signature: "void**()"
-    note: Returns the vector {begin, end, capacity} of BoundCommand entries.
+    note: Returns the vector {begin, end, capacity} of BoundCommand entries. Empty in game (seen by GridNode M4.5).
   - name: ConsoleBinding_registerFieldsRecursive
     va: 0x142a7e840
     signature: "void(const i8* group, void* type, void* binding, const i8* prefix)"
     note: Binds only fields with flag 0x2000 (141 of the 3,431 settings fields).
+  - name: ConsoleRegistry_addCommands
+    va: 0x142a90e20
+    signature: "void(const i8* group, void* entries, u32 count)"
+    note: Adds count 0x28-byte entries (setting their group at +0x10) to the static command list, under the ConsoleRegistry lock.
   - name: ConsoleFieldBinding_getOrSet
     va: 0x142a7e1e0
     signature: "void(void* context)"

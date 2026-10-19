@@ -198,6 +198,22 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
 In game: GridNode menu → **Console** (every command, with search; online ones in orange ask for
 confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
 
+## Name hashes
+
+Frostbite keeps many names only as a 32-bit hash: property and event ids in blueprint connections
+(`PropertyConnection.SourceFieldId` / `TargetFieldId`, `EventConnection.SourceEvent` /
+`TargetEvent`) and names in EBX. The hash is `h = 5381; h = (h * 33) ^ c` (Frosty calls it Fnv1).
+A hash cannot be reversed, only looked up:
+
+```
+python tools/gen/gridnode.py hash Visible ControllableTransform
+python tools/gen/gridnode.py unhash 0x7c46ea68 -2024647575 @hashes.txt --image MirrorsEdgeCatalyst_dump_SCY.exe
+```
+
+The dictionary holds every reflected type, field and enum value name, GridNode's annotations, every
+string in the game image (with `--image`) and your own word lists (`--words`). Frosty shows ids as
+signed numbers; both forms are accepted.
+
 ## Logging
 
 `gn::log(fmt, ...)` writes one line to `gridnode.log`, prefixed with the mod's name.

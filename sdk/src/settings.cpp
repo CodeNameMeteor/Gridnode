@@ -71,7 +71,7 @@ const char* onlineFor(const std::string& name) {
 std::mutex g_setM;
 std::vector<SettingsEntry> g_settings; // guarded by g_setM
 DWORD g_settingsAt = 0;
-bool g_settingsLogged = false;
+size_t g_settingsLogged = 0; // the count last logged
 
 std::vector<SettingsEntry> scanSettings() {
     std::vector<SettingsEntry> out;
@@ -98,6 +98,12 @@ std::vector<SettingsEntry> scanSettings() {
         }
     }
     std::sort(out.begin(), out.end(), [](const SettingsEntry& a, const SettingsEntry& b) { return a.type->name < b.type->name; });
+    static bool reportedEmpty = false;
+    if (out.empty() && !reportedEmpty) {
+        reportedEmpty = true;
+        GN_LOG("settings: none found (manager %llx, buckets %llx, %u buckets)", static_cast<unsigned long long>(mgr),
+               static_cast<unsigned long long>(buckets), n);
+    }
     return out;
 }
 
@@ -142,8 +148,8 @@ std::vector<SettingsEntry> settingsList() {
     if (g_settings.empty() || GetTickCount() - g_settingsAt > 1000) {
         g_settings = scanSettings();
         g_settingsAt = GetTickCount();
-        if (!g_settingsLogged && !g_settings.empty()) {
-            g_settingsLogged = true;
+        if (g_settings.size() != g_settingsLogged) {
+            g_settingsLogged = g_settings.size();
             size_t online = 0;
             for (const SettingsEntry& s : g_settings) online += s.online ? 1 : 0;
             GN_LOG("settings: %llu settings objects (%llu marked as online)", static_cast<unsigned long long>(g_settings.size()),
@@ -195,6 +201,9 @@ std::vector<ConsoleCommand> consoleCommands() {
             c.name = intern(cstr(rec[1]));
             c.group = intern(cstr(rec[2]));
             c.help = intern(cstr(rec[3]));
+            // Settings fields are added to this list too (ConsoleRegistry_addCommands), with the
+            // field binding as their function.
+            c.setting = rec[0] == mem::rva(e::function::ConsoleFieldBinding_getOrSet);
             cmds.push_back(c);
         }
     }
@@ -215,9 +224,10 @@ std::vector<ConsoleCommand> consoleCommands() {
         c.online = onlineFor(*c.group ? c.group : c.name);
     }
     std::sort(cmds.begin(), cmds.end(), [](const ConsoleCommand& a, const ConsoleCommand& b) { return strcmp(a.full, b.full) < 0; });
-    if (g_commands.empty())
-        GN_LOG("console: %llu commands (%llu static, %llu bound settings fields)", static_cast<unsigned long long>(cmds.size()),
-               static_cast<unsigned long long>(ns), static_cast<unsigned long long>(nb));
+    size_t settingCmds = 0;
+    for (const ConsoleCommand& c : cmds) settingCmds += c.setting ? 1 : 0;
+    GN_LOG("console: %llu commands (%llu of them settings fields; %llu in the bound list)",
+           static_cast<unsigned long long>(cmds.size()), static_cast<unsigned long long>(settingCmds), static_cast<unsigned long long>(nb));
     g_commands = std::move(cmds);
     g_seenStatic = ns;
     g_seenBound = nb;

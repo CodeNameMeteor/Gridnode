@@ -438,8 +438,8 @@ Findings (Ghidra):
 - `types.hpp` from the real dump has only been compiled with GCC and MinGW here; MSVC is checked in
   CI with the synthetic fixture. Building `types_compile_test` with Visual Studio against your own
   dump is the remaining MSVC check.
-- The property id `0x7c46ea68` that research.md lists for "Transform" is not djb2-xor("Transform")
-  (`0x87525469`); every other recorded hash is. Worth a look when `gn::events` is built (M8).
+- The property id `0x7c46ea68` that research.md lists for "Transform" is djb2-xor("ControllableTransform")
+  (found by `gridnode.py unhash` in M4.5); the hash is right, the name was a guess.
 
 ### M1 findings
 

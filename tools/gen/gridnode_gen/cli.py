@@ -6,6 +6,8 @@
   gridnode setup --dump FILE                  install your dump and generate types.hpp
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
+  gridnode hash NAME...                       Frostbite name hash of each name
+  gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
 
 from __future__ import annotations
@@ -36,6 +38,10 @@ def _find(path: str | None, what: str) -> str | None:
         if os.path.isfile(candidate):
             return os.path.abspath(candidate)
     raise UserError(f"{what} not found: {path}\n  (looked in {os.getcwd()} and in the repository root {ROOT})")
+
+
+def _resolve(path: str) -> str:
+    return path if os.path.exists(path) else os.path.join(ROOT, path)
 
 
 def _load(ann_dir: str, reflected_path: str | None, quiet=False):
@@ -105,7 +111,51 @@ def _main(argv=None) -> int:
     c.add_argument("ghidra")
     c.add_argument("--strict", action="store_true")
 
+    h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
+    h.add_argument("names", nargs="+")
+
+    u = sub.add_parser("unhash", help="look hashes up in GridNode's dictionary")
+    u.add_argument("hashes", nargs="+", help="hex (0x...) or decimal (Frosty shows signed ints), or @file with one per line")
+    u.add_argument("--reflected", default=DEFAULT_DUMP, help="dump whose names go in the dictionary")
+    u.add_argument("--image", help="also every string in this PE dump of the game")
+    u.add_argument("--words", action="append", default=[], help="extra word list (one name per line)")
+    u.add_argument("--unknown", action="store_true", help="print only the hashes that were not found")
+
     a = ap.parse_args(argv)
+
+    if a.cmd == "hash":
+        from .hashes import name_hash
+        for n in a.names:
+            hv = name_hash(n)
+            signed = hv - (1 << 32) if hv & 0x80000000 else hv
+            print(f"0x{hv:08x}  {signed:>11}  {n}")
+        return 0
+
+    if a.cmd == "unhash":
+        from . import hashes
+        values: list[str] = []
+        for x in a.hashes:
+            if x.startswith("@"):
+                with open(_find(x[1:], "hash list"), encoding="utf-8") as f:
+                    values += [ln.split("#")[0].strip() for ln in f if ln.split("#")[0].strip()]
+            else:
+                values.append(x)
+        dump = _find(a.reflected, "dump") if a.reflected and os.path.exists(_resolve(a.reflected)) else None
+        db, r, _ = _load(a.annotations, dump, quiet=True)
+        image = None
+        if a.image:
+            with open(_find(a.image, "image"), "rb") as f:
+                image = f.read()
+        d = hashes.dictionary(reflected=r, db=db, image=image, word_files=[_find(w, "word list") for w in a.words])
+        found = 0
+        for v in values:
+            hv = hashes.parse_hash(v)
+            name = d.get(hv)
+            found += name is not None
+            if name is None or not a.unknown:
+                print(f"0x{hv:08x}  {name if name is not None else '?'}")
+        print(f"{found} of {len(values)} found ({len(d)} names in the dictionary)", file=sys.stderr)
+        return 0
 
     if a.cmd == "validate":
         db, r, p = _load(a.annotations, _find(a.reflected, "dump"))
