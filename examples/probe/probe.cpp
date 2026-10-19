@@ -350,6 +350,63 @@ void diffTick() {
     }
 }
 
+// ---- jump tests: write a candidate, see whether Faith rises ---------------------------------------------
+struct JumpTest {
+    const char* name;
+    uint32_t off;  // in ClientPlayer (Faith +0x238), or in the input devices object when raw
+    bool raw;
+    uint32_t value;
+};
+const JumpTest kJumpTests[] = {
+    {"ClientPlayer+0x1a28 = 1", 0x1a28, false, 1},
+    {"ClientPlayer+0x1a9c = 1", 0x1a9c, false, 1},
+    {"ClientPlayer+0x1a28 and +0x1a9c = 1", 0, false, 1},
+    {"raw keyboard Space (MEC_Trainer's way, the control)", 0x1bb0, true, 1},
+};
+int g_test = -1;    // the test running, -1 none
+int g_testTick = 0;
+float g_y0 = 0, g_yMax = 0;
+
+void jumpWrite(const JumpTest& t, uint32_t v) {
+    if (t.raw) {
+        uint64_t input = 0;
+        if (gn::read(reinterpret_cast<const void*>(gn::rva(0x14256D7C0)), input) && input)
+            gn::write(reinterpret_cast<void*>(input + t.off), v);
+        return;
+    }
+    uint64_t player = 0;
+    void* cf = gn::localClientCharacter();
+    if (!cf || !gn::read(static_cast<char*>(cf) + 0x238, player) || !player) return;
+    if (t.off) gn::write(reinterpret_cast<void*>(player + t.off), v);
+    else {
+        gn::write(reinterpret_cast<void*>(player + 0x1a28), v);
+        gn::write(reinterpret_cast<void*>(player + 0x1a9c), v);
+    }
+}
+
+void jumpTick() {
+    if (g_test < 0) return;
+    const JumpTest& t = kJumpTests[g_test];
+    gn::Vec3 p{};
+    void* cf = gn::localClientCharacter();
+    if (!cf || !gn::positionOf(cf, p)) return;
+    if (g_testTick == 0) {
+        g_y0 = g_yMax = p.y;
+        gn::log("jump test %d: %s", g_test + 1, t.name);
+    }
+    if (p.y > g_yMax) g_yMax = p.y;
+    if (g_testTick < 4) jumpWrite(t, t.value);      // "held" for 4 ticks
+    else if (g_testTick == 4) jumpWrite(t, 0);       // released
+    if (++g_testTick == 75) {                        // ~2.5 s later
+        gn::log("jump test %d: Faith rose %.2f m -> %s", g_test + 1, g_yMax - g_y0, g_yMax - g_y0 > 0.3f ? "JUMPED" : "no jump");
+        g_testTick = 0;
+        if (++g_test == static_cast<int>(sizeof(kJumpTests) / sizeof(kJumpTests[0]))) {
+            g_test = -1;
+            gn::log("==== jump tests done");
+        }
+    }
+}
+
 } // namespace
 
 GN_MOD("probe") {
@@ -375,7 +432,12 @@ GN_MOD("probe") {
         const float before = t;
         t += dt;
         if (before < 5.f && t >= 5.f) deep("5 s after Faith appeared");
-        if (before < 10.f && t >= 10.f && g_snap.stage == 0) armDiff(); // no key needed
+        if (before < 10.f && t >= 10.f) {
+            gn::log("jump tests start: stand still on flat ground and do not touch anything for 12 s");
+            g_test = 0;
+            g_testTick = 0;
+        }
+        jumpTick();
     });
     gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes");
     return true;
