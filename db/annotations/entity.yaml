@@ -23,7 +23,9 @@ structs:
     opaque: true
     note: >-
       Live transform storage of a spatial entity. The current LinearTransform is at
-      +0x10 + (u8@+9 + 2 * u8@+10) * 0x20. Only the header is described here.
+      +0x10 + (u8@+9 + 2 * u8@+10) * 0x20. Only the header is described here. The indices are
+      not 0/1: GridNode saw 19 and 10 on Faith's client character (transform space inline at
+      character+0x350), so read them as plain bytes.
     members:
       - { offset: 0x09, name: selectA, type: u8 }
       - { offset: 0x0a, name: selectB, type: u8 }

@@ -264,7 +264,8 @@ bool entityTransform(const void* entity, gn_transform& out) {
     if (!entity) return false;
     const uintptr_t ts = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(entity) + e::cls::ComponentEntity::off::transformSpace);
     uint8_t sel[2] = {};
-    if (!ts || !mem::read(ts + 9, sel, 2) || sel[0] > 7 || sel[1] > 7) return false;
+    // Two indices into the space's transform slots (seen in game: 19 and 10 for Faith).
+    if (!ts || !mem::read(ts + 9, sel, 2)) return false;
     float m[16];
     // The rows' fourth floats are padding (not always initialised): only x, y, z are checked.
     if (!mem::read(ts + 0x10 + (sel[0] + 2u * sel[1]) * 0x20, m, sizeof(m)) || !finite(m, 3) || !finite(m + 4, 3) ||
