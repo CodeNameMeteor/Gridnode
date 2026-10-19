@@ -2,13 +2,6 @@
 defaults: { confidence: inferred, sources: [gridnode, research] }
 
 structs:
-  - name: MessageManager
-    size: 0x70
-    opaque: true
-    note: The object behind the MessageManager global.
-    members:
-      - { offset: 0x10, name: listenerRegistry, type: "void*" }
-      - { offset: 0x68, name: serverPlayerManager, type: "ServerPlayerManager*" }
   - name: ServerPlayerManager
     size: 0x278
     opaque: true

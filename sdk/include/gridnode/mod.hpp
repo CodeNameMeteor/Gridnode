@@ -228,6 +228,18 @@ template <class F> bool console(const char* line, F f) {
     return r == GN_OK;
 }
 
+// ---- messages ---------------------------------------------------------------------------------
+// fn(const void* message, const gn_message_info& info) for every message of a type
+// ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"), on the sender's thread.
+template <class F> bool onMessage(const char* typeOrCategory, F f) {
+    auto* p = detail::keep(std::function<void(const void*, const gn_message_info&)>(std::move(f)));
+    return api().on_message(modName(), typeOrCategory,
+                            [](const void* m, const gn_message_info* i, void* u) {
+                                (*static_cast<std::function<void(const void*, const gn_message_info&)>*>(u))(m, *i);
+                            },
+                            p) == GN_OK;
+}
+
 } // namespace gn
 
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.

@@ -213,6 +213,10 @@ int apiConsoleCommandAt(uint32_t i, gn_command* out) {
     return GN_OK;
 }
 
+int apiOnMessage(const char* mod, const char* name, gn_message_fn fn, void* user) {
+    return name ? onMessage(mod ? mod : "?", name, fn, user) : GN_ERR_ARGUMENT;
+}
+
 } // namespace
 
 const gn_api* api() {
@@ -264,6 +268,7 @@ const gn_api* api() {
         a.console_run = apiConsoleRun;
         a.console_command_count = apiConsoleCommandCount;
         a.console_command_at = apiConsoleCommandAt;
+        a.on_message = apiOnMessage;
         return a;
     }();
     return &table;

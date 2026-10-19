@@ -351,7 +351,7 @@ Each milestone ends with something testable in game.
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** ✅ | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M4.5** ✅ | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
-| **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
+| **M5** 🔄 | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
@@ -384,6 +384,21 @@ Findings (Ghidra):
   is the `MessageManager` global (+0x10 listener registry). Plan: register a GridNode listener
   object through the engine's own registration (no hook), filtered by category; mods receive the
   message with its fields readable by name.
+
+### M5 notes
+
+- Messages (Ghidra): three managers: `g_coreMessageManager` (0x142142ce0), and inline at +0x10 of
+  `g_clientGameContext` (0x142401cb0) and `g_serverGameContext` (0x14253d670, until now called
+  "MessageManager" in our annotations). `MessageManager_registerListener(manager, category,
+  listener, realm)`; a listener is an object whose vtable has `onMessage(this, msg)` and an order
+  (default 100); messages carry category (+8, djb2 of the category name), type id (+0xc, djb2 of
+  the class name) and realm (+0x10). All 668 message types' static instances check out (offline,
+  on the Scylla image): 120 categories, every name recovered.
+- Built: `on_message` (API 4) by type or category, a listener per manager registered from the
+  realm's tick (again if a manager is recreated), the inspector's Messages tab (record, counts, all
+  types; a copy of each message's bytes), hello listens to ServerPlayer. Waiting for the in-game test.
+- Message members after the 0x30-byte header are not reflected; annotating the useful ones is
+  ongoing work. Entity-to-component messages (`Entity_sendMessageToComponents`) bypass the managers.
 
 ### M4.5 notes
 

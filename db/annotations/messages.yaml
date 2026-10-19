@@ -1,0 +1,73 @@
+# The engine's message system: three message managers (core, client, server), listeners, messages.
+defaults: { confidence: confirmed, sources: [gridnode] }
+
+globals:
+  - name: ServerGameContext
+    va: 0x14253d670
+    type: "ServerGameContext*"
+    note: g_serverGameContext. Created by 0x14333d150 (0x98 bytes); its message manager is inline at +0x10.
+  - name: ClientGameContext
+    va: 0x142401cb0
+    type: "ClientGameContext*"
+    note: g_clientGameContext; its message manager is inline at +0x10.
+  - name: CoreMessageManager
+    va: 0x142142ce0
+    type: "MessageManager*"
+    note: g_coreMessageManager (initGameApplication registers the application on it).
+
+structs:
+  - name: ServerGameContext
+    size: 0x98
+    opaque: true
+    members:
+      - { offset: 0x10, name: messageManager, type: MessageManager }
+      - { offset: 0x68, name: serverPlayerManager, type: "ServerPlayerManager*", note: "Confirmed in game (GridNode M4)." }
+      - { offset: 0x70, name: playerGameState, type: "void*", confidence: inferred, note: "Looked up per ServerPlayer by 0x1433b6f90." }
+  - name: ClientGameContext
+    size: 0x18
+    opaque: true
+    members:
+      - { offset: 0x10, name: messageManager, type: MessageManager }
+  - name: MessageManager
+    size: 0x8
+    note: A handle; every MessageManager_* function starts with mov rcx,[rcx] and works on the implementation.
+    members:
+      - { offset: 0x0, name: impl, type: "void*", note: "Listener map at +0x80 (category -> listeners), lock at +0x40." }
+  - name: Message
+    size: 0x30
+    note: >-
+      Base of every message (a reflected value type whose static instance the walker finds).
+      category = djb2-xor of the category name (e.g. "ClientPlayer"), typeId = djb2-xor of the full
+      message class name (e.g. "ClientPlayerLocalSetMessage"): checked for all 668 message types.
+      The message's own members start at +0x30 and are not reflected.
+    members:
+      - { offset: 0x08, name: category, type: u32 }
+      - { offset: 0x0c, name: typeId, type: u32 }
+      - { offset: 0x10, name: realm, type: u32, note: "0xff: any. A listener registered with a realm only gets messages for it (or 0xff)." }
+  - name: MessageListener
+    size: 0x8
+    note: >-
+      An object whose vtable has onMessage(this, const Message*) at +0 and a u16 order at +8
+      (the engine's default returns 100). Registered per category; called on the thread that
+      executes (or dispatches the queued) message.
+    members:
+      - { offset: 0x0, name: vtable, type: "void*" }
+
+functions:
+  - name: MessageManager_registerListener
+    va: 0x142a3ad40
+    signature: "u8(MessageManager* manager, u32 category, MessageListener* listener, u32 realm)"
+    note: Takes the manager lock; additions while a message is being dispatched are deferred.
+  - name: MessageManager_unregisterListener
+    va: 0x142a3b600
+    signature: "void(MessageManager* manager, u32 category, MessageListener* listener, u32 realm)"
+  - name: MessageManager_executeMessage
+    va: 0x142a39770
+    signature: "void(MessageManager* manager, const Message* message)"
+    note: Calls the category's listeners now, on this thread.
+  - name: MessageManager_queueMessage
+    va: 0x142a3ad30
+    signature: "void(MessageManager* manager, const Message* message)"
+  - name: Message_ctor
+    va: 0x142a37120
+    signature: "Message*(Message* message, u32 category, u32 typeId, u32 realm)"

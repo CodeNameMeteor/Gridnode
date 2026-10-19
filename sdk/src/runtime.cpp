@@ -210,6 +210,7 @@ void run(HMODULE self) {
     GN_LOG("ticks: server %s, client %s", ticks.server ? "hooked" : "UNAVAILABLE", ticks.client ? "hooked" : "UNAVAILABLE");
 
     host::worldStart();
+    host::messageTypes(); // reads the message types' static instances once (logged)
     if (s.ui.enabled && s.ui.inspector) host::inspector::start();
     host::ui::install(s.ui);
 

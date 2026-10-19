@@ -621,6 +621,132 @@ void shortcutsTab() {
     ImGui::TextDisabled("Addresses are runtime addresses in the game process.");
 }
 
+// ---- messages -----------------------------------------------------------------------------------
+struct Rec {
+    uint64_t seq;
+    DWORD tick;
+    int manager;
+    uint32_t category, typeId, realm;
+    std::vector<uint8_t> bytes; // a copy of the message (it only lives during the call)
+};
+std::mutex g_recM;
+std::vector<Rec> g_recs;                        // guarded by g_recM: the newest 2000
+std::map<uint32_t, uint64_t> g_recCounts;       // guarded by g_recM: type id -> messages seen
+uint64_t g_recSeq = 0;                          // guarded by g_recM
+std::atomic<bool> g_recPaused{false};
+
+void record(int manager, const uint8_t* msg, uint32_t category, uint32_t typeId, uint32_t realm) {
+    const Type* t = messageTypeById(typeId);
+    const size_t n = std::min<size_t>(t && t->size >= 0x30 ? t->size : 0x80, 0x400);
+    Rec r{0, GetTickCount(), manager, category, typeId, realm, std::vector<uint8_t>(n)};
+    if (!mem::read(reinterpret_cast<uintptr_t>(msg), r.bytes.data(), n)) r.bytes.resize(0x30), memcpy(r.bytes.data(), msg, 0x30);
+    std::lock_guard<std::mutex> lock(g_recM);
+    ++g_recCounts[typeId];
+    if (g_recPaused.load(std::memory_order_relaxed)) return;
+    r.seq = ++g_recSeq;
+    g_recs.push_back(std::move(r));
+    if (g_recs.size() > 2000) g_recs.erase(g_recs.begin(), g_recs.begin() + 500);
+}
+
+const char* managerName(int m) { return m == 0 ? "core" : m == 1 ? "client" : "server"; }
+
+void messagesTab() {
+    if (!messagesAvailable()) {
+        ImGui::TextDisabled("The message manager functions are not as expected in this build.");
+        return;
+    }
+    static bool on = false;
+    if (ImGui::Checkbox("Record", &on)) messageMonitor(on, &record);
+    ImGui::SameLine();
+    bool paused = g_recPaused.load();
+    if (ImGui::Checkbox("Pause", &paused)) g_recPaused = paused;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        std::lock_guard<std::mutex> lock(g_recM);
+        g_recs.clear();
+        g_recCounts.clear();
+    }
+    static char filter[96] = "";
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##mf", "filter (type or category)", filter, sizeof(filter));
+    static int view = 0;
+    ImGui::RadioButton("Recent", &view, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton("Counts", &view, 1);
+    ImGui::SameLine();
+    ImGui::RadioButton("All types", &view, 2);
+
+    static uint64_t sel = 0;
+    static Rec selRec{};
+    const float h = ImGui::GetContentRegionAvail().y;
+    if (ImGui::BeginChild("msgs", ImVec2(0, sel ? h * 0.5f : 0), ImGuiChildFlags_Borders)) {
+        auto nameOf = [](uint32_t typeId) {
+            const Type* t = messageTypeById(typeId);
+            char b[16];
+            snprintf(b, sizeof(b), "%08x", typeId);
+            return t ? t->name : std::string(b);
+        };
+        if (view == 0) {
+            std::vector<const Rec*> shown;
+            std::lock_guard<std::mutex> lock(g_recM);
+            for (auto it = g_recs.rbegin(); it != g_recs.rend(); ++it)
+                if (ciContains(nameOf(it->typeId), filter) || ciContains(messageCategoryName(it->category), filter)) shown.push_back(&*it);
+            if (!on && g_recs.empty()) ImGui::TextDisabled("Tick Record to see every message the engine sends.");
+            ImGuiListClipper clip;
+            clip.Begin(int(shown.size()));
+            while (clip.Step())
+                for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+                    const Rec& r = *shown[size_t(i)];
+                    char label[200];
+                    const std::string cat = messageCategoryName(r.category);
+                    snprintf(label, sizeof(label), "%6.1fs  %-6s %s##%llu", (GetTickCount() - r.tick) / 1000.0, managerName(r.manager),
+                             nameOf(r.typeId).c_str(), static_cast<unsigned long long>(r.seq));
+                    const bool online = onlineWarning(cat) != nullptr;
+                    if (online) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.65f, 0.3f, 1.f));
+                    if (ImGui::Selectable(label, sel == r.seq)) {
+                        sel = r.seq;
+                        selRec = r;
+                    }
+                    if (online) ImGui::PopStyleColor();
+                }
+        } else if (view == 1) {
+            std::vector<std::pair<uint64_t, uint32_t>> counts;
+            {
+                std::lock_guard<std::mutex> lock(g_recM);
+                for (const auto& kv : g_recCounts) counts.push_back({kv.second, kv.first});
+            }
+            std::sort(counts.rbegin(), counts.rend());
+            for (const auto& c : counts) {
+                const std::string n = nameOf(c.second);
+                if (!ciContains(n, filter)) continue;
+                ImGui::Text("%8llu  %s", static_cast<unsigned long long>(c.first), n.c_str());
+            }
+        } else {
+            for (const MessageType& m : messageTypes()) {
+                if (!ciContains(m.type->name, filter) && !ciContains(m.categoryName, filter)) continue;
+                if (m.online) ImGui::TextColored(ImVec4(1.f, 0.65f, 0.3f, 1.f), "%s", m.type->name.c_str());
+                else ImGui::TextUnformatted(m.type->name.c_str());
+                ImGui::SameLine(ImGui::GetFontSize() * 24);
+                ImGui::TextDisabled("%s  (%u bytes)", m.categoryName, m.type->size);
+            }
+        }
+    }
+    ImGui::EndChild();
+    const bool showSel = sel != 0;
+    if (showSel && ImGui::BeginChild("msg", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        const Type* t = messageTypeById(selRec.typeId);
+        ImGui::Text("%s", t ? t->name.c_str() : "?");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("close")) sel = 0;
+        ImGui::TextDisabled("category %s, %s message manager, realm 0x%x, %llu bytes copied when it was sent",
+                            messageCategoryName(selRec.category).c_str(), managerName(selRec.manager), selRec.realm,
+                            static_cast<unsigned long long>(selRec.bytes.size()));
+        ImGui::TextDisabled("Members after +0x30 are not reflected; pointers to known objects are links.");
+        if (!selRec.bytes.empty()) hexView(reinterpret_cast<uintptr_t>(selRec.bytes.data()));
+    }
+    if (showSel) ImGui::EndChild();
+}
+
 // ---- console ----------------------------------------------------------------------------------
 std::mutex g_conM;
 std::vector<std::string> g_conLines; // guarded by g_conM: the scrollback
@@ -860,6 +986,10 @@ void draw(bool* open) {
                 }
                 if (ImGui::BeginTabItem("Settings")) {
                     settingsTab();
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Messages")) {
+                    messagesTab();
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Shortcuts")) {

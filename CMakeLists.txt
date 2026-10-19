@@ -148,6 +148,7 @@ add_library(gridnode SHARED
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
   sdk/src/settings.cpp
+  sdk/src/messages.cpp
   third_party/imgui/backends/imgui_impl_dx11.cpp
   third_party/imgui/backends/imgui_impl_win32.cpp
 )

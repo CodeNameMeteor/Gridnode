@@ -32,4 +32,7 @@ fingerprint:
     - { at: ConsoleRegistry_getStaticCommands, bytes: "48 83 EC 28 8B 05 56 09 8E FF A8 01", required: false }
     - { at: ConsoleRegistry_getBoundCommands, bytes: "48 83 EC 28 8B 05 06 1D 8E FF A8 01", required: false }
     - { at: EngineAllocator_free, bytes: "48 8B 09 E9 A8 2B 01 00", required: false, note: "mov rcx,[rcx]; jmp" }
+    - { at: MessageManager_registerListener, bytes: "48 8B 09 EB 0B", required: false, note: "Optional: only messages depend on it (mov rcx,[rcx]; jmp to the implementation)." }
+    - { at: MessageManager_unregisterListener, bytes: "48 8B 09 EB 0B", required: false }
+    - { at: 0x142a3ad50, bytes: "89 54 24 10 55 53 56 57 41 54 41 56 41 57", required: false, note: "registerListener's implementation" }
     - { at: RaycastQuery_execute, bytes: "48 89 E0 55 56 57 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC D0 01 00 00", required: false, note: "Optional: only ray casts depend on it." }

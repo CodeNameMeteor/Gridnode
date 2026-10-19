@@ -147,12 +147,12 @@ void* localClientCharacter() {
 void worldStart() { onCreated("gridnode", "ServerCharacterEntity", &onServerCharacter, nullptr); }
 
 namespace {
-// MessageManager -> server player manager (+0x68) -> players (+0x268/+0x270). The first human
+// ServerGameContext -> server player manager (+0x68) -> players (+0x268/+0x270). The first human
 // player whose character (+0x1478) is a ServerCharacterEntity that points back at the player.
 void* fromPlayerManager() {
     using namespace e::st;
-    const uintptr_t mm = mem::readOr<uintptr_t>(mem::rva(e::global::MessageManager));
-    const uintptr_t pm = mm ? mem::readOr<uintptr_t>(mm + MessageManager::off::serverPlayerManager) : 0;
+    const uintptr_t mm = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameContext));
+    const uintptr_t pm = mm ? mem::readOr<uintptr_t>(mm + ServerGameContext::off::serverPlayerManager) : 0;
     if (!pm) return nullptr;
     uintptr_t range[2] = {};
     if (!mem::read(pm + ServerPlayerManager::off::playersBegin, range, sizeof(range))) return nullptr;
@@ -194,11 +194,11 @@ void* fromClientPosition() {
 // Once per failure streak: what each way of finding the character saw (for the log).
 void diagnoseServerCharacter() {
     using namespace e::st;
-    const uintptr_t mm = mem::readOr<uintptr_t>(mem::rva(e::global::MessageManager));
-    const uintptr_t pm = mm ? mem::readOr<uintptr_t>(mm + MessageManager::off::serverPlayerManager) : 0;
+    const uintptr_t mm = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameContext));
+    const uintptr_t pm = mm ? mem::readOr<uintptr_t>(mm + ServerGameContext::off::serverPlayerManager) : 0;
     uintptr_t range[2] = {};
     if (pm) mem::read(pm + ServerPlayerManager::off::playersBegin, range, sizeof(range));
-    GN_LOG("world: no local server character. MessageManager %llx, player manager %llx, players %llx..%llx (%lld)",
+    GN_LOG("world: no local server character. server game context %llx, player manager %llx, players %llx..%llx (%lld)",
            static_cast<unsigned long long>(mm), static_cast<unsigned long long>(pm), static_cast<unsigned long long>(range[0]),
            static_cast<unsigned long long>(range[1]), static_cast<long long>(range[1] >= range[0] ? (range[1] - range[0]) / 8 : -1));
     if (range[0] && range[1] > range[0] && (range[1] - range[0]) / 8 <= 16) {

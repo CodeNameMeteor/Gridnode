@@ -5,6 +5,7 @@
 //   - entity creation: be told about every PamClientCharacterEntity the game creates
 //   - ticks: run code on the client and server game threads
 //   - engine addresses: call a game function from gridnode/engine.hpp
+//   - messages: be told when the engine sends a message
 // Everything it does is read-only. Output goes to gridnode.log, prefixed [hello].
 
 #include <cmath>
@@ -73,6 +74,18 @@ GN_MOD("hello") {
         Vec3 p{};
         if (ch && position(ch, p)) gn::log("client: Faith at (%.2f, %.2f, %.2f)", p.x, p.y, p.z);
         else gn::log("client: no local character");
+    });
+
+    // Engine messages: everything in the ServerPlayer category (spawns, deaths, ...: the first 30),
+    // and the client being told which character the local player has.
+    gn::onMessage("ServerPlayer", [](const void*, const gn_message_info& info) {
+        static int n = 0;
+        if (++n <= 30) gn::log("message: %s (%s manager)", info.type_name, info.manager == 2 ? "server" : info.manager == 1 ? "client" : "core");
+    });
+    gn::onMessage("ClientCharacterLocalPlayerSetMessage", [](const void* m, const gn_message_info& info) {
+        void* character = nullptr;
+        gn::read(static_cast<const char*>(m) + 0x30, character); // the message's member after the header
+        gn::log("message: %s, character %p (%s)", info.type_name, character, gn::Type::of(character).name());
     });
 
     // Every ~5 s on the server thread: how many server ticks ran.

@@ -201,6 +201,29 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
 In game: GridNode menu → **Console** (every command, with search; Up / Down recall earlier lines,
 Tab completes a command name; online ones in orange ask for confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
 
+## Messages
+
+```cpp
+gn::onMessage("ClientCharacterLocalPlayerSetMessage", [](const void* m, const gn_message_info& info) {
+    void* character = nullptr;
+    gn::read(static_cast<const char*>(m) + 0x30, character);   // members start after the 0x30-byte header
+});
+gn::onMessage("ServerPlayer", [](const void*, const gn_message_info& info) { gn::log("%s", info.type_name); });
+```
+
+- The engine's systems talk through three message managers (core, client, server). GridNode
+  registers its own listener with them, as the game's code does: nothing is hooked, and listening
+  is safe for every category.
+- Subscribe to a message type (668 of them) or a whole category (120, e.g. `ServerPlayer`,
+  `ClientPlayer`, `UI`). Inspector → **Messages** lists them all, and with **Record** shows every
+  message as it is sent, with a copy of its bytes.
+- The callback runs on the thread that sent the message, and the message only lives during the
+  call: copy what you need. Most members after the header are not reflected; the inspector's copy
+  shows them (pointers to known objects are links).
+- Messages an entity sends to its own components (e.g. `CharacterToComponentsOnTeleportedMessage`
+  from the game's teleport) do not go through the managers and are not seen here.
+- Sending messages is planned for M8.
+
 ## Name hashes
 
 Frostbite keeps many names only as a 32-bit hash: property and event ids in blueprint connections

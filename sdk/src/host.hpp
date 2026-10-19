@@ -80,6 +80,24 @@ bool consoleAvailable();
 std::string consoleRun(const std::string& line); // client thread
 std::vector<ConsoleCommand> consoleCommands();
 
+// Messages (messages.cpp).
+struct MessageType {
+    const reflect::Type* type = nullptr;
+    uint32_t typeId = 0;
+    uint32_t category = 0;
+    const char* categoryName = "";
+    const char* online = nullptr;
+};
+using MessageRecorder = void (*)(int manager, const uint8_t* message, uint32_t category, uint32_t typeId, uint32_t realm);
+const std::vector<MessageType>& messageTypes(); // every message type the engine has (sorted by name)
+std::string messageCategoryName(uint32_t category);
+const reflect::Type* messageTypeById(uint32_t typeId);
+int onMessage(const std::string& mod, const std::string& typeOrCategory, gn_message_fn fn, void* user);
+void messageMonitor(bool on, MessageRecorder rec); // every category to rec (the inspector)
+bool messagesAvailable();
+void messagesClientTick(); // client thread: registrations with the core and client managers
+void messagesServerTick(); // server thread: registrations with the server manager
+
 // Overlay (ui.cpp).
 namespace ui {
 struct Settings {

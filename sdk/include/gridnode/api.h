@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 3 /* 2: world, levels and UI (M4); 3: settings and console (M4.5) */
+#define GN_API_VERSION 4 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages (M5) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -66,6 +66,21 @@ typedef struct gn_command {
     const char* help;   /* may be empty */
     uint32_t flags;     /* GN_COMMAND_* */
 } gn_command;
+
+/* A message the engine sent. Messages are value types (gn_type) whose members after the 0x30-byte
+ * header are mostly not reflected: read them at known offsets, or look at them in the inspector. */
+typedef struct gn_message_info {
+    const gn_type* type;      /* the message's type, or null if unknown */
+    const char* type_name;    /* e.g. "ClientPlayerLocalSetMessage" ("" if unknown) */
+    const char* category;     /* e.g. "ClientPlayer" */
+    uint32_t type_id;         /* name hash of the type name */
+    uint32_t category_id;     /* name hash of the category */
+    uint32_t realm;           /* the message's realm filter (0xff: any) */
+    int manager;              /* which message manager carried it: 0 core, 1 client, 2 server */
+} gn_message_info;
+/* Called on the thread that sends the message (usually its realm's game thread). The message is
+ * only valid during the call. */
+typedef void (*gn_message_fn)(const void* message, const gn_message_info* info, void* user);
 
 /* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
  * 16-byte aligned, as the engine reads it with aligned loads. */
@@ -212,6 +227,15 @@ typedef struct gn_api {
     int (*console_run)(const char* mod, const char* line, gn_console_fn fn, void* user);
     uint32_t (*console_command_count)(void);
     int (*console_command_at)(uint32_t index, gn_command* out);
+
+    /* ==== GN_API_VERSION 4 ==================================================================== */
+
+    /* ---- messages ------------------------------------------------------------------------------
+     * Listens to the engine's messages, the way the game's own systems do (GridNode registers a
+     * listener with the engine's message managers; nothing is hooked). type_or_category: a message
+     * type ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"). Listening only
+     * reads: it is safe for every category, online ones included. */
+    int (*on_message)(const char* mod, const char* type_or_category, gn_message_fn fn, void* user);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -105,10 +105,3 @@ globals:
   - name: BlueprintInstantiationEnabled
     va: 0x1425476c0
     type: bool
-  - name: MessageManager
-    va: 0x14253d670
-    type: "MessageManager*"
-    note: >-
-      The server game context (g_serverGameContext): its MessageManager is inline at +0x10
-      (MessageManager_registerListener(ctx+0x10, category hash, listener, 0xff)); +0x68 server player
-      manager (players vector at +0x268/+0x270; player+0x1398 is-human), not yet confirmed in game.
