@@ -179,6 +179,10 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_link_libraries(hello PRIVATE gn_engine)
   set_target_properties(hello PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(probe SHARED examples/probe/probe.cpp)
+  target_include_directories(probe PRIVATE sdk/include)
+  set_target_properties(probe PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
   add_library(trainer SHARED examples/trainer/trainer.cpp)
   target_include_directories(trainer PRIVATE sdk/include)
   target_link_libraries(trainer PRIVATE gn_imgui)
