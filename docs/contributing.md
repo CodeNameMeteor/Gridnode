@@ -36,7 +36,9 @@ from the game: annotations hold our own findings only.
 
 ## Ghidra (GridNodeSync)
 
-`tools/ghidra/GridNodeSync.java` keeps Ghidra and the annotations in step, both ways.
+`tools/ghidra/GridNodeSync.java` keeps Ghidra and the annotations in step, both ways. It needs
+Ghidra 12 (checked against 12.0.3): copy it into one of your script folders (Script Manager → Manage
+Script Directories).
 
 **Annotations into Ghidra.**
 

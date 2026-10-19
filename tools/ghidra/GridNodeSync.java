@@ -19,6 +19,8 @@
 //
 // Export before importing again if you edited the /GridNode structs: an import replaces them.
 //
+// Needs Ghidra 12 (CommentType); checked against 12.0.3.
+//
 //@category GridNode
 //@author GridNode
 
@@ -64,6 +66,7 @@ import ghidra.program.model.data.UnsignedLongLongDataType;
 import ghidra.program.model.data.UnsignedShortDataType;
 import ghidra.program.model.data.VoidDataType;
 import ghidra.program.model.listing.CodeUnit;
+import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
@@ -174,7 +177,7 @@ public class GridNodeSync extends GhidraScript {
 				setQualifiedName(f.getSymbol(), name);
 				named++;
 			}
-			setComment(a, CodeUnit.PLATE_COMMENT, comment);
+			setComment(a, CommentType.PLATE, comment);
 		}
 		catch (Exception ex) {
 			failed++;
@@ -207,7 +210,7 @@ public class GridNodeSync extends GhidraScript {
 					}
 				}
 			}
-			setComment(a, getFunctionContaining(a) != null ? CodeUnit.EOL_COMMENT : CodeUnit.PLATE_COMMENT, comment);
+			setComment(a, getFunctionContaining(a) != null ? CommentType.EOL : CommentType.PLATE, comment);
 		}
 		catch (Exception ex) {
 			failed++;
@@ -216,7 +219,7 @@ public class GridNodeSync extends GhidraScript {
 	}
 
 	// GridNode's comment replaces an earlier GridNode comment; any other comment is kept above it.
-	private void setComment(Address a, int kind, String comment) {
+	private void setComment(Address a, CommentType kind, String comment) {
 		if (comment == null || comment.isEmpty()) {
 			return;
 		}
