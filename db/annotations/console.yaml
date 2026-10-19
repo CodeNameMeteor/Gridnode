@@ -36,32 +36,32 @@ structs:
     size: 0x20
     note: The string Console_executeCommand returns.
     members:
-      - { offset: 0x00, name: begin, type: "char*" }
-      - { offset: 0x08, name: end, type: "char*" }
-      - { offset: 0x10, name: capacity, type: "char*" }
+      - { offset: 0x00, name: begin, type: "i8*" }
+      - { offset: 0x08, name: end, type: "i8*" }
+      - { offset: 0x10, name: capacity, type: "i8*" }
       - { offset: 0x18, name: allocator, type: "void*" }
   - name: StaticCommand
     size: 0x20
     note: Entries of ConsoleRegistry_getStaticCommands (a vector of pointers to these). Full name group.name.
     members:
       - { offset: 0x00, name: fn, type: "void*" }
-      - { offset: 0x08, name: name, type: "const char*" }
-      - { offset: 0x10, name: group, type: "const char*" }
-      - { offset: 0x18, name: arguments, type: "const char*", note: "Help text for the arguments; may be null." }
+      - { offset: 0x08, name: name, type: "const i8*" }
+      - { offset: 0x10, name: group, type: "const i8*" }
+      - { offset: 0x18, name: arguments, type: "const i8*", note: "Help text for the arguments; may be null." }
   - name: BoundCommand
     size: 0x28
     note: Entries of ConsoleRegistry_getBoundCommands (a vector of these, inline). Settings fields with flag 0x2000.
     members:
-      - { offset: 0x00, name: name, type: "const char*" }
-      - { offset: 0x08, name: group, type: "const char*" }
-      - { offset: 0x10, name: help, type: "const char*" }
+      - { offset: 0x00, name: name, type: "const i8*" }
+      - { offset: 0x08, name: group, type: "const i8*" }
+      - { offset: 0x10, name: help, type: "const i8*" }
       - { offset: 0x18, name: context, type: "void*" }
       - { offset: 0x20, name: fn, type: "void*" }
 
 functions:
   - name: Console_executeCommand
     va: 0x142a8a190
-    signature: "void(EngineString* result, const char* line, u8 trusted)"
+    signature: "void(EngineString* result, const i8* line, u8 trusted)"
     confidence: confirmed
     note: >-
       trusted = 0 is the player's console: everything except enable / disable / select is refused
@@ -77,7 +77,7 @@ functions:
     note: Returns the vector {begin, end, capacity} of BoundCommand entries.
   - name: ConsoleBinding_registerFieldsRecursive
     va: 0x142a7e840
-    signature: "void(const char* group, void* type, void* binding, const char* prefix)"
+    signature: "void(const i8* group, void* type, void* binding, const i8* prefix)"
     note: Binds only fields with flag 0x2000 (141 of the 3,431 settings fields).
   - name: ConsoleFieldBinding_getOrSet
     va: 0x142a7e1e0
@@ -90,7 +90,7 @@ functions:
     note: Takes the manager lock. 0x142ab21c0 is an identical copy.
   - name: SettingsManager_registerSettingsImpl
     va: 0x142ab0510
-    signature: "void*(SettingsManager* manager, const char* name, void* object, u8 bindToConsole, void* a5, void* type, u8 a7)"
+    signature: "void*(SettingsManager* manager, const i8* name, void* object, u8 bindToConsole, void* a5, void* type, u8 a7)"
   - name: Console_runScriptFile
     va: 0x142a2f5d0
     signature: "void(void* path, u8 now)"
