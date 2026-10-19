@@ -8,6 +8,8 @@
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
   gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
   gridnode docs [--reflected FILE] [--build]   the docs site (with a dump: the full reference, local)
+  gridnode ghidra-export [--out FILE]          annotations for GridNodeSync.java to apply in Ghidra
+  gridnode ghidra-import FILE [--out FILE]     what was named in Ghidra, as annotations to review
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
@@ -123,6 +125,13 @@ def _main(argv=None) -> int:
     d.add_argument("--build", action="store_true", help="run mkdocs build (site in OUT/site)")
     d.add_argument("--serve", action="store_true", help="run mkdocs serve")
 
+    ge = sub.add_parser("ghidra-export", help="annotations as JSON for GridNodeSync.java (import into Ghidra)")
+    ge.add_argument("--out", default=os.path.join(ROOT, "build", "gridnode-ghidra.json"))
+    ge.add_argument("--reflected", default=DEFAULT_DUMP, help="dump for class sizes (optional)")
+    gi = sub.add_parser("ghidra-import", help="GridNodeSync.java's export -> annotations to review")
+    gi.add_argument("file")
+    gi.add_argument("--out", default=os.path.join(ROOT, "db", "ghidra-inbox.yaml"))
+
     h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
     h.add_argument("names", nargs="+")
 
@@ -165,6 +174,45 @@ def _main(argv=None) -> int:
             if a.build:
                 cmd += ["-d", os.path.join(a.out, "site")]
             return subprocess.call(cmd)
+        return 0
+
+    if a.cmd == "ghidra-export":
+        import json
+        from . import ghidra_sync
+        dump = _find(a.reflected, "dump") if a.reflected and os.path.exists(_resolve(a.reflected)) else None
+        db, r, p = _load(a.annotations, dump, quiet=True)
+        if p.errors:
+            return 1
+        doc = ghidra_sync.to_ghidra(db, r)
+        _write(a.out, json.dumps(doc, indent=1) + "\n")
+        print(f"ghidra-export: {len(doc['structs'])} structs, {len(doc['functions'])} functions, {len(doc['labels'])} labels "
+              f"-> {a.out}\n  In Ghidra: Script Manager -> GridNode -> GridNodeSync, choose Import, pick this file.")
+        return 0
+
+    if a.cmd == "ghidra-import":
+        import json
+        import tempfile
+        from . import ghidra_sync
+        db, _, p = _load(a.annotations, None, quiet=True)
+        if p.errors:
+            return 1
+        with open(_find(a.file, "GridNodeSync export"), encoding="utf-8") as f:
+            text, counts = ghidra_sync.from_ghidra(json.load(f), db)
+        # The result must load next to the existing annotations before it is written.
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(a.annotations):
+                if fn.endswith(".yaml"):
+                    shutil.copy(os.path.join(a.annotations, fn), d)
+            with open(os.path.join(d, "zz-ghidra-inbox.yaml"), "w", encoding="utf-8") as f:
+                f.write(text)
+            _, p2 = annotations.load(d)
+            if p2.errors:
+                for e in p2.errors:
+                    print("error:", e, file=sys.stderr)
+                raise UserError("the imported findings do not load; nothing written")
+        _write(a.out, text)
+        print(f"ghidra-import: {counts['functions']} functions, {counts['globals']} globals, {counts['members']} members, "
+              f"{counts['renamed']} named differently -> {a.out}\n  Review them and move each into its annotation file.")
         return 0
 
     if a.cmd == "hash":

@@ -33,3 +33,4 @@ __pycache__/
 # Rust
 target/
 Cargo.lock
+db/ghidra-inbox.yaml

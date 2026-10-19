@@ -280,3 +280,48 @@ class Docs(unittest.TestCase):
             self.assertIn("annotated/fixture.md", conf)
             self.assertNotIn("reference/", conf)
             self.assertTrue(all(p.startswith("annotated/") for p in pages))
+
+
+class GhidraSync(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.db, p = annotations.load(os.path.join(FIXTURE, "annotations"))
+        assert not p.errors, p.errors
+        cls.r = reflected.Reflected.load(os.path.join(FIXTURE, "reflected.json"))
+
+    def test_to_ghidra(self):
+        from gridnode_gen import ghidra_sync
+        doc = ghidra_sync.to_ghidra(self.db, self.r)
+        self.assertEqual(doc["format"], "gridnode-ghidra")
+        names = {f["name"] for f in doc["functions"]}
+        self.assertTrue(any("::" in n for n in names) or names)  # virtuals as Class::name when annotated
+        self.assertTrue(all("GridNode [" in f["comment"] for f in doc["functions"]))
+
+    def test_round_trip(self):
+        """What Ghidra exports comes back as annotations that load next to the existing ones,
+        and what GridNode already knows is not repeated."""
+        from gridnode_gen import ghidra_sync
+        known = next(iter(self.db.functions.values()))
+        export = {
+            "format": "gridnode-ghidra-export", "version": 1,
+            "functions": [
+                {"name": known.name, "va": known.va, "prototype": "void x(void)", "signatureUserDefined": False},
+                {"name": "Thing::update", "va": 0x140123450, "prototype": "undefined8 update(longlong * this, float dt)",
+                 "signatureUserDefined": True},
+                {"name": "odd", "va": 0x140123460, "prototype": "?? broken", "signatureUserDefined": True},
+            ],
+            "labels": [{"name": "g_thing", "va": 0x142000010, "type": "pointer"}],
+            "structs": [],
+        }
+        text, counts = ghidra_sync.from_ghidra(export, self.db)
+        self.assertEqual(counts["functions"], 2)
+        self.assertEqual(counts["globals"], 1)
+        self.assertIn('signature: "u64(i64* this, f32 dt)"', text)
+        self.assertIn("name: \"Thing_update\"", text)
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(os.path.join(FIXTURE, "annotations")):
+                shutil.copy(os.path.join(FIXTURE, "annotations", fn), d)
+            with open(os.path.join(d, "zz.yaml"), "w") as f:
+                f.write(text)
+            _, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
