@@ -11,7 +11,7 @@ It has three parts that share one source of truth:
 
 This plan is based on the material in `PreFindings/` (research.md, mec_reversing_notes.md, review.md,
 the FrostbiteTypeDumper script and its PC outputs, the MECMP docs and the EBX XML dump) and on the
-MECMP source in `D:\Dev\MECMP`. Status: **decisions recorded (2026-10-19), nothing implemented yet.**
+MECMP source in `D:\Dev\MECMP`. Status: **M0 and M1 done (2026-10-19).** See §8.
 
 **Decisions**
 
@@ -345,8 +345,8 @@ Each milestone ends with something testable in game.
 
 | # | Milestone | Done when |
 |---|---|---|
-| **M0** | Repo, MIT licence, CMake, CI (Windows MSVC + clang-cl; CI builds without generated headers), `.gitignore` | CI builds an empty `gridnode.dll` |
-| **M1** | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | In game: build check passes and the runtime dump matches the Ghidra dump (9,988 types). Offline against the Scylla dump this already passes `compare_dumps.py --strict`. |
+| **M0** ✅ | Repo, MIT licence, CMake, CI (Windows MSVC + clang-cl; CI builds without generated headers), `.gitignore` | CI builds an empty `gridnode.dll` |
+| **M1** ✅ | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | Done: in game the build check passes and the dump matches the Ghidra dump on all 9,988 types (`compare_dumps.py --strict`), identical to the offline dump of the Scylla image. |
 | **M2** | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Generated headers compile; every `engine.h` value is reproduced from the database |
 | **M3** | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | A sample mod logs every `PamClientCharacterEntity` creation and runs code on the server tick |
 | **M4** | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
@@ -356,6 +356,15 @@ Each milestone ends with something testable in game.
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
+
+### M1 findings
+
+- In the running game every page of the image is committed and executable (Denuvo), so page
+  protections cannot tell code from data. GridNode uses the PE section table for that, and
+  treats the whole image as readable for fast reads.
+- Deciding "code" by page protection made creator detection vary between runs (469 vs 1,103);
+  with the section table it is deterministic.
+- The dump takes about 0.35 s in game.
 
 ## 9. Risks
 

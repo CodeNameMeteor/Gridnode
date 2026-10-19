@@ -74,19 +74,21 @@ struct Section {
 const std::vector<Section>& imageSections();
 std::vector<reflect::Region> imageSectionRegions();
 
-// Committed, readable, non-executable pages of the image (VirtualQuery, found once): reads entirely
-// inside one of these are plain copies.
-const std::vector<reflect::Region>& imageDataRanges();
+// Image ranges whose pages are committed and readable (VirtualQuery, found once; the image stays
+// mapped for the life of the process). Reads entirely inside one are plain copies. In the running
+// game every page of the image is committed and executable-readable, so this is normally the whole
+// image.
+const std::vector<reflect::Region>& imageReadableRanges();
 
-inline bool inImageData(uintptr_t addr, size_t size) {
-    for (const reflect::Region& r : imageDataRanges())
+inline bool inImageReadable(uintptr_t addr, size_t size) {
+    for (const reflect::Region& r : imageReadableRanges())
         if (addr >= r.begin && addr + size <= r.end && addr + size >= addr) return true;
     return false;
 }
 
-// As read(), but a plain copy when the bytes lie in the image's data.
+// As read(), but a plain copy when the bytes lie in the image.
 inline bool readFast(uintptr_t addr, void* out, size_t size) {
-    if (inImageData(addr, size)) {
+    if (inImageReadable(addr, size)) {
         memcpy(out, reinterpret_cast<const void*>(addr), size);
         return true;
     }

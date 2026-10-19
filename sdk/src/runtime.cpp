@@ -73,27 +73,28 @@ std::string exeName() {
     return n ? narrow(std::wstring(path + dir.size(), n - dir.size())) : std::string();
 }
 
-// One line per section: range, code flag, and how its pages are protected and readable now.
+// One line per section: range, code flag, and how its pages are protected now (summed over
+// VirtualQuery regions, so it is cheap). In the running game every page of the image is
+// executable, which is why GridNode goes by the section table instead.
 void logImageLayout() {
     for (const mem::Section& s : mem::imageSections()) {
-        size_t pages = 0, unreadable = 0, exec = 0, data = 0, other = 0;
-        uint8_t probe;
-        for (uintptr_t p = s.region.begin; p < s.region.end; p += 0x1000) {
-            ++pages;
+        unsigned long long exec = 0, data = 0, other = 0;
+        for (uintptr_t a = s.region.begin; a < s.region.end;) {
             MEMORY_BASIC_INFORMATION mbi{};
-            if (VirtualQuery(reinterpret_cast<LPCVOID>(p), &mbi, sizeof(mbi))) {
-                const DWORD pr = mbi.Protect;
-                if (mbi.State != MEM_COMMIT || (pr & (PAGE_GUARD | PAGE_NOACCESS))) ++other;
-                else if (pr & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ++exec;
-                else ++data;
-            }
-            if (!mem::read(p, &probe, 1)) ++unreadable;
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(a), &mbi, sizeof(mbi)) || !mbi.RegionSize) break;
+            const uintptr_t rb = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            uintptr_t re = rb + mbi.RegionSize;
+            if (re > s.region.end) re = s.region.end;
+            const unsigned long long pages = (re - a + 0xfff) / 0x1000;
+            const DWORD pr = mbi.Protect;
+            if (mbi.State != MEM_COMMIT || (pr & (PAGE_GUARD | PAGE_NOACCESS))) other += pages;
+            else if (pr & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) exec += pages;
+            else data += pages;
+            a = re;
         }
-        GN_LOG("image: %-8s 0x%llx-0x%llx %s  pages %llu: exec %llu, data %llu, other %llu, unreadable %llu", s.name,
+        GN_LOG("image: %-8s 0x%llx-0x%llx %s  pages: exec %llu, data %llu, other %llu", s.name,
                static_cast<unsigned long long>(mem::va(s.region.begin)), static_cast<unsigned long long>(mem::va(s.region.end)),
-               s.region.code ? "code" : "data", static_cast<unsigned long long>(pages), static_cast<unsigned long long>(exec),
-               static_cast<unsigned long long>(data), static_cast<unsigned long long>(other),
-               static_cast<unsigned long long>(unreadable));
+               s.region.code ? "code" : "data", exec, data, other);
     }
 }
 

@@ -6,8 +6,9 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M1 in progress.** The runtime loads into the game, checks the build, and writes the
-> engine's reflection data to a JSON file. Entity, hook and threading APIs come next.
+> Status: **M1 done.** The runtime loads into the game, checks the build, and writes the engine's
+> reflection data (9,988 types, matching the Ghidra dump exactly) to a JSON file. Next (M2): the
+> annotation database and the header generator.
 
 ## What's here
 

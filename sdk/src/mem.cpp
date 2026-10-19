@@ -27,7 +27,7 @@ std::vector<reflect::Region> imageSectionRegions() {
     return out;
 }
 
-const std::vector<reflect::Region>& imageDataRanges() {
+const std::vector<reflect::Region>& imageReadableRanges() {
     static const std::vector<reflect::Region> ranges = [] {
         std::vector<reflect::Region> out;
         const uintptr_t base = moduleBase();
@@ -38,9 +38,9 @@ const std::vector<reflect::Region>& imageDataRanges() {
             const uintptr_t rb = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
             const uintptr_t re = rb + mbi.RegionSize < end ? rb + mbi.RegionSize : end;
             const DWORD p = mbi.Protect;
-            const bool data = mbi.State == MEM_COMMIT && !(p & (PAGE_GUARD | PAGE_NOACCESS)) &&
-                              (p & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
-            if (data) {
+            const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                                   PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+            if (mbi.State == MEM_COMMIT && !(p & (PAGE_GUARD | PAGE_NOACCESS)) && (p & readable)) {
                 if (!out.empty() && out.back().end == rb) out.back().end = re;
                 else out.push_back({rb, re, false});
             }
