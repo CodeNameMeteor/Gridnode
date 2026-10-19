@@ -13,7 +13,7 @@ structs:
     size: 0x278
     opaque: true
     members:
-      - { offset: 0x268, name: playersBegin, type: "ServerPlayer**", note: "vector<ServerPlayer*>" }
+      - { offset: 0x268, name: playersBegin, type: "ServerPlayer**", confidence: confirmed, note: "vector<ServerPlayer*>; GridNode finds Faith here (M4)." }
       - { offset: 0x270, name: playersEnd, type: "ServerPlayer**" }
   - name: ServerPlayer
     size: 0x1508

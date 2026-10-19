@@ -349,7 +349,7 @@ Each milestone ends with something testable in game.
 | **M1** ✅ | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | Done: in game the build check passes and the dump matches the Ghidra dump on all 9,988 types (`compare_dumps.py --strict`), identical to the offline dump of the Scylla image. |
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
-| **M4** 🔄 | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
+| **M4** ✅ | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M4.5** 🔄 | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
 | **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
@@ -408,7 +408,12 @@ Findings (Ghidra):
   ResizeBuffers swapped in DXGI's vtable, virtual cursor from raw input, window messages queued
   to the render thread), the mod UI API (`on_ui`; mods link GridNode's ImGui and share its context
   and allocator, with a version and layout check), the inspector, and `examples/trainer`.
-  API version 2. Waiting for the in-game test.
+  API version 2. Tested in game: the trainer saves and loads positions (the game's teleport on the
+  server thread), the speed HUD and the inspector work.
+- In game the transform space indices are plain bytes (19 and 10 on Faith), not 0/1; and the
+  rows' fourth floats are padding. Both had made every position read fail at first.
+- The local server character comes from the player manager (+0x68 of the server game context,
+  players at +0x268/+0x270, character at +0x1478): confirmed in game.
 - Local server character: `MessageManager` +0x68 → server player manager, players at
   +0x268/+0x270; a human player (+0x1398) whose character (+0x1478, confirmed in
   `ServerTeleportEntity_teleportPlayer` 0x143391430) points back at it through +0x250. Fallback:

@@ -195,8 +195,8 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
   makes to them; the menu asks before changing them. Keep them alone unless you know what they do:
   they can affect Beat Revival and your online profile.
 
-In game: GridNode menu → **Console** (every command, with search; online ones in orange ask for
-confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
+In game: GridNode menu → **Console** (every command, with search; Up / Down recall earlier lines,
+Tab completes a command name; online ones in orange ask for confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
 
 ## Name hashes
 

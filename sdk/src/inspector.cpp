@@ -640,7 +640,61 @@ void conPrint(const std::string& text) {
     g_conScroll = true;
 }
 
+// Command history (Up / Down in the input line, as in a command prompt) and Tab completion.
+std::vector<std::string> g_cmdHistory; // render thread; oldest first
+int g_cmdHistPos = -1;                 // -1: a new line; otherwise an index into g_cmdHistory
+
+void remember(const std::string& line) {
+    g_cmdHistPos = -1;
+    if (!g_cmdHistory.empty() && g_cmdHistory.back() == line) return;
+    g_cmdHistory.push_back(line);
+    if (g_cmdHistory.size() > 200) g_cmdHistory.erase(g_cmdHistory.begin());
+}
+
+int inputCallback(ImGuiInputTextCallbackData* d) {
+    if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+        if (g_cmdHistory.empty()) return 0;
+        const int before = g_cmdHistPos;
+        if (d->EventKey == ImGuiKey_UpArrow)
+            g_cmdHistPos = g_cmdHistPos == -1 ? int(g_cmdHistory.size()) - 1 : std::max(0, g_cmdHistPos - 1);
+        else if (d->EventKey == ImGuiKey_DownArrow && g_cmdHistPos != -1)
+            g_cmdHistPos = g_cmdHistPos + 1 >= int(g_cmdHistory.size()) ? -1 : g_cmdHistPos + 1;
+        if (before != g_cmdHistPos) {
+            d->DeleteChars(0, d->BufTextLen);
+            if (g_cmdHistPos >= 0) d->InsertChars(0, g_cmdHistory[size_t(g_cmdHistPos)].c_str());
+        }
+    } else if (d->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
+        // Complete the first word from the command names; list the candidates when it is ambiguous.
+        const std::string text(d->Buf, size_t(d->BufTextLen));
+        if (text.find(' ') != std::string::npos) return 0;
+        const auto* cmds = static_cast<const std::vector<ConsoleCommand>*>(d->UserData);
+        std::vector<const char*> hits;
+        for (const ConsoleCommand& c : *cmds)
+            if (_strnicmp(c.full, text.c_str(), text.size()) == 0) hits.push_back(c.full);
+        if (hits.empty()) return 0;
+        std::string common = hits[0];
+        for (const char* h : hits) {
+            size_t n = 0;
+            while (n < common.size() && h[n] && tolower(static_cast<unsigned char>(h[n])) == tolower(static_cast<unsigned char>(common[n]))) ++n;
+            common.resize(n);
+        }
+        if (hits.size() > 1 && common.size() <= text.size()) {
+            std::string list = "  ";
+            for (size_t i = 0; i < hits.size() && i < 40; ++i) list += std::string(hits[i]) + "  ";
+            if (hits.size() > 40) list += "...";
+            conPrint(list);
+        }
+        if (common.size() >= text.size()) {
+            d->DeleteChars(0, d->BufTextLen);
+            d->InsertChars(0, common.c_str());
+            if (hits.size() == 1) d->InsertChars(d->CursorPos, " ");
+        }
+    }
+    return 0;
+}
+
 void conRun(const std::string& line) {
+    remember(line);
     conPrint("> " + line);
     client().post([line] { conPrint(consoleRun(line)); });
 }
@@ -687,9 +741,16 @@ void drawConsole(bool* open) {
             }
         }
         ImGui::EndChild();
+        static bool refocus = false;
+        if (refocus) {
+            ImGui::SetKeyboardFocusHere(); // keep typing after Enter
+            refocus = false;
+        }
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
-        bool run = ImGui::InputTextWithHint("##in", "command (e.g. list)", input, sizeof(input),
-                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        bool run = ImGui::InputTextWithHint("##in", "command (Up/Down: history, Tab: complete)", input, sizeof(input),
+                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
+                                                ImGuiInputTextFlags_CallbackCompletion,
+                                            &inputCallback, const_cast<std::vector<ConsoleCommand>*>(&cmds));
         ImGui::SameLine();
         run |= ImGui::Button("Run");
         if (run && input[0]) {
@@ -702,7 +763,7 @@ void drawConsole(bool* open) {
                 conRun(line);
             }
             input[0] = 0;
-            ImGui::SetKeyboardFocusHere(-1);
+            refocus = true;
         }
         if (askConfirm) {
             ImGui::OpenPopup("Online command");
@@ -718,7 +779,10 @@ void drawConsole(bool* open) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            if (ImGui::Button("Cancel")) {
+                remember(pending); // still in the history, to fix and run again
+                ImGui::CloseCurrentPopup();
+            }
             ImGui::EndPopup();
         }
 

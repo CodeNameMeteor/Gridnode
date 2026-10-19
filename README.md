@@ -6,7 +6,7 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M4 in testing.** GridNode loads mods from `mods/` and gives them reflection by name
+> Status: **M4 done, M4.5 (settings and console) in testing.** GridNode loads mods from `mods/` and gives them reflection by name
 > (9,988 engine types), entity-creation callbacks, server and client ticks, chained pointer hooks,
 > a world API (local characters, transforms, teleport, components, level events) and a Dear ImGui
 > overlay mods can draw into. INSERT opens the GridNode menu and its inspector. See
