@@ -350,12 +350,40 @@ Each milestone ends with something testable in game.
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** 🔄 | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
-| **M5** | MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
+| **M4.5** | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
+| **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8) and MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
+
+### Settings, console and messages (decided 2026-10-19)
+
+Decision: expose everything; nothing is hidden. Settings and commands that touch online play
+(NetworkSettings, Blaze/online environment, matchmaking) are shown with a warning and need a
+confirmation before a write; mods get the same warning in the log.
+
+Findings (Ghidra):
+- `Console_executeCommand` (0x142a8a190) `(String* out, const char* line, bool trusted)`. With
+  `trusted = 0` (the player's console) every command except `enable` / `disable` / `select` is
+  refused unless `g_consoleEnabledForPlatform` is set. Config files run with `trusted = 1`
+  (0x142a2f5d0 reads a file line by line, `#` comments, `sleep` and `afterloading` deferred through
+  a queue run by 0x142a28c80), which skips that check. GridNode can call it the same way.
+- Two command lists: static commands (`ConsoleRegistry_getStaticCommands` 0x142a91fc0; entries
+  `{fn, name, group +0x10, args help +0x18}`) and bound commands
+  (`ConsoleRegistry_getBoundCommands` 0x142a92040; 0x28-byte entries `{name, group, help, ctx, fn}`).
+- Bound commands are settings fields: `ConsoleBinding_registerFieldsRecursive` (0x142a7e840)
+  binds only fields with flag 0x2000 (116 in the dump) through `ConsoleFieldBinding_getOrSet`
+  (0x142a7e1e0). Fields without the flag (most of the 105 settings classes) have no command, but
+  their objects are live and readable by reflection: GridNode writes them directly.
+- To do: the thread `Console_executeCommand` expects (the deferred queue's caller), where the
+  settings objects are registered (the binding's +0x28 is the object), and why some commands work
+  for players and others not.
+- Messages: 764 message value types, 668 vtables already found by the walker; the message manager
+  is the `MessageManager` global (+0x10 listener registry). Plan: register a GridNode listener
+  object through the engine's own registration (no hook), filtered by category; mods receive the
+  message with its fields readable by name.
 
 ### M4 notes
 
