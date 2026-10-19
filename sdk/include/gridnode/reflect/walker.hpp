@@ -99,6 +99,7 @@ struct WalkStats {
     size_t shortClassInfos = 0;
     size_t unknownCategory = 0;
     size_t unreadable = 0;
+    size_t unreadablePages = 0; // 4 KB pages the accessor / vtable scans could not read
 };
 
 struct Reflected {

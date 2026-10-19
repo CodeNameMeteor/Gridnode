@@ -65,13 +65,22 @@ inline bool write(uintptr_t addr, const void* src, size_t size) {
 }
 template <class T> inline bool write(uintptr_t addr, const T& v) { return write(addr, &v, sizeof(T)); }
 
-// The game image's committed regions, split into code (executable) and data (readable, not
-// executable). Found once with VirtualQuery; the image stays mapped for the life of the process.
-const std::vector<reflect::Region>& imageRegions();
+// The image's sections from its PE section table (code = IMAGE_SCN_MEM_EXECUTE). Page protections
+// are not used here: they do not reliably tell code from data in this image.
+struct Section {
+    char name[9] = {};
+    reflect::Region region;
+};
+const std::vector<Section>& imageSections();
+std::vector<reflect::Region> imageSectionRegions();
+
+// Committed, readable, non-executable pages of the image (VirtualQuery, found once): reads entirely
+// inside one of these are plain copies.
+const std::vector<reflect::Region>& imageDataRanges();
 
 inline bool inImageData(uintptr_t addr, size_t size) {
-    for (const reflect::Region& r : imageRegions())
-        if (!r.code && addr >= r.begin && addr + size <= r.end && addr + size >= addr) return true;
+    for (const reflect::Region& r : imageDataRanges())
+        if (addr >= r.begin && addr + size <= r.end && addr + size >= addr) return true;
     return false;
 }
 

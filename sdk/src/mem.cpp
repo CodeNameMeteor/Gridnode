@@ -2,8 +2,33 @@
 
 namespace gn::mem {
 
-const std::vector<reflect::Region>& imageRegions() {
-    static const std::vector<reflect::Region> regions = [] {
+const std::vector<Section>& imageSections() {
+    static const std::vector<Section> sections = [] {
+        std::vector<Section> out;
+        const IMAGE_NT_HEADERS* nt = ntHeaders();
+        const IMAGE_SECTION_HEADER* sh = IMAGE_FIRST_SECTION(nt);
+        const uintptr_t base = moduleBase();
+        for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+            Section s;
+            memcpy(s.name, sh[i].Name, 8);
+            const DWORD size = sh[i].Misc.VirtualSize > sh[i].SizeOfRawData ? sh[i].Misc.VirtualSize : sh[i].SizeOfRawData;
+            s.region = {base + sh[i].VirtualAddress, base + sh[i].VirtualAddress + size,
+                        (sh[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0};
+            out.push_back(s);
+        }
+        return out;
+    }();
+    return sections;
+}
+
+std::vector<reflect::Region> imageSectionRegions() {
+    std::vector<reflect::Region> out;
+    for (const Section& s : imageSections()) out.push_back(s.region);
+    return out;
+}
+
+const std::vector<reflect::Region>& imageDataRanges() {
+    static const std::vector<reflect::Region> ranges = [] {
         std::vector<reflect::Region> out;
         const uintptr_t base = moduleBase();
         const uintptr_t end = base + imageSize();
@@ -13,18 +38,17 @@ const std::vector<reflect::Region>& imageRegions() {
             const uintptr_t rb = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
             const uintptr_t re = rb + mbi.RegionSize < end ? rb + mbi.RegionSize : end;
             const DWORD p = mbi.Protect;
-            const bool usable = mbi.State == MEM_COMMIT && !(p & (PAGE_GUARD | PAGE_NOACCESS));
-            const bool code = (p & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
-            const bool data = (p & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
-            if (usable && (code || data)) {
-                if (!out.empty() && out.back().end == rb && out.back().code == code) out.back().end = re;
-                else out.push_back({rb, re, code});
+            const bool data = mbi.State == MEM_COMMIT && !(p & (PAGE_GUARD | PAGE_NOACCESS)) &&
+                              (p & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
+            if (data) {
+                if (!out.empty() && out.back().end == rb) out.back().end = re;
+                else out.push_back({rb, re, false});
             }
             a = rb + mbi.RegionSize;
         }
         return out;
     }();
-    return regions;
+    return ranges;
 }
 
 bool readCString(uintptr_t addr, std::string& out, size_t maxLen) {

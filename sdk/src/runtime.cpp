@@ -73,19 +73,44 @@ std::string exeName() {
     return n ? narrow(std::wstring(path + dir.size(), n - dir.size())) : std::string();
 }
 
+// One line per section: range, code flag, and how its pages are protected and readable now.
+void logImageLayout() {
+    for (const mem::Section& s : mem::imageSections()) {
+        size_t pages = 0, unreadable = 0, exec = 0, data = 0, other = 0;
+        uint8_t probe;
+        for (uintptr_t p = s.region.begin; p < s.region.end; p += 0x1000) {
+            ++pages;
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(reinterpret_cast<LPCVOID>(p), &mbi, sizeof(mbi))) {
+                const DWORD pr = mbi.Protect;
+                if (mbi.State != MEM_COMMIT || (pr & (PAGE_GUARD | PAGE_NOACCESS))) ++other;
+                else if (pr & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ++exec;
+                else ++data;
+            }
+            if (!mem::read(p, &probe, 1)) ++unreadable;
+        }
+        GN_LOG("image: %-8s 0x%llx-0x%llx %s  pages %llu: exec %llu, data %llu, other %llu, unreadable %llu", s.name,
+               static_cast<unsigned long long>(mem::va(s.region.begin)), static_cast<unsigned long long>(mem::va(s.region.end)),
+               s.region.code ? "code" : "data", static_cast<unsigned long long>(pages), static_cast<unsigned long long>(exec),
+               static_cast<unsigned long long>(data), static_cast<unsigned long long>(other),
+               static_cast<unsigned long long>(unreadable));
+    }
+}
+
 bool writeDump(const std::wstring& file) {
+    logImageLayout();
     const DWORD t0 = GetTickCount();
     mem::ProcessMemory m;
     reflect::WalkOptions opt;
     opt.listHead = mem::rva(layout::kTypeInfoListHead);
-    opt.regions = mem::imageRegions();
+    opt.regions = mem::imageSectionRegions();
     const reflect::Reflected r = reflect::walk(m, opt);
     const reflect::WalkStats& s = r.stats;
     using ull = unsigned long long;
     GN_LOG("dump: %llu types (%llu listed), %llu accessors, vtables %llu from ClassInfo + %llu from messages + %llu from data scan "
-           "(%llu ambiguous), %llu creators, %llu short ClassInfos, %llu unknown category, in %lu ms",
+           "(%llu ambiguous), %llu creators, %llu short ClassInfos, %llu unknown category, %llu unreadable scan pages, in %lu ms",
            ull(r.types.size()), ull(s.listed), ull(s.accessors), ull(s.vtablesFromClassInfo), ull(s.vtablesFromStaticInstance), ull(s.vtablesFromDataScan),
-           ull(s.vtableCandidatesAmbiguous), ull(s.creators), ull(s.shortClassInfos), ull(s.unknownCategory),
+           ull(s.vtableCandidatesAmbiguous), ull(s.creators), ull(s.shortClassInfos), ull(s.unknownCategory), ull(s.unreadablePages),
            static_cast<unsigned long>(GetTickCount() - t0));
 
     reflect::DumpInfo info;

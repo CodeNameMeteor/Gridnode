@@ -65,7 +65,7 @@ void writeJson(std::ostream& o, const Reflected& r, const DumpInfo& info) {
       << ",\"vtablesFromStaticInstance\":" << s.vtablesFromStaticInstance << ",\"vtablesFromDataScan\":" << s.vtablesFromDataScan
       << ",\"vtableCandidatesAmbiguous\":" << s.vtableCandidatesAmbiguous << ",\"creators\":" << s.creators
       << ",\"shortClassInfos\":" << s.shortClassInfos << ",\"unknownCategory\":" << s.unknownCategory
-      << ",\"unreadable\":" << s.unreadable << "},\n";
+      << ",\"unreadable\":" << s.unreadable << ",\"unreadablePages\":" << s.unreadablePages << "},\n";
     o << "\"typeCount\":" << r.types.size() << ",\n\"types\":[\n";
     bool first = true;
     for (const Type& t : r.types) {

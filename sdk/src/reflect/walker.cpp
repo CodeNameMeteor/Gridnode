@@ -348,6 +348,7 @@ private:
             for (uint64_t p = a; p < blockEnd; p += kPage) {
                 const size_t plen = size_t(std::min<uint64_t>(kPage, blockEnd - p));
                 if (mem_.read(p, buf.data(), plen)) fn(buf.data(), p, plen);
+                else ++out_.stats.unreadablePages;
             }
         }
     }
