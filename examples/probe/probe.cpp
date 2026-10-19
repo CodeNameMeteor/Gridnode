@@ -195,10 +195,14 @@ void pathfind(std::vector<std::pair<std::string, uint64_t>> targets, std::vector
     gn::log("==== pathfind done (%llu nodes)", static_cast<unsigned long long>(nodes.size()));
 }
 
+void vtable(const char* what, void* obj);
+
 void deep(const char* why) {
     run(why);
     void* cf = gn::localClientCharacter();
     void* sf = gn::localServerCharacter();
+    vtable("clientFaith", cf);
+    vtable("serverFaith", sf);
     members("clientFaith", reinterpret_cast<uint64_t>(cf), 0x400);
     members("serverFaith", reinterpret_cast<uint64_t>(sf), 0x1600);
     uint64_t mv = 0;
@@ -212,6 +216,131 @@ void deep(const char* why) {
     std::thread([targets, roots] { pathfind(targets, roots); }).detach();
 }
 
+// ---- the virtual functions of Faith's classes ---------------------------------------------------------
+bool isCode(uint64_t a) { return inImage(a) && (va(a) < 0x141878000ull || (va(a) >= 0x14292a000ull && va(a) < 0x147263000ull)); }
+
+void vtable(const char* what, void* obj) {
+    uint64_t vt = 0;
+    if (!obj || !gn::read(obj, vt)) return;
+    std::string line;
+    int n = 0;
+    for (; n < 512; ++n) {
+        uint64_t fn = 0;
+        if (!gn::read(reinterpret_cast<const void*>(vt + n * 8), fn) || !isCode(fn)) break;
+        char b[40];
+        snprintf(b, sizeof(b), " %x:%llx", n * 8, static_cast<unsigned long long>(va(fn)));
+        line += b;
+    }
+    gn::log("vtable of %s (vt %llx, %d slots):%s", what, static_cast<unsigned long long>(va(vt)), n, line.c_str());
+}
+
+// ---- what changes while Space is held (F10 arms it) ----------------------------------------------------
+// Snapshots a graph of objects around Faith and the input system three times: before Space, while it is
+// held, and after it is released. A 4-byte slot that is zero, then non-zero, then zero again is logged.
+struct Snap {
+    std::vector<Node> nodes;
+    std::vector<uint32_t> spans;
+    std::vector<std::vector<uint32_t>> a, b, c;
+    std::vector<std::string> rootNames;
+    int stage = 0; // 0 off, 1 wait for Space, 2 wait for release, 3 diffing
+    int ticks = 0;
+};
+Snap g_snap;
+
+void snapshot(std::vector<std::vector<uint32_t>>& out) {
+    out.assign(g_snap.nodes.size(), {});
+    for (size_t i = 0; i < g_snap.nodes.size(); ++i) {
+        out[i].resize(g_snap.spans[i] / 4);
+        if (gn::api().read(reinterpret_cast<const void*>(g_snap.nodes[i].addr), out[i].data(), g_snap.spans[i]) != GN_OK)
+            out[i].clear();
+    }
+}
+
+void armDiff() {
+    g_snap = Snap{};
+    void* cf = gn::localClientCharacter();
+    if (!cf) {
+        gn::log("diff: no Faith");
+        return;
+    }
+    uint64_t input = 0, ctx = 0;
+    gn::read(reinterpret_cast<const void*>(gn::rva(0x14256D7C0)), input);
+    gn::read(reinterpret_cast<const void*>(gn::rva(0x142401CB0)), ctx);
+    std::vector<std::pair<std::string, uint64_t>> roots = {{"clientFaith", reinterpret_cast<uint64_t>(cf)},
+                                                           {"inputDevices", input},
+                                                           {"clientGameContext", ctx}};
+    std::unordered_set<uint64_t> seen;
+    for (size_t r = 0; r < roots.size(); ++r) {
+        g_snap.rootNames.push_back(roots[r].first);
+        if (roots[r].second && seen.insert(roots[r].second).second) g_snap.nodes.push_back({roots[r].second, -1, 0, 0, static_cast<int>(r)});
+    }
+    std::vector<uint64_t> buf(kSpan / 8);
+    for (size_t i = 0; i < g_snap.nodes.size(); ++i) {
+        const Node n = g_snap.nodes[i];
+        uint32_t span = n.root == 1 && n.depth == 0 ? 0x8000 : kSpan; // the input object is big
+        std::vector<uint64_t> big;
+        uint64_t* data = buf.data();
+        if (span > kSpan) {
+            big.resize(span / 8);
+            data = big.data();
+        }
+        while (span >= 0x40 && gn::api().read(reinterpret_cast<const void*>(n.addr), data, span) != GN_OK) span /= 2;
+        g_snap.spans.push_back(span >= 0x40 ? span : 0);
+        if (span < 0x40 || n.depth >= 3 || g_snap.nodes.size() >= 30000) continue;
+        for (uint32_t k = 0; k < span / 8; ++k) {
+            const uint64_t p = data[k];
+            if (!heapPtr(p) || !seen.insert(p).second) continue;
+            g_snap.nodes.push_back({p, static_cast<int>(i), k * 8, n.depth + 1, n.root});
+        }
+    }
+    g_snap.spans.resize(g_snap.nodes.size(), 0);
+    snapshot(g_snap.a);
+    g_snap.stage = 1;
+    gn::log("diff: %llu objects watched; now hold Space for half a second, then let go", static_cast<unsigned long long>(g_snap.nodes.size()));
+}
+
+void diffTick() {
+    const bool space = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+    if (g_snap.stage == 1) {
+        g_snap.ticks = space ? g_snap.ticks + 1 : 0;
+        if (g_snap.ticks == 3) {
+            snapshot(g_snap.b);
+            g_snap.stage = 2;
+            g_snap.ticks = 0;
+        }
+    } else if (g_snap.stage == 2) {
+        g_snap.ticks = space ? 0 : g_snap.ticks + 1;
+        if (g_snap.ticks == 3) {
+            snapshot(g_snap.c);
+            g_snap.stage = 3;
+            std::thread([] {
+                int hits = 0;
+                for (size_t i = 0; i < g_snap.nodes.size() && hits < 300; ++i) {
+                    const auto &A = g_snap.a[i], &B = g_snap.b[i], &C = g_snap.c[i];
+                    if (A.empty() || B.size() != A.size() || C.size() != A.size()) continue;
+                    for (size_t k = 0; k < A.size() && hits < 300; ++k) {
+                        if (A[k] != 0 || B[k] == 0 || C[k] != 0) continue;
+                        std::string path;
+                        char b[64];
+                        for (int j = static_cast<int>(i); g_snap.nodes[j].parent >= 0; j = g_snap.nodes[j].parent) {
+                            gn::Type ty = gn::Type::of(reinterpret_cast<void*>(g_snap.nodes[j].addr));
+                            snprintf(b, sizeof(b), "+%x->%s ", g_snap.nodes[j].off, ty ? ty.name() : "");
+                            path = b + path;
+                        }
+                        float f;
+                        memcpy(&f, &B[k], 4);
+                        gn::log("diff: %s %s+%llx  held = %u / %g", g_snap.rootNames[g_snap.nodes[i].root].c_str(), path.c_str(),
+                                static_cast<unsigned long long>(k * 4), B[k], f);
+                        ++hits;
+                    }
+                }
+                gn::log("==== diff done (%d slots)", hits);
+                g_snap.stage = 0;
+            }).detach();
+        }
+    }
+}
+
 } // namespace
 
 GN_MOD("probe") {
@@ -220,6 +349,11 @@ GN_MOD("probe") {
         const bool down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
         if (down && !was) deep("F9");
         was = down;
+        static bool was10 = false;
+        const bool down10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+        if (down10 && !was10 && g_snap.stage == 0) armDiff();
+        was10 = down10;
+        if (g_snap.stage == 1 || g_snap.stage == 2) diffTick();
         static float t = -1.f; // seconds since Faith appeared (-1: not yet / not this level)
         if (!gn::localClientCharacter()) {
             t = -1.f;
@@ -230,6 +364,6 @@ GN_MOD("probe") {
         t += dt;
         if (before < 5.f && t >= 5.f) deep("5 s after Faith appeared");
     });
-    gn::log("ready: F9 walks MEC_Trainer's pointer chains");
+    gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes");
     return true;
 }
