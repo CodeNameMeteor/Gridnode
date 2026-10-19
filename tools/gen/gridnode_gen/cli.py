@@ -7,6 +7,7 @@
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
   gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
+  gridnode docs [--reflected FILE] [--build]   the docs site (with a dump: the full reference, local)
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
@@ -116,6 +117,12 @@ def _main(argv=None) -> int:
     rs.add_argument("--out", default=os.path.join(ROOT, "bindings", "rust", "gridnode", "src", "sys.rs"))
     rs.add_argument("--check", action="store_true", help="fail if the file is not up to date (CI)")
 
+    d = sub.add_parser("docs", help="the docs site; with --reflected, the full reflected reference (local only)")
+    d.add_argument("--reflected", help="your dump: adds the reflected reference (never publish that build)")
+    d.add_argument("--out", default=os.path.join(ROOT, "build", "docs"), help="output folder (default: build/docs)")
+    d.add_argument("--build", action="store_true", help="run mkdocs build (site in OUT/site)")
+    d.add_argument("--serve", action="store_true", help="run mkdocs serve")
+
     h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
     h.add_argument("names", nargs="+")
 
@@ -142,6 +149,22 @@ def _main(argv=None) -> int:
             return 0 if same else 1
         changed = _write(a.out, text)
         print(f"sys.rs {'written' if changed else 'unchanged'}: {a.out}")
+        return 0
+
+    if a.cmd == "docs":
+        from . import emit_docs
+        dump = _find(a.reflected, "dump") if a.reflected else None
+        db, r, p = _load(a.annotations, dump, quiet=True)
+        if p.errors:
+            return 1
+        pages = emit_docs.write_site(ROOT, a.out, db, r)
+        print(f"docs: {len(pages)} generated pages in {a.out}" + (" (with the reflected reference: local only)" if r else ""))
+        if a.build or a.serve:
+            import subprocess
+            cmd = [sys.executable, "-m", "mkdocs", "serve" if a.serve else "build", "-f", os.path.join(a.out, "mkdocs.yml")]
+            if a.build:
+                cmd += ["-d", os.path.join(a.out, "site")]
+            return subprocess.call(cmd)
         return 0
 
     if a.cmd == "hash":

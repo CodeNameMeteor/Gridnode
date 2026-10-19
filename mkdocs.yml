@@ -1,0 +1,50 @@
+# The GridNode docs site. Build it with `python tools/gen/gridnode.py docs --build` (the generated
+# pages are added in a copy of docs/, so the repository stays free of generated files). With your
+# own dump (`--reflected`), the build also gets the full reflected reference, for local use only.
+site_name: GridNode
+site_description: An open-source modding SDK for Mirror's Edge Catalyst (PC)
+repo_name: GridNode
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: slate
+      primary: red
+      accent: red
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+not_in_nav: |
+  PLAN.md
+
+nav:
+  - Home: index.md
+  - Guides:
+      - getting-started.md
+      - modding.md
+      - building.md
+      - contributing.md
+  - Engine notes:
+      - engine/index.md
+      - engine/characters.md
+      - engine/input.md
+  - Formats:
+      - annotations.md
+      - dump-format.md
+  # @generated-nav

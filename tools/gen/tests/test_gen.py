@@ -243,3 +243,40 @@ class RustBindingsTest(unittest.TestCase):
         for m in members:
             self.assertIn(f"pub {emit_rust._safe(m)}: Option<unsafe extern \"C\" fn(", rs, m)
         self.assertIn("#[repr(C, align(16))]\n#[derive(Copy, Clone)]\npub struct gn_transform", rs)
+
+
+class Docs(unittest.TestCase):
+    """The docs pages from the fixture (no mkdocs needed)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db, p = annotations.load(os.path.join(FIXTURE, "annotations"))
+        assert not p.errors, p.errors
+        cls.r = reflected.Reflected.load(os.path.join(FIXTURE, "reflected.json"))
+
+    def test_annotated_pages(self):
+        from gridnode_gen import emit_docs
+        pages = emit_docs.annotated_pages(self.db)
+        self.assertIn("annotated/index.md", pages)
+        self.assertIn("annotated/fixture.md", pages)
+        self.assertIn("## MyEntity", pages["annotated/fixture.md"])
+        self.assertNotIn("reference/", pages["annotated/fixture.md"])  # no dump: no links into it
+
+    def test_reference_pages(self):
+        from gridnode_gen import emit_docs
+        pages = emit_docs.reference_pages(self.r, self.db)
+        self.assertIn("reference/index.md", pages)
+        text = "\n".join(pages.values())
+        self.assertIn("{ #mydata }", text)
+        self.assertIn("Annotated: [fixture](../annotated/fixture.md#myentity)", text)
+
+    def test_site(self):
+        from gridnode_gen import emit_docs
+        with tempfile.TemporaryDirectory() as d:
+            pages = emit_docs.write_site(ROOT, d, self.db, None)
+            self.assertTrue(os.path.isfile(os.path.join(d, "docs", "annotated", "fixture.md")))
+            with open(os.path.join(d, "mkdocs.yml")) as f:
+                conf = f.read()
+            self.assertIn("annotated/fixture.md", conf)
+            self.assertNotIn("reference/", conf)
+            self.assertTrue(all(p.startswith("annotated/") for p in pages))

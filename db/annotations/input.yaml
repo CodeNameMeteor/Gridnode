@@ -46,7 +46,7 @@ structs:
 functions:
   - name: EntryInputState_getAnalog
     va: 0x1432fc490
-    signature: "float(EntryInputState* state, u32 actionHash)"
+    signature: "f32(EntryInputState* state, u32 actionHash)"
     confidence: inferred
     sources: [gridnode]
   - name: EntryInputState_getDigital
@@ -56,7 +56,7 @@ functions:
     sources: [gridnode]
   - name: EntryInputState_set
     va: 0x143301620
-    signature: "void(EntryInputState* state, u32 actionHash, float value)"
+    signature: "void(EntryInputState* state, u32 actionHash, f32 value)"
     confidence: inferred
     sources: [gridnode]
     note: Digital actions are set when value >= 1.
