@@ -12,7 +12,8 @@
 
 namespace gn::build {
 
-// The image GridNode's addresses come from (EA app build; the Steam copy is expected to match).
+// The image GridNode's addresses come from: the EA app build. The Steam copy launches the game
+// through the EA app, so it runs the same exe.
 constexpr uint32_t kTimestamp = 0x5762e3b7;
 constexpr uint32_t kImageSize = 0x727b000;
 constexpr size_t kMinTypes = 9000; // the PC build registers 9,988 types
