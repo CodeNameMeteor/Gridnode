@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reflection walker test (sanitizers)
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -g \
+            -Isdk/include tests/reflect_walker_test.cpp sdk/src/reflect/walker.cpp sdk/src/reflect/dump_json.cpp \
+            -o reflect_walker_test
+          ./reflect_walker_test
+      - name: CMake build and ctest (Linux)
+        run: |
+          cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-linux
+          ctest --test-dir build-linux --output-on-failure
+      - name: Python tools compile
+        run: python3 -m py_compile tools/gen/compare_dumps.py
+
+  windows-mingw:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 ninja-build
+      - name: Configure and build (x64, Release)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGRIDNODE_BUILD_TESTS=OFF
+          cmake --build build
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: gridnode-x64-mingw
+          path: |
+            build/gridnode.dll
+            build/version.dll
+            build/gridnode_inject.exe
+
+  windows-msvc:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure and build (MSVC x64, Release)
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release
+          ctest --test-dir build -C Release --output-on-failure

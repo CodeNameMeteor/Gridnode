@@ -1,0 +1,104 @@
+#pragma once
+// Fault-tolerant access to game memory from inside the game process.
+//
+// read()/write() go through the kernel, so a bad pointer returns false instead of crashing.
+// That is slower than a plain load: use it for anything the mod did not allocate itself, and
+// readFast() for the game image's own data (vtables, type info, globals), which is always mapped.
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "gridnode/reflect/layout.hpp"
+#include "gridnode/reflect/walker.hpp"
+
+namespace gn::mem {
+
+inline uintptr_t moduleBase() { return reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)); }
+
+// Image VA (as in Ghidra, base 0x140000000) -> address in the running process.
+inline uintptr_t rva(uint64_t va) { return moduleBase() + static_cast<uintptr_t>(va - layout::kImageBase); }
+// Address in the running process -> image VA.
+inline uint64_t va(uintptr_t addr) { return static_cast<uint64_t>(addr - moduleBase()) + layout::kImageBase; }
+
+inline const IMAGE_NT_HEADERS* ntHeaders() {
+    const uintptr_t base = moduleBase();
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    return reinterpret_cast<const IMAGE_NT_HEADERS*>(base + static_cast<uintptr_t>(dos->e_lfanew));
+}
+inline size_t imageSize() { return ntHeaders()->OptionalHeader.SizeOfImage; }
+inline bool inImage(uintptr_t a) { return a >= moduleBase() && a < moduleBase() + imageSize(); }
+
+inline bool read(uintptr_t addr, void* out, size_t size) {
+    if (addr < 0x10000) return false;
+    SIZE_T got = 0;
+    return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<LPCVOID>(addr), out, size, &got) && got == size;
+}
+template <class T> inline bool read(uintptr_t addr, T& out) { return read(addr, &out, sizeof(T)); }
+template <class T> inline T readOr(uintptr_t addr, T fallback = T{}) {
+    T v{};
+    return read(addr, v) ? v : fallback;
+}
+
+// Fault-tolerant write. NtWriteVirtualMemory skips WriteProcessMemory's protection changes and
+// instruction cache flush (made for patching code) and is much cheaper; WriteProcessMemory is
+// the fallback (e.g. for a read-only page).
+inline bool write(uintptr_t addr, const void* src, size_t size) {
+    if (addr < 0x10000) return false;
+    using NtWriteFn = LONG(NTAPI*)(HANDLE, PVOID, LPCVOID, SIZE_T, SIZE_T*);
+    static const NtWriteFn ntWrite = reinterpret_cast<NtWriteFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtWriteVirtualMemory")));
+    SIZE_T done = 0;
+    if (ntWrite && ntWrite(GetCurrentProcess(), reinterpret_cast<PVOID>(addr), src, size, &done) >= 0 && done == size)
+        return true;
+    done = 0;
+    return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<LPVOID>(addr), src, size, &done) && done == size;
+}
+template <class T> inline bool write(uintptr_t addr, const T& v) { return write(addr, &v, sizeof(T)); }
+
+// The game image's committed regions, split into code (executable) and data (readable, not
+// executable). Found once with VirtualQuery; the image stays mapped for the life of the process.
+const std::vector<reflect::Region>& imageRegions();
+
+inline bool inImageData(uintptr_t addr, size_t size) {
+    for (const reflect::Region& r : imageRegions())
+        if (!r.code && addr >= r.begin && addr + size <= r.end && addr + size >= addr) return true;
+    return false;
+}
+
+// As read(), but a plain copy when the bytes lie in the image's data.
+inline bool readFast(uintptr_t addr, void* out, size_t size) {
+    if (inImageData(addr, size)) {
+        memcpy(out, reinterpret_cast<const void*>(addr), size);
+        return true;
+    }
+    return read(addr, out, size);
+}
+template <class T> inline bool readFast(uintptr_t addr, T& out) { return readFast(addr, &out, sizeof(T)); }
+
+// NUL-terminated printable ASCII (false if unreadable or not printable).
+bool readCString(uintptr_t addr, std::string& out, size_t maxLen = 256);
+
+// Swaps one pointer in read-only image data (a vtable or creator slot). The aligned 8-byte store
+// is atomic on x64, so a concurrent virtual call sees either the old or the new function.
+// This is the only kind of write GridNode makes to the game image: code bytes are never patched.
+bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
+
+// MemoryView over this process (for gn::reflect).
+class ProcessMemory final : public reflect::MemoryView {
+public:
+    bool read(uint64_t addr, void* out, size_t size) const override {
+        return readFast(static_cast<uintptr_t>(addr), out, size);
+    }
+};
+
+} // namespace gn::mem
