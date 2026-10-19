@@ -212,10 +212,15 @@ int keyFind(const char* name) {
 
 int keyPress(int key, uint32_t ticks) {
     if (key <= 0 || key >= kKeys) return GN_ERR_ARGUMENT;
-    if (!inputDevices()) return GN_ERR_UNAVAILABLE;
+    const uintptr_t dev = inputDevices();
+    if (!dev) return GN_ERR_UNAVAILABLE;
     std::lock_guard<std::mutex> lock(g_keyM);
     g_keyTicks[key] = static_cast<int>(ticks);
-    if (!ticks && g_keyHeld[key]) g_keyTicks[key] = 0; // released at the next tick
+    if (ticks) {
+        // Down now, not at the next client tick: a press lands in the very next frame the game reads.
+        setKey(dev, key, true);
+        g_keyHeld[key] = true;
+    }
     return GN_OK;
 }
 
@@ -283,6 +288,57 @@ int positionSet(const float pos[3]) {
     const uintptr_t pose = ptr(anim + k::Animatable_Pose);
     if (!pose) return GN_ERR_UNAVAILABLE;
     return mem::write(pose + k::Pose_Position, pos, 3 * sizeof(float)) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+// God mode: the game's own immortality flags in Faith's data, the character's
+// (ControllableEntityData.Immortal) and her health component's (PamHealthComponentData.IsImmortal).
+// They are data, shared by everything made from it (Faith's blueprint), so they are put back when
+// god mode is turned off. Server thread.
+namespace {
+struct Flag {
+    uintptr_t at = 0;
+    uint8_t original = 0;
+};
+Flag g_godFlags[2];
+
+uintptr_t fieldAddr(uintptr_t obj, const char* baseType, const char* field) {
+    const reflect::Type* t = obj ? registry().typeOf(mem::ProcessMemory(), obj) : nullptr;
+    const reflect::Type* base = registry().find(baseType);
+    reflect::FieldInfo fi;
+    if (!t || !base || !registry().isKindOf(t, base) || !registry().findField(t, field, fi) || fi.size != 1) return 0;
+    return obj + fi.field->offset;
+}
+} // namespace
+
+int godModeSet(int on) {
+    if (!isServerThread()) return GN_ERR_THREAD;
+    const uintptr_t sf = reinterpret_cast<uintptr_t>(localServerCharacter());
+    if (!sf) return GN_ERR_UNAVAILABLE;
+    uintptr_t at[2] = {};
+    at[0] = fieldAddr(ptr(sf + e::cls::ComponentEntity::off::data), "ControllableEntityData", "Immortal");
+    // The health component's data: the first pointer in the component to a PamHealthComponentData.
+    const reflect::Type* hcType = registry().find("PamServerHumanHealthComponent");
+    const uintptr_t hc = hcType ? reinterpret_cast<uintptr_t>(getComponent(reinterpret_cast<void*>(sf), reinterpret_cast<const gn_type*>(hcType))) : 0;
+    for (uint32_t off = 8; hc && off < 0x150 && !at[1]; off += 8) at[1] = fieldAddr(ptr(hc + off), "PamHealthComponentData", "IsImmortal");
+    int set = 0;
+    for (int i = 0; i < 2; ++i) {
+        Flag& f = g_godFlags[i];
+        if (!at[i]) continue;
+        if (on) {
+            if (f.at != at[i]) f = {at[i], mem::readOr<uint8_t>(at[i])};
+            mem::write<uint8_t>(at[i], 1);
+        } else if (f.at == at[i]) {
+            mem::write<uint8_t>(at[i], f.original);
+        }
+        ++set;
+    }
+    static int logged = -1;
+    if (logged != set) {
+        logged = set;
+        GN_LOG("god mode: %s (character data Immortal %s, health data IsImmortal %s)", on ? "on" : "off", at[0] ? "found" : "NOT FOUND",
+               at[1] ? "found" : "NOT FOUND");
+    }
+    return set ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
 // ---- game state -------------------------------------------------------------------------------------

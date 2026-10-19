@@ -324,6 +324,10 @@ typedef struct gn_api {
      * camera and her state carry on; physics may push her back out of geometry). For noclip-style
      * movement every tick. For a normal move use teleport. Any thread. */
     int (*position_set)(const float pos[3]);
+
+    /* God mode: the game's own immortality flags in Faith's character data and health data (put
+     * back as they were when turned off). Server thread (run_on_server). */
+    int (*god_mode)(int on);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

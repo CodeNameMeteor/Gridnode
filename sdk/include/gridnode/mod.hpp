@@ -281,6 +281,8 @@ inline GameState gameState() {
     return s;
 }
 inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) == GN_OK; }
+// God mode (the game's immortality flags). Server thread: wrap in runOnServer.
+inline bool godMode(bool on) { return api().god_mode(on ? 1 : 0) == GN_OK; }
 // Moves Faith without a teleport (the camera stays free): for noclip-style movement every tick.
 inline bool setPosition(const Vec3& p) {
     const float a[3] = {p.x, p.y, p.z};

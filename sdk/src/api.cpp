@@ -283,6 +283,7 @@ const gn_api* api() {
         a.game_state = gameStateGet;
         a.time_of_day_set = timeOfDaySet;
         a.position_set = positionSet;
+        a.god_mode = godModeSet;
         return a;
     }();
     return &table;

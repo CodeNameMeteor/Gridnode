@@ -72,6 +72,7 @@ int tuningSet(const char* name, float value);
 int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
 int positionSet(const float pos[3]);
+int godModeSet(int on); // server thread
 
 // Settings and console (settings.cpp).
 struct SettingsEntry {

@@ -63,8 +63,8 @@ bool gameFocused() {
 }
 
 void setGodMode(bool on) {
-    gn::runOnClient([on] {
-        if (!gn::settings("GameSettings").set("IsGodMode", on)) gn::log("god mode: GameSettings.IsGodMode not available");
+    gn::runOnServer([on] {
+        if (!gn::godMode(on)) gn::log("god mode: not available (no Faith?)");
     });
 }
 
@@ -116,14 +116,14 @@ void noclipClient(const gn::Movement& m, bool keys) {
     float delta[3] = {};
     if (keys) {
         const float* f = m.camera_forward; // includes up / down: W flies where the camera points
-        // Right of the camera, flat on the ground.
+        // Sideways from the camera, flat on the ground (A goes this way, D the other).
         float rx = f[2], rz = -f[0];
         const float len = std::sqrt(rx * rx + rz * rz);
         if (len > 1e-4f) rx /= len, rz /= len;
         if (GetAsyncKeyState('W') & 0x8000) delta[0] += f[0], delta[1] += f[1], delta[2] += f[2];
         if (GetAsyncKeyState('S') & 0x8000) delta[0] -= f[0], delta[1] -= f[1], delta[2] -= f[2];
-        if (GetAsyncKeyState('D') & 0x8000) delta[0] += rx, delta[2] += rz;
-        if (GetAsyncKeyState('A') & 0x8000) delta[0] -= rx, delta[2] -= rz;
+        if (GetAsyncKeyState('A') & 0x8000) delta[0] += rx, delta[2] += rz;
+        if (GetAsyncKeyState('D') & 0x8000) delta[0] -= rx, delta[2] -= rz;
         if (GetAsyncKeyState(VK_SPACE) & 0x8000) delta[1] += 0.6f;
         if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) || (GetAsyncKeyState('C') & 0x8000)) delta[1] -= 0.6f;
         if (GetAsyncKeyState('R') & 0x8000) g_noclipSpeed = std::min(g_noclipSpeed.load() + 0.05f, 10.f);
@@ -150,23 +150,44 @@ std::atomic<float> g_groundDist{-1.f};     // last ray cast (-1: nothing below)
 std::atomic<int> g_bhops{0};
 DWORD g_bhopArmedAt = 0, g_lastHop = 0;
 
+std::mutex g_hopM; // the check runs on both ticks, whichever comes first
+float g_minDist8 = 1e9f; // closest to the ground during the current state-8 stretch (diagnostics)
+bool g_in8 = false;
+
+// Server and client tick: jump if the window is open. dist: the latest ray cast.
+void bhopCheck(const char* tick) {
+    std::lock_guard<std::mutex> lock(g_hopM);
+    gn::Movement m;
+    if (!gn::movement(m)) return;
+    const float dist = g_groundDist.load();
+    // Diagnostics: each time state 8 ends, how close to the ground it got.
+    if (m.state == 8) {
+        g_in8 = true;
+        if (dist >= 0.f) g_minDist8 = std::min(g_minDist8, dist);
+    } else if (g_in8) {
+        g_in8 = false;
+        if (g_bhopArmed || g_bhopAuto) gn::log("bhop: state 8 ended, closest to the ground %.3f m (tolerance %.2f)", g_minDist8, g_bhopTolerance.load());
+        g_minDist8 = 1e9f;
+    }
+    if (!g_bhopArmed && !g_bhopAuto) return;
+    if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
+    if (m.state != 8 || dist < 0.f || dist > g_bhopTolerance) return;
+    if (GetTickCount() - g_lastHop < 250) return; // one jump per window
+    g_lastHop = GetTickCount();
+    gn::jump(); // the key goes down now; the game reads it in its next frame
+    g_bhops.fetch_add(1);
+    g_bhopArmed = false;
+    gn::log("bhop: jumped on the %s tick, %.3f m above the ground", tick, dist);
+}
+
 void serverTick(float) {
     void* faith = gn::localServerCharacter();
     gn::Vec3 p;
     if (!faith || !gn::positionOf(faith, p)) return;
     gn::RayHit hit;
     const bool hitGround = gn::raycast({p.x, p.y + 0.5f, p.z}, {p.x, p.y - 3.f, p.z}, hit);
-    const float dist = hitGround ? std::max(0.f, p.y - hit.position[1]) : -1.f;
-    g_groundDist = dist;
-    if (!g_bhopArmed && !g_bhopAuto) return;
-    if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
-    gn::Movement m;
-    if (!gn::movement(m) || m.state != 8 || dist < 0.f || dist > g_bhopTolerance) return;
-    if (GetTickCount() - g_lastHop < 250) return; // one jump per window
-    g_lastHop = GetTickCount();
-    gn::jump();
-    g_bhops.fetch_add(1);
-    g_bhopArmed = false;
+    g_groundDist = hitGround ? std::max(0.f, p.y - hit.position[1]) : -1.f;
+    bhopCheck("server");
 }
 
 void bhopArm() {
@@ -232,25 +253,28 @@ void clientTick(float) {
         g_noclipPos[0] = p.x, g_noclipPos[1] = p.y, g_noclipPos[2] = p.z;
         g_noclipActive = true;
     } else if (!g_noclip && g_noclipActive) {
-        // Let go where she is: standing, still, and any fall counted from here.
+        // Let go where she is, standing and still. As in MEC_Trainer the last ground stays far below
+        // her (-2000), so the drop cannot count as a fall; kept until she is down (the ray cast finds
+        // the ground under her feet) and a moment after, at most 15 s.
         g_noclipActive = false;
         gn::Movement w{};
         w.state = 2;
-        w.last_ground_y = p.y;
-        gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED | GN_MOVE_LAST_GROUND_Y);
-        g_noclipGrace = 300; // and keep it that way until she lands (at most 10 s)
+        gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED);
+        g_noclipGrace = 450;
     }
     if (g_noclipGrace > 0) {
-        // The fall is measured from last_ground_y: keep it at her height until she is on the ground.
-        g_noclipGrace = m.on_ground ? 0 : g_noclipGrace - 1;
+        const float gd = g_groundDist.load();
+        if (gd >= 0.f && gd < 0.15f && g_noclipGrace > 15) g_noclipGrace = 15; // landed: half a second more
+        --g_noclipGrace;
         gn::Movement w{};
-        w.last_ground_y = p.y;
+        w.last_ground_y = -2000.f;
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
     }
     if (g_noclipActive) {
         noclipClient(m, keys);
         return;
     }
+    bhopCheck("client");
 
     // No stumble: a fall only counts from where Faith is now.
     if (g_noStumble && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
