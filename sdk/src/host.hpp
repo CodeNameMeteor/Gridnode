@@ -59,6 +59,19 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s
 
+// Faith, keys, tuning, game state (faith.cpp).
+int keyFind(const char* name);
+int keyPress(int key, uint32_t ticks);
+int jump();
+void faithClientTick(); // client thread: applies and releases held keys
+int movementGet(gn_movement* out);
+int movementSet(const gn_movement* in, uint32_t fields);
+uint32_t tuningCount();
+int tuningAt(uint32_t index, gn_tuning* out);
+int tuningSet(const char* name, float value);
+int gameStateGet(gn_game_state* out);
+int timeOfDaySet(float seconds);
+
 // Settings and console (settings.cpp).
 struct SettingsEntry {
     const reflect::Type* type = nullptr;

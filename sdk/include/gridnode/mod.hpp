@@ -248,6 +248,40 @@ template <class F> bool onMessage(const char* typeOrCategory, F f) {
                             p) == GN_OK;
 }
 
+// ---- keys, movement, tuning, game state ----------------------------------------------------------
+// A key as the game reads it: keyFind("Space") (an InputDeviceKeys value, -1 if unknown).
+inline int keyFind(const char* name) { return api().key_find(name); }
+// Holds the key for `ticks` client ticks, then lets go. Any thread.
+inline bool keyPress(int key, uint32_t ticks = 4) { return api().key_press(key, ticks) == GN_OK; }
+// Makes Faith jump (a tap of the jump input; the game decides whether it becomes a vault, a coil...).
+inline bool jump() { return api().jump() == GN_OK; }
+
+using Movement = gn_movement;
+// Faith's movement state, wall counters, ground, speed and camera direction.
+inline bool movement(Movement& out) { return api().movement_get(&out) == GN_OK; }
+// Writes the fields named in `fields` (GN_MOVE_*).
+inline bool setMovement(const Movement& in, uint32_t fields) { return api().movement_set(&in, fields) == GN_OK; }
+
+using Tuning = gn_tuning;
+inline uint32_t tuningCount() { return api().tuning_count(); }
+inline bool tuningAt(uint32_t i, Tuning& out) { return api().tuning_at(i, &out) == GN_OK; }
+// e.g. setTuning("MaxRunSpeed", 9.f). Refused until GridNode has seen the default at its address.
+inline bool setTuning(const char* name, float value) { return api().tuning_set(name, value) == GN_OK; }
+inline float tuning(const char* name, float fallback = 0.f) {
+    Tuning t;
+    for (uint32_t i = 0; i < tuningCount(); ++i)
+        if (tuningAt(i, t) && std::string(t.name) == name) return t.available ? t.value : fallback;
+    return fallback;
+}
+
+using GameState = gn_game_state;
+inline GameState gameState() {
+    GameState s{};
+    api().game_state(&s);
+    return s;
+}
+inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) == GN_OK; }
+
 } // namespace gn
 
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.

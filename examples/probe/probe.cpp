@@ -431,14 +431,17 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        if (before < 5.f && t >= 5.f) deep("5 s after Faith appeared");
-        if (before < 10.f && t >= 10.f) {
+        (void)before; // nothing runs by itself any more: F9, F10, F11
+        static bool was11 = false;
+        const bool down11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+        if (down11 && !was11 && g_test < 0) {
             gn::log("jump tests start: stand still on flat ground and do not touch anything for 12 s");
             g_test = 0;
             g_testTick = 0;
         }
+        was11 = down11;
         jumpTick();
     });
-    gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes");
+    gn::log("ready: F9 walks MEC_Trainer's pointer chains; F10 then Space finds what Space changes; F11 runs the jump tests");
     return true;
 }

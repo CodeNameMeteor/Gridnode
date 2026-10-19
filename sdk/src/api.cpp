@@ -272,6 +272,16 @@ const gn_api* api() {
         a.console_command_at = apiConsoleCommandAt;
         a.on_message = apiOnMessage;
         a.raycast = apiRaycast;
+        a.key_find = keyFind;
+        a.key_press = keyPress;
+        a.jump = jump;
+        a.movement_get = movementGet;
+        a.movement_set = movementSet;
+        a.tuning_count = tuningCount;
+        a.tuning_at = tuningAt;
+        a.tuning_set = tuningSet;
+        a.game_state = gameStateGet;
+        a.time_of_day_set = timeOfDaySet;
         return a;
     }();
     return &table;

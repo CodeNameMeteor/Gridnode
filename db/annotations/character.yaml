@@ -29,6 +29,13 @@ classes:
     realm: client
     vtable: 0x141c3c760
     members:
+      - { offset: 0x28, name: physicsHolder, type: "void*", confidence: inferred, sources: [gridnode], note: "+0x1f0 -> +0x10 -> +0x438 = horizontal speed (f32), MEC_Trainer's PlayerVelocity (probe path search)." }
+      - { offset: 0x30, name: data, type: "PamCharacterEntityData*", sources: [gridnode] }
+      - { offset: 0xb0, name: movementOwner, type: "void*", sources: [gridnode], note: "+0x48 -> +0 = PamMovement (faith.yaml)." }
+      - { offset: 0x198, name: health, type: "PamClientHumanHealthComponent*", sources: [gridnode] }
+      - { offset: 0x218, name: blueprint, type: "PamCharacterBlueprint*", sources: [gridnode] }
+      - { offset: 0x238, name: player, type: "ClientPlayer*", sources: [gridnode], note: "ClientPlayer +0x14a0 points back to the character." }
+      - { offset: 0x250, name: camera, type: "PamClientCharacterCameraComponent*", sources: [gridnode], note: "+0x70 = camera forward (Vec3)." }
       - offset: 0x334
         name: ghostShader
         type: bool

@@ -238,6 +238,49 @@ pub fn on_level<F: FnMut(&str, bool) + Send + 'static>(f: F) -> bool {
     unsafe { (api().on_level.unwrap())(name(), Some(level_tramp::<F>), keep(f)) == 0 }
 }
 
+// ---- keys, movement, tuning, game state -----------------------------------------------------------
+/// A key as the game reads it (`"Space"` or `"IDK_Space"`); None if unknown.
+pub fn key_find(name: &str) -> Option<i32> {
+    let c = cstr(name);
+    let k = unsafe { (api().key_find.unwrap())(c.as_ptr()) };
+    (k >= 0).then_some(k)
+}
+/// Holds the key for `ticks` client ticks, then lets go.
+pub fn key_press(key: i32, ticks: u32) -> bool { unsafe { (api().key_press.unwrap())(key, ticks) == 0 } }
+/// Makes Faith jump (a tap of the jump input; the game decides what it becomes).
+pub fn jump() -> bool { unsafe { (api().jump.unwrap())() == 0 } }
+pub use crate::sys::{gn_game_state as GameState, gn_movement as Movement};
+/// Faith's movement state, wall counters, ground, speed and camera direction.
+pub fn movement() -> Option<Movement> {
+    let mut m: Movement = unsafe { core::mem::zeroed() };
+    (unsafe { (api().movement_get.unwrap())(&mut m) } == 0).then_some(m)
+}
+/// Writes the fields in `fields` (`sys::GN_MOVE_*`).
+pub fn set_movement(m: &Movement, fields: u32) -> bool { unsafe { (api().movement_set.unwrap())(m, fields) == 0 } }
+/// A movement tuning value by name (None until GridNode has verified it this session).
+pub fn tuning(name: &str) -> Option<f32> {
+    unsafe {
+        let a = api();
+        for i in 0..(a.tuning_count.unwrap())() {
+            let mut t: crate::sys::gn_tuning = core::mem::zeroed();
+            if (a.tuning_at.unwrap())(i, &mut t) == 0 && string(t.name) == name {
+                return (t.available != 0).then_some(t.value);
+            }
+        }
+    }
+    None
+}
+pub fn set_tuning(name: &str, value: f32) -> bool {
+    let c = cstr(name);
+    unsafe { (api().tuning_set.unwrap())(c.as_ptr(), value) == 0 }
+}
+pub fn game_state() -> GameState {
+    let mut s: GameState = unsafe { core::mem::zeroed() };
+    unsafe { (api().game_state.unwrap())(&mut s) };
+    s
+}
+pub fn set_time_of_day(seconds: f32) -> bool { unsafe { (api().time_of_day_set.unwrap())(seconds) == 0 } }
+
 // ---- settings, console, messages ------------------------------------------------------------------
 /// A settings object by class name (`"GameTimeSettings"`); look it up each time.
 pub fn settings(class: &str) -> *mut c_void {

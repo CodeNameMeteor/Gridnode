@@ -37,6 +37,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     worldClientTick();
     messagesClientTick();
+    faithClientTick();
     client().dispatch(dtOf(updateInfo));
 }
 

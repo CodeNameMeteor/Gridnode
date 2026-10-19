@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 5;
+pub const GN_API_VERSION: u32 = 6;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -92,6 +92,39 @@ pub struct gn_field {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_movement {
+    pub state: i32,
+    pub wall_count: i32,
+    pub wall_climbs: i32,
+    pub wall_runs: i32,
+    pub last_ground_y: f32,
+    pub on_ground: i32,
+    pub speed: f32,
+    pub camera_forward: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_tuning {
+    pub name: *const c_char,
+    pub group: *const c_char,
+    pub value: f32,
+    pub default_value: f32,
+    pub available: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_game_state {
+    pub loading: i32,
+    pub in_menu: i32,
+    pub content_active: i32,
+    pub dash_started: i32,
+    pub time_of_day: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_api {
     pub version: u32,
     pub size: u32,
@@ -141,6 +174,16 @@ pub struct gn_api {
     pub console_command_at: Option<unsafe extern "C" fn(index: u32, out: *mut gn_command) -> c_int>,
     pub on_message: Option<unsafe extern "C" fn(mod_: *const c_char, type_or_category: *const c_char, fn_: gn_message_fn, user: *mut c_void) -> c_int>,
     pub raycast: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, radius: f32, out: *mut gn_ray_hit) -> c_int>,
+    pub key_find: Option<unsafe extern "C" fn(name: *const c_char) -> c_int>,
+    pub key_press: Option<unsafe extern "C" fn(key: c_int, ticks: u32) -> c_int>,
+    pub jump: Option<unsafe extern "C" fn() -> c_int>,
+    pub movement_get: Option<unsafe extern "C" fn(out: *mut gn_movement) -> c_int>,
+    pub movement_set: Option<unsafe extern "C" fn(in_: *const gn_movement, fields: u32) -> c_int>,
+    pub tuning_count: Option<unsafe extern "C" fn() -> u32>,
+    pub tuning_at: Option<unsafe extern "C" fn(index: u32, out: *mut gn_tuning) -> c_int>,
+    pub tuning_set: Option<unsafe extern "C" fn(name: *const c_char, value: f32) -> c_int>,
+    pub game_state: Option<unsafe extern "C" fn(out: *mut gn_game_state) -> c_int>,
+    pub time_of_day_set: Option<unsafe extern "C" fn(seconds: f32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -152,4 +195,7 @@ const _: () = assert!(core::mem::size_of::<gn_message_info>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_transform>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 376);
+const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
+const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
+const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 456);

@@ -106,7 +106,7 @@ def _fn(ret: str, params: list[Param], structs, fnptrs) -> str:
 
 
 def _safe(name: str) -> str:
-    return name + "_" if name in ("type", "fn", "loop", "move", "ref", "self", "use", "mod") else name
+    return name + "_" if name in ("type", "fn", "loop", "move", "ref", "self", "use", "mod", "in", "as", "match", "impl", "where", "struct", "enum", "let", "const", "static", "box", "dyn", "for", "if", "else", "while", "return", "break", "continue", "crate", "super", "trait", "pub", "mut", "true", "false", "extern", "unsafe", "async", "await", "override", "final", "macro", "priv", "typeof", "yield", "abstract", "become", "do", "virtual", "unsized") else name
 
 
 def parse(header: str):

@@ -141,6 +141,35 @@ std::string level = gn::levelName();
 Entity pointers are only good while the entity lives (most until their level ends). Keep them
 in a per-level variable cleared by `onLevel`, or look them up again each time.
 
+## Faith, keys, tuning and game state (API 6)
+
+Found with `examples/probe` while porting MEC_Trainer (`db/annotations/faith.yaml`).
+
+```cpp
+gn::jump();                                   // a tap of the jump input: the game decides what it becomes
+gn::keyPress(gn::keyFind("Space"), 4);        // any key, as the game reads it, for 4 client ticks
+
+gn::Movement m;
+if (gn::movement(m)) {                        // state, wall counters, last ground Y, on ground, speed, camera forward
+    m.wall_runs = 0;
+    gn::setMovement(m, GN_MOVE_WALL_RUNS);    // only the fields named
+}
+
+gn::setTuning("MaxRunSpeed", 9.f);            // run / jump / wall run / wall climb / coil / slide / mag rope
+gn::GameState gs = gn::gameState();           // loading, in menu, content active, dash, time of day
+gn::setTimeOfDay(12 * 3600.f);
+```
+
+- **Jumping.** MEC has no "make Faith jump" call: every frame the animation system (ANT) decides
+  from the jump input whether Faith jumps, vaults, coils or climbs. `gn::jump()` gives it that input,
+  so the result is exactly what the player would get. Writing the movement state yourself is possible
+  (`GN_MOVE_STATE`) but skips the animation system's decision.
+- **Tuning** values belong to the animation system's assets, which reflection does not describe, so
+  they are reached by fixed paths. Each object on the way is checked by its vtable, and a value is
+  only written after GridNode has seen its default at that address; until then `available` is 0
+  and `tuning_set` refuses. The values are shared by every character and stay until set back.
+- **God mode** is the game's own `GameSettings.IsGodMode` (`gn::settings`).
+
 ## UI (Dear ImGui)
 
 GridNode draws a Dear ImGui overlay on the game. **INSERT** opens its menu: the GridNode window

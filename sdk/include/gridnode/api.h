@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 5 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5) */
+#define GN_API_VERSION 6 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -125,6 +125,42 @@ typedef struct gn_field {
     const gn_type* type;      /* the field's type */
     const gn_type* owner;     /* the class or value type that declares it (may be a base class) */
 } gn_field;
+
+/* Faith's movement (movement_get / movement_set). */
+typedef struct gn_movement {
+    int32_t state;          /* the movement state (MEC_Trainer: 2 standing/running, 3-4 wall moves, 8 jumping...) */
+    int32_t wall_count;     /* walls used since the ground */
+    int32_t wall_climbs;    /* wall climbs used */
+    int32_t wall_runs;      /* wall runs used */
+    float last_ground_y;    /* height of the last ground; falls are measured from it (fall damage, stumbles) */
+    int32_t on_ground;
+    float speed;            /* horizontal speed, m/s */
+    float camera_forward[3];
+} gn_movement;
+#define GN_MOVE_STATE 0x1u
+#define GN_MOVE_WALL_COUNT 0x2u
+#define GN_MOVE_WALL_CLIMBS 0x4u
+#define GN_MOVE_WALL_RUNS 0x8u
+#define GN_MOVE_LAST_GROUND_Y 0x10u
+#define GN_MOVE_SPEED 0x20u
+
+/* A movement tuning value (run, jump, wall run/climb, coil, slide, mag rope). */
+typedef struct gn_tuning {
+    const char* name;  /* e.g. "MaxRunSpeed" */
+    const char* group; /* e.g. "Running" */
+    float value;
+    float default_value;
+    int32_t available; /* 0 until GridNode has seen the default at the value's address this session */
+} gn_tuning;
+
+/* What MEC_Trainer read about the game (game_state). */
+typedef struct gn_game_state {
+    int32_t loading;
+    int32_t in_menu;
+    int32_t content_active; /* a shared content event (a mission, a dash) is running */
+    int32_t dash_started;
+    float time_of_day;      /* seconds; -1 when there is no clock */
+} gn_game_state;
 
 typedef struct gn_api {
     uint32_t version;         /* GN_API_VERSION of the host */
@@ -253,6 +289,36 @@ typedef struct gn_api {
      * GN_ERR_THREAD: not on the server thread (use run_on_server / on_server_tick),
      * GN_ERR_UNAVAILABLE: no level (or the caster is not as expected). */
     int (*raycast)(const float from[3], const float to[3], float radius, gn_ray_hit* out);
+
+    /* ==== GN_API_VERSION 6 ==================================================================== */
+
+    /* ---- keys ----------------------------------------------------------------------------------
+     * The keyboard as the game reads it. key: an InputDeviceKeys value (key_find("Space") or
+     * "IDK_Space"; -1 if unknown). key_press holds it for `ticks` client ticks and then releases it
+     * (unless you are holding it yourself); 0 releases it at the next tick. Any thread. */
+    int (*key_find)(const char* name);
+    int (*key_press)(int key, uint32_t ticks);
+    /* Makes Faith jump: taps the jump input for four ticks, so the game decides what the jump
+     * becomes (a jump, a vault, a coil...), exactly as if the player had pressed it. */
+    int (*jump)(void);
+
+    /* ---- Faith's movement ----------------------------------------------------------------------
+     * GN_ERR_UNAVAILABLE when there is no Faith. movement_set writes the fields in `fields`
+     * (GN_MOVE_*). Any thread; values are read and written as the game keeps them. */
+    int (*movement_get)(gn_movement* out);
+    int (*movement_set)(const gn_movement* in, uint32_t fields);
+
+    /* ---- movement tuning -----------------------------------------------------------------------
+     * The values MEC_Trainer's movement sliders change. tuning_set refuses (GN_ERR_UNAVAILABLE)
+     * until GridNode has seen the value's default at its address, so it never writes to an
+     * unexpected object. The values are shared by every character and stay until changed back. */
+    uint32_t (*tuning_count)(void);
+    int (*tuning_at)(uint32_t index, gn_tuning* out);
+    int (*tuning_set)(const char* name, float value);
+
+    /* ---- game state ------------------------------------------------------------------------------ */
+    int (*game_state)(gn_game_state* out);
+    int (*time_of_day_set)(float seconds); /* the level's clock; GN_ERR_UNAVAILABLE without one */
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
