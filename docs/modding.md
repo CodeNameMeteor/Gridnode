@@ -187,6 +187,9 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
   through the console replaces the object with a changed copy.
 - `gn::console(line[, fn])`: runs a console line the way the engine runs its config files, so every
   registered command works. It runs on the client thread; `fn` receives the output there.
+  The engine prints its own messages (its `list`, unknown commands, argument errors) to a log the
+  shipping game does not show, so GridNode answers `list [filter]` itself and reports unknown
+  commands; otherwise the output is the command's result (a setting without a value prints it).
 - Some settings are only read when the game starts or a level loads: changing them later may do
   nothing until then.
 - Online play: settings classes and command groups that reach the network or EA's services

@@ -350,7 +350,7 @@ Each milestone ends with something testable in game.
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** ✅ | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
-| **M4.5** 🔄 | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
+| **M4.5** ✅ | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
 | **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
@@ -399,6 +399,9 @@ Findings (Ghidra):
   binding (`ConsoleFieldBinding_getOrSet`), so the manager may hold a new object afterwards;
   GridNode looks objects up again instead of keeping pointers. Direct writes change the live
   object; a system that copied a value at startup will not see them.
+- Tested in game: settings edits work, console history works. The engine's own `list` and its error
+  messages go to an internal log the shipping game does not show (`Console_executeCommand` writes
+  them to a stream, not to the result), so GridNode answers `list` itself and reports unknown commands.
 - MECMP is not ported to GridNode for now (decided 2026-10-19); it stays as it is.
 
 ### M4 notes

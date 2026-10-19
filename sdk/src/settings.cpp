@@ -168,8 +168,54 @@ uintptr_t settingsFind(const std::string& className) {
 bool consoleAvailable() { return consoleOk(); }
 
 // Client thread. trusted = 1, as for the engine's own config files.
+namespace {
+bool ieq(const char* a, const std::string& b) { return _stricmp(a, b.c_str()) == 0; }
+
+// The engine prints its own messages (the 'list' output, "Unknown console command", errors in the
+// arguments) to an internal log that shipping builds do not show; only a command's result comes
+// back. So GridNode answers 'list' itself and says when a command does not exist.
+std::string listing(const std::string& filter) {
+    std::string out;
+    size_t n = 0;
+    for (const ConsoleCommand& c : consoleCommands()) {
+        std::string full = c.full;
+        if (!filter.empty()) {
+            std::string a = full, f = filter;
+            for (char& ch : a) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+            for (char& ch : f) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+            if (a.find(f) == std::string::npos) continue;
+        }
+        out += full;
+        if (c.setting) out += "  [setting]";
+        if (c.online) out += "  [online]";
+        if (*c.help) out += std::string("  ") + c.help;
+        out += "\n";
+        ++n;
+    }
+    out += std::to_string(n) + " command(s)" + (filter.empty() ? "" : " matching \"" + filter + "\"") +
+           ". A setting with no value prints it; with a value sets it.";
+    return out;
+}
+
+bool known(const std::string& word) {
+    const size_t dot = word.find('.');
+    for (const ConsoleCommand& c : consoleCommands()) {
+        if (ieq(c.full, word)) return true;
+        if (dot == std::string::npos && ieq(c.name, word)) return true; // the engine accepts a name without its group
+    }
+    return false;
+}
+} // namespace
+
 std::string consoleRun(const std::string& line) {
     if (!consoleOk()) return "(the console is not available)";
+    const size_t start = line.find_first_not_of(' ');
+    if (start == std::string::npos) return {};
+    const size_t sp = line.find(' ', start);
+    const std::string word = line.substr(start, sp == std::string::npos ? std::string::npos : sp - start);
+    std::string rest = sp == std::string::npos ? std::string() : line.substr(line.find_first_not_of(' ', sp) == std::string::npos ? line.size() : line.find_first_not_of(' ', sp));
+    if (_stricmp(word.c_str(), "list") == 0 || _stricmp(word.c_str(), "help") == 0) return listing(rest);
+    if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";
     EngineString s{};
     reinterpret_cast<void (*)(EngineString*, const char*, uint8_t)>(mem::rva(e::function::Console_executeCommand))(&s, line.c_str(), 1);
     std::string out;
@@ -177,7 +223,7 @@ std::string consoleRun(const std::string& line) {
     if (s.begin && s.capacity - s.begin > 1)
         reinterpret_cast<void (*)(void*, void*, int)>(mem::rva(e::function::EngineAllocator_free))(&s.allocator, s.begin,
                                                                                                   static_cast<int>(s.capacity - s.begin));
-    return out;
+    return out.empty() ? "(done; the command printed nothing)" : out;
 }
 
 std::vector<ConsoleCommand> consoleCommands() {
