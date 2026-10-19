@@ -396,7 +396,10 @@ Findings (Ghidra):
   on the Scylla image): 120 categories, every name recovered.
 - Built: `on_message` (API 4) by type or category, a listener per manager registered from the
   realm's tick (again if a manager is recreated), the inspector's Messages tab (record, counts, all
-  types; a copy of each message's bytes), hello listens to ServerPlayer. Waiting for the in-game test.
+  types; a copy of each message's bytes), hello listens to ServerPlayer. Tested in game: registration
+  on all three managers, again after level changes, recording turned on at different points; hello
+  sees ServerPlayer messages and the local character from ClientCharacterLocalPlayerSetMessage
+  (+0x30 is the character: confirmed).
 - Message members after the 0x30-byte header are not reflected; annotating the useful ones is
   ongoing work. Entity-to-component messages (`Entity_sendMessageToComponents`) bypass the managers.
 

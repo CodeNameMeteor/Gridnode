@@ -215,8 +215,9 @@ gn::onMessage("ServerPlayer", [](const void*, const gn_message_info& info) { gn:
   registers its own listener with them, as the game's code does: nothing is hooked, and listening
   is safe for every category.
 - Subscribe to a message type (668 of them) or a whole category (120, e.g. `ServerPlayer`,
-  `ClientPlayer`, `UI`). Inspector → **Messages** lists them all, and with **Record** shows every
-  message as it is sent, with a copy of its bytes.
+  `ClientPlayer`, `UI`). Inspector → **Messages**: *Start recording* shows every message as it is
+  sent (newest at the bottom, with a copy of its bytes); the **Types** list has all 668 types and how
+  often each was recorded, and clicking one shows only its messages.
 - The callback runs on the thread that sent the message, and the message only lives during the
   call: copy what you need. Most members after the header are not reflected; the inspector's copy
   shows them (pointers to known objects are links).
