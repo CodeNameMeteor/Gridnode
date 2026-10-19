@@ -26,8 +26,12 @@ TickStatus installTicks();
 bool isServerThread();
 bool isClientThread();
 
-// Entities (entities.cpp): onCreated through the classes' creator slots.
+// Entities (entities.cpp): onCreated through the classes' creator slots. Creators are bound by the
+// engine when a realm starts, possibly after GridNode: refreshCreators attaches listeners to
+// creators that appeared since (called about once a second).
 int onCreated(const std::string& owner, const std::string& className, gn_created_fn fn, void* user);
+void refreshCreators();
+size_t boundCreatorCount();
 
 // The API table handed to mods (api.cpp).
 const gn_api* api();

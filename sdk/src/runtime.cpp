@@ -185,7 +185,9 @@ void run(HMODULE self) {
     logImageLayout();
     reflect::Reflected types = walkTypes();
     const bool exists = GetFileAttributesW(s.dumpFile.c_str()) != INVALID_FILE_ATTRIBUTES;
-    if (s.dumpMode == L"always" || (s.dumpMode == L"auto" && !exists)) writeDump(types, s.dumpFile);
+    const bool dumping = s.dumpMode == L"always" || (s.dumpMode == L"auto" && !exists);
+    size_t dumpedCreators = types.stats.creators;
+    if (dumping) writeDump(types, s.dumpFile);
     else GN_LOG("dump: skipped (mode=%s, file %s)", narrow(s.dumpMode).c_str(), exists ? "exists" : "missing");
     host::registry().build(std::move(types));
 
@@ -196,6 +198,28 @@ void run(HMODULE self) {
     else GN_LOG("mods: disabled in gridnode.ini");
 
     GN_LOG("ready (%llu hooks installed)", static_cast<unsigned long long>(host::hooks().count()));
+
+    // The engine binds its entity creators when each realm starts, which can be after this point
+    // (GridNode injected early): keep attaching on_created listeners as creators appear, and
+    // rewrite this session's dump once the creator count has settled.
+    size_t creators = dumpedCreators;
+    DWORD changedAt = GetTickCount();
+    while (!g_stop) {
+        Sleep(1000);
+        host::refreshCreators();
+        const size_t n = host::boundCreatorCount();
+        if (n != creators) {
+            GN_LOG("creators: %llu bound (was %llu)", static_cast<unsigned long long>(n), static_cast<unsigned long long>(creators));
+            creators = n;
+            changedAt = GetTickCount();
+        }
+        if (dumping && creators != dumpedCreators && GetTickCount() - changedAt > 3000) {
+            GN_LOG("dump: the engine bound %llu creators since the dump; writing it again",
+                   static_cast<unsigned long long>(creators));
+            writeDump(walkTypes(), s.dumpFile);
+            dumpedCreators = creators;
+        }
+    }
 }
 
 void shutdown() {

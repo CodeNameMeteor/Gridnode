@@ -105,6 +105,7 @@ struct WalkStats {
 struct Reflected {
     std::vector<Type> types; // sorted by ti
     std::map<uint64_t, size_t> byTi;
+    std::vector<uint64_t> recordStarts; // every TypeInfo and TypeInfoData address, sorted
     WalkStats stats;
 
     const Type* find(uint64_t ti) const;
@@ -118,5 +119,12 @@ struct Reflected {
 size_t countTypes(const MemoryView& mem, uint64_t listHead, size_t maxTypes = 200000);
 
 Reflected walk(const MemoryView& mem, const WalkOptions& opt);
+
+// The entity creators bound to class t right now (ClassInfo+0x50: client, +0x58: server). The
+// engine binds them when a realm's entity system starts (EntityCreators_bindRealm, 0x143161af0),
+// which can be after GridNode's walk, so callers that need them later read them again.
+// Code regions (from opt.regions) are needed to validate the creator's vtable.
+std::vector<Creator> readCreators(const MemoryView& mem, const Reflected& r, const std::vector<Region>& regions,
+                                  const Type& t);
 
 } // namespace gn::reflect

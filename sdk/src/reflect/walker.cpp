@@ -127,6 +127,14 @@ std::string Reflected::displayName(uint64_t ti) const {
     return prefix + "?" + suffix;
 }
 
+namespace {
+// Bytes from a ClassInfo to the next known record (some ClassInfos have no +0x50/+0x58 slots).
+uint64_t classInfoRoom(const Reflected& r, uint64_t ti) {
+    auto next = std::upper_bound(r.recordStarts.begin(), r.recordStarts.end(), ti);
+    return next == r.recordStarts.end() ? UINT64_MAX : *next - ti;
+}
+} // namespace
+
 size_t countTypes(const MemoryView& mem, uint64_t listHead, size_t maxTypes) {
     uint64_t ti = mem.readOr<uint64_t>(listHead);
     size_t n = 0;
@@ -355,12 +363,14 @@ private:
 
     // ClassInfo+0x50/+0x58: a data class's vtable, or a runtime class's creators.
     void classInfoSlots() {
-        // Record starts that bound how long a ClassInfo can be.
-        std::set<uint64_t> starts;
+        // Record starts bound how long a ClassInfo can be.
+        out_.recordStarts.clear();
         for (const Type& t : out_.types) {
-            starts.insert(t.ti);
-            if (t.data) starts.insert(t.data);
+            out_.recordStarts.push_back(t.ti);
+            if (t.data) out_.recordStarts.push_back(t.data);
         }
+        std::sort(out_.recordStarts.begin(), out_.recordStarts.end());
+        out_.recordStarts.erase(std::unique(out_.recordStarts.begin(), out_.recordStarts.end()), out_.recordStarts.end());
         for (Type& t : out_.types) {
             // Messages: value types whose static instance (TypeInfoData+0x20) starts with their vtable.
             if (t.category == Category::ValueType) {
@@ -378,38 +388,25 @@ private:
                 continue;
             }
             if (t.category != Category::Class) continue;
-            auto next = starts.upper_bound(t.ti);
-            const uint64_t room = next == starts.end() ? UINT64_MAX : *next - t.ti;
-            if (room < L::CI_SizeShort + 8) {
+            if (classInfoRoom(out_, t.ti) < L::CI_SizeShort + 8) {
                 ++out_.stats.shortClassInfos;
                 continue;
             }
-            const uint64_t slots[2] = {mem_.readOr<uint64_t>(t.ti + L::CI_Slot50),
-                                       room >= L::CI_SizeLong ? mem_.readOr<uint64_t>(t.ti + L::CI_Slot58) : 0};
-            for (uint32_t realm = 0; realm < 2; ++realm) {
-                const uint64_t p = slots[realm];
-                if (p < kMinValidAddr) continue;
-                if (realm == 0) {
-                    const uint64_t fn = mem_.readOr<uint64_t>(p + 8ull * L::kGetTypeSlot);
-                    auto it = accessorOwner_.find(fn);
-                    if (it != accessorOwner_.end() && it->second == t.ti) {
-                        t.vtables.insert(t.vtables.begin(), p);
-                        t.vtableConfirmed = true;
-                        t.getType = fn;
-                        ++out_.stats.vtablesFromClassInfo;
-                        continue;
-                    }
-                }
-                const uint64_t cvt = mem_.readOr<uint64_t>(p + L::Creator_Vtable);
-                const uint64_t dataTi = mem_.readOr<uint64_t>(p + L::Creator_DataTi);
-                const uint32_t creatorRealm = mem_.readOr<uint32_t>(p + L::Creator_Realm, 0xffffffffu);
-                const Type* data = type(dataTi);
-                if (cvt < kMinValidAddr || !inCode(mem_.readOr<uint64_t>(cvt)) || !data || data == &t ||
-                    data->category != Category::Class || creatorRealm != realm)
+            // A data class's ClassInfo+0x50 holds its vtable (getType at slot 0).
+            const uint64_t p = mem_.readOr<uint64_t>(t.ti + L::CI_Slot50);
+            if (p >= kMinValidAddr) {
+                const uint64_t fn = mem_.readOr<uint64_t>(p + 8ull * L::kGetTypeSlot);
+                auto it = accessorOwner_.find(fn);
+                if (it != accessorOwner_.end() && it->second == t.ti) {
+                    t.vtables.insert(t.vtables.begin(), p);
+                    t.vtableConfirmed = true;
+                    t.getType = fn;
+                    ++out_.stats.vtablesFromClassInfo;
                     continue;
-                t.creators.push_back({p, realm, dataTi});
-                ++out_.stats.creators;
+                }
             }
+            t.creators = readCreators(mem_, out_, opt_.regions, t);
+            out_.stats.creators += t.creators.size();
         }
     }
 
@@ -452,5 +449,34 @@ private:
 } // namespace
 
 Reflected walk(const MemoryView& mem, const WalkOptions& opt) { return Walker(mem, opt).run(); }
+
+std::vector<Creator> readCreators(const MemoryView& mem, const Reflected& r, const std::vector<Region>& regions,
+                                  const Type& t) {
+    std::vector<Creator> out;
+    if (t.category != Category::Class) return out;
+    const uint64_t room = classInfoRoom(r, t.ti);
+    if (room < L::CI_SizeShort + 8) return out;
+    auto inCode = [&](uint64_t a) {
+        for (const Region& g : regions)
+            if (g.code && a >= g.begin && a < g.end) return true;
+        return false;
+    };
+    const uint64_t slots[2] = {mem.readOr<uint64_t>(t.ti + L::CI_Slot50),
+                               room >= L::CI_SizeLong ? mem.readOr<uint64_t>(t.ti + L::CI_Slot58) : 0};
+    for (uint32_t realm = 0; realm < 2; ++realm) {
+        const uint64_t p = slots[realm];
+        if (p < kMinValidAddr) continue;
+        if (realm == 0 && t.vtableConfirmed && !t.vtables.empty() && t.vtables[0] == p) continue; // a data class's vtable
+        const uint64_t cvt = mem.readOr<uint64_t>(p + L::Creator_Vtable);
+        const uint64_t dataTi = mem.readOr<uint64_t>(p + L::Creator_DataTi);
+        const uint32_t creatorRealm = mem.readOr<uint32_t>(p + L::Creator_Realm, 0xffffffffu);
+        const Type* data = r.find(dataTi);
+        if (cvt < kMinValidAddr || !inCode(mem.readOr<uint64_t>(cvt)) || !data || data == &t ||
+            data->category != Category::Class || creatorRealm != realm)
+            continue;
+        out.push_back({p, realm, dataTi});
+    }
+    return out;
+}
 
 } // namespace gn::reflect
