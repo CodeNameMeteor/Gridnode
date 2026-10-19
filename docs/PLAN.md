@@ -11,7 +11,7 @@ It has three parts that share one source of truth:
 
 This plan is based on the material in `PreFindings/` (research.md, mec_reversing_notes.md, review.md,
 the FrostbiteTypeDumper script and its PC outputs, the MECMP docs and the EBX XML dump) and on the
-MECMP source in `D:\Dev\MECMP`. Status: **M0, M1 and M2 done (2026-10-19).** See §8.
+MECMP source in `D:\Dev\MECMP`. Status: **M0 to M3 done (2026-10-19).** See §8.
 
 **Decisions**
 
@@ -348,7 +348,7 @@ Each milestone ends with something testable in game.
 | **M0** ✅ | Repo, MIT licence, CMake, CI (Windows MSVC + clang-cl; CI builds without generated headers), `.gitignore` | CI builds an empty `gridnode.dll` |
 | **M1** ✅ | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | Done: in game the build check passes and the dump matches the Ghidra dump on all 9,988 types (`compare_dumps.py --strict`), identical to the offline dump of the Scylla image. |
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
-| **M3** | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | A sample mod logs every `PamClientCharacterEntity` creation and runs code on the server tick |
+| **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M5** | MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
@@ -356,6 +356,19 @@ Each milestone ends with something testable in game.
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
+
+### M3 notes
+
+- Client tick: `ClientGameWorld` vtable `0x141afe5f8` +0x28 (`0x14319f210`), the client counterpart
+  of the server world's postUpdate; its only reference in the image. Confirmed in game.
+- Mods get a C function table (`gridnode/api.h`), so they build with any compiler; C++ mods use
+  `gridnode/mod.hpp`.
+- Entity creators are bound to their classes when each realm's entity system starts
+  (`EntityCreators_bindRealm` 0x143161af0), which can be after GridNode starts: `on_created` keeps
+  its listeners and attaches them as creators appear, and the dump is rewritten once they settle.
+- Client creators reach the class factory through a shared wrapper (vtable +8 = 0x14304bf60 ->
+  0x143163210 -> +0x70 -> +0x40); server creators call it directly at +8. GridNode hooks +8 for both.
+- Several characters share one `PamCharacterEntityData` (seen in game): data writes affect all of them.
 
 ### M2 notes
 

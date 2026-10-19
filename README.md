@@ -6,9 +6,10 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M3 in progress.** GridNode loads mods from `mods/` and gives them reflection by name
+> Status: **M3 done.** GridNode loads mods from `mods/` and gives them reflection by name
 > (9,988 engine types), entity-creation callbacks, server and client ticks, and chained pointer
-> hooks. See [docs/modding.md](docs/modding.md) and `examples/hello`.
+> hooks, all tested in game. See [docs/modding.md](docs/modding.md) and `examples/hello`.
+> Next (M4): entity and world API, and an in-game inspector.
 
 ## What's here
 

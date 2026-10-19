@@ -17,6 +17,7 @@ fingerprint:
     - PamServerCharacterSpawnEntity.spawn
     - ServerCharacterSpawnEntity.spawn
     - ServerGameWorld_postUpdate
+    - ClientGameWorld_postUpdate
   code:
     - { at: NetState_setDirty, bytes: "48 8B 41 18 48 85 C0 74 18", note: "mov rax,[rcx+18h]; test rax,rax; jz" }
     - { at: SpatialEntity_setTransform, bytes: "48 83 EC 38 8B 41 18 45 0F B6 C8" }

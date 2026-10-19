@@ -44,6 +44,7 @@ hooks:
     signature: "void(void* world, void* updateInfo)"
     sources: [gridnode]
     note: >-
+      Confirmed in game (GridNode M3, client tick at the main menu and in the city).
       Client counterpart of ServerGameWorld_postUpdate: runs once per client tick on the client game
       thread (ClientLevel_update -> GameWorld_update), N times per frame when catching up. dt is a
       float at updateInfo+0x10. The slot is the function's only reference in the image.
