@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -224,7 +226,130 @@ int keyPress(int key, uint32_t ticks) {
     return GN_OK;
 }
 
+// ---- input actions (db/annotations/input.yaml) ------------------------------------------------------
+// Keys become actions in the player's EntryInputState; the animation system's input component reads
+// them, and reads ClientPlayer's override state instead when the player has flag 0x40. GridNode
+// presses an action by copying the live state into the override, setting the action, and raising
+// the flag for as long as the action is held. Actions are what key bindings map to, so this works
+// whatever key the player bound.
+namespace {
+namespace ka = gn::engine::constant;
+std::mutex g_actM;
+struct HeldAction {
+    uint32_t hash;
+    int ticks;
+};
+std::vector<HeldAction> g_actions; // (g_actM)
+bool g_overrideOn = false;          // GridNode raised flag 0x40 (g_actM)
+std::atomic<uintptr_t> g_override{0}, g_overridePlayer{0};
+
+// Faith's ClientPlayer, checked by its back pointer.
+uintptr_t clientPlayer() {
+    const uintptr_t c = reinterpret_cast<uintptr_t>(localClientCharacter());
+    const uintptr_t p = ptr(c + e::cls::PamClientCharacterEntity::off::player);
+    return p && ptr(p + ka::ClientPlayer_Character) == c ? p : 0;
+}
+
+// The action's bit in EntryInputState.digitalBits, or -1 (not a digital action / no registry).
+int digitalBit(uint32_t hash) {
+    const uintptr_t reg = ptr(mem::rva(e::global::EntryInputActionRegistryPtr));
+    if (!reg) return -1;
+    const uintptr_t buckets = ptr(reg + e::st::EntryInputActionRegistry::off::buckets);
+    const uint32_t count = mem::readOr<uint32_t>(reg + e::st::EntryInputActionRegistry::off::bucketCount);
+    if (!buckets || !count || count > 0x10000) return -1;
+    const uintptr_t sentinel = ptr(buckets + count * 8ull);
+    for (uintptr_t n = ptr(buckets + (hash % count) * 8ull), guard = 0; n && n != sentinel && guard < 256; n = ptr(n + 8), ++guard) {
+        uint32_t hi[2] = {};
+        if (!mem::read(n, hi, sizeof(hi))) return -1;
+        if (hi[0] != hash) continue;
+        const uint32_t first = mem::readOr<uint32_t>(reg + e::st::EntryInputActionRegistry::off::digitalFirst);
+        const uint32_t end = mem::readOr<uint32_t>(reg + e::st::EntryInputActionRegistry::off::end);
+        return hi[1] >= first && hi[1] < end && hi[1] - first < 64 ? static_cast<int>(hi[1] - first) : -1;
+    }
+    return -1;
+}
+
+// Copies the live state into the override, sets the held actions, raises the flag (g_actM held).
+bool applyActions() {
+    const uintptr_t player = g_overridePlayer.load(), st = g_override.load();
+    if (!player || !st || player != clientPlayer()) return false;
+    const uintptr_t live = ptr(player + ka::ClientPlayer_InputState);
+    if (!live) return false;
+    uint8_t buf[ka::EntryInputState_Size];
+    if (!mem::read(live, buf, sizeof(buf))) return false;
+    uint64_t bits = 0;
+    memcpy(&bits, buf + ka::EntryInputState_Digital, 8);
+    for (const HeldAction& a : g_actions) {
+        const int bit = digitalBit(a.hash);
+        if (bit >= 0) bits |= 1ull << bit;
+    }
+    memcpy(buf + ka::EntryInputState_Digital, &bits, 8);
+    mem::write(st, buf, sizeof(buf));
+    const uint8_t flags = mem::readOr<uint8_t>(player + ka::ClientPlayer_InputFlags);
+    mem::write<uint8_t>(player + ka::ClientPlayer_InputFlags, flags | ka::InputFlag_UseOverride);
+    g_overrideOn = true;
+    return true;
+}
+
+void releaseActions() { // g_actM held
+    if (!g_overrideOn) return;
+    g_overrideOn = false;
+    const uintptr_t player = g_overridePlayer.load();
+    if (!player || player != clientPlayer()) return;
+    const uint8_t flags = mem::readOr<uint8_t>(player + ka::ClientPlayer_InputFlags);
+    mem::write<uint8_t>(player + ka::ClientPlayer_InputFlags, flags & ~ka::InputFlag_UseOverride);
+}
+
+// Client thread: make sure the override state exists for Faith's player (the game makes it).
+void prepareOverride() {
+    const uintptr_t player = clientPlayer();
+    if (!player) {
+        g_overridePlayer = 0;
+        g_override = 0;
+        return;
+    }
+    if (player == g_overridePlayer.load() && g_override.load()) return;
+    if (!build::codeMatches("ClientPlayer_overrideInputState")) {
+        static bool said = false;
+        if (!said) GN_LOG("input: the override input function is not as expected; jump() presses Space instead");
+        said = true;
+        return;
+    }
+    const uint8_t before = mem::readOr<uint8_t>(player + ka::ClientPlayer_InputFlags);
+    using Fn = uintptr_t (*)(uintptr_t);
+    const uintptr_t st = reinterpret_cast<Fn>(mem::rva(e::function::ClientPlayer_overrideInputState))(player);
+    // Leave the "made" flag as it was: GridNode only uses the state while it holds an action.
+    const uint8_t after = mem::readOr<uint8_t>(player + ka::ClientPlayer_InputFlags);
+    mem::write<uint8_t>(player + ka::ClientPlayer_InputFlags, static_cast<uint8_t>((after & ~ka::InputFlag_OverrideMade) | (before & ka::InputFlag_OverrideMade)));
+    g_override = st;
+    g_overridePlayer = st ? player : 0;
+    GN_LOG("input: actions ready for player %llx (override state %llx, jump is bit %d)", static_cast<unsigned long long>(player),
+           static_cast<unsigned long long>(st), digitalBit(static_cast<uint32_t>(k::Action_Jump)));
+}
+} // namespace
+
+int actionPress(uint32_t hash, uint32_t ticks) {
+    if (digitalBit(hash) < 0) return GN_ERR_NOT_FOUND;
+    std::lock_guard<std::mutex> lock(g_actM);
+    if (!g_override.load()) return GN_ERR_UNAVAILABLE;
+    bool found = false;
+    for (HeldAction& a : g_actions)
+        if (a.hash == hash) a.ticks = static_cast<int>(ticks), found = true;
+    if (!found && ticks) g_actions.push_back({hash, static_cast<int>(ticks)});
+    // Pressed now, not at the next client tick, so it lands in the next frame the game reads.
+    if (ticks && !applyActions()) return GN_ERR_UNAVAILABLE;
+    return GN_OK;
+}
+
 void faithClientTick() {
+    prepareOverride();
+    {
+        std::lock_guard<std::mutex> lock(g_actM);
+        for (HeldAction& a : g_actions) --a.ticks;
+        g_actions.erase(std::remove_if(g_actions.begin(), g_actions.end(), [](const HeldAction& a) { return a.ticks < 0; }), g_actions.end());
+        if (g_actions.empty()) releaseActions();
+        else if (!applyActions()) releaseActions();
+    }
     const uintptr_t dev = inputDevices();
     std::lock_guard<std::mutex> lock(g_keyM);
     for (int key = 1; key < kKeys; ++key) {
@@ -240,8 +365,9 @@ void faithClientTick() {
 }
 
 int jump() {
-    // The game decides from the jump input what Faith does (jump, vault, coil...): GridNode
-    // presses it for four ticks, as a quick tap would. Space is the default binding.
+    // The jump action, whatever key the player bound to it; the game decides what it becomes (a
+    // jump, a vault, a coil...). Four ticks, as a quick tap. Falls back to the Space key.
+    if (actionPress(static_cast<uint32_t>(k::Action_Jump), 4) == GN_OK) return GN_OK;
     static const int space = keyFind("IDK_Space");
     return keyPress(space > 0 ? space : 57, 4);
 }

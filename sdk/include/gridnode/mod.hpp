@@ -253,8 +253,11 @@ template <class F> bool onMessage(const char* typeOrCategory, F f) {
 inline int keyFind(const char* name) { return api().key_find(name); }
 // Holds the key for `ticks` client ticks, then lets go. Any thread.
 inline bool keyPress(int key, uint32_t ticks = 4) { return api().key_press(key, ticks) == GN_OK; }
-// Makes Faith jump (a tap of the jump input; the game decides whether it becomes a vault, a coil...).
+// Makes Faith jump: the jump action, whatever key the player bound (the game decides whether it
+// becomes a vault, a coil...).
 inline bool jump() { return api().jump() == GN_OK; }
+// Holds an input action (GN_ACTION_JUMP, or another action's hash) for `ticks` client ticks.
+inline bool actionPress(uint32_t actionHash, uint32_t ticks = 4) { return api().action_press(actionHash, ticks) == GN_OK; }
 
 using Movement = gn_movement;
 // Faith's movement state, wall counters, ground, speed and camera direction.

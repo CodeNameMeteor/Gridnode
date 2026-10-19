@@ -144,6 +144,9 @@ typedef struct gn_movement {
 #define GN_MOVE_LAST_GROUND_Y 0x10u
 #define GN_MOVE_SPEED 0x20u
 
+/* Input actions (action_press). */
+#define GN_ACTION_JUMP 0xb5a0a981u
+
 /* A movement tuning value (run, jump, wall run/climb, coil, slide, mag rope). */
 typedef struct gn_tuning {
     const char* name;  /* e.g. "MaxRunSpeed" */
@@ -298,8 +301,8 @@ typedef struct gn_api {
      * (unless you are holding it yourself); 0 releases it at the next tick. Any thread. */
     int (*key_find)(const char* name);
     int (*key_press)(int key, uint32_t ticks);
-    /* Makes Faith jump: taps the jump input for four ticks, so the game decides what the jump
-     * becomes (a jump, a vault, a coil...), exactly as if the player had pressed it. */
+    /* Makes Faith jump: the jump action for four ticks, whatever key the player bound to it; the
+     * game decides what it becomes (a jump, a vault, a coil...). Falls back to the Space key. */
     int (*jump)(void);
 
     /* ---- Faith's movement ----------------------------------------------------------------------
@@ -330,6 +333,11 @@ typedef struct gn_api {
      * mode should stay on (cheap when nothing changed). Falls still kill: that is not damage in MEC
      * (see GN_MOVE_LAST_GROUND_Y). Server thread (run_on_server / on_server_tick). */
     int (*god_mode)(int on);
+
+    /* Holds an input action (by its hash, e.g. GN_ACTION_JUMP) for `ticks` client ticks, as if its
+     * key were down, whatever the binding. Digital actions only. GN_ERR_NOT_FOUND: no such action,
+     * GN_ERR_UNAVAILABLE: no Faith yet. Any thread. */
+    int (*action_press)(uint32_t action_hash, uint32_t ticks);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

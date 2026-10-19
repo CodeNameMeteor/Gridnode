@@ -60,6 +60,12 @@ functions:
     confidence: inferred
     sources: [gridnode]
     note: Digital actions are set when value >= 1.
+  - name: ClientPlayer_overrideInputState
+    va: 0x143203d50
+    signature: "EntryInputState*(void* clientPlayer)"
+    confidence: inferred
+    sources: [gridnode]
+    note: Returns ClientPlayer +0x14c0, making it (poolAlloc 0x530 + 0x1432f8aa0) the first time; sets flag 0x20 in +0x1520.
   - name: PamClientAntInputComponent_onInput
     va: 0x143911c80
     signature: "void(void* inputListener, EntryInputState* state, void* player)"
@@ -71,3 +77,14 @@ functions:
       character it calls 0x14391b970, which reads the movement actions: analog 0x1dcfd4cd/cc
       (move), 0x436f6516/17 (look), digital 0x2884e120..0x2884e136, 0x578abcc, 0xb5adb0e5,
       0xb5a0a981 (buttons, one of them jump) into the ANT input (0x142bc5540).
+
+constants:
+  - { name: ClientPlayer_Character, value: 0x14a0 }
+  - { name: ClientPlayer_InputState, value: 0x14b0, note: "The live EntryInputState (probe F12: +0x14b8 holds the same)." }
+  - { name: ClientPlayer_OverrideInputState, value: 0x14c0 }
+  - { name: ClientPlayer_InputFlags, value: 0x1520 }
+  - { name: InputFlag_UseOverride, value: 0x40, note: "PamClientAntInputComponent_onInput reads the override state instead of the live one." }
+  - { name: InputFlag_OverrideMade, value: 0x20 }
+  - { name: EntryInputState_Size, value: 0x530 }
+  - { name: EntryInputState_Digital, value: 0x4b8 }
+  - { name: Action_Jump, value: 0xb5a0a981, note: "Digital action 38 (bit 32). Probe F12, 2026-10-20: the only bit Space sets, in both states." }

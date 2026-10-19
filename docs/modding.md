@@ -161,9 +161,13 @@ gn::setTimeOfDay(12 * 3600.f);
 ```
 
 - **Jumping.** MEC has no "make Faith jump" call: every frame the animation system (ANT) decides
-  from the jump input whether Faith jumps, vaults, coils or climbs. `gn::jump()` gives it that input,
-  so the result is exactly what the player would get. Writing the movement state yourself is possible
-  (`GN_MOVE_STATE`) but skips the animation system's decision.
+  from the jump *action* whether Faith jumps, vaults, coils or climbs. Keys become actions in the
+  player's EntryInputState, and the animation input component reads the player's override state
+  instead when the player has flag 0x40 (`db/annotations/input.yaml`). `gn::jump()` copies the live
+  input into that override, sets the jump action (`GN_ACTION_JUMP`) and raises the flag for four
+  ticks, so it works whatever key the player bound to jump. `gn::actionPress(hash, ticks)` does the
+  same for any digital action. Writing the movement state yourself (`GN_MOVE_STATE`) is possible but
+  skips the animation system's decision.
 - **Tuning** values belong to the animation system's assets, which reflection does not describe, so
   they are reached by fixed paths. Each object on the way is checked by its vtable, and a value is
   only written after GridNode has seen its default at that address; until then `available` is 0

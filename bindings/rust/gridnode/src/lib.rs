@@ -247,7 +247,9 @@ pub fn key_find(name: &str) -> Option<i32> {
 }
 /// Holds the key for `ticks` client ticks, then lets go.
 pub fn key_press(key: i32, ticks: u32) -> bool { unsafe { (api().key_press.unwrap())(key, ticks) == 0 } }
-/// Makes Faith jump (a tap of the jump input; the game decides what it becomes).
+/// Holds an input action (`sys::GN_ACTION_JUMP`, ...) for `ticks` client ticks, whatever the binding.
+pub fn action_press(action_hash: u32, ticks: u32) -> bool { unsafe { (api().action_press.unwrap())(action_hash, ticks) == 0 } }
+/// Makes Faith jump: the jump action, whatever key is bound (the game decides what it becomes).
 pub fn jump() -> bool { unsafe { (api().jump.unwrap())() == 0 } }
 pub use crate::sys::{gn_game_state as GameState, gn_movement as Movement};
 /// Faith's movement state, wall counters, ground, speed and camera direction.

@@ -284,6 +284,7 @@ const gn_api* api() {
         a.time_of_day_set = timeOfDaySet;
         a.position_set = positionSet;
         a.god_mode = godModeSet;
+        a.action_press = actionPress;
         return a;
     }();
     return &table;

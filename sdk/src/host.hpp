@@ -63,6 +63,7 @@ void pollLevel(); // GridNode's thread, about every 0.1 s
 int keyFind(const char* name);
 int keyPress(int key, uint32_t ticks);
 int jump();
+int actionPress(uint32_t hash, uint32_t ticks);
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
 int movementSet(const gn_movement* in, uint32_t fields);

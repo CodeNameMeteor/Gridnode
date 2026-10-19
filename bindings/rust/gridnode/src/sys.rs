@@ -14,6 +14,13 @@ pub const GN_ERR_THREAD: u32 = 6;
 pub const GN_ERR_MISMATCH: u32 = 7;
 pub const GN_COMMAND_SETTING: u32 = 1;
 pub const GN_COMMAND_ONLINE: u32 = 2;
+pub const GN_MOVE_STATE: u32 = 0x1;
+pub const GN_MOVE_WALL_COUNT: u32 = 0x2;
+pub const GN_MOVE_WALL_CLIMBS: u32 = 0x4;
+pub const GN_MOVE_WALL_RUNS: u32 = 0x8;
+pub const GN_MOVE_LAST_GROUND_Y: u32 = 0x10;
+pub const GN_MOVE_SPEED: u32 = 0x20;
+pub const GN_ACTION_JUMP: u32 = 0xb5a0a981;
 
 pub const GN_CATEGORY_UNKNOWN: c_int = 0;
 pub const GN_CATEGORY_PRIMITIVE: c_int = 1;
@@ -186,6 +193,7 @@ pub struct gn_api {
     pub time_of_day_set: Option<unsafe extern "C" fn(seconds: f32) -> c_int>,
     pub position_set: Option<unsafe extern "C" fn(pos: *const f32) -> c_int>,
     pub god_mode: Option<unsafe extern "C" fn(on: c_int) -> c_int>,
+    pub action_press: Option<unsafe extern "C" fn(action_hash: u32, ticks: u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -200,4 +208,4 @@ const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 472);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 480);

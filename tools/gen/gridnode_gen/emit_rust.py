@@ -111,7 +111,7 @@ def _safe(name: str) -> str:
 
 def parse(header: str):
     text = _strip(header)
-    defines = re.findall(r"^\s*#define\s+(GN_\w+)\s+([0-9]+)u?\b", header, flags=re.M)
+    defines = re.findall(r"^\s*#define\s+(GN_\w+)\s+(0x[0-9A-Fa-f]+|[0-9]+)u?\b", header, flags=re.M)
     enums = re.findall(r"enum\s+(\w+)\s*\{(.*?)\}", text, flags=re.S)
     structs_src = re.findall(r"typedef\s+struct\s+(\w+)\s*\{(.*?)\}\s*\w+\s*;", text, flags=re.S)
     fnptr_src = re.findall(r"typedef\s+([\w\s\*]+?)\s*\(\*\s*(\w+)\)\s*\((.*?)\)\s*;", text, flags=re.S)
