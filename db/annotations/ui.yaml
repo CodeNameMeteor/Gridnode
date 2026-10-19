@@ -1,0 +1,69 @@
+# UI systems, friend markers, challenge entities.
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+classes:
+  - name: PamUISystem
+    realm: client
+    vtable: 0x141cb63b0
+    members:
+      - { offset: 0x8c8, name: pauseController, type: "UIPauseController", note: "Inline. Pause requests are the ints at +0x08 / +0x0c." }
+
+  - name: PamClientPresenceInfoManagerEntity
+    realm: client
+    vtable: 0x141c74be8
+    note: Friend markers on the map.
+
+structs:
+  - name: UIPauseController
+    size: 0x10
+    opaque: true
+    members:
+      - { offset: 0x08, name: pauseRequestsA, type: i32 }
+      - { offset: 0x0c, name: pauseRequestsB, type: i32 }
+
+hooks:
+  - name: PamUISystem_update
+    kind: vtable-slot
+    vtable: 0x141cb63b0
+    offset: 0x140
+    original: 0x143b16c50
+    signature: "void(void* uiSystem, void* updateInfo)"
+    note: Per-frame UI update (vf40). Its only call to UIPauseController_applyToClient passes the controller at +0x8c8.
+  - name: PresenceInfoManagerPool_update
+    kind: vtable-slot
+    slot: 0x141c74bc8
+    original: 0x143a4bb30
+    signature: "void(void* pool, void* updateInfo)"
+  - name: PamClientPresenceInfoManagerEntity_create
+    kind: creator-slot
+    slot: 0x141c74cb8
+    original: 0x143a41850
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+  - name: PamServerNamedChallengeEntity_create
+    kind: creator-slot
+    slot: 0x141c7ee00
+    original: 0x143a834b0
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: Dashes and other named challenges.
+  - name: PamServerChallengeMarkerEntity_create
+    kind: creator-slot
+    slot: 0x141c7e9f0
+    original: 0x143a83460
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: Player-made time trials.
+  - name: PamServerCustomizeProjectionCharacterEntity_create
+    kind: creator-slot
+    slot: 0x141c7eb40
+    original: 0x143a83490
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: Time-trial marker look picker; the thunk calls the factory 0x143a7b5a0.
+
+functions:
+  - name: UIPauseController_applyToClient
+    va: 0x143b16ae0
+    signature: "void(UIPauseController* controller)"
+    confidence: inferred
+  - name: PresenceInfoManager_assignSlot
+    va: 0x143a405e0
+    signature: "void*(void* manager, void* onlineId, const f32* position, i32 priority)"
+    note: Returns the marker slot. position is a Vec4.

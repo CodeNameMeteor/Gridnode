@@ -1,0 +1,34 @@
+defaults: { confidence: confirmed, sources: [test] }
+classes:
+  - name: MyEntity
+    realm: client
+    vtable: 0x140020400
+    members:
+      - { offset: 0x20, name: data, type: "MyData*" }
+      - { offset: 0x28, name: state, type: "MyState" }
+      - { offset: 0x40, name: transform, type: "LinearTransform", note: "16-aligned by value" }
+    virtuals:
+      - { offset: 0x10, name: tick, va: 0x140001000, signature: "void(f32 dt)" }
+    properties:
+      - { name: Visible, hash: 0x35bc69ab, type: bool }
+structs:
+  - name: MyState
+    size: 0x10
+    members:
+      - { offset: 0x0, name: count, type: u32 }
+      - { offset: 0x8, name: owner, type: "MyEntity*" }
+  - name: Opaque
+    size: 0x20
+    opaque: true
+    members:
+      - { offset: 0x10, name: bytes, type: "u8[4]" }
+globals:
+  - { name: TheList, va: 0x14215d028, type: "void*" }
+functions:
+  - { name: DoThing, va: 0x140001100, signature: "MyEntity*(const LinearTransform* where, i32 n)" }
+hooks:
+  - { name: TickHook, kind: vtable-slot, vtable: 0x140020400, offset: 0x10, original: 0x140001000, signature: "void(MyEntity* self, f32 dt)" }
+fingerprint:
+  types: [ { name: MyData, ti: 0x140001580 } ]
+  slots: [ MyEntity.tick, TickHook ]
+  code: [ { at: DoThing, bytes: "48 83 EC 28" } ]

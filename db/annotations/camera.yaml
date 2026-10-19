@@ -1,0 +1,33 @@
+# Cameras (used for name tags / world-to-screen).
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+globals:
+  - name: ClientCameraViewManagers
+    va: 0x142415e50
+    type: "ClientCameraViewManagers*"
+    note: Loaded by clientWorldFrameTick (code site CameraViewManagers_load).
+
+structs:
+  - name: ClientCameraViewManagers
+    size: 0x18
+    opaque: true
+    members:
+      - { offset: 0x08, name: managersBegin, type: "ClientCameraViewManager**", note: "vector, one per local player." }
+      - { offset: 0x10, name: managersEnd, type: "ClientCameraViewManager**" }
+  - name: ClientCameraViewManager
+    size: 0x210
+    opaque: true
+    members:
+      - { offset: 0x80, name: fovYDegrees, type: f32, note: "Final vertical FOV, including the player's FOV setting." }
+      - { offset: 0x90, name: transform, type: LinearTransform, note: "right, up, forward, position." }
+      - { offset: 0x208, name: activeCamera, type: "CameraObject*" }
+  - name: CameraObject
+    size: 0xb0
+    opaque: true
+    members:
+      - { offset: 0xac, name: baseFovYDegrees, type: f32, note: "The camera's own vertical FOV before the player's setting (55)." }
+
+code:
+  - name: CameraViewManagers_load
+    va: 0x1431a24fb
+    note: "mov rcx,[ClientCameraViewManagers] in clientWorldFrameTick."

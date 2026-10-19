@@ -11,7 +11,7 @@ It has three parts that share one source of truth:
 
 This plan is based on the material in `PreFindings/` (research.md, mec_reversing_notes.md, review.md,
 the FrostbiteTypeDumper script and its PC outputs, the MECMP docs and the EBX XML dump) and on the
-MECMP source in `D:\Dev\MECMP`. Status: **M0 and M1 done (2026-10-19).** See §8.
+MECMP source in `D:\Dev\MECMP`. Status: **M0, M1 and M2 done (2026-10-19).** See §8.
 
 **Decisions**
 
@@ -347,7 +347,7 @@ Each milestone ends with something testable in game.
 |---|---|---|
 | **M0** ✅ | Repo, MIT licence, CMake, CI (Windows MSVC + clang-cl; CI builds without generated headers), `.gitignore` | CI builds an empty `gridnode.dll` |
 | **M1** ✅ | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | Done: in game the build check passes and the dump matches the Ghidra dump on all 9,988 types (`compare_dumps.py --strict`), identical to the offline dump of the Scylla image. |
-| **M2** | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Generated headers compile; every `engine.h` value is reproduced from the database |
+| **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | A sample mod logs every `PamClientCharacterEntity` creation and runs code on the server tick |
 | **M4** | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M5** | MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
@@ -356,6 +356,17 @@ Each milestone ends with something testable in game.
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
+
+### M2 notes
+
+- The FrostbiteTypeDumper fixes listed in §5.1 are deferred to M6 (GridNodeSync): the in-game dump
+  is now the source of the reflected layer, and the Ghidra script is only used to annotate Ghidra
+  and as a cross-check.
+- `types.hpp` from the real dump has only been compiled with GCC and MinGW here; MSVC is checked in
+  CI with the synthetic fixture. Building `types_compile_test` with Visual Studio against your own
+  dump is the remaining MSVC check.
+- The property id `0x7c46ea68` that research.md lists for "Transform" is not djb2-xor("Transform")
+  (`0x87525469`); every other recorded hash is. Worth a look when `gn::events` is built (M8).
 
 ### M1 findings
 

@@ -92,13 +92,13 @@ def load_ghidra(path):
     return d, out
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("gridnode")
     ap.add_argument("ghidra")
     ap.add_argument("--strict", action="store_true", help="also fail on getType / vtable / creator differences")
     ap.add_argument("--examples", type=int, default=5, help="examples to print per property")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     gd, g = load_gridnode(a.gridnode)
     hd, h = load_ghidra(a.ghidra)

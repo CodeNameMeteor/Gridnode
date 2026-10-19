@@ -1,0 +1,71 @@
+# Characters (Faith, ghosts, AI).
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+classes:
+  - name: ServerControllableEntity
+    realm: server
+    confidence: inferred
+    note: Observed on Pam server characters; the offset falls in ServerControllableEntity's range.
+    members:
+      - { offset: 0x138, name: spawner, type: "ServerCharacterSpawnEntity*", note: "The spawner that made this character." }
+
+  - name: ServerCharacterEntity
+    realm: server
+    members:
+      - { offset: 0x250, name: player, type: "void*", note: "Owning player (null for AI and ghosts)." }
+
+  - name: PamServerCharacterEntity
+    realm: server
+    vtable: 0x141c3fcb0
+    virtuals:
+      - { offset: 0x108, name: getComponent, va: 0x1431c6eb0, signature: "void*(const TypeInfo* type)" }
+      - name: applyCustomization
+        offset: 0x340
+        va: 0x14336cf00
+        signature: "void(CustomizeRequest* request)"
+        note: Applies a CustomizeCharacterData (look) to the character. See CustomizeRequest.
+
+  - name: PamClientCharacterEntity
+    realm: client
+    vtable: 0x141c3c760
+    members:
+      - offset: 0x334
+        name: ghostShader
+        type: bool
+        note: Copy of data->PamUseRunnersGhostShader taken at creation. Write this per character, not the shared data.
+    virtuals:
+      - { offset: 0x108, name: getComponent, va: 0x1431c6eb0, signature: "void*(const TypeInfo* type)" }
+      - { offset: 0x3d8, name: setVisible, va: 0x143229480, signature: "void(bool visible)" }
+    properties:
+      - { name: Visible, hash: 0x35bc69ab, type: bool, note: "Handled by vf2 (0x143919960), which calls setVisible." }
+
+structs:
+  - name: CustomizeRequest
+    size: 0x20
+    note: Argument of PamServerCharacterEntity::applyCustomization (checked in Ghidra by MECMP).
+    members:
+      - { offset: 0x00, name: character, type: "void*" }
+      - { offset: 0x08, name: player, type: "void*", note: "null: apply the data as is (0x14336c860); non-null: the player's own unlock path (0x143349f60)." }
+      - { offset: 0x10, name: customization, type: "CustomizeCharacterData*" }
+      - { offset: 0x18, name: skip, type: u8, note: "Non-zero: do nothing." }
+
+hooks:
+  - name: PamClientCharacterEntity_factory
+    kind: creator-slot
+    slot: 0x141c3cd80
+    original: 0x143910d20
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+
+functions:
+  - name: LocalClientCharacter
+    va: 0x1439655f0
+    signature: "PamClientCharacterEntity*()"
+    note: The local player's client character (null when there is none). Game thread.
+  - name: ServerCharacterEntity_teleport
+    va: 0x143378830
+    signature: "void(ServerCharacterEntity* character, const LinearTransform* transform)"
+    note: The game's own teleport (as ServerTeleportEntity_teleportPlayer 0x143391430 uses it). The transform must be 16-byte aligned. Server game thread.
+
+constants:
+  - { name: PlayerBlueprint, value: "Characters/FaithCharacter" }
+  - { name: GhostBlueprint, value: "Characters/Projection/ProjectionCharacter" }

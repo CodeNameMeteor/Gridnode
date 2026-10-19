@@ -6,9 +6,9 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M1 done.** The runtime loads into the game, checks the build, and writes the engine's
-> reflection data (9,988 types, matching the Ghidra dump exactly) to a JSON file. Next (M2): the
-> annotation database and the header generator.
+> Status: **M2 done.** The runtime loads into the game, checks the build and dumps the engine's
+> reflection data (9,988 types). The type database (`db/annotations`) holds everything MECMP uses,
+> and `tools/gen` generates C++ headers from it. Next (M3): the reflection, hook and threading APIs.
 
 ## What's here
 
@@ -19,7 +19,7 @@ The full plan is in [docs/PLAN.md](docs/PLAN.md).
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/` | Type database: `annotations/` (our findings, committed), `reflected/` (your own dump, git-ignored) |
 | `tools/ghidra/` | `FrostbiteTypeDumper.java` Ghidra script |
-| `tools/gen/` | Database tools (`compare_dumps.py`) |
+| `tools/gen/` | `gridnode.py`: validate the database, generate headers, set up your dump ([docs/annotations.md](docs/annotations.md)) |
 | `tools/offline_dump/` | `gn_offline_dump`: the walker run on a PE memory dump, for testing |
 | `tests/` | Host-side tests |
 | `docs/` | Plan and reference docs |
@@ -42,7 +42,22 @@ cmake -S . -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
 cmake --build build
 ```
 
-On Linux without the cross compiler only the portable parts (walker, tests, `gn_offline_dump`) build.
+Building needs Python 3 with PyYAML (`pip install pyyaml`): `gridnode/engine.hpp` is generated from
+`db/annotations` at build time. On Linux without the cross compiler only the portable parts
+(walker, generator, tests, `gn_offline_dump`) build.
+
+## Setting up your type headers
+
+After your first in-game dump:
+
+```
+python tools/gen/gridnode.py setup --dump path/to/gridnode-reflected.json
+```
+
+This copies the dump to `db/reflected/` (git-ignored) and writes
+`sdk/include/gridnode/generated/types.hpp`: C++ structs for every engine class and value type,
+with GridNode's annotations merged in. CMake regenerates and compile-checks it whenever the dump
+is present.
 
 ## Running
 

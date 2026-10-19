@@ -1,0 +1,417 @@
+{
+ "format": "gridnode-reflected",
+ "version": 1,
+ "generator": "fixture",
+ "created": "",
+ "image": {
+  "name": "fixture.exe",
+  "base": "0x140000000",
+  "size": "0x727b000",
+  "timestamp": "0x0"
+ },
+ "stats": {},
+ "typeCount": 18,
+ "types": [
+  {
+   "ti": "0x140001000",
+   "data": "0x140008000",
+   "name": "Boolean",
+   "displayName": "Boolean",
+   "module": "Core",
+   "category": "Primitive",
+   "flags": 173,
+   "size": 1,
+   "alignment": 1,
+   "runtimeId": 0
+  },
+  {
+   "ti": "0x140001080",
+   "data": "0x140008040",
+   "name": "Float32",
+   "displayName": "Float32",
+   "module": "Core",
+   "category": "Primitive",
+   "flags": 317,
+   "size": 4,
+   "alignment": 4,
+   "runtimeId": 1
+  },
+  {
+   "ti": "0x140001100",
+   "data": "0x140008080",
+   "name": "Uint32",
+   "displayName": "Uint32",
+   "module": "Core",
+   "category": "Primitive",
+   "flags": 269,
+   "size": 4,
+   "alignment": 4,
+   "runtimeId": 2
+  },
+  {
+   "ti": "0x140001180",
+   "data": "0x1400080c0",
+   "name": "CString",
+   "displayName": "CString",
+   "module": "Core",
+   "category": "Primitive",
+   "flags": 16509,
+   "size": 8,
+   "alignment": 8,
+   "runtimeId": 3
+  },
+  {
+   "ti": "0x140001200",
+   "data": "0x140008100",
+   "name": "String",
+   "displayName": "String",
+   "module": "Core",
+   "category": "Primitive",
+   "flags": 16493,
+   "size": 32,
+   "alignment": 8,
+   "runtimeId": 4
+  },
+  {
+   "ti": "0x140001280",
+   "data": "0x140008140",
+   "name": "Vec3",
+   "displayName": "Vec3",
+   "module": "Core",
+   "category": "ValueType",
+   "flags": 41,
+   "size": 16,
+   "alignment": 16,
+   "runtimeId": 5,
+   "fields": [
+    {
+     "name": "x",
+     "offset": 0,
+     "flags": 0,
+     "type": "0x140001080"
+    },
+    {
+     "name": "y",
+     "offset": 4,
+     "flags": 0,
+     "type": "0x140001080"
+    },
+    {
+     "name": "z",
+     "offset": 8,
+     "flags": 0,
+     "type": "0x140001080"
+    }
+   ]
+  },
+  {
+   "ti": "0x140001300",
+   "data": "0x140008180",
+   "name": "LinearTransform",
+   "displayName": "LinearTransform",
+   "module": "Core",
+   "category": "ValueType",
+   "flags": 41,
+   "size": 64,
+   "alignment": 16,
+   "runtimeId": 6,
+   "fields": [
+    {
+     "name": "right",
+     "offset": 0,
+     "flags": 0,
+     "type": "0x140001280"
+    },
+    {
+     "name": "up",
+     "offset": 16,
+     "flags": 0,
+     "type": "0x140001280"
+    },
+    {
+     "name": "forward",
+     "offset": 32,
+     "flags": 0,
+     "type": "0x140001280"
+    },
+    {
+     "name": "trans",
+     "offset": 48,
+     "flags": 0,
+     "type": "0x140001280"
+    }
+   ]
+  },
+  {
+   "ti": "0x140001380",
+   "data": "0x1400081c0",
+   "name": "MyEnum",
+   "displayName": "MyEnum",
+   "module": "Core",
+   "category": "Enum",
+   "flags": 137,
+   "size": 4,
+   "alignment": 4,
+   "runtimeId": 7,
+   "values": [
+    {
+     "name": "MyEnum_A",
+     "value": 0
+    },
+    {
+     "name": "MyEnum_B",
+     "value": 5
+    },
+    {
+     "name": "MyEnum_C",
+     "value": -1
+    }
+   ]
+  },
+  {
+   "ti": "0x140001400",
+   "data": "0x140008200",
+   "name": "DataContainer",
+   "displayName": "DataContainer",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 16,
+   "alignment": 8,
+   "runtimeId": 8,
+   "classId": 1,
+   "lastSubClassId": 9,
+   "vtables": [
+    "0x140020000"
+   ],
+   "vtableConfirmed": true,
+   "getType": "0x140030000"
+  },
+  {
+   "ti": "0x140001480",
+   "data": "0x140008240",
+   "name": "Asset",
+   "displayName": "Asset",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 24,
+   "alignment": 8,
+   "runtimeId": 9,
+   "super": "0x140001400",
+   "classId": 2,
+   "lastSubClassId": 3,
+   "fields": [
+    {
+     "name": "Name",
+     "offset": 16,
+     "flags": 0,
+     "type": "0x140001180"
+    }
+   ],
+   "vtables": [
+    "0x140020100"
+   ],
+   "vtableConfirmed": true
+  },
+  {
+   "ti": "0x140001500",
+   "data": "0x140008280",
+   "name": "",
+   "displayName": "Array<Asset>",
+   "module": "Core",
+   "category": "Array",
+   "flags": 65,
+   "size": 8,
+   "alignment": 8,
+   "runtimeId": 10,
+   "element": "0x140001480"
+  },
+  {
+   "ti": "0x140001580",
+   "data": "0x1400082c0",
+   "name": "MyData",
+   "displayName": "MyData",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 128,
+   "alignment": 16,
+   "runtimeId": 11,
+   "super": "0x140001480",
+   "classId": 3,
+   "lastSubClassId": 3,
+   "fields": [
+    {
+     "name": "Asset",
+     "offset": 24,
+     "flags": 0,
+     "type": "0x140001480"
+    },
+    {
+     "name": "Odd",
+     "offset": 33,
+     "flags": 0,
+     "type": "0x140001100"
+    },
+    {
+     "name": "Items",
+     "offset": 40,
+     "flags": 72,
+     "type": "0x140001500"
+    },
+    {
+     "name": "Kind",
+     "offset": 48,
+     "flags": 0,
+     "type": "0x140001380"
+    },
+    {
+     "name": "Label",
+     "offset": 56,
+     "flags": 0,
+     "type": "0x140001200"
+    },
+    {
+     "name": "Transform",
+     "offset": 64,
+     "flags": 0,
+     "type": "0x140001300"
+    },
+    {
+     "name": "Enabled",
+     "offset": 32,
+     "flags": 0,
+     "type": "0x140001000"
+    }
+   ],
+   "vtables": [
+    "0x140020200"
+   ],
+   "vtableConfirmed": true
+  },
+  {
+   "ti": "0x140001600",
+   "data": "0x140008300",
+   "name": "Entity",
+   "displayName": "Entity",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 32,
+   "alignment": 0,
+   "runtimeId": 12,
+   "classId": 10,
+   "lastSubClassId": 12,
+   "vtables": [
+    "0x140020300"
+   ],
+   "vtableConfirmed": false
+  },
+  {
+   "ti": "0x140001680",
+   "data": "0x140008340",
+   "name": "MyEntity",
+   "displayName": "MyEntity",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 128,
+   "alignment": 0,
+   "runtimeId": 13,
+   "super": "0x140001600",
+   "classId": 11,
+   "lastSubClassId": 11,
+   "vtables": [
+    "0x140020400"
+   ],
+   "vtableConfirmed": false,
+   "creators": [
+    {
+     "creator": "0x140025000",
+     "realm": 0,
+     "data": "0x140001580"
+    }
+   ]
+  },
+  {
+   "ti": "0x140001700",
+   "data": "0x140008380",
+   "name": "MyMessage",
+   "displayName": "MyMessage",
+   "module": "Core",
+   "category": "ValueType",
+   "flags": 32809,
+   "size": 16,
+   "alignment": 8,
+   "runtimeId": 14,
+   "fields": [
+    {
+     "name": "Value",
+     "offset": 8,
+     "flags": 0,
+     "type": "0x140001100"
+    }
+   ],
+   "vtables": [
+    "0x140020500"
+   ],
+   "vtableConfirmed": true,
+   "staticInstance": "0x140026000"
+  },
+  {
+   "ti": "0x140001780",
+   "data": "0x1400083c0",
+   "name": "BoneNameId",
+   "displayName": "BoneNameId",
+   "module": "Ant",
+   "category": "ValueType",
+   "flags": 41,
+   "size": 4,
+   "alignment": 4,
+   "runtimeId": 15,
+   "fields": [
+    {
+     "name": "Id",
+     "offset": 0,
+     "flags": 0,
+     "type": "0x140001100"
+    }
+   ]
+  },
+  {
+   "ti": "0x140001800",
+   "data": "0x140008400",
+   "name": "BoneNameId",
+   "displayName": "BoneNameId",
+   "module": "Morph",
+   "category": "ValueType",
+   "flags": 41,
+   "size": 4,
+   "alignment": 4,
+   "runtimeId": 16,
+   "fields": [
+    {
+     "name": "Id",
+     "offset": 0,
+     "flags": 0,
+     "type": "0x140001100"
+    }
+   ]
+  },
+  {
+   "ti": "0x140001880",
+   "data": "0x140008440",
+   "name": "EmptyBase",
+   "displayName": "EmptyBase",
+   "module": "Core",
+   "category": "Class",
+   "flags": 53,
+   "size": 0,
+   "alignment": 0,
+   "runtimeId": 17,
+   "classId": 20,
+   "lastSubClassId": 21
+  }
+ ]
+}

@@ -4,44 +4,15 @@
 #include <cstdio>
 #include <cstring>
 
+#include "gridnode/engine.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/reflect/layout.hpp"
 
 namespace gn::build {
 namespace {
 
-// Facts confirmed on the EA app build by MECMP (fingerprint.cpp / engine.h) and the PC dump.
-
-// Runtime TypeInfo addresses of a few types.
-struct TypeCheck { const char* name; uint64_t ti; };
-const TypeCheck kTypes[] = {
-    {"PamReplayPlayerComponentData", 0x14286b890},
-    {"ServerCharacterEntity", 0x1427fe1e0},
-    {"ObjectBlueprint", 0x1427e7eb0},
-};
-
-// A vtable slot and the function it holds.
-struct SlotCheck { const char* what; uint64_t vtable; uint32_t offset; uint64_t fn; };
-const SlotCheck kSlots[] = {
-    {"PamServerCharacterEntity::applyCustomization", 0x141c3fcb0, 0x340, 0x14336cf00},
-    {"PamServerCharacterEntity::getComponent", 0x141c3fcb0, 0x108, 0x1431c6eb0},
-    {"PamClientCharacterEntity::setVisible", 0x141c3c760, 0x3d8, 0x143229480},
-    {"PamClientCharacterEntity::getComponent", 0x141c3c760, 0x108, 0x1431c6eb0},
-    {"PamServerCharacterSpawnEntity::spawn", 0x141c4b388, 0xd0, 0x143390830},
-    {"ServerCharacterSpawnEntity::spawn", 0x141b4e0c8, 0xd0, 0x143390830},
-    {"ServerGameWorld::postUpdate", 0x141b42d00, 0x28, 0x143341ee0},
-};
-
-// The first position-independent bytes of functions (RIP-relative displacements do not change
-// when the image moves, absolute addresses would).
-struct CodeCheck { const char* what; uint64_t at; uint8_t bytes[16]; size_t n; };
-const CodeCheck kCode[] = {
-    {"NetState::setDirty", 0x14347e420, {0x48, 0x8B, 0x41, 0x18, 0x48, 0x85, 0xC0, 0x74, 0x18}, 9},
-    {"SpatialEntity::setTransform", 0x1432eb1f0, {0x48, 0x83, 0xEC, 0x38, 0x8B, 0x41, 0x18, 0x45, 0x0F, 0xB6, 0xC8}, 11},
-    {"localClientCharacter", 0x1439655f0, {0x48, 0x83, 0xEC, 0x28, 0x48, 0x8B, 0x05, 0xB5, 0xC6, 0xA9, 0xFE}, 11},
-    {"Arena::allocFromMember", 0x142a647d0,
-     {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20}, 15},
-};
+// The checks themselves come from db/annotations/fingerprint.yaml (generated gridnode/engine.hpp).
+namespace fp = gn::engine::fingerprint;
 
 std::string hex(const uint8_t* b, size_t n) {
     std::string s;
@@ -110,7 +81,7 @@ Result check() {
         line(r, "warning: image size is 0x%lx, expected 0x%x", static_cast<unsigned long>(nt->OptionalHeader.SizeOfImage),
              kImageSize);
     }
-    for (const TypeCheck& t : kTypes) {
+    for (const fp::Type& t : fp::types) {
         const uint64_t got = findType(t.name);
         if (got != mem::rva(t.ti)) {
             ++r.failed;
@@ -118,19 +89,21 @@ Result check() {
                  static_cast<unsigned long long>(t.ti));
         }
     }
-    for (const SlotCheck& s : kSlots) {
+    for (const fp::Slot& s : fp::slots) {
         uintptr_t got = 0;
-        if (!mem::read(mem::rva(s.vtable) + s.offset, got) || got != mem::rva(s.fn)) {
+        if (!mem::read(mem::rva(s.slot), got) || got != mem::rva(s.fn)) {
             ++r.failed;
             line(r, "%s holds 0x%llx, expected 0x%llx", s.what, static_cast<unsigned long long>(got ? mem::va(got) : 0),
                  static_cast<unsigned long long>(s.fn));
         }
     }
-    for (const CodeCheck& c : kCode) {
-        uint8_t got[16] = {};
-        if (!mem::read(mem::rva(c.at), got, c.n) || memcmp(got, c.bytes, c.n) != 0) {
-            ++r.failed;
-            line(r, "%s starts with %s, expected %s", c.what, hex(got, c.n).c_str(), hex(c.bytes, c.n).c_str());
+    for (const fp::Code& c : fp::code) {
+        uint8_t got[32] = {};
+        if (!mem::read(mem::rva(c.at) + c.skip, got, c.count) || memcmp(got, c.bytes, c.count) != 0) {
+            if (c.required) ++r.failed;
+            else ++r.warnings;
+            line(r, "%s%s starts with %s, expected %s", c.required ? "" : "warning (optional): ", c.what,
+                 hex(got, c.count).c_str(), hex(c.bytes, c.count).c_str());
         }
     }
     r.ok = r.failed == 0;

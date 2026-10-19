@@ -1,0 +1,13 @@
+# Input.
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+globals:
+  - name: XInputGetStatePtr
+    va: 0x14256d7e0
+    type: "void*"
+    note: The game's XInputGetState, stored once by 0x1437ba6c0. Swapping it is a pointer hook.
+
+code:
+  - name: XInputGetState_store
+    va: 0x1437ba76f
+    note: "mov [XInputGetStatePtr],rax"

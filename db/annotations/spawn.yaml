@@ -1,0 +1,111 @@
+# Spawning characters: spawner entities, creators, creation info.
+defaults: { confidence: confirmed, sources: [mecmp, research] }
+
+classes:
+  - name: ServerSpawnEntity
+    realm: server
+    note: Members observed on ServerCharacterSpawnEntity; their offsets fall in ServerSpawnEntity's range.
+    confidence: inferred
+    members:
+      - { offset: 0x28, name: bus, type: "void*", note: "EntityBus (refcount at +0x30)." }
+      - { offset: 0x30, name: data, type: "SpawnReferenceObjectData*", note: "For character spawners: CharacterSpawnReferenceObjectData." }
+      - { offset: 0xf4, name: spawnCounter, type: u32, note: "Bus id of the next spawn = counter & 0x7f." }
+      - { offset: 0x148, name: spawnedBegin, type: "void**", note: "vector<character*> of what this spawner spawned (last = newest)." }
+      - { offset: 0x150, name: spawnedEnd, type: "void**" }
+      - { offset: 0x2a4, name: enabled, type: bool }
+
+  - name: ServerCharacterSpawnEntity
+    realm: server
+    vtable: 0x141b4e0c8
+    virtuals:
+      - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)", note: "Spawns at info->transform. Server game thread." }
+      - { offset: 0x120, name: update, va: 0x143391d70, signature: "void(void* updateInfo)", confidence: inferred }
+
+  - name: PamServerCharacterSpawnEntity
+    realm: server
+    vtable: 0x141c4b388
+    note: Every character spawner in the city is one of these (993 created when the city loads).
+    virtuals:
+      - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)" }
+
+structs:
+  - name: SpawnInfo
+    size: 0x70
+    align: 16
+    note: Argument of ServerCharacterSpawnEntity::spawn (same layout on PS4).
+    members:
+      - { offset: 0x00, name: transform, type: LinearTransform }
+      - { offset: 0x40, name: player, type: "void*" }
+      - { offset: 0x48, name: existing, type: "void*" }
+      - { offset: 0x50, name: unk50, type: "void*" }
+      - { offset: 0x58, name: unk58, type: i32, note: "-1" }
+      - { offset: 0x5c, name: busId, type: i32, note: "-1: allocate" }
+      - { offset: 0x60, name: unk60, type: u8, note: "1" }
+      - { offset: 0x61, name: useTransform, type: u8 }
+
+  - name: EntityCreationInfo
+    size: 0x140
+    opaque: true
+    note: Passed to entity factories (creator vtable +8). The constructor touches up to +0x128.
+    members:
+      - { offset: 0x10, name: bus, type: "void*" }
+      - { offset: 0x20, name: realm, type: i32, note: "1 for server creation." }
+      - { offset: 0x28, name: kind, type: i32, note: "2 for character spawns." }
+      - { offset: 0x30, name: team, type: u8, note: "0xff: none." }
+      - { offset: 0x40, name: transform, type: LinearTransform }
+      - { offset: 0xd0, name: data, type: "EntityData*", note: "The data of the entity being created (a spawner's CharacterSpawnReferenceObjectData)." }
+      - { offset: 0xd8, name: existing, type: "void*" }
+      - { offset: 0xf0, name: world, type: "void*" }
+
+hooks:
+  - name: ServerCharacterSpawnEntity_factory
+    kind: creator-slot
+    slot: 0x141b4f720
+    original: 0x1433820c0
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: Creator vtable 0x141b4f718 +8. Never fires in the city (all spawners there are Pam ones).
+  - name: PamServerCharacterSpawnEntity_factory
+    kind: creator-slot
+    slot: 0x141c4b5c0
+    original: 0x143957610
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: Sees every character spawner as it is created; ci->data is the spawner's data (Blueprint at +0x18).
+
+functions:
+  - name: ServerCharacterSpawnEntity_createCharacter
+    va: 0x143390a30
+    signature: "void*(void* spawner, SpawnInfo* info)"
+    confidence: inferred
+    note: Blueprint = vtable +0x138 override, else spawnerData+0x18. Wraps generic blueprint instantiation.
+  - name: ServerSpawnEntity_getLastSpawnedCharacter
+    va: 0x143381080
+    signature: "void*(void* spawner)"
+    confidence: inferred
+  - name: EntityBus_create
+    va: 0x143146e90
+    signature: "void*(void* owner, void* parentBus, void* referenceData, u32 id, u64 a5, u64 a6)"
+    confidence: inferred
+  - name: EntityBus_addRef
+    va: 0x144122ca0
+    signature: "void(void* bus)"
+  - name: EntityBus_release
+    va: 0x1431547b0
+    signature: "void(void* bus)"
+  - name: ServerEntityCreationInfo_ctor
+    va: 0x14335cab0
+    signature: "void(EntityCreationInfo* ci, void* player, void* bus, const LinearTransform* transform)"
+    confidence: inferred
+  - name: Blueprint_instantiate
+    va: 0x14335e390
+    signature: "void(void* result, EntityCreationInfo* ci, void* blueprint, void* referenceData, u64 a5)"
+    confidence: inferred
+    note: No-op unless BlueprintInstantiationEnabled is set.
+
+globals:
+  - name: BlueprintInstantiationEnabled
+    va: 0x1425476c0
+    type: bool
+  - name: MessageManager
+    va: 0x14253d670
+    type: "void*"
+    note: +0x10 listener registry; +0x68 server player manager (players vector at +0x268/+0x270; player+0x1398 is-human).

@@ -1,0 +1,69 @@
+# Runner ghost replay components (time-trial ghosts; MECMP's puppets).
+defaults: { confidence: confirmed, sources: [mecmp, research] }
+
+classes:
+  - name: PamServerReplayPlayerComponent
+    realm: server
+    members:
+      - { offset: 0x30, name: playback, type: "void*", note: "Playback object (inline); its state is at +0x38." }
+      - { offset: 0x38, name: playbackState, type: u32, note: "1 = playing." }
+      - { offset: 0xb0, name: setup, type: "void*", note: "Bone setup." }
+      - { offset: 0x178, name: pose, type: "ReplayBone*", note: "Output pose buffer (begin/end/capacity, then its arena)." }
+      - { offset: 0x180, name: poseEnd, type: "ReplayBone*" }
+      - { offset: 0x188, name: poseCapacity, type: "ReplayBone*" }
+      - { offset: 0x190, name: poseArena, type: "void*" }
+      - { offset: 0x1a0, name: netState, type: "void*", note: "Inline net state: NetState_setDirty(this+0x1a0, 4) after writing the pose." }
+
+  - name: PamClientReplayPlayerComponent
+    realm: client
+    vtable: 0x141c48a28
+    members:
+      - { offset: 0x38, name: playback, type: "void*", note: "The client's own playback (inline); state at +0x40." }
+      - { offset: 0x40, name: playbackState, type: u32, note: "1 = playing. 0 stops the client's own playback." }
+      - { offset: 0xb0, name: playbackForced, type: u8 }
+      - { offset: 0xb8, name: setup, type: "void*" }
+      - { offset: 0x180, name: receivedPose, type: "ReplayBone*", note: "Pose received from the server (or decoded by the client's own playback)." }
+      - { offset: 0x200, name: expectedBones, type: u32 }
+      - { offset: 0x2e6, name: skipRoot, type: u8 }
+
+  - name: PamClientReplayRecordingComponent
+    realm: client
+    members:
+      - { offset: 0x48, name: recorder, type: "ReplayRecorder*", note: "Always records the last ~15 s (for creating time trials)." }
+
+structs:
+  - name: ReplayRecorder
+    size: 0x90
+    opaque: true
+    note: Keyframe ring of the local replay recorder. Keyframe = {f32 time; ...; ReplayBone bones[] at +0x10}.
+    members:
+      - { offset: 0x68, name: stride, type: u64, note: "Bytes per keyframe: 0x10 + bones * 0x20." }
+      - { offset: 0x70, name: capacity, type: u32 }
+      - { offset: 0x78, name: base, type: "u8*" }
+      - { offset: 0x88, name: head, type: u32 }
+  - name: ReplayBone
+    size: 0x20
+    align: 16
+    members:
+      - { offset: 0x00, name: translation, type: "f32[4]" }
+      - { offset: 0x10, name: rotation, type: "f32[4]", note: "Quaternion." }
+
+hooks:
+  - name: PamClientReplayPlayerComponent_factory
+    kind: creator-slot
+    slot: 0x141c49158
+    original: 0x143949050
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+  - name: ClientReplayUpdater_updateAll
+    kind: vtable-slot
+    vtable: 0x141c49190
+    offset: 0x10
+    original: 0x14394da40
+    signature: "void(void* updater, void* updateInfo)"
+    note: >-
+      Runs every client replay component's update (PamClientReplayPlayerComponent_update 0x1439501a0)
+      on the client game thread. The two updater objects exist once the first client replay
+      component has been created. MECMP writes ghost poses here.
+
+constants:
+  - { name: MaxReplayBones, value: 32 }

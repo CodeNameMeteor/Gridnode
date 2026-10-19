@@ -1,0 +1,37 @@
+# Generic entity layout (Frostbite Entity / Component hierarchy).
+defaults: { confidence: confirmed, sources: [mecmp, research] }
+
+classes:
+  - name: ComponentEntity
+    realm: any
+    confidence: inferred
+    note: >-
+      The members below were observed on Pam{Client,Server}CharacterEntity; their offsets fall in
+      ComponentEntity's range (SpatialEntity ends at 0x28, ComponentEntity at 0x40).
+    members:
+      - { offset: 0x30, name: data, type: "EntityData*", note: "The entity's data (shared by every entity made from the same asset: do not write it)." }
+      - { offset: 0x38, name: transformSpace, type: "EntityTransformSpace*", note: "Read by SpatialEntity_setTransform; see EntityTransformSpace." }
+
+  - name: Component
+    realm: any
+    members:
+      - { offset: 0x08, name: collection, type: "void**", note: "Owner's component collection; element [0] is the owner entity." }
+
+structs:
+  - name: EntityTransformSpace
+    size: 0x10
+    opaque: true
+    note: >-
+      Live transform storage of a spatial entity. The current LinearTransform is at
+      +0x10 + (u8@+9 + 2 * u8@+10) * 0x20. Only the header is described here.
+    members:
+      - { offset: 0x09, name: selectA, type: u8 }
+      - { offset: 0x0a, name: selectB, type: u8 }
+
+functions:
+  - name: SpatialEntity_setTransform
+    va: 0x1432eb1f0
+    signature: "void(void* entity, const LinearTransform* transform, u8 notify)"
+    note: >-
+      Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
+      +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.

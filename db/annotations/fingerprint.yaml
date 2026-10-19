@@ -1,0 +1,28 @@
+# The build check gridnode.dll runs before touching anything (sdk/src/build.cpp).
+# Types: runtime TypeInfo addresses. Slots: virtual functions and hooks by name (their vtable,
+# offset and function come from the class / hook annotations). Code: the first bytes of
+# functions or code sites; only position-independent bytes (RIP-relative displacements are fine).
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+fingerprint:
+  types:
+    - { name: PamReplayPlayerComponentData, ti: 0x14286b890 }
+    - { name: ServerCharacterEntity, ti: 0x1427fe1e0 }
+    - { name: ObjectBlueprint, ti: 0x1427e7eb0 }
+  slots:
+    - PamServerCharacterEntity.applyCustomization
+    - PamServerCharacterEntity.getComponent
+    - PamClientCharacterEntity.setVisible
+    - PamClientCharacterEntity.getComponent
+    - PamServerCharacterSpawnEntity.spawn
+    - ServerCharacterSpawnEntity.spawn
+    - ServerGameWorld_postUpdate
+  code:
+    - { at: NetState_setDirty, bytes: "48 8B 41 18 48 85 C0 74 18", note: "mov rax,[rcx+18h]; test rax,rax; jz" }
+    - { at: SpatialEntity_setTransform, bytes: "48 83 EC 38 8B 41 18 45 0F B6 C8" }
+    - { at: LocalClientCharacter, bytes: "48 83 EC 28 48 8B 05 B5 C6 A9 FE", note: "loads the client game context" }
+    - { at: Arena_allocFromMember, bytes: "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20" }
+    - { at: XInputGetState_store, bytes: "48 89 05 6A 30 DB FE" }
+    - { at: CameraViewManagers_load, bytes: "48 8B 0D 4E 39 27 FF" }
+    - { at: RbTree_increment, skip: 3, bytes: "48 8B 09 48 85 C9 74 19", note: "after mov rax,rcx" }
+    - { at: RaycastQuery_execute, bytes: "48 89 E0 55 56 57 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC D0 01 00 00", required: false, note: "Optional: only ray casts depend on it." }

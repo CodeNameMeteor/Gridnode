@@ -1,0 +1,42 @@
+# Physics: ray casts.
+defaults: { confidence: confirmed, sources: [mecmp] }
+
+structs:
+  - name: RaycastQuery
+    size: 0x30
+    align: 16
+    note: What the caster reads (MOVAPS, 16-byte aligned). A radius above ~0 makes it a sphere sweep.
+    members:
+      - { offset: 0x00, name: from, type: "f32[4]" }
+      - { offset: 0x10, name: to, type: "f32[4]" }
+      - { offset: 0x20, name: radius, type: f32 }
+      - { offset: 0x24, name: flags, type: "u8[3]", note: "Set by the entity's query builder (0x143a22330); not read by the caster." }
+  - name: RaycastResult
+    size: 0x40
+    align: 16
+    note: "A miss: position = to, fraction = 1, distance = |to - from|, hit = 0."
+    members:
+      - { offset: 0x00, name: position, type: "f32[4]" }
+      - { offset: 0x10, name: normal, type: "f32[4]" }
+      - { offset: 0x20, name: id, type: u32 }
+      - { offset: 0x24, name: fraction, type: f32 }
+      - { offset: 0x28, name: distance, type: f32 }
+      - { offset: 0x2c, name: hit, type: u8 }
+      - { offset: 0x30, name: tail, type: u16, note: "Always 0x0101." }
+
+functions:
+  - name: RaycastQuery_execute
+    va: 0x143a24890
+    signature: "void(const RaycastQuery* query, void* world, void* physics, RaycastResult* result)"
+    note: >-
+      The ray caster behind the game's ray cast entities (ServerRaycastEntity). world is unused.
+      Physics: ServerGameWorld+0x50 -> +0xf0 -> +0x18 (getter 0x1434ee940). A plain ray goes on to
+      0x1434e27f0 with collision filter 9.
+
+constants:
+  - { name: World_PhysicsManager, value: 0x50 }
+  - { name: PhysicsManager_Holder, value: 0xf0 }
+  - { name: PhysicsHolder_Physics, value: 0x18 }
+  - { name: Physics_HavokWorld, value: 0x10 }
+  - { name: HavokWorld_FilterOwner, value: 0x150 }
+  - { name: FilterOwner_Filter, value: 0x4d0 }

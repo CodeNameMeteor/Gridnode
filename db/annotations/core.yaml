@@ -1,0 +1,36 @@
+# Core engine globals and helpers.
+defaults: { confidence: confirmed, sources: [mecmp, dumper] }
+
+globals:
+  - name: TypeInfoListHead
+    va: 0x14215d028
+    type: "TypeInfo*"
+    note: Head of the engine's singly linked list of every runtime TypeInfo (next at +0x08).
+
+functions:
+  - name: Arena_allocFromMember
+    va: 0x142a647d0
+    signature: "void*(void** arenaMember, u64 size, u64 align)"
+    note: Allocates from the arena held in *arenaMember. Used to give a replay component its pose buffer.
+    sources: [mecmp]
+  - name: RbTree_increment
+    va: 0x142a34820
+    signature: "void*(void* node)"
+    note: EASTL red-black tree successor (iterator ++).
+    sources: [mecmp]
+  - name: NetState_setDirty
+    va: 0x14347e420
+    signature: "void(void* netState, u64 bits)"
+    note: Marks replicated state dirty so the server sends it to the client.
+    sources: [mecmp, research]
+
+structs:
+  - name: TypeInfo
+    size: 0x18
+    opaque: true
+    note: Runtime TypeInfo (ClassInfo for classes adds super at +0x18, classId range at +0x28). See sdk/include/gridnode/reflect/layout.hpp.
+    members:
+      - { offset: 0x00, name: data, type: "void*", note: "Static TypeInfoData record." }
+      - { offset: 0x08, name: next, type: "TypeInfo*" }
+      - { offset: 0x10, name: runtimeId, type: u16 }
+      - { offset: 0x12, name: flags, type: u16 }

@@ -1,0 +1,55 @@
+# Worlds, levels and the per-tick hook.
+defaults: { confidence: confirmed, sources: [mecmp, research] }
+
+globals:
+  - name: ServerGameWorld
+    va: 0x1425469e0
+    type: "ServerGameWorld*"
+    note: The server world. Changes on every level load; null between levels.
+
+structs:
+  - name: ServerGameWorld
+    size: 0x88
+    note: Created in the ServerLevel init (0x14333f2e0); vtable 0x141b42d00 (only the server world uses it).
+    members:
+      - { offset: 0x20, name: level, type: "ServerLevel*" }
+      - { offset: 0x50, name: physicsManager, type: "void*", note: "See physics.yaml for the chain to the Havok filter." }
+  - name: ServerLevel
+    size: 0x110
+    opaque: true
+    members:
+      - { offset: 0x108, name: data, type: "LevelData*", note: "Asset: its name (e.g. Levels/SP/FrontEnd/FrontEnd) at +0x10." }
+
+hooks:
+  - name: ServerGameWorld_postUpdate
+    kind: vtable-slot
+    vtable: 0x141b42d00
+    offset: 0x28
+    original: 0x143341ee0
+    signature: "void(void* world, void* updateInfo)"
+    note: >-
+      Runs once per server simulation tick on the server game thread (N times per frame when
+      catching up). dt is a float at updateInfo+0x10. MECMP's tick hook.
+
+functions:
+  - name: Server_tickFrame
+    va: 0x143345f30
+    signature: "void(void* server)"
+    confidence: inferred
+    note: Calls Server_update once per simulation tick.
+  - name: Server_update
+    va: 0x1433445b0
+    signature: "void(void* server, void* updateInfo)"
+    confidence: inferred
+  - name: ServerLevel_update
+    va: 0x1433434a0
+    signature: "void(void* level, void* updateInfo)"
+    confidence: inferred
+  - name: GameWorld_update
+    va: 0x1432e8bb0
+    signature: "void(void* world, void* updateInfo)"
+    confidence: inferred
+  - name: ClientLevel_update
+    va: 0x1431a11d0
+    signature: "void(void* level, void* updateInfo)"
+    confidence: inferred
