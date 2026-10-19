@@ -52,6 +52,14 @@ target_link_libraries(gn_offline_dump PRIVATE gn_reflect)
 
 # --- generated headers (tools/gen, from db/annotations and your own dump) --------------------------
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+# The generator needs PyYAML in the Python CMake found (which is not always the `python` on PATH).
+execute_process(COMMAND ${Python3_EXECUTABLE} -c "import yaml" RESULT_VARIABLE GN_PYYAML_MISSING
+                OUTPUT_QUIET ERROR_QUIET)
+if(GN_PYYAML_MISSING)
+  message(FATAL_ERROR "GridNode needs PyYAML in ${Python3_EXECUTABLE}:\n"
+                      "  \"${Python3_EXECUTABLE}\" -m pip install pyyaml\n"
+                      "or point CMake at a Python that has it: -DPython3_EXECUTABLE=<path to python.exe>")
+endif()
 set(GN_GEN_DIR ${CMAKE_BINARY_DIR}/generated)
 file(GLOB GN_ANNOTATION_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/db/annotations/*.yaml)
 file(GLOB GN_GEN_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tools/gen/gridnode_gen/*.py)
