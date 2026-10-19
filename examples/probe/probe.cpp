@@ -499,12 +499,16 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        (void)before; // nothing runs by itself any more: F9, F10, F11
+        if (before < 5.f && t >= 5.f && g_watch <= 0) { // the input watch starts by itself (F-keys may not reach the game)
+            dumpRegistry();
+            g_watch = 30 * 12;
+            gn::log("input watch (12 s): press Space a few times, then Shift, Ctrl and E, a second apart");
+        }
         static bool was12 = false;
         const bool down12 = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
         if (down12 && !was12 && g_watch <= 0) {
             dumpRegistry();
-            g_watch = 30 * 8; // about 8 s
+            g_watch = 30 * 12;
             gn::log("input watch: press Space a few times (and Shift, Ctrl, E) in the next 8 s");
         }
         was12 = down12;
