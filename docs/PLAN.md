@@ -350,8 +350,8 @@ Each milestone ends with something testable in game.
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** 🔄 | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
-| **M4.5** | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
-| **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8) and MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
+| **M4.5** 🔄 | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
+| **M5** | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
@@ -385,6 +385,22 @@ Findings (Ghidra):
   object through the engine's own registration (no hook), filtered by category; mods receive the
   message with its fields readable by name.
 
+### M4.5 notes
+
+- Built: settings from the `SettingsManager` by-type map (`settings_find`, an inspector Settings
+  tab with every field editable), the console run with `trusted = 1` on the client thread
+  (`console_run`, a Console window listing all static commands and bound settings fields),
+  online warnings (settings classes and command groups; the menu asks before changing them, the
+  log records every change a mod makes). API version 3.
+- FrostbiteGen's CVars list (user data, not committed) matches the reflection: 135 settings
+  classes, 3,431 fields, of which the console binds 141 (flag 0x2000). The rest are what players
+  cannot reach; GridNode writes them directly.
+- Setting a value through the console clones the settings object and hands the copy to the
+  binding (`ConsoleFieldBinding_getOrSet`), so the manager may hold a new object afterwards;
+  GridNode looks objects up again instead of keeping pointers. Direct writes change the live
+  object; a system that copied a value at startup will not see them.
+- MECMP is not ported to GridNode for now (decided 2026-10-19); it stays as it is.
+
 ### M4 notes
 
 - Built: world API (local client and server characters, transforms, the game's teleport,
@@ -399,8 +415,7 @@ Findings (Ghidra):
   server characters seen being created whose player is human. The log says which one was used.
 - `engine.hpp` now has `meta::classMembers` / `meta::structMembers` tables, which the inspector
   shows next to the reflected fields.
-- Ray casts are left for M5 (MECMP's port needs them and brings its checked use of
-  `RaycastQuery_execute`).
+- Ray casts are left for M5 (MECMP's checked use of `RaycastQuery_execute` is the reference).
 
 ### M3 notes
 

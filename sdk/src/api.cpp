@@ -178,6 +178,41 @@ int apiUiCheck(const char* mod, const char* v, size_t io, size_t style, size_t v
 }
 int apiUiMenuOpen() { return ui::menuOpen() ? 1 : 0; }
 
+void* apiSettingsFind(const char* name) { return name ? reinterpret_cast<void*>(settingsFind(name)) : nullptr; }
+uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsList().size()); }
+int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
+    const std::vector<SettingsEntry> l = settingsList();
+    if (i >= l.size()) return GN_ERR_ARGUMENT;
+    if (type) *type = G(l[i].type);
+    if (object) *object = reinterpret_cast<void*>(l[i].object);
+    return GN_OK;
+}
+const char* apiOnlineWarning(const char* name) { return name ? onlineWarning(name) : nullptr; }
+
+int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* user) {
+    if (!line) return GN_ERR_ARGUMENT;
+    if (!consoleAvailable()) return GN_ERR_UNAVAILABLE;
+    const std::string who = mod ? mod : "?";
+    const std::string l = line;
+    if (const char* why = commandOnline(l)) GN_LOG("[%s] console: \"%s\" (online: %s)", who.c_str(), l.c_str(), why);
+    client().post([who, l, fn, user] {
+        const std::string out = consoleRun(l);
+        if (fn) fn(out.c_str(), user);
+    });
+    return GN_OK;
+}
+uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommands().size()); }
+int apiConsoleCommandAt(uint32_t i, gn_command* out) {
+    const std::vector<ConsoleCommand> c = consoleCommands();
+    if (i >= c.size() || !out) return GN_ERR_ARGUMENT;
+    out->name = c[i].name;
+    out->group = c[i].group;
+    out->full = c[i].full;
+    out->help = c[i].help;
+    out->flags = (c[i].setting ? GN_COMMAND_SETTING : 0u) | (c[i].online ? GN_COMMAND_ONLINE : 0u);
+    return GN_OK;
+}
+
 } // namespace
 
 const gn_api* api() {
@@ -222,6 +257,13 @@ const gn_api* api() {
         a.ui_allocators = apiUiAllocators;
         a.ui_check = apiUiCheck;
         a.ui_menu_open = apiUiMenuOpen;
+        a.settings_find = apiSettingsFind;
+        a.settings_count = apiSettingsCount;
+        a.settings_at = apiSettingsAt;
+        a.online_warning = apiOnlineWarning;
+        a.console_run = apiConsoleRun;
+        a.console_command_count = apiConsoleCommandCount;
+        a.console_command_at = apiConsoleCommandAt;
         return a;
     }();
     return &table;

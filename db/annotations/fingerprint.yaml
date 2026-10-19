@@ -27,4 +27,9 @@ fingerprint:
     - { at: CameraViewManagers_load, bytes: "48 8B 0D 4E 39 27 FF" }
     - { at: RbTree_increment, skip: 3, bytes: "48 8B 09 48 85 C9 74 19", note: "after mov rax,rcx" }
     - { at: ServerCharacterEntity_teleport, skip: 24, bytes: "48 89 CF 48 8D 99 10 04 00 00", required: false, note: "Optional: only teleport depends on it (mov rdi,rcx; lea rbx,[rcx+410h])." }
+    - { at: SettingsManager_load, bytes: "48 8B 0D AD 7B 94 FF", required: false, note: "Optional: only settings depend on it (mov rcx,[SettingsManager])." }
+    - { at: Console_executeCommand, bytes: "55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 E0 FC FF FF", required: false, note: "Optional: only the console depends on it." }
+    - { at: ConsoleRegistry_getStaticCommands, bytes: "48 83 EC 28 8B 05 56 09 8E FF A8 01", required: false }
+    - { at: ConsoleRegistry_getBoundCommands, bytes: "48 83 EC 28 8B 05 06 1D 8E FF A8 01", required: false }
+    - { at: EngineAllocator_free, bytes: "48 8B 09 E9 A8 2B 01 00", required: false, note: "mov rcx,[rcx]; jmp" }
     - { at: RaycastQuery_execute, bytes: "48 89 E0 55 56 57 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC D0 01 00 00", required: false, note: "Optional: only ray casts depend on it." }

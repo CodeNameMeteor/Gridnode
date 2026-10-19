@@ -1,0 +1,101 @@
+# The engine's console and settings: commands, bound settings fields, the settings manager.
+defaults: { confidence: inferred, sources: [gridnode] }
+
+globals:
+  - name: SettingsManager
+    va: 0x142374a88
+    type: "SettingsManager*"
+    confidence: confirmed
+    note: Read by every settings getter (e.g. 0x142a2ceb0 for GameTimeSettings).
+
+code:
+  - name: SettingsManager_load
+    va: 0x142a2ced4
+    note: "mov rcx,[SettingsManager] in the GameTimeSettings getter (0x142a2ceb0)."
+
+structs:
+  - name: SettingsManager
+    size: 0xb8
+    opaque: true
+    note: >-
+      Settings objects (DataContainers of the 135 settings classes) by name and by type.
+      SettingsManager_registerSettingsImpl fills both maps and binds the object's console-flagged
+      fields (flag 0x2000) as commands only when asked to (its 4th argument).
+    members:
+      - { offset: 0x40, name: lock, type: "void*", note: "Taken by getByType and registerSettings." }
+      - { offset: 0x70, name: byName, type: "void*", note: "Hash map name -> {object +8, ?, console binding +0x18}." }
+      - { offset: 0xa8, name: byTypeBuckets, type: "SettingsTypeNode**", note: "Hash map runtime TypeInfo* -> object: bucket = (ti & 0xffffffff) % bucketCount; bucket[bucketCount] is the end sentinel." }
+      - { offset: 0xb0, name: byTypeBucketCount, type: u32 }
+  - name: SettingsTypeNode
+    size: 0x18
+    members:
+      - { offset: 0x00, name: type, type: "void*", note: "Runtime TypeInfo*" }
+      - { offset: 0x08, name: object, type: "void*", note: "The settings object. The console replaces it with a changed copy when it sets a value." }
+      - { offset: 0x10, name: next, type: "SettingsTypeNode*" }
+  - name: EngineString
+    size: 0x20
+    note: The string Console_executeCommand returns.
+    members:
+      - { offset: 0x00, name: begin, type: "char*" }
+      - { offset: 0x08, name: end, type: "char*" }
+      - { offset: 0x10, name: capacity, type: "char*" }
+      - { offset: 0x18, name: allocator, type: "void*" }
+  - name: StaticCommand
+    size: 0x20
+    note: Entries of ConsoleRegistry_getStaticCommands (a vector of pointers to these). Full name group.name.
+    members:
+      - { offset: 0x00, name: fn, type: "void*" }
+      - { offset: 0x08, name: name, type: "const char*" }
+      - { offset: 0x10, name: group, type: "const char*" }
+      - { offset: 0x18, name: arguments, type: "const char*", note: "Help text for the arguments; may be null." }
+  - name: BoundCommand
+    size: 0x28
+    note: Entries of ConsoleRegistry_getBoundCommands (a vector of these, inline). Settings fields with flag 0x2000.
+    members:
+      - { offset: 0x00, name: name, type: "const char*" }
+      - { offset: 0x08, name: group, type: "const char*" }
+      - { offset: 0x10, name: help, type: "const char*" }
+      - { offset: 0x18, name: context, type: "void*" }
+      - { offset: 0x20, name: fn, type: "void*" }
+
+functions:
+  - name: Console_executeCommand
+    va: 0x142a8a190
+    signature: "void(EngineString* result, const char* line, u8 trusted)"
+    confidence: confirmed
+    note: >-
+      trusted = 0 is the player's console: everything except enable / disable / select is refused
+      unless the platform switch is on. Config files run with trusted = 1 (0x142a2f5d0), which
+      skips that check. Normally runs on the game frame thread (updateGameFrame).
+  - name: ConsoleRegistry_getStaticCommands
+    va: 0x142a91fc0
+    signature: "void**()"
+    note: Returns the vector {begin, end, capacity} of StaticCommand pointers (lazily initialised).
+  - name: ConsoleRegistry_getBoundCommands
+    va: 0x142a92040
+    signature: "void**()"
+    note: Returns the vector {begin, end, capacity} of BoundCommand entries.
+  - name: ConsoleBinding_registerFieldsRecursive
+    va: 0x142a7e840
+    signature: "void(const char* group, void* type, void* binding, const char* prefix)"
+    note: Binds only fields with flag 0x2000 (141 of the 3,431 settings fields).
+  - name: ConsoleFieldBinding_getOrSet
+    va: 0x142a7e1e0
+    signature: "void(void* context)"
+    note: Get or set a bound field by string. Setting clones the settings object, writes the clone and hands it back to the binding (vtable +8), so the manager ends up holding the copy.
+  - name: SettingsManager_getByType
+    va: 0x142ab2290
+    signature: "void*(SettingsManager* manager, const void* typeInfo)"
+    confidence: confirmed
+    note: Takes the manager lock. 0x142ab21c0 is an identical copy.
+  - name: SettingsManager_registerSettingsImpl
+    va: 0x142ab0510
+    signature: "void*(SettingsManager* manager, const char* name, void* object, u8 bindToConsole, void* a5, void* type, u8 a7)"
+  - name: Console_runScriptFile
+    va: 0x142a2f5d0
+    signature: "void(void* path, u8 now)"
+    note: Runs a command file line by line (# comments) with trusted = 1; now = 0 queues the lines for updateGameFrame (0x142a28c80 runs the queue, with sleep and afterloading).
+  - name: EngineAllocator_free
+    va: 0x142a65670
+    signature: "void(void* allocator, void* p, i32 size)"
+    note: "How callers free an EngineString: free(&s.allocator, s.begin, capacity - begin) when capacity - begin > 1."

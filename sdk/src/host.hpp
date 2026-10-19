@@ -58,6 +58,28 @@ std::string levelName();
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s
 
+// Settings and console (settings.cpp).
+struct SettingsEntry {
+    const reflect::Type* type = nullptr;
+    uintptr_t object = 0;
+    const char* online = nullptr; // why it touches online play, or null
+};
+struct ConsoleCommand {
+    const char* name = "";
+    const char* group = "";
+    const char* help = "";
+    const char* full = ""; // group.name
+    bool setting = false;  // a bound settings field
+    const char* online = nullptr;
+};
+std::vector<SettingsEntry> settingsList(); // cached for a second
+uintptr_t settingsFind(const std::string& className);
+const char* onlineWarning(const std::string& name); // settings class or console group
+const char* commandOnline(const std::string& line);
+bool consoleAvailable();
+std::string consoleRun(const std::string& line); // client thread
+std::vector<ConsoleCommand> consoleCommands();
+
 // Overlay (ui.cpp).
 namespace ui {
 struct Settings {
@@ -81,6 +103,7 @@ int keyFromName(const std::string& name);
 namespace inspector {
 void start();
 void draw(bool* open);
+void drawConsole(bool* open); // the console window (render thread)
 } // namespace inspector
 
 } // namespace gn::host

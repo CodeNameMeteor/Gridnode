@@ -32,4 +32,8 @@ struct Result {
 // Compares known TypeInfo addresses, vtable slots and the first bytes of functions GridNode calls.
 Result check();
 
+// One fingerprint code entry by name (db/annotations/fingerprint.yaml), e.g. "Console_executeCommand":
+// true if the bytes are as expected. Features behind optional fingerprints check this first.
+bool codeMatches(const char* what);
+
 } // namespace gn::build

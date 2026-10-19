@@ -110,4 +110,13 @@ Result check() {
     return r;
 }
 
+bool codeMatches(const char* what) {
+    for (const fp::Code& c : fp::code) {
+        if (strcmp(c.what, what) != 0) continue;
+        uint8_t got[32] = {};
+        return mem::read(mem::rva(c.at) + c.skip, got, c.count) && memcmp(got, c.bytes, c.count) == 0;
+    }
+    return false; // no such fingerprint: treat as not checked
+}
+
 } // namespace gn::build

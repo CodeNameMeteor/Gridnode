@@ -351,6 +351,7 @@ bool init(IDXGISwapChain* sc) {
 
 // The GridNode window (while the menu is open).
 bool g_showInspector = false;
+bool g_showConsole = false;
 bool g_showMetrics = false;
 
 void drawMain() {
@@ -364,6 +365,7 @@ void drawMain() {
         ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
         ImGui::Separator();
         if (g_settings.inspector) ImGui::Checkbox("Inspector", &g_showInspector);
+        ImGui::Checkbox("Console", &g_showConsole);
         ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
@@ -383,6 +385,7 @@ void drawMain() {
     }
     ImGui::End();
     if (g_showInspector && g_settings.inspector) inspector::draw(&g_showInspector);
+    if (g_showConsole) inspector::drawConsole(&g_showConsole);
     if (g_showMetrics) ImGui::ShowMetricsWindow(&g_showMetrics);
 }
 

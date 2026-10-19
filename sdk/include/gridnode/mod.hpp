@@ -203,6 +203,31 @@ template <class F> bool onLevel(F f) {
                           p) == GN_OK;
 }
 
+// ---- settings and console --------------------------------------------------------------------
+// A settings object by class name, e.g. gn::settings("GameTimeSettings").set("TimeScale", 0.5f).
+// Look it up each time: the console can replace it with a changed copy.
+inline Object settings(const char* className) {
+    void* p = api().settings_find(className);
+    return p ? Object(p, Type::find(className)) : Object();
+}
+// Why a settings class or console group touches online play, or null.
+inline const char* onlineWarning(const char* classOrGroup) { return api().online_warning(classOrGroup); }
+
+// Runs a console line (every command works). fn(std::string output) runs on the client thread.
+inline bool console(const char* line) { return api().console_run(modName(), line, nullptr, nullptr) == GN_OK; }
+template <class F> bool console(const char* line, F f) {
+    auto* p = new std::function<void(const char*)>(std::move(f));
+    const int r = api().console_run(modName(), line,
+                                    [](const char* out, void* u) {
+                                        auto* fn = static_cast<std::function<void(const char*)>*>(u);
+                                        (*fn)(out);
+                                        delete fn;
+                                    },
+                                    p);
+    if (r != GN_OK) delete p;
+    return r == GN_OK;
+}
+
 } // namespace gn
 
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.

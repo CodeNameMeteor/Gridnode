@@ -175,6 +175,29 @@ GridNode menu → **Inspector**:
   pointers and arrays, and edits booleans, numbers and enums. Edits are written on the client
   thread. Remember that data objects (`...Data`) are shared by every entity made from them.
 
+## Settings and console
+
+```cpp
+gn::settings("GameTimeSettings").set("TimeScale", 0.5f);   // any field of any settings class
+gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thread
+```
+
+- `gn::settings(className)`: the engine's settings object (135 classes, all 3,431 fields, not
+  only the 141 the player's console exposes). Look it up each time you use it: setting a value
+  through the console replaces the object with a changed copy.
+- `gn::console(line[, fn])`: runs a console line the way the engine runs its config files, so every
+  registered command works. It runs on the client thread; `fn` receives the output there.
+- Some settings are only read when the game starts or a level loads: changing them later may do
+  nothing until then.
+- Online play: settings classes and command groups that reach the network or EA's services
+  (`Network`, `Online`, `Origin`, `Server`, `PamSocialPlay`, `PamStats`, ...) are marked.
+  `gn::onlineWarning(name)` says why. GridNode does not block them, but logs every change a mod
+  makes to them; the menu asks before changing them. Keep them alone unless you know what they do:
+  they can affect Beat Revival and your online profile.
+
+In game: GridNode menu → **Console** (every command, with search; online ones in orange ask for
+confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
+
 ## Logging
 
 `gn::log(fmt, ...)` writes one line to `gridnode.log`, prefixed with the mod's name.

@@ -16,6 +16,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -140,6 +141,11 @@ void open(uintptr_t ptr, const Type* type, std::string label) {
     g_at = int(g_history.size()) - 1;
 }
 
+// The object on screen belongs to a settings class that touches online play and its changes have
+// not been allowed: values are shown, not editable (render thread).
+bool g_readOnly = false;
+std::set<const Type*> g_allowed; // online settings classes the user allowed changes to
+
 template <class T> void postWrite(uintptr_t at, T v) {
     client().post([at, v] { mem::write(at, v); });
 }
@@ -169,6 +175,7 @@ void value(uintptr_t at, const Type* ft, const char* id, int depth) {
     ImGui::PushID(id);
     switch (ft->category) {
     case Category::Primitive: {
+        ImGui::BeginDisabled(g_readOnly);
         const std::string& n = ft->name;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
         if (n == "Boolean") {
@@ -206,9 +213,11 @@ void value(uintptr_t at, const Type* ft, const char* id, int depth) {
             mem::read(at, &raw, std::min<size_t>(ft->size ? ft->size : 8, 8));
             ImGui::TextDisabled("0x%llx", static_cast<unsigned long long>(raw));
         }
+        ImGui::EndDisabled();
         break;
     }
     case Category::Enum: {
+        ImGui::BeginDisabled(g_readOnly);
         int32_t v = mem::readOr<int32_t>(at);
         const char* name = nullptr;
         for (const auto& ev : ft->values)
@@ -219,6 +228,7 @@ void value(uintptr_t at, const Type* ft, const char* id, int depth) {
                 if (ImGui::Selectable(ev.name.c_str(), ev.value == v)) postWrite<int32_t>(at, ev.value);
             ImGui::EndCombo();
         }
+        ImGui::EndDisabled();
         break;
     }
     case Category::Class:
@@ -400,6 +410,27 @@ void objectView() {
         if (entityTransform(reinterpret_cast<void*>(cur.ptr), x))
             ImGui::Text("Position %.2f, %.2f, %.2f", x.trans[0], x.trans[1], x.trans[2]);
     }
+    // Settings that touch online play: shown, editable only once allowed.
+    g_readOnly = false;
+    if (type) {
+        if (const char* why = onlineWarning(type->name)) {
+            const bool allowed = g_allowed.count(type) != 0;
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.65f, 0.3f, 1.f));
+            ImGui::TextWrapped("Online: %s. Changing these can affect online play, EA services or your online profile "
+                               "(Beat Revival included).", why);
+            ImGui::PopStyleColor();
+            bool on = allowed;
+            if (ImGui::Checkbox("Allow changes to this class", &on)) {
+                if (on) {
+                    g_allowed.insert(type);
+                    GN_LOG("inspector: changes allowed to %s (online: %s)", type->name.c_str(), why);
+                } else {
+                    g_allowed.erase(type);
+                }
+            }
+            g_readOnly = !on;
+        }
+    }
     ImGui::Separator();
     if (ImGui::BeginChild("obj", ImVec2(0, 0))) {
         if (type) fieldsOf(cur.ptr, type, 0);
@@ -538,6 +569,32 @@ void typesTab() {
     ImGui::EndChild();
 }
 
+void settingsTab() {
+    static char filter[96] = "";
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##sf", "filter settings", filter, sizeof(filter));
+    const std::vector<SettingsEntry> list = settingsList();
+    if (list.empty()) {
+        ImGui::TextDisabled("No settings objects found (not registered yet, or the settings manager is unreadable).");
+        return;
+    }
+    ImGui::TextDisabled("%llu settings objects; select one to see and edit all of its fields",
+                        static_cast<unsigned long long>(list.size()));
+    if (ImGui::BeginChild("settings", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        for (const SettingsEntry& e : list) {
+            if (!ciContains(e.type->name, filter)) continue;
+            const bool sel = g_at >= 0 && g_history[size_t(g_at)].ptr == e.object;
+            if (e.online) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.65f, 0.3f, 1.f));
+            if (ImGui::Selectable(e.type->name.c_str(), sel)) open(e.object, e.type, e.type->name);
+            if (e.online) {
+                ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Online: %s", e.online);
+            }
+        }
+    }
+    ImGui::EndChild();
+}
+
 void shortcutsTab() {
     void* cc = localClientCharacter();
     void* sc = localServerCharacter();
@@ -564,7 +621,147 @@ void shortcutsTab() {
     ImGui::TextDisabled("Addresses are runtime addresses in the game process.");
 }
 
+// ---- console ----------------------------------------------------------------------------------
+std::mutex g_conM;
+std::vector<std::string> g_conLines; // guarded by g_conM: the scrollback
+bool g_conScroll = false;            // guarded by g_conM
+
+void conPrint(const std::string& text) {
+    std::lock_guard<std::mutex> lock(g_conM);
+    size_t start = 0;
+    while (start <= text.size()) {
+        const size_t nl = text.find('\n', start);
+        const std::string line = text.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+        if (!line.empty() || nl != std::string::npos) g_conLines.push_back(line);
+        if (nl == std::string::npos) break;
+        start = nl + 1;
+    }
+    if (g_conLines.size() > 2000) g_conLines.erase(g_conLines.begin(), g_conLines.begin() + 500);
+    g_conScroll = true;
+}
+
+void conRun(const std::string& line) {
+    conPrint("> " + line);
+    client().post([line] { conPrint(consoleRun(line)); });
+}
+
 } // namespace
+
+void drawConsole(bool* open) {
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 44, ImGui::GetFontSize() * 26), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Console###gridnode_console", open)) {
+        ImGui::End();
+        return;
+    }
+    if (!consoleAvailable()) {
+        ImGui::TextDisabled("The console functions are not as expected in this build; the console is off.");
+        ImGui::End();
+        return;
+    }
+    static char input[512] = "";
+    static std::string pending;   // an online command waiting for confirmation
+    static const char* pendingWhy = nullptr;
+    static bool askConfirm = false; // open the confirmation (from anywhere in the window)
+    static char filter[96] = "";
+    const std::vector<ConsoleCommand> cmds = consoleCommands();
+
+    if (ImGui::BeginTable("con", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("out", ImGuiTableColumnFlags_WidthStretch, 0.62f);
+        ImGui::TableSetupColumn("cmds", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        const float inputH = ImGui::GetFrameHeightWithSpacing() * 1.2f;
+        if (ImGui::BeginChild("scroll", ImVec2(0, -inputH), ImGuiChildFlags_Borders)) {
+            std::lock_guard<std::mutex> lock(g_conM);
+            ImGuiListClipper clip;
+            clip.Begin(int(g_conLines.size()));
+            while (clip.Step())
+                for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+                    const std::string& l = g_conLines[size_t(i)];
+                    if (!l.empty() && l[0] == '>') ImGui::TextColored(ImVec4(1.f, 0.6f, 0.45f, 1.f), "%s", l.c_str());
+                    else ImGui::TextUnformatted(l.c_str());
+                }
+            if (g_conScroll) {
+                ImGui::SetScrollHereY(1.f);
+                g_conScroll = false;
+            }
+        }
+        ImGui::EndChild();
+        ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
+        bool run = ImGui::InputTextWithHint("##in", "command (e.g. list)", input, sizeof(input),
+                                            ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        run |= ImGui::Button("Run");
+        if (run && input[0]) {
+            const std::string line = input;
+            if (const char* why = commandOnline(line)) {
+                pending = line;
+                pendingWhy = why;
+                askConfirm = true;
+            } else {
+                conRun(line);
+            }
+            input[0] = 0;
+            ImGui::SetKeyboardFocusHere(-1);
+        }
+        if (askConfirm) {
+            ImGui::OpenPopup("Online command");
+            askConfirm = false;
+        }
+        if (ImGui::BeginPopupModal("Online command", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("%s", pending.c_str());
+            ImGui::TextColored(ImVec4(1.f, 0.65f, 0.3f, 1.f), "Online: %s.", pendingWhy ? pendingWhy : "");
+            ImGui::TextWrapped("This can affect online play, EA services or your online profile (Beat Revival included).");
+            if (ImGui::Button("Run it")) {
+                GN_LOG("console: online command run from the menu: %s", pending.c_str());
+                conRun(pending);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##cf", "filter commands", filter, sizeof(filter));
+        ImGui::TextDisabled("%llu commands. Click to fill in, double-click to run.", static_cast<unsigned long long>(cmds.size()));
+        if (ImGui::BeginChild("cmds", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+            std::vector<const ConsoleCommand*> shown;
+            for (const ConsoleCommand& c : cmds)
+                if (ciContains(c.full, filter)) shown.push_back(&c);
+            ImGuiListClipper clip;
+            clip.Begin(int(shown.size()));
+            while (clip.Step())
+                for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+                    const ConsoleCommand& c = *shown[size_t(i)];
+                    ImGui::PushID(i);
+                    if (c.online) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.65f, 0.3f, 1.f));
+                    else if (c.setting) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.f, 1.f));
+                    if (ImGui::Selectable(c.full, false, ImGuiSelectableFlags_AllowDoubleClick)) {
+                        snprintf(input, sizeof(input), "%s%s", c.full, c.setting ? " " : "");
+                        if (ImGui::IsMouseDoubleClicked(0)) {
+                            if (c.online) {
+                                pending = c.full;
+                                pendingWhy = c.online;
+                                askConfirm = true;
+                            } else {
+                                conRun(c.full);
+                            }
+                        }
+                    }
+                    if (c.online || c.setting) ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered() && (*c.help || c.online))
+                        ImGui::SetTooltip("%s%s%s%s", c.setting ? "Setting. " : "", c.help, c.online ? "\nOnline: " : "",
+                                          c.online ? c.online : "");
+                    ImGui::PopID();
+                }
+        }
+        ImGui::EndChild();
+        ImGui::EndTable();
+    }
+    ImGui::End();
+}
 
 void start() {
     if (g_started) return;
@@ -595,6 +792,10 @@ void draw(bool* open) {
                 }
                 if (ImGui::BeginTabItem("Types")) {
                     typesTab();
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Settings")) {
+                    settingsTab();
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Shortcuts")) {

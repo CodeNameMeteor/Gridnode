@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 2 /* 2: world, levels and UI (M4) */
+#define GN_API_VERSION 3 /* 2: world, levels and UI (M4); 3: settings and console (M4.5) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -53,6 +53,19 @@ typedef void (*gn_level_fn)(const char* level, int loaded, void* user);
 /* Every frame on the render thread, between Dear ImGui's NewFrame and Render. menu_open: the
  * GridNode menu (INSERT) is open, so the mouse and keyboard belong to the overlay. */
 typedef void (*gn_ui_fn)(int menu_open, void* user);
+
+/* The console's output for one command line (client thread). */
+typedef void (*gn_console_fn)(const char* output, void* user);
+
+#define GN_COMMAND_SETTING 1u /* a settings field bound to the console (Group.Field [value]) */
+#define GN_COMMAND_ONLINE 2u  /* touches online play or EA services: see online_warning */
+typedef struct gn_command {
+    const char* name;
+    const char* group;
+    const char* full;   /* group.name, as typed in the console */
+    const char* help;   /* may be empty */
+    uint32_t flags;     /* GN_COMMAND_* */
+} gn_command;
 
 /* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
  * 16-byte aligned, as the engine reads it with aligned loads. */
@@ -177,6 +190,28 @@ typedef struct gn_api {
     int (*ui_check)(const char* mod, const char* imgui_version, size_t io, size_t style, size_t vec2, size_t vec4,
                     size_t draw_vert, size_t draw_idx);
     int (*ui_menu_open)(void);
+
+    /* ==== GN_API_VERSION 3 ==================================================================== */
+
+    /* ---- settings ------------------------------------------------------------------------------
+     * The engine's settings objects (GameTimeSettings, WindowSettings, ... 135 classes), all of
+     * their reflected fields, not only those the console exposes. Read and write them with the
+     * reflection functions above. The console may replace an object with a changed copy, so look
+     * it up again rather than keeping the pointer. */
+    void* (*settings_find)(const char* class_name);     /* null if the engine has none */
+    uint32_t (*settings_count)(void);
+    int (*settings_at)(uint32_t index, const gn_type** type, void** object);
+    /* Why changing this settings class or console group could affect online play / EA services,
+     * or null. GridNode never blocks these: it logs every change mods make to them. */
+    const char* (*online_warning)(const char* class_or_group);
+
+    /* ---- console -------------------------------------------------------------------------------
+     * Runs one console line as the engine runs its config files, so every command works, also the
+     * ones the player's console refuses. Queued to the client thread; fn (may be null) gets the
+     * output there. GN_ERR_UNAVAILABLE if the console functions are not as expected. */
+    int (*console_run)(const char* mod, const char* line, gn_console_fn fn, void* user);
+    uint32_t (*console_command_count)(void);
+    int (*console_command_at)(uint32_t index, gn_command* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
