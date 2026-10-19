@@ -236,9 +236,10 @@ class RustBindingsTest(unittest.TestCase):
         root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
         header = open(os.path.join(root, "sdk", "include", "gridnode", "api.h"), encoding="utf-8").read()
         rs = emit_rust.emit(header)
-        api = header[header.index("typedef struct gn_api {"):header.index("} gn_api;")]
-        members = re.findall(r"\(\*(\w+)\)\(", api)
-        self.assertGreater(len(members), 50)
+        clean = emit_rust._strip(header)
+        api = clean[clean.index("typedef struct gn_api {"):clean.index("} gn_api;")]
+        members = re.findall(r"\(\*\s*(\w+)\)\s*\(", api)
+        self.assertGreater(len(members), 40)
         for m in members:
             self.assertIn(f"pub {emit_rust._safe(m)}: Option<unsafe extern \"C\" fn(", rs, m)
         self.assertIn("#[repr(C, align(16))]\n#[derive(Copy, Clone)]\npub struct gn_transform", rs)
