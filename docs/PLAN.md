@@ -351,7 +351,7 @@ Each milestone ends with something testable in game.
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
 | **M4** ✅ | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M4.5** ✅ | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
-| **M5** 🔄 | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision (deferred to after M6) | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
+| **M5** ✅ | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision (deferred to after M6) | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
@@ -407,7 +407,7 @@ Findings (Ghidra):
   checks from the C compiler; a safe layer for log, ticks, tasks, reflection, entities, world, ray
   casts, settings, console, messages) and `examples/hello-rust`. Tested here through the C ABI with
   a fake host (tests/rust_mod_harness.c, also in CI); the Windows build comes from CI. The overlay
-  stays C++ only for now.
+  stays C++ only for now. Tested in game with the CI-built DLL (hello-rust: ticks, ray cast, messages).
 - Lua: decided 2026-10-19 to revisit after M6 (docs), once the API has settled; the user decides
   then whether it is worth adding. It would be one more way to write mods on top of the same C API:
   C, C++, Rust and any language that can export a C function keep working for bigger mods.

@@ -6,7 +6,7 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M4.5 done** (settings and console). Next: M5, the message system. GridNode loads mods from `mods/` and gives them reflection by name
+> Status: **M5 done**: messages, ray casts and Rust bindings on top of M4 (world API, overlay, inspector) and M4.5 (settings, console). Next: M6. GridNode loads mods from `mods/` and gives them reflection by name
 > (9,988 engine types), entity-creation callbacks, server and client ticks, chained pointer hooks,
 > a world API (local characters, transforms, teleport, components, level events) and a Dear ImGui
 > overlay mods can draw into. INSERT opens the GridNode menu and its inspector. See

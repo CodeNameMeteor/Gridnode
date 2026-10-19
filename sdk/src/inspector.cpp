@@ -651,6 +651,56 @@ void record(int manager, const uint8_t* msg, uint32_t category, uint32_t typeId,
     if (g_recs.size() > kMaxRecs) g_recs.erase(g_recs.begin(), g_recs.begin() + kMaxRecs / 4);
 }
 
+// A copied message, 8 bytes per row: the header named, then each slot as hex, two u32, two f32,
+// and a link when it points at an object GridNode knows (it opens in the object view, right).
+// Only the copy is shown: nothing past its end (that would be unrelated, changing memory).
+void messageBytes(const std::vector<uint8_t>& b) {
+    const ImGuiTableFlags tf = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit;
+    if (!ImGui::BeginTable("bytes", 5, tf)) return;
+    ImGui::TableSetupColumn("Offset");
+    ImGui::TableSetupColumn("Bytes");
+    ImGui::TableSetupColumn("as u32");
+    ImGui::TableSetupColumn("as f32");
+    ImGui::TableSetupColumn("Meaning", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+    for (size_t off = 0; off + 8 <= b.size(); off += 8) {
+        uint64_t q;
+        uint32_t u[2];
+        float f[2];
+        memcpy(&q, &b[off], 8);
+        memcpy(u, &b[off], 8);
+        memcpy(f, &b[off], 8);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextDisabled("+%02llx", static_cast<unsigned long long>(off));
+        ImGui::TableNextColumn();
+        char hex[32];
+        snprintf(hex, sizeof(hex), "%02x %02x %02x %02x %02x %02x %02x %02x", b[off], b[off + 1], b[off + 2], b[off + 3], b[off + 4],
+                 b[off + 5], b[off + 6], b[off + 7]);
+        ImGui::TextUnformatted(hex);
+        ImGui::TableNextColumn();
+        ImGui::Text("%u  %u", u[0], u[1]);
+        ImGui::TableNextColumn();
+        auto fl = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e7f && (v == 0.f || std::fabs(v) > 1e-6f); };
+        if (fl(f[0]) || fl(f[1])) ImGui::Text("%.3g  %.3g", f[0], f[1]);
+        else ImGui::TextDisabled("-");
+        ImGui::TableNextColumn();
+        if (off == 0) ImGui::TextDisabled("header: the message's vtable");
+        else if (off == 8) ImGui::TextDisabled("header: category id, type id");
+        else if (off == 0x10) ImGui::TextDisabled("header: realm");
+        else if (off < 0x30) ImGui::TextDisabled("header");
+        else if (q >= 0x10000 && !(q & 7)) {
+            if (const Type* t = typeOf(static_cast<uintptr_t>(q))) {
+                char id[16];
+                snprintf(id, sizeof(id), "mb%llx", static_cast<unsigned long long>(off));
+                pointerLink(static_cast<uintptr_t>(q), t, id);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Opens in the object view (right)");
+            }
+        }
+    }
+    ImGui::EndTable();
+}
+
 const char* managerName(int m) { return m == 0 ? "core" : m == 1 ? "client" : "server"; }
 
 std::string messageName(uint32_t typeId) {
@@ -759,8 +809,9 @@ void messagesTab() {
                     ImGui::TextDisabled("category %s, %s message manager, realm 0x%x, %.3f s; %llu bytes copied when it was sent",
                                         messageCategoryName(selRec.category).c_str(), managerName(selRec.manager), selRec.realm,
                                         (selRec.tick - g_recStart) / 1000.0, static_cast<unsigned long long>(selRec.bytes.size()));
-                    ImGui::TextDisabled("+0x00..0x2f is the message header; the members after it are not reflected. Pointers to known objects are links.");
-                    if (!selRec.bytes.empty()) hexView(reinterpret_cast<uintptr_t>(selRec.bytes.data()));
+                    ImGui::TextDisabled("This is a copy taken when the message was sent: it does not change. Members after the header are not "
+                                        "reflected; a link opens the object it points to (still live) in the object view.");
+                    messageBytes(selRec.bytes);
                 }
                 ImGui::EndChild();
             }
