@@ -400,6 +400,10 @@ Findings (Ghidra):
   on all three managers, again after level changes, recording turned on at different points; hello
   sees ServerPlayer messages and the local character from ClientCharacterLocalPlayerSetMessage
   (+0x30 is the character: confirmed).
+- Ray casts: `raycast` (API 5) with MECMP's checked call into `RaycastQuery_execute` and its
+  physics chain; the trainer shows the height above the ground with it. Waiting for the in-game test.
+- Lua (still to decide) would be one more way to write mods, on top of the same C API: C, C++,
+  Rust and any language that can export a C function keep working for bigger mods.
 - Message members after the 0x30-byte header are not reflected; annotating the useful ones is
   ongoing work. Entity-to-component messages (`Entity_sendMessageToComponents`) bypass the managers.
 

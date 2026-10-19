@@ -217,6 +217,8 @@ int apiOnMessage(const char* mod, const char* name, gn_message_fn fn, void* user
     return name ? onMessage(mod ? mod : "?", name, fn, user) : GN_ERR_ARGUMENT;
 }
 
+int apiRaycast(const float* from, const float* to, float radius, gn_ray_hit* out) { return raycast(from, to, radius, out); }
+
 } // namespace
 
 const gn_api* api() {
@@ -269,6 +271,7 @@ const gn_api* api() {
         a.console_command_count = apiConsoleCommandCount;
         a.console_command_at = apiConsoleCommandAt;
         a.on_message = apiOnMessage;
+        a.raycast = apiRaycast;
         return a;
     }();
     return &table;

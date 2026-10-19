@@ -116,6 +116,7 @@ std::string level = gn::levelName();
 | `transformOf` / `positionOf` | any | `false` if the entity has no readable transform. |
 | `teleport` | server | `GN_ERR_THREAD` elsewhere. Clears velocity and replicates to the client like the game's teleport triggers. |
 | `component` | the entity's realm | Characters only (client or server). |
+| `raycast(from, to, hit[, radius])` | server | The game's ray caster (what its ray cast entities use); a radius sweeps a sphere. The first hit can be the character the ray starts in. |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
 
 Entity pointers are only good while the entity lives (most until their level ends). Keep them

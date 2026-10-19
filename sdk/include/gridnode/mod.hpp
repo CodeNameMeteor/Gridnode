@@ -228,6 +228,14 @@ template <class F> bool console(const char* line, F f) {
     return r == GN_OK;
 }
 
+// ---- ray casts --------------------------------------------------------------------------------
+using RayHit = gn_ray_hit;
+// The nearest hit between from and to (radius > 0: a sphere sweep). Server thread only.
+inline bool raycast(const Vec3& from, const Vec3& to, RayHit& hit, float radius = 0.f) {
+    const float a[3] = {from.x, from.y, from.z}, b[3] = {to.x, to.y, to.z};
+    return api().raycast(a, b, radius, &hit) == GN_OK;
+}
+
 // ---- messages ---------------------------------------------------------------------------------
 // fn(const void* message, const gn_message_info& info) for every message of a type
 // ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"), on the sender's thread.

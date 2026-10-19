@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -300,6 +301,73 @@ void* getComponent(void* character, const gn_type* type) {
         return nullptr;
     const auto* t = reinterpret_cast<const reflect::Type*>(type);
     return reinterpret_cast<void* (*)(void*, const void*)>(fn)(character, reinterpret_cast<const void*>(t->ti));
+}
+
+// ---- ray casts (the call the game's ray cast entities make; MECMP's checked use) -----------------
+namespace {
+struct alignas(16) RayQuery {
+    float from[4] = {0, 0, 0, 0};
+    float to[4] = {0, 0, 0, 0};
+    float radius = 0.f;
+    uint8_t flags[3] = {};
+    uint8_t pad[9] = {};
+};
+static_assert(sizeof(RayQuery) == e::st::RaycastQuery::size, "RaycastQuery layout");
+struct alignas(16) RayResult {
+    float position[4] = {0, 0, 0, 0};
+    float normal[4] = {0, 0, 0, 0};
+    uint32_t id = 0;
+    float fraction = 0.f;
+    float distance = 0.f;
+    uint8_t hit = 0;
+    uint8_t pad[0x13] = {};
+};
+static_assert(sizeof(RayResult) == e::st::RaycastResult::size, "RaycastResult layout");
+
+// The server world's physics, as the game's ray cast update finds it; every object on the way is
+// checked, so a world that is going away gives "unavailable" instead of a fault.
+uintptr_t serverPhysics(uintptr_t world) {
+    namespace c = e::constant;
+    const uintptr_t manager = mem::readOr<uintptr_t>(world + c::World_PhysicsManager);
+    const uintptr_t holder = manager ? mem::readOr<uintptr_t>(manager + c::PhysicsManager_Holder) : 0;
+    const uintptr_t inner = holder ? mem::readOr<uintptr_t>(holder) : 0;
+    const uintptr_t phys = inner ? mem::readOr<uintptr_t>(inner + c::PhysicsHolder_Physics) : 0;
+    if (!phys || !mem::inImage(mem::readOr<uintptr_t>(phys))) return 0;
+    const uintptr_t havok = mem::readOr<uintptr_t>(phys + c::Physics_HavokWorld);
+    const uintptr_t filterOwner = havok ? mem::readOr<uintptr_t>(havok + c::HavokWorld_FilterOwner) : 0;
+    if (!filterOwner || !mem::readOr<uintptr_t>(filterOwner + c::FilterOwner_Filter)) return 0;
+    return phys;
+}
+} // namespace
+
+int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out) {
+    if (!from || !to || !finite(from, 3) || !finite(to, 3) || !std::isfinite(radius) || radius < 0.f || radius > 100.f)
+        return GN_ERR_ARGUMENT;
+    if (!isServerThread()) return GN_ERR_THREAD;
+    static const bool ok = [] {
+        const bool b = build::codeMatches("RaycastQuery_execute");
+        if (!b) GN_LOG("world: RaycastQuery_execute does not look as expected; ray casts are off");
+        return b;
+    }();
+    if (!ok) return GN_ERR_UNAVAILABLE;
+    const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
+    const uintptr_t phys = world ? serverPhysics(world) : 0;
+    if (!phys) return GN_ERR_UNAVAILABLE;
+    RayQuery q;
+    RayResult r;
+    memcpy(q.from, from, 12);
+    memcpy(q.to, to, 12);
+    q.radius = radius;
+    using Fn = void (*)(const RayQuery*, void* world, void* physics, RayResult*);
+    reinterpret_cast<Fn>(mem::rva(e::function::RaycastQuery_execute))(&q, reinterpret_cast<void*>(world), reinterpret_cast<void*>(phys), &r);
+    if (r.hit != 1 || !finite(r.position, 3)) return GN_ERR_NOT_FOUND;
+    if (out) {
+        memcpy(out->position, r.position, 12);
+        memcpy(out->normal, r.normal, 12);
+        out->distance = r.distance;
+        out->fraction = r.fraction;
+    }
+    return GN_OK;
 }
 
 std::string levelName() {

@@ -3,12 +3,14 @@
 //   - Save and load positions (5 slots), from the window or with hotkeys (F5 save, F6 load, F7 /
 //     F8 previous / next slot). Loading uses the game's own teleport on the server thread.
 //   - A speed and position readout, in the window and as a small HUD that stays on screen.
+//   - Height above the ground, from a ray cast straight down (server thread).
 //   - Slots are forgotten when the level changes.
 //
 // Threads, which every GridNode mod has to keep apart:
 //   render thread  gn::ui::onDraw    draws; never calls the game; reads state under g_m
 //   client thread  gn::onClientTick  reads Faith's position, measures speed, polls the hotkeys
 //   server thread  gn::runOnServer   saves and teleports (the server owns the character)
+//                  gn::onServerTick  casts a ray down for the height above the ground
 //   GridNode       gn::onLevel       clears the slots
 #include <windows.h>
 
@@ -41,6 +43,7 @@ std::atomic<bool> g_hud{true};
 std::atomic<float> g_speed{0}, g_speedH{0}, g_topSpeed{0};
 std::atomic<float> g_px{0}, g_py{0}, g_pz{0};
 std::atomic<bool> g_haveFaith{false};
+std::atomic<float> g_ground{-1.f}; // metres from Faith's feet to the ground below (-1: none found)
 
 void status(const char* fmt, ...) {
     char buf[256];
@@ -152,6 +155,29 @@ void clientTick(float dt) {
     g_haveFaith = true;
 }
 
+// Server thread, every tick: how high above the ground Faith is (a ray straight down). The first
+// hit can be her own capsule, so a hit above her feet casts again from just below it.
+void serverTick(float) {
+    void* faith = gn::localServerCharacter();
+    gn::Vec3 p;
+    if (!faith || !gn::positionOf(faith, p)) {
+        g_ground = -1.f;
+        return;
+    }
+    gn::Vec3 from{p.x, p.y + 0.5f, p.z};
+    const gn::Vec3 to{p.x, p.y - 200.f, p.z};
+    for (int i = 0; i < 3; ++i) {
+        gn::RayHit hit;
+        if (!gn::raycast(from, to, hit)) break;
+        if (hit.position[1] <= p.y + 0.05f) {
+            g_ground = p.y - hit.position[1];
+            return;
+        }
+        from.y = hit.position[1] - 0.05f; // her own capsule (or something above her feet): look below it
+    }
+    g_ground = -1.f;
+}
+
 // Render thread.
 void hud() {
     if (!g_hud || !g_haveFaith) return;
@@ -162,6 +188,7 @@ void hud() {
                                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("##trainer_hud", nullptr, f)) {
         ImGui::Text("%5.1f m/s", g_speedH.load());
+        if (g_ground.load() > 0.3f) ImGui::Text("%5.1f m up", g_ground.load());
         ImGui::TextDisabled("slot %d  F5 save  F6 load", g_slot.load() + 1);
     }
     ImGui::End();
@@ -180,6 +207,8 @@ void window() {
         ImGui::Text("Top speed %.1f m/s", g_topSpeed.load());
         ImGui::SameLine();
         if (ImGui::SmallButton("reset")) g_topSpeed = 0.f;
+        if (g_ground.load() >= 0.f) ImGui::Text("Ground    %.2f m below (ray cast)", g_ground.load());
+        else ImGui::TextDisabled("Ground    none within 200 m");
     } else {
         ImGui::TextDisabled("No character (in a menu or loading).");
     }
@@ -229,6 +258,7 @@ GN_MOD("trainer") {
         }))
         gn::log("no overlay (disabled in gridnode.ini, or another Dear ImGui): hotkeys only");
     gn::onClientTick(clientTick);
+    gn::onServerTick(serverTick);
     gn::onLevel([](const char* level, bool loaded) {
         if (!loaded) return;
         std::lock_guard<std::mutex> lock(g_m);

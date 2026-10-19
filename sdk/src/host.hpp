@@ -55,6 +55,7 @@ bool entityTransform(const void* entity, gn_transform& out);
 int teleport(void* serverCharacter, const gn_transform* to);
 void* getComponent(void* character, const gn_type* type);
 std::string levelName();
+int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out); // server thread
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s
 

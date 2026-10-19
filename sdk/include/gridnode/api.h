@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 4 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages (M5) */
+#define GN_API_VERSION 5 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -81,6 +81,14 @@ typedef struct gn_message_info {
 /* Called on the thread that sends the message (usually its realm's game thread). The message is
  * only valid during the call. */
 typedef void (*gn_message_fn)(const void* message, const gn_message_info* info, void* user);
+
+/* The nearest thing a ray cast hit. */
+typedef struct gn_ray_hit {
+    float position[3];
+    float normal[3];   /* the surface's normal at the hit */
+    float distance;    /* metres from the start of the ray */
+    float fraction;    /* 0..1 along the ray */
+} gn_ray_hit;
 
 /* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
  * 16-byte aligned, as the engine reads it with aligned loads. */
@@ -236,6 +244,15 @@ typedef struct gn_api {
      * type ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"). Listening only
      * reads: it is safe for every category, online ones included. */
     int (*on_message)(const char* mod, const char* type_or_category, gn_message_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 5 ==================================================================== */
+
+    /* ---- ray casts -----------------------------------------------------------------------------
+     * Casts from..to through the server world's physics, as the game's own ray cast entities do.
+     * radius > 0 sweeps a sphere. GN_OK: hit (out filled), GN_ERR_NOT_FOUND: nothing in the way,
+     * GN_ERR_THREAD: not on the server thread (use run_on_server / on_server_tick),
+     * GN_ERR_UNAVAILABLE: no level (or the caster is not as expected). */
+    int (*raycast)(const float from[3], const float to[3], float radius, gn_ray_hit* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
