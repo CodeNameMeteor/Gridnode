@@ -1,0 +1,4 @@
+# Link the C runtime statically on Windows, so the mod needs no Visual C++ redistributable
+# (gridnode.dll does the same).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
