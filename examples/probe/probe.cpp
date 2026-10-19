@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "gridnode/mod.hpp"
@@ -76,7 +78,10 @@ std::string describe(uint64_t p) {
     return s + where(p);
 }
 
+std::vector<std::pair<std::string, uint64_t>> g_targets; // chain name -> final address (this run)
+
 void run(const char* why) {
+    g_targets.clear();
     g_base = gn::api().module_base();
     gn::log("==== probe (%s): client Faith %p, server Faith %p", why, gn::localClientCharacter(), gn::localServerCharacter());
     for (const Chain& c : kChains) {
@@ -103,9 +108,108 @@ void run(const char* why) {
             memcpy(&f, &u, 4);
             snprintf(b, sizeof(b), "final %llx = %u / %g", static_cast<unsigned long long>(inImage(addr) ? va(addr) : addr), u, f);
             line += b + where(addr);
+            g_targets.push_back({c.name, addr});
         }
         gn::log("%s", line.c_str());
     }
+}
+
+// ---- which of Faith's members are objects, and of what type -------------------------------------
+void members(const char* what, uint64_t obj, uint32_t size) {
+    if (!obj) return;
+    std::vector<uint64_t> q(size / 8);
+    if (gn::api().read(reinterpret_cast<const void*>(obj), q.data(), size) != GN_OK) return;
+    std::string line;
+    for (size_t i = 0; i < q.size(); ++i) {
+        uint64_t vt = 0;
+        if (q[i] < 0x10000 || inImage(q[i]) || !gn::read(reinterpret_cast<const void*>(q[i]), vt) || !inImage(vt)) continue;
+        gn::Type t = gn::Type::of(reinterpret_cast<void*>(q[i]));
+        char b[128];
+        snprintf(b, sizeof(b), " +%llx:%s(vt %llx)", static_cast<unsigned long long>(i * 8), t ? t.name() : "?",
+                 static_cast<unsigned long long>(va(vt)));
+        line += b;
+    }
+    gn::log("members of %s %llx:%s", what, static_cast<unsigned long long>(obj), line.c_str());
+}
+
+// ---- pointer paths from Faith to each chain's final address ----------------------------------------
+// Breadth first over heap pointers, from client and server Faith, scanning kSpan bytes of every node.
+// A target is reached when it lies inside a node's span: the path is the offsets taken.
+constexpr uint32_t kSpan = 0x800;
+constexpr int kDepth = 5;
+constexpr size_t kMaxNodes = 400000;
+
+struct Node {
+    uint64_t addr;
+    int parent; // index into the node list, -1 for a root
+    uint32_t off; // offset in the parent the pointer was read from
+    int depth;
+    int root;
+};
+
+bool heapPtr(uint64_t p) { return p > 0x100000 && p < 0x7fffffff0000ull && !(p & 7) && !inImage(p); }
+
+void pathfind(std::vector<std::pair<std::string, uint64_t>> targets, std::vector<std::pair<std::string, uint64_t>> roots) {
+    std::vector<Node> nodes;
+    std::unordered_set<uint64_t> seen;
+    std::vector<bool> found(targets.size(), false);
+    for (size_t r = 0; r < roots.size(); ++r)
+        if (roots[r].second) {
+            nodes.push_back({roots[r].second, -1, 0, 0, static_cast<int>(r)});
+            seen.insert(roots[r].second);
+        }
+    std::vector<uint64_t> buf(kSpan / 8);
+    size_t remaining = targets.size();
+    for (size_t i = 0; i < nodes.size() && remaining; ++i) {
+        const Node n = nodes[i];
+        // targets inside this node
+        for (size_t t = 0; t < targets.size(); ++t) {
+            if (found[t] || targets[t].second < n.addr || targets[t].second >= n.addr + kSpan) continue;
+            found[t] = true;
+            --remaining;
+            std::string path;
+            char b[48];
+            snprintf(b, sizeof(b), "+%llx", static_cast<unsigned long long>(targets[t].second - n.addr));
+            path = b;
+            for (int k = static_cast<int>(i); nodes[k].parent >= 0; k = nodes[k].parent) {
+                gn::Type ty = gn::Type::of(reinterpret_cast<void*>(nodes[k].addr));
+                snprintf(b, sizeof(b), "+%x->%s", nodes[k].off, ty ? ty.name() : "");
+                path = std::string(b) + " " + path;
+            }
+            gn::log("path %s: %s %s  (depth %d)", targets[t].first.c_str(), roots[n.root].first.c_str(), path.c_str(), n.depth);
+        }
+        if (n.depth >= kDepth || nodes.size() >= kMaxNodes) continue;
+        // Read what can be read (a span can run off the end of an allocation into a free page).
+        uint32_t span = kSpan;
+        while (span >= 0x40 && gn::api().read(reinterpret_cast<const void*>(n.addr), buf.data(), span) != GN_OK) span /= 2;
+        if (span < 0x40) continue;
+        for (uint32_t k = 0; k < span / 8; ++k) {
+            const uint64_t p = buf[k];
+            if (!heapPtr(p) || !seen.insert(p).second) continue;
+            nodes.push_back({p, static_cast<int>(i), k * 8, n.depth + 1, n.root});
+        }
+    }
+    for (size_t t = 0; t < targets.size(); ++t)
+        if (!found[t]) gn::log("path %s: not found within depth %d (%llu nodes)", targets[t].first.c_str(), kDepth,
+                               static_cast<unsigned long long>(nodes.size()));
+    gn::log("==== pathfind done (%llu nodes)", static_cast<unsigned long long>(nodes.size()));
+}
+
+void deep(const char* why) {
+    run(why);
+    void* cf = gn::localClientCharacter();
+    void* sf = gn::localServerCharacter();
+    members("clientFaith", reinterpret_cast<uint64_t>(cf), 0x400);
+    members("serverFaith", reinterpret_cast<uint64_t>(sf), 0x1600);
+    uint64_t mv = 0;
+    if (cf && gn::read(static_cast<char*>(cf) + 0xb0, mv)) members("clientFaith+0xb0", mv, 0x200);
+    std::vector<std::pair<std::string, uint64_t>> targets;
+    for (auto& t : g_targets)
+        if (!inImage(t.second) && t.first != std::string("playerX")) targets.push_back(t);
+    std::vector<std::pair<std::string, uint64_t>> roots = {{"clientFaith", reinterpret_cast<uint64_t>(cf)},
+                                                           {"serverFaith", reinterpret_cast<uint64_t>(sf)}};
+    // In the background: it reads a lot; reads are fault-safe, and the game keeps running.
+    std::thread([targets, roots] { pathfind(targets, roots); }).detach();
 }
 
 } // namespace
@@ -114,7 +218,7 @@ GN_MOD("probe") {
     gn::onClientTick([](float dt) {
         static bool was = false;
         const bool down = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
-        if (down && !was) run("F9");
+        if (down && !was) deep("F9");
         was = down;
         static float t = -1.f; // seconds since Faith appeared (-1: not yet / not this level)
         if (!gn::localClientCharacter()) {
@@ -124,7 +228,7 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        if (before < 5.f && t >= 5.f) run("5 s after Faith appeared");
+        if (before < 5.f && t >= 5.f) deep("5 s after Faith appeared");
     });
     gn::log("ready: F9 walks MEC_Trainer's pointer chains");
     return true;
