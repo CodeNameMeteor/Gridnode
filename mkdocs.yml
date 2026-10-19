@@ -47,4 +47,6 @@ nav:
   - Formats:
       - annotations.md
       - dump-format.md
+  - Plans:
+      - assets-assessment.md
   # @generated-nav
