@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -128,8 +129,12 @@ void members(const char* what, uint64_t obj, uint32_t size) {
         snprintf(b, sizeof(b), " +%llx:%s(vt %llx)", static_cast<unsigned long long>(i * 8), t ? t.name() : "?",
                  static_cast<unsigned long long>(va(vt)));
         line += b;
+        if (line.size() > 700) {
+            gn::log("members of %s %llx:%s", what, static_cast<unsigned long long>(obj), line.c_str());
+            line.clear();
+        }
     }
-    gn::log("members of %s %llx:%s", what, static_cast<unsigned long long>(obj), line.c_str());
+    if (!line.empty()) gn::log("members of %s %llx:%s", what, static_cast<unsigned long long>(obj), line.c_str());
 }
 
 // ---- pointer paths from Faith to each chain's final address ----------------------------------------
@@ -203,7 +208,7 @@ void deep(const char* why) {
     void* sf = gn::localServerCharacter();
     vtable("clientFaith", cf);
     vtable("serverFaith", sf);
-    members("clientFaith", reinterpret_cast<uint64_t>(cf), 0x400);
+    members("clientFaith", reinterpret_cast<uint64_t>(cf), 0x800);
     members("serverFaith", reinterpret_cast<uint64_t>(sf), 0x1600);
     uint64_t mv = 0;
     if (cf && gn::read(static_cast<char*>(cf) + 0xb0, mv)) members("clientFaith+0xb0", mv, 0x200);
@@ -212,6 +217,7 @@ void deep(const char* why) {
         if (!inImage(t.second) && t.first != std::string("playerX")) targets.push_back(t);
     std::vector<std::pair<std::string, uint64_t>> roots = {{"clientFaith", reinterpret_cast<uint64_t>(cf)},
                                                            {"serverFaith", reinterpret_cast<uint64_t>(sf)}};
+    if (strcmp(why, "F9") != 0) return; // the path search only on F9
     // In the background: it reads a lot; reads are fault-safe, and the game keeps running.
     std::thread([targets, roots] { pathfind(targets, roots); }).detach();
 }
@@ -230,6 +236,10 @@ void vtable(const char* what, void* obj) {
         char b[40];
         snprintf(b, sizeof(b), " %x:%llx", n * 8, static_cast<unsigned long long>(va(fn)));
         line += b;
+        if (line.size() > 800) {
+            gn::log("vtable of %s:%s", what, line.c_str());
+            line.clear();
+        }
     }
     gn::log("vtable of %s (vt %llx, %d slots):%s", what, static_cast<unsigned long long>(va(vt)), n, line.c_str());
 }
