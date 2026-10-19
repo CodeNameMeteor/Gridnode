@@ -21,6 +21,12 @@ jobs:
         run: |
           python3 -m unittest discover -s tools/gen/tests -t tools/gen -v
           python3 tools/gen/gridnode.py validate --strict
+      - name: Rust bindings are up to date, and a Rust mod works through the C ABI
+        run: |
+          python3 tools/gen/gridnode.py rust --check
+          cargo build --release --manifest-path examples/hello-rust/Cargo.toml
+          gcc -std=c11 -Wall -Wextra -Werror -Isdk/include tests/rust_mod_harness.c -o rust_mod_harness -ldl
+          ./rust_mod_harness examples/hello-rust/target/release/libhello_rust.so
       - name: CMake build and ctest (Linux, fixture dump)
         run: |
           cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release \
@@ -77,3 +83,11 @@ jobs:
             Select-String -Path ci.log -Pattern "error|failed|FAILED|Error" | Select-Object -First 40 | ForEach-Object { "::error::$($_.Line.Trim())" }
           }
           exit $code
+      - name: Rust example mod (MSVC x64)
+        shell: pwsh
+        run: cargo build --release --manifest-path examples/hello-rust/Cargo.toml --target x86_64-pc-windows-msvc
+      - name: Upload the Rust example mod
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello-rust-x64-msvc
+          path: examples/hello-rust/target/x86_64-pc-windows-msvc/release/hello_rust.dll

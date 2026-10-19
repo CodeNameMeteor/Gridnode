@@ -226,3 +226,19 @@ class NameHashTest(unittest.TestCase):
         self.assertEqual(name_hash("ControllableTransform"), 0x7C46EA68)  # research.md's "Transform" id
         self.assertEqual(parse_hash("-2024647575"), 0x87525469)       # Frosty shows ids signed
         self.assertEqual(parse_hash("0x35bc69ab"), 0x35BC69AB)
+
+
+class RustBindingsTest(unittest.TestCase):
+    def test_every_api_member_is_bound(self):
+        import os
+        import re
+        from gridnode_gen import emit_rust
+        root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        header = open(os.path.join(root, "sdk", "include", "gridnode", "api.h"), encoding="utf-8").read()
+        rs = emit_rust.emit(header)
+        api = header[header.index("typedef struct gn_api {"):header.index("} gn_api;")]
+        members = re.findall(r"\(\*(\w+)\)\(", api)
+        self.assertGreater(len(members), 50)
+        for m in members:
+            self.assertIn(f"pub {emit_rust._safe(m)}: Option<unsafe extern \"C\" fn(", rs, m)
+        self.assertIn("#[repr(C, align(16))]\n#[derive(Copy, Clone)]\npub struct gn_transform", rs)

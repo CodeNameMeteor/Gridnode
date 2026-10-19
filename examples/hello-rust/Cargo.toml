@@ -1,0 +1,16 @@
+[package]
+name = "hello_rust"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+gridnode = { path = "../../bindings/rust/gridnode" }
+
+[profile.release]
+panic = "abort"

@@ -29,3 +29,7 @@ bin/
 .vs/
 CMakeUserPresets.json
 __pycache__/
+
+# Rust
+target/
+Cargo.lock

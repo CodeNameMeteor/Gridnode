@@ -24,6 +24,7 @@ The full plan is in [docs/PLAN.md](docs/PLAN.md).
 | `tools/gen/` | `gridnode.py`: validate the database, generate headers, set up your dump ([docs/annotations.md](docs/annotations.md)) |
 | `tools/offline_dump/` | `gn_offline_dump`: the walker run on a PE memory dump, for testing |
 | `examples/` | Example mods: `hello` (reflection, ticks, creation), `trainer` (save/load position, speed, an ImGui window) |
+| `bindings/rust/gridnode` | Rust bindings (generated from `api.h`) and a safe layer; `examples/hello-rust` |
 | `third_party/imgui` | Dear ImGui 1.91.9 (MIT, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 | `tests/` | Host-side tests |
 | `docs/` | Plan and reference docs |

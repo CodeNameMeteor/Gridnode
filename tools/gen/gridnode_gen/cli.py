@@ -6,6 +6,7 @@
   gridnode setup --dump FILE                  install your dump and generate types.hpp
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
+  gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
@@ -111,6 +112,10 @@ def _main(argv=None) -> int:
     c.add_argument("ghidra")
     c.add_argument("--strict", action="store_true")
 
+    rs = sub.add_parser("rust", help="write the Rust bindings from sdk/include/gridnode/api.h")
+    rs.add_argument("--out", default=os.path.join(ROOT, "bindings", "rust", "gridnode", "src", "sys.rs"))
+    rs.add_argument("--check", action="store_true", help="fail if the file is not up to date (CI)")
+
     h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
     h.add_argument("names", nargs="+")
 
@@ -122,6 +127,22 @@ def _main(argv=None) -> int:
     u.add_argument("--unknown", action="store_true", help="print only the hashes that were not found")
 
     a = ap.parse_args(argv)
+
+    if a.cmd == "rust":
+        from . import emit_rust
+        with open(os.path.join(ROOT, "sdk", "include", "gridnode", "api.h"), encoding="utf-8") as f:
+            text = emit_rust.emit(f.read())
+        if a.check:
+            try:
+                with open(a.out, encoding="utf-8") as f:
+                    same = f.read() == text
+            except FileNotFoundError:
+                same = False
+            print(f"{a.out}: {'up to date' if same else 'OUT OF DATE (run gridnode.py rust)'}")
+            return 0 if same else 1
+        changed = _write(a.out, text)
+        print(f"sys.rs {'written' if changed else 'unchanged'}: {a.out}")
+        return 0
 
     if a.cmd == "hash":
         from .hashes import name_hash

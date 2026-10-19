@@ -21,6 +21,25 @@ in `build/mods/`), or in your own project: add `sdk/include` and the generated
 pointers handed to `gn_mod_load` (`gridnode/api.h`), so a mod can be built with MSVC, MinGW or
 clang, independently of how `gridnode.dll` was built.
 
+## Rust
+
+`bindings/rust/gridnode` is a Rust crate over the same C API (`src/sys.rs` is generated from
+`api.h` by `python tools/gen/gridnode.py rust`; CI checks it is up to date). A Rust mod is a
+`cdylib`:
+
+```rust
+gridnode::gn_mod!("my-mod", || {
+    gridnode::log!("hello from Rust");
+    gridnode::on_client_tick(|dt| { /* client game thread */ });
+    gridnode::on_message("ServerPlayer", |_msg, info| gridnode::log!("{}", info.type_name));
+    true
+});
+```
+
+Build it for Windows (`cargo build --release --target x86_64-pc-windows-msvc`, or
+`x86_64-pc-windows-gnu`) and put the DLL in `mods/`. `examples/hello-rust` is a complete mod; CI
+builds it (artifact `hello-rust-x64-msvc`). The overlay (Dear ImGui) is C++ only for now.
+
 ## Threads
 
 The game updates its server and client worlds on two separate threads, even in single player.
