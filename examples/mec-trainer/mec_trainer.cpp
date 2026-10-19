@@ -171,7 +171,7 @@ void bhopCheck(const char* tick) {
     }
     if (!g_bhopArmed && !g_bhopAuto) return;
     if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
-    if (m.state != 8 || dist < 0.f || dist > g_bhopTolerance) return;
+    if (m.state != 8 || dist < 0.f || dist > std::max(0.04f, g_bhopTolerance.load())) return;
     if (GetTickCount() - g_lastHop < 250) return; // one jump per window
     g_lastHop = GetTickCount();
     gn::jump(); // the key goes down now; the game reads it in its next frame
@@ -276,8 +276,9 @@ void clientTick(float) {
     }
     bhopCheck("client");
 
-    // No stumble: a fall only counts from where Faith is now.
-    if (g_noStumble && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
+    // No stumble (and god mode: falls are deaths in MEC, not damage): a fall only counts from where
+    // Faith is now.
+    if ((g_noStumble || g_god) && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
         gn::Movement w{};
         w.last_ground_y = p.y;
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
@@ -406,7 +407,10 @@ void trainerTab() {
     if (ImGui::Checkbox("Auto", &v)) g_bhopAuto = v;
     float tol = g_bhopTolerance;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-    if (ImGui::SliderFloat("Ground tolerance (m)", &tol, 0.f, 0.5f, "%.2f")) g_bhopTolerance = tol;
+    if (ImGui::SliderFloat("Ground tolerance (m)", &tol, 0.04f, 0.5f, "%.2f")) g_bhopTolerance = tol;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How far above the ground still counts as on it. Standing, the ray reads about 0.02 m\n"
+                          "(her position sits just above the collision), so 0 would never fire. 0.10 works.");
     ImGui::TextDisabled("state %d, ground %.2f m, hops %d", g_state.load(), g_groundDist.load(), g_bhops.load());
     ImGui::SeparatorText("Position");
     if (ImGui::Button("Save  [4]")) savePosition();
