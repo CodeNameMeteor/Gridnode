@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -20,7 +21,20 @@ std::string narrow(const std::wstring& w) {
     return s;
 }
 
+std::mutex g_modsM;
+std::vector<ModInfo> g_mods; // guarded by g_modsM
+
+void record(const std::string& file, bool loaded, int result) {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    g_mods.push_back({file, loaded, result});
+}
+
 } // namespace
+
+std::vector<ModInfo> modList() {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    return g_mods;
+}
 
 void loadMods(const std::wstring& folder) {
     std::vector<std::wstring> files;
@@ -57,8 +71,10 @@ void loadMods(const std::wstring& folder) {
         const int r = load(api());
         if (r == GN_OK) {
             ++loaded;
+            record(name, true, r);
             GN_LOG("mods: %s loaded", name.c_str());
         } else {
+            record(name, false, r);
             GN_LOG("mods: %s returned %d from gn_mod_load", name.c_str(), r);
         }
     }

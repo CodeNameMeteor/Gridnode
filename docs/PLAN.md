@@ -349,13 +349,30 @@ Each milestone ends with something testable in game.
 | **M1** ✅ | Loader (proxy + injector), `gn::mem`, `gn::build`, and `gridnode-dump` (runtime TypeInfo walk → JSON) | Done: in game the build check passes and the dump matches the Ghidra dump on all 9,988 types (`compare_dumps.py --strict`), identical to the offline dump of the Scylla image. |
 | **M2** ✅ | Database + generator: annotation schema; annotations for everything in MECMP `engine.h` and `fingerprint.cpp`; `gridnode setup`; dumper fixes from §5.1 | Done: `types.hpp` from the real dump compiles (GCC, MinGW) with all 5,626 static_asserts; all 111 `engine.h` values reproduced from the database (`tools/gen/mecmp_coverage.py`); all hooks, virtuals and fingerprint bytes verified against the game image (`gridnode.py verify-image`) |
 | **M3** ✅ | Core runtime: `reflect`, `hook`, `thread`, `mods/` folder; hello-world mod | Done in game: the hello mod logs every `PamClientCharacterEntity` created (with fields read by name from its data), Faith's position on the client tick, and server ticks (30 Hz) on the server thread |
-| **M4** | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
+| **M4** 🔄 | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M5** | MECMP on GridNode; C ABI; Rust bindings crate (generated); Lua decision | MECMP built on GridNode passes its own test checklist |
 | **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
+
+### M4 notes
+
+- Built: world API (local client and server characters, transforms, the game's teleport,
+  components, level name and events), the Dear ImGui overlay ported from MECMP (Present and
+  ResizeBuffers swapped in DXGI's vtable, virtual cursor from raw input, window messages queued
+  to the render thread), the mod UI API (`on_ui`; mods link GridNode's ImGui and share its context
+  and allocator, with a version and layout check), the inspector, and `examples/trainer`.
+  API version 2. Waiting for the in-game test.
+- Local server character: `MessageManager` +0x68 → server player manager, players at
+  +0x268/+0x270; a human player (+0x1398) whose character (+0x1478, confirmed in
+  `ServerTeleportEntity_teleportPlayer` 0x143391430) points back at it through +0x250. Fallback:
+  server characters seen being created whose player is human. The log says which one was used.
+- `engine.hpp` now has `meta::classMembers` / `meta::structMembers` tables, which the inspector
+  shows next to the reflected fields.
+- Ray casts are left for M5 (MECMP's port needs them and brings its checked use of
+  `RaycastQuery_execute`).
 
 ### M3 notes
 

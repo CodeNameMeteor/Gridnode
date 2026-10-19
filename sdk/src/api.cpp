@@ -153,6 +153,31 @@ int apiOnCreated(const char* mod, const char* className, gn_created_fn fn, void*
     return onCreated(mod ? mod : "?", className, fn, user);
 }
 
+void* apiLocalClientCharacter() { return localClientCharacter(); }
+void* apiLocalServerCharacter() { return localServerCharacter(); }
+int apiEntityTransform(const void* entity, gn_transform* out) {
+    return out && entityTransform(entity, *out) ? GN_OK : GN_ERR_ARGUMENT;
+}
+int apiTeleport(void* character, const gn_transform* to) { return teleport(character, to); }
+void* apiGetComponent(void* character, const gn_type* type) { return getComponent(character, type); }
+size_t apiLevelName(char* out, size_t size) {
+    const std::string n = levelName();
+    if (out && size) {
+        const size_t k = n.size() < size - 1 ? n.size() : size - 1;
+        memcpy(out, n.data(), k);
+        out[k] = 0;
+    }
+    return n.size();
+}
+int apiOnLevel(const char* mod, gn_level_fn fn, void* user) { return onLevel(mod ? mod : "?", fn, user); }
+int apiOnUi(const char* mod, gn_ui_fn fn, void* user) { return ui::onUi(mod ? mod : "?", fn, user); }
+void* apiUiContext() { return ui::context(); }
+void apiUiAllocators(void** a, void** f, void** u) { ui::allocators(a, f, u); }
+int apiUiCheck(const char* mod, const char* v, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx) {
+    return ui::check(mod, v, io, style, vec2, vec4, vert, idx);
+}
+int apiUiMenuOpen() { return ui::menuOpen() ? 1 : 0; }
+
 } // namespace
 
 const gn_api* api() {
@@ -185,6 +210,18 @@ const gn_api* api() {
         a.read = apiRead;
         a.write = apiWrite;
         a.on_created = apiOnCreated;
+        a.local_client_character = apiLocalClientCharacter;
+        a.local_server_character = apiLocalServerCharacter;
+        a.entity_transform = apiEntityTransform;
+        a.teleport = apiTeleport;
+        a.get_component = apiGetComponent;
+        a.level_name = apiLevelName;
+        a.on_level = apiOnLevel;
+        a.on_ui = apiOnUi;
+        a.ui_context = apiUiContext;
+        a.ui_allocators = apiUiAllocators;
+        a.ui_check = apiUiCheck;
+        a.ui_menu_open = apiUiMenuOpen;
         return a;
     }();
     return &table;

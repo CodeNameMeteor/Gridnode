@@ -107,5 +107,5 @@ globals:
     type: bool
   - name: MessageManager
     va: 0x14253d670
-    type: "void*"
+    type: "MessageManager*"
     note: +0x10 listener registry; +0x68 server player manager (players vector at +0x268/+0x270; player+0x1398 is-human).

@@ -105,6 +105,23 @@ def emit(db: Database) -> str:
         w(f"}} // namespace {s.name}\n")
     w("} // namespace st\n\n")
 
+    w("// ---- Member tables (for tools such as the in-game inspector) ---------------------------------\n")
+    w("// meta::classMembers: members of runtime classes (cls::), meta::structMembers: of structs (st::).\n")
+    w("namespace meta {\n")
+    w("struct Member { const char* owner; const char* name; uint32_t offset; const char* type; const char* note; };\n")
+    for table, items in (("classMembers", db.classes.values()), ("structMembers", db.structs.values())):
+        w(f"inline constexpr Member {table}[] = {{\n")
+        rows = 0
+        for c in sorted(items, key=lambda c: c.name):
+            for m in sorted(c.members, key=lambda m: m.offset):
+                note = " ".join((m.meta.note or "").split()) if m.meta is not None else ""
+                w(f"    {{{_cstr(c.name)}, {_cstr(m.name)}, {m.offset:#x}, {_cstr(str(m.type))}, {_cstr(note)}}},\n")
+                rows += 1
+        if not rows:
+            w("    {nullptr, nullptr, 0, nullptr, nullptr},\n")
+        w("};\n")
+    w("} // namespace meta\n\n")
+
     w("// ---- Property / event name hashes (djb2-xor) -------------------------------------------------\n")
     w("namespace hash {\n")
     props = {}

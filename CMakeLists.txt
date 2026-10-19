@@ -118,6 +118,21 @@ if(NOT WIN32)
   return() # everything below is the Windows runtime
 endif()
 
+# --- gn_imgui: Dear ImGui (third_party/imgui), for gridnode.dll and for mods that draw -------------
+# Mods link this same copy: gridnode/ui.hpp checks that the version and layout match GridNode's.
+add_library(gn_imgui STATIC
+  third_party/imgui/imgui.cpp
+  third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp
+  third_party/imgui/imgui_widgets.cpp
+)
+target_include_directories(gn_imgui PUBLIC third_party/imgui)
+if(MSVC)
+  target_compile_options(gn_imgui PRIVATE /W0)
+else()
+  target_compile_options(gn_imgui PRIVATE -w)
+endif()
+
 # --- gridnode.dll: the runtime loaded into the game ------------------------------------------------
 add_library(gridnode SHARED
   sdk/src/dllmain.cpp
@@ -129,9 +144,16 @@ add_library(gridnode SHARED
   sdk/src/ticks.cpp
   sdk/src/entities.cpp
   sdk/src/mods.cpp
+  sdk/src/world.cpp
+  sdk/src/ui.cpp
+  sdk/src/inspector.cpp
+  third_party/imgui/backends/imgui_impl_dx11.cpp
+  third_party/imgui/backends/imgui_impl_win32.cpp
 )
-target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src)
-target_link_libraries(gridnode PRIVATE gn_reflect gn_engine)
+set_source_files_properties(third_party/imgui/backends/imgui_impl_dx11.cpp third_party/imgui/backends/imgui_impl_win32.cpp
+                            PROPERTIES COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/W0,-w>")
+target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src third_party/imgui)
+target_link_libraries(gridnode PRIVATE gn_reflect gn_engine gn_imgui d3d11 dxgi d3dcompiler gdi32 dwmapi)
 set_target_properties(gridnode PROPERTIES OUTPUT_NAME "gridnode" PREFIX "")
 
 # --- gridnode_inject.exe: loads gridnode.dll into the running game (development) -------------------
@@ -155,4 +177,9 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_link_libraries(hello PRIVATE gn_engine)
   set_target_properties(hello PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(trainer SHARED examples/trainer/trainer.cpp)
+  target_include_directories(trainer PRIVATE sdk/include)
+  target_link_libraries(trainer PRIVATE gn_imgui)
+  set_target_properties(trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                           RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
 endif()

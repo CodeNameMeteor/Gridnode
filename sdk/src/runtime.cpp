@@ -44,11 +44,17 @@ std::string narrow(const std::wstring& w) {
 //   [mods]
 //   enabled=1
 //   folder=mods   ; relative to gridnode.dll, or absolute
+//   [ui]
+//   enabled=1     ; the Dear ImGui overlay (mods' windows need it)
+//   menu_key=INSERT
+//   scale=1.0
+//   inspector=1   ; the inspector (tracks every entity the game creates)
 struct Settings {
     std::wstring dumpMode = L"auto";
     std::wstring dumpFile;
     bool modsEnabled = true;
     std::wstring modsFolder;
+    host::ui::Settings ui;
 };
 
 Settings readSettings(const std::wstring& dir) {
@@ -68,6 +74,15 @@ Settings readSettings(const std::wstring& dir) {
     if (!modsAbsolute) mods = dir + mods;
     if (!mods.empty() && mods.back() != L'\\' && mods.back() != L'/') mods += L'\\';
     s.modsFolder = mods;
+    s.ui.enabled = GetPrivateProfileIntW(L"ui", L"enabled", 1, ini.c_str()) != 0;
+    s.ui.inspector = GetPrivateProfileIntW(L"ui", L"inspector", 1, ini.c_str()) != 0;
+    GetPrivateProfileStringW(L"ui", L"menu_key", L"INSERT", buf, MAX_PATH, ini.c_str());
+    const int key = host::ui::keyFromName(narrow(buf));
+    if (!key) GN_LOG("gridnode.ini: menu_key '%s' is not a key; INSERT opens the menu", narrow(buf).c_str());
+    s.ui.menuKey = key ? key : VK_INSERT;
+    GetPrivateProfileStringW(L"ui", L"scale", L"1.0", buf, MAX_PATH, ini.c_str());
+    s.ui.scale = static_cast<float>(_wtof(buf));
+    if (!(s.ui.scale > 0.f)) s.ui.scale = 1.f;
     return s;
 }
 
@@ -194,6 +209,10 @@ void run(HMODULE self) {
     const host::TickStatus ticks = host::installTicks();
     GN_LOG("ticks: server %s, client %s", ticks.server ? "hooked" : "UNAVAILABLE", ticks.client ? "hooked" : "UNAVAILABLE");
 
+    host::worldStart();
+    if (s.ui.enabled && s.ui.inspector) host::inspector::start();
+    host::ui::install(s.ui);
+
     if (s.modsEnabled) host::loadMods(s.modsFolder);
     else GN_LOG("mods: disabled in gridnode.ini");
 
@@ -204,8 +223,10 @@ void run(HMODULE self) {
     // rewrite this session's dump once the creator count has settled.
     size_t creators = dumpedCreators;
     DWORD changedAt = GetTickCount();
-    while (!g_stop) {
-        Sleep(1000);
+    for (unsigned i = 1; !g_stop; ++i) {
+        Sleep(100);
+        host::pollLevel();
+        if (i % 10) continue;
         host::refreshCreators();
         const size_t n = host::boundCreatorCount();
         if (n != creators) {

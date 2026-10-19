@@ -166,6 +166,43 @@ template <class F> bool onCreated(const char* className, F f) {
                             p) == GN_OK;
 }
 
+// ---- world ----------------------------------------------------------------------------------
+using Transform = gn_transform;
+
+struct Vec3 {
+    float x = 0, y = 0, z = 0;
+};
+
+// Faith on the client (PamClientCharacterEntity). On the client thread: now; elsewhere: as of the
+// last client tick. Null when there is none (menus, loading).
+inline void* localClientCharacter() { return api().local_client_character(); }
+// Faith on the server (ServerCharacterEntity), the one teleport() moves. Null when there is none.
+inline void* localServerCharacter() { return api().local_server_character(); }
+
+inline bool transformOf(const void* entity, Transform& out) { return api().entity_transform(entity, &out) == GN_OK; }
+inline bool positionOf(const void* entity, Vec3& out) {
+    Transform t;
+    if (!transformOf(entity, t)) return false;
+    out = {t.trans[0], t.trans[1], t.trans[2]};
+    return true;
+}
+// The game's own teleport. Server thread only (see runOnServer). Returns a GN_ result.
+inline int teleport(void* serverCharacter, const Transform& to) { return api().teleport(serverCharacter, &to); }
+inline void* component(void* character, const Type& type) { return api().get_component(character, type.get()); }
+
+inline std::string levelName() {
+    char buf[256];
+    api().level_name(buf, sizeof(buf));
+    return buf;
+}
+// fn(const char* level, bool loaded): a level started or ended (GridNode's own thread).
+template <class F> bool onLevel(F f) {
+    auto* p = detail::keep(std::function<void(const char*, bool)>(std::move(f)));
+    return api().on_level(modName(),
+                          [](const char* l, int loaded, void* u) { (*static_cast<std::function<void(const char*, bool)>*>(u))(l, loaded != 0); },
+                          p) == GN_OK;
+}
+
 } // namespace gn
 
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.

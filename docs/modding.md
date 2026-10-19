@@ -94,6 +94,87 @@ detour. Always call `original`. Hooks stay for the life of the process.
 A vtable hook affects every object of that class (and of subclasses that inherit the slot):
 filter inside the detour if you only care about some objects.
 
+## World
+
+```cpp
+void* faith = gn::localServerCharacter();    // ServerCharacterEntity (what teleport moves)
+void* faithC = gn::localClientCharacter();   // PamClientCharacterEntity
+gn::Vec3 p;
+gn::positionOf(faithC, p);                   // any spatial entity, any thread (fault tolerant)
+gn::Transform t;
+gn::transformOf(faith, t);                   // the full LinearTransform
+gn::runOnServer([=] { gn::teleport(faith, t); });  // the game's own teleport: server thread only
+void* rec = gn::component(faithC, gn::Type::find("PamClientReplayRecordingComponent"));
+gn::onLevel([](const char* level, bool loaded) { /* "Levels/SP/..." started or ended */ });
+std::string level = gn::levelName();
+```
+
+| Function | Thread | Notes |
+|---|---|---|
+| `localClientCharacter` | any | On the client thread it asks the game; elsewhere it is the value from the last client tick. |
+| `localServerCharacter` | any | Reads only: the server player manager, checked against the character's back pointer. |
+| `transformOf` / `positionOf` | any | `false` if the entity has no readable transform. |
+| `teleport` | server | `GN_ERR_THREAD` elsewhere. Clears velocity and replicates to the client like the game's teleport triggers. |
+| `component` | the entity's realm | Characters only (client or server). |
+| `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
+
+Entity pointers are only good while the entity lives (most until their level ends). Keep them
+in a per-level variable cleared by `onLevel`, or look them up again each time.
+
+## UI (Dear ImGui)
+
+GridNode draws a Dear ImGui overlay on the game. **INSERT** opens its menu: the GridNode window
+(level, mods, the inspector), and every mod's interactive windows. While the menu is open the
+mouse and keyboard belong to the overlay; key releases still reach the game.
+
+```cpp
+#include <gridnode/ui.hpp>   // includes imgui.h
+
+GN_MOD("my-mod") {
+    gn::ui::onDraw([](bool menuOpen) {
+        if (!menuOpen) return;            // or draw a HUD here (a window with ImGuiWindowFlags_NoInputs)
+        ImGui::Begin("My mod");
+        if (ImGui::Button("Teleport home")) gn::runOnServer([] { /* ... */ });
+        ImGui::End();
+    });
+    return true;
+}
+```
+
+- Link the `gn_imgui` CMake target: GridNode's own copy of Dear ImGui (`third_party/imgui`,
+  1.91.9). `ui.hpp` checks the version and data layout once; a mod built against another
+  ImGui gets no UI (logged) rather than a corrupted frame.
+- Callbacks run on the **render thread**, every frame. Never call engine functions there: post
+  work with `gn::runOnServer` / `gn::runOnClient` and share state with atomics or a mutex
+  (`examples/trainer` shows the pattern).
+- A mod that leaves a window open (a missing `End`) is cleaned up after its callback.
+- Window titles are global: prefix them with your mod's name if they could clash.
+
+`gridnode.ini`:
+
+```ini
+[ui]
+enabled=1        ; 0: no overlay (mods' onDraw returns false)
+menu_key=INSERT  ; INSERT, HOME, END, DELETE, PAGEUP, PAGEDOWN, PAUSE, F1..F12, NUM0..NUM9, a letter, or VK_xx
+scale=1.0        ; text size
+inspector=1      ; the inspector (tracks every entity the game creates)
+```
+
+MECMP also opens its menu with INSERT: if you run both, give GridNode another `menu_key`.
+
+### Inspector
+
+GridNode menu → **Inspector**:
+
+- **Entities**: every live entity created since GridNode started, by class, with positions.
+  (With the injector, entities created before injection are not listed; with `version.dll` all are.)
+- **Types**: all 9,988 reflected types, with fields, enum values, base classes, vtable and the
+  default instance.
+- **Shortcuts**: Faith (client and server), the worlds, and any address.
+- The object view decodes reflected fields (and GridNode's annotated members, in blue), follows
+  pointers and arrays, and edits booleans, numbers and enums. Edits are written on the client
+  thread. Remember that data objects (`...Data`) are shared by every entity made from them.
+
 ## Logging
 
 `gn::log(fmt, ...)` writes one line to `gridnode.log`, prefixed with the mod's name.

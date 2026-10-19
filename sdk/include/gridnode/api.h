@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 1
+#define GN_API_VERSION 2 /* 2: world, levels and UI (M4) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -40,12 +40,34 @@ extern "C" {
 #define GN_ERR_SLOT 3          /* a hook slot does not hold what was expected */
 #define GN_ERR_FULL 4          /* an internal table is full */
 #define GN_ERR_UNAVAILABLE 5   /* the feature is not available (e.g. its hook point could not be installed) */
+#define GN_ERR_THREAD 6        /* called on the wrong thread (see the function's comment) */
+#define GN_ERR_MISMATCH 7      /* the mod was built against a different Dear ImGui */
 
 typedef struct gn_type gn_type; /* a runtime TypeInfo / ClassInfo of the engine */
 
 typedef void (*gn_tick_fn)(float dt, void* user);
 typedef void (*gn_task_fn)(void* user);
 typedef void (*gn_created_fn)(void* entity, void* creation_info, void* user);
+/* loaded: 1 when a level starts (name e.g. "Levels/SP/SP_MainCity/SP_MainCity"), 0 when it ends. */
+typedef void (*gn_level_fn)(const char* level, int loaded, void* user);
+/* Every frame on the render thread, between Dear ImGui's NewFrame and Render. menu_open: the
+ * GridNode menu (INSERT) is open, so the mouse and keyboard belong to the overlay. */
+typedef void (*gn_ui_fn)(int menu_open, void* user);
+
+/* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
+ * 16-byte aligned, as the engine reads it with aligned loads. */
+typedef struct gn_transform {
+#if defined(__cplusplus)
+    alignas(16) float right[4];
+#elif defined(_MSC_VER)
+    __declspec(align(16)) float right[4];
+#else
+    float right[4] __attribute__((aligned(16)));
+#endif
+    float up[4];
+    float forward[4];
+    float trans[4];
+} gn_transform;
 
 enum gn_category {
     GN_CATEGORY_UNKNOWN = 0,
@@ -119,6 +141,42 @@ typedef struct gn_api {
      * right after it was constructed, on the thread that created it. Works for every class
      * the engine has an entity creator for. */
     int (*on_created)(const char* mod, const char* class_name, gn_created_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 2 ==================================================================== */
+
+    /* ---- world -----------------------------------------------------------------------------
+     * Entities are runtime objects of the game: an entity pointer is only good while the entity
+     * lives (until its level ends, for most). Reads below are fault tolerant; calls into the game
+     * are made only on the thread the comment names. */
+    void* (*local_client_character)(void);  /* Faith on the client (PamClientCharacterEntity); null if none. Client thread. */
+    void* (*local_server_character)(void);  /* Faith on the server (ServerCharacterEntity); null if none. Any thread (reads only). */
+    /* A spatial entity's world transform (any thread; GN_ERR_ARGUMENT if unreadable). */
+    int (*entity_transform)(const void* entity, gn_transform* out);
+    /* Moves a server character with the game's own teleport (velocity cleared, replicated to the
+     * client). Server thread only: GN_ERR_THREAD otherwise; use run_on_server. */
+    int (*teleport)(void* server_character, const gn_transform* to);
+    /* The entity's component of this type (or a subclass), e.g. type_find("PamClientReplayRecordingComponent").
+     * Characters only. Thread of the entity's realm. Null if none. */
+    void* (*get_component)(void* character, const gn_type* type);
+    /* The running level's asset name into out (empty between levels). Returns the length. Any thread. */
+    size_t (*level_name)(char* out, size_t size);
+    /* Called when a level starts or ends, on GridNode's own thread (within ~0.1 s). If a level is
+     * already running, fn is called for it at once. */
+    int (*on_level)(const char* mod, gn_level_fn fn, void* user);
+
+    /* ---- UI (Dear ImGui overlay) --------------------------------------------------------------
+     * GridNode draws a Dear ImGui overlay on the game (INSERT opens its menu). Mods draw into the
+     * same frame with their own copy of Dear ImGui (third_party/imgui, same version): before
+     * drawing they set GridNode's context and allocators. gridnode/ui.hpp does all of this.
+     * The UI runs on the render thread: never call engine functions from it (use run_on_*). */
+    int (*on_ui)(const char* mod, gn_ui_fn fn, void* user);
+    void* (*ui_context)(void);              /* ImGuiContext*; null until the overlay has started */
+    void (*ui_allocators)(void** alloc_fn, void** free_fn, void** user); /* for ImGui::SetAllocatorFunctions */
+    /* GN_OK if the mod's Dear ImGui matches GridNode's (IMGUI_VERSION and the sizes ImGui itself
+     * checks in IMGUI_CHECKVERSION); GN_ERR_MISMATCH otherwise (logged). */
+    int (*ui_check)(const char* mod, const char* imgui_version, size_t io, size_t style, size_t vec2, size_t vec4,
+                    size_t draw_vert, size_t draw_idx);
+    int (*ui_menu_open)(void);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

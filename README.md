@@ -6,10 +6,11 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M3 done.** GridNode loads mods from `mods/` and gives them reflection by name
-> (9,988 engine types), entity-creation callbacks, server and client ticks, and chained pointer
-> hooks, all tested in game. See [docs/modding.md](docs/modding.md) and `examples/hello`.
-> Next (M4): entity and world API, and an in-game inspector.
+> Status: **M4 in testing.** GridNode loads mods from `mods/` and gives them reflection by name
+> (9,988 engine types), entity-creation callbacks, server and client ticks, chained pointer hooks,
+> a world API (local characters, transforms, teleport, components, level events) and a Dear ImGui
+> overlay mods can draw into. INSERT opens the GridNode menu and its inspector. See
+> [docs/modding.md](docs/modding.md), `examples/hello` and `examples/trainer`.
 
 ## What's here
 
@@ -22,7 +23,8 @@ The full plan is in [docs/PLAN.md](docs/PLAN.md).
 | `tools/ghidra/` | `FrostbiteTypeDumper.java` Ghidra script |
 | `tools/gen/` | `gridnode.py`: validate the database, generate headers, set up your dump ([docs/annotations.md](docs/annotations.md)) |
 | `tools/offline_dump/` | `gn_offline_dump`: the walker run on a PE memory dump, for testing |
-| `examples/` | Example mods (`hello`) |
+| `examples/` | Example mods: `hello` (reflection, ticks, creation), `trainer` (save/load position, speed, an ImGui window) |
+| `third_party/imgui` | Dear ImGui 1.91.9 (MIT, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 | `tests/` | Host-side tests |
 | `docs/` | Plan and reference docs |
 
@@ -65,7 +67,7 @@ is present.
 
 1. Copy `gridnode.dll` and `version.dll` into the game folder (or run `gridnode_inject.exe` next to
    `gridnode.dll` after starting the game).
-2. Put mods (e.g. `build/mods/hello.dll`) in a `mods` folder next to `gridnode.dll`.
+2. Put mods (e.g. `build/mods/trainer.dll`) in a `mods` folder next to `gridnode.dll`.
 3. Start the game. `gridnode.log` (next to `gridnode.dll`) reports the build check, writes
    `gridnode-reflected.json` the first time ([docs/dump-format.md](docs/dump-format.md)), and
    lists the mods it loaded.
@@ -73,9 +75,13 @@ is present.
 If the game is in `Program Files`, Windows may redirect the log to
 `%LOCALAPPDATA%\VirtualStore\Program Files\...`; GridNode also falls back to `%LOCALAPPDATA%\GridNode`.
 
+In game, **INSERT** opens the GridNode menu (settings: `[ui]` in `gridnode.ini`, see
+[docs/modding.md](docs/modding.md#ui-dear-imgui)).
+
 ## Rules GridNode follows
 
-- Game code is never patched. Hooks only swap pointers in vtables and creator tables.
+- Game code is never patched. Hooks only swap pointers in vtables and creator tables (and the
+  overlay swaps two slots of DXGI's swap chain vtable, as MECMP does).
 - Nothing is done until the build check passes; on any other build GridNode stays passive.
 - Nothing from the game is committed: each user generates their own reflected data.
 - Online services, Denuvo and the EA app are left alone.
