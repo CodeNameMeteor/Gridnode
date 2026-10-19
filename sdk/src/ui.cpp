@@ -377,6 +377,17 @@ void drawMain() {
                 else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "failed (%d)", m.result);
             }
         }
+        if (ImGui::CollapsingHeader("World")) {
+            void* cc = localClientCharacter();
+            void* sc = localServerCharacter();
+            gn_transform t{};
+            ImGui::Text("Client character %p", cc);
+            if (cc && entityTransform(cc, t)) ImGui::Text("  at %.2f, %.2f, %.2f", t.trans[0], t.trans[1], t.trans[2]);
+            else if (cc) ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "  position unreadable");
+            ImGui::Text("Server character %p", sc);
+            if (sc && entityTransform(sc, t)) ImGui::Text("  at %.2f, %.2f, %.2f", t.trans[0], t.trans[1], t.trans[2]);
+            else if (sc) ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "  position unreadable");
+        }
         if (ImGui::CollapsingHeader("Hooks")) {
             ImGui::Text("%llu pointer hooks installed", static_cast<unsigned long long>(hooks().count()));
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));

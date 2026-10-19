@@ -117,14 +117,23 @@ void clientTick(float dt) {
 
     static gn::Vec3 last{};
     static bool haveLast = false;
+    static int reported = -1; // what the log last said: 0 found, 1 no character, 2 no position
     gn::Vec3 p;
     void* faith = gn::localClientCharacter();
-    if (!faith || !gn::positionOf(faith, p) || dt <= 0.f) {
+    const int state = !faith ? 1 : !gn::positionOf(faith, p) ? 2 : 0;
+    static int logged = 0;
+    if (state != reported && logged < 20) { // a few lines, not one per tick if it flickers
+        ++logged;
+        reported = state;
+        gn::log(state == 0 ? "client: Faith found (%p)" : state == 1 ? "client: no character (%p)" : "client: Faith %p has no readable position",
+                faith);
+    }
+    if (state != 0) {
         haveLast = false;
         g_haveFaith = false;
         return;
     }
-    if (haveLast) {
+    if (haveLast && dt > 0.f) {
         const float dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
         const float v = std::sqrt(dx * dx + dy * dy + dz * dz) / dt;
         const float vh = std::sqrt(dx * dx + dz * dz) / dt;

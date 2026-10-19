@@ -83,6 +83,13 @@ std::mutex g_charM;
 std::vector<uintptr_t> g_serverChars; // guarded by g_charM
 
 void onServerCharacter(void* entity, void*, void*) {
+    static std::atomic<int> logged{0}; // the first few, to check the capture works
+    if (logged.fetch_add(1) < 8) {
+        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
+        GN_LOG("world: server character created %p (%s), player %llx", entity, t ? t->name.c_str() : "?",
+               static_cast<unsigned long long>(
+                   mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(entity) + e::cls::ServerCharacterEntity::off::player)));
+    }
     std::lock_guard<std::mutex> lock(g_charM);
     if (g_serverChars.size() >= 4096) g_serverChars.erase(g_serverChars.begin(), g_serverChars.begin() + 1024);
     g_serverChars.push_back(reinterpret_cast<uintptr_t>(entity));
@@ -113,8 +120,23 @@ void callLevel(const std::vector<LevelListener>& ls, const std::string& level, b
 
 // Client tick (ticks.cpp): remember Faith for the other threads.
 void worldClientTick() {
-    g_clientCharacter.store(reinterpret_cast<void* (*)()>(mem::rva(e::function::LocalClientCharacter))(),
-                            std::memory_order_relaxed);
+    void* c = reinterpret_cast<void* (*)()>(mem::rva(e::function::LocalClientCharacter))();
+    void* before = g_clientCharacter.exchange(c, std::memory_order_relaxed);
+    if (c == before) return;
+    // Faith changed (a level started, a respawn): say so, and whether her transform reads.
+    if (!c) {
+        GN_LOG("world: client character gone");
+        return;
+    }
+    const uintptr_t ts = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(c) + e::cls::ComponentEntity::off::transformSpace);
+    uint8_t sel[2] = {};
+    if (ts) mem::read(ts + 9, sel, 2);
+    gn_transform t{};
+    const bool ok = entityTransform(c, t);
+    const reflect::Type* type = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(c));
+    GN_LOG("world: client character %p (%s), transform space %llx (selectors %u %u): %s %.2f %.2f %.2f", c,
+           type ? type->name.c_str() : "?", static_cast<unsigned long long>(ts), sel[0], sel[1],
+           ok ? "position" : "UNREADABLE, last read", t.trans[0], t.trans[1], t.trans[2]);
 }
 
 void* localClientCharacter() {
