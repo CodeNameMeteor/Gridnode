@@ -187,6 +187,7 @@ void serverTick(float) {
     gn::RayHit hit;
     const bool hitGround = gn::raycast({p.x, p.y + 0.5f, p.z}, {p.x, p.y - 3.f, p.z}, hit);
     g_groundDist = hitGround ? std::max(0.f, p.y - hit.position[1]) : -1.f;
+    if (g_god) gn::godMode(true); // again after a respawn (a new health component)
     bhopCheck("server");
 }
 

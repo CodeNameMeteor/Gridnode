@@ -290,55 +290,45 @@ int positionSet(const float pos[3]) {
     return mem::write(pose + k::Pose_Position, pos, 3 * sizeof(float)) ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
-// God mode: the game's own immortality flags in Faith's data, the character's
-// (ControllableEntityData.Immortal) and her health component's (PamHealthComponentData.IsImmortal).
-// They are data, shared by everything made from it (Faith's blueprint), so they are put back when
-// god mode is turned off. Server thread.
+// God mode: the IsImmortal property of Faith's server health component. PamServerHealthComponent's
+// constructor (0x14391e410) connects +0xc0 to the data bus property "IsImmortal" (hash 0xa1b7b692,
+// default PamHealthComponentData.IsImmortal, via 0x14474f280); +0xc0 -> node, node +0 -> the bool.
+// Setting that bool is what the game's own logic would do to make her immortal, and it is per
+// component, so nothing shared changes. MEC_Trainer wrote 4 bytes there; this writes the one byte.
+// The component is new after every respawn: call it again (the trainer does, each server tick).
+// Server thread.
 namespace {
-struct Flag {
-    uintptr_t at = 0;
-    uint8_t original = 0;
-};
-Flag g_godFlags[2];
-
-uintptr_t fieldAddr(uintptr_t obj, const char* baseType, const char* field) {
-    const reflect::Type* t = obj ? registry().typeOf(mem::ProcessMemory(), obj) : nullptr;
-    const reflect::Type* base = registry().find(baseType);
-    reflect::FieldInfo fi;
-    if (!t || !base || !registry().isKindOf(t, base) || !registry().findField(t, field, fi) || fi.size != 1) return 0;
-    return obj + fi.field->offset;
+uintptr_t g_godAt = 0;
+uint8_t g_godOriginal = 0;
 }
-} // namespace
 
 int godModeSet(int on) {
     if (!isServerThread()) return GN_ERR_THREAD;
     const uintptr_t sf = reinterpret_cast<uintptr_t>(localServerCharacter());
     if (!sf) return GN_ERR_UNAVAILABLE;
-    uintptr_t at[2] = {};
-    at[0] = fieldAddr(ptr(sf + e::cls::ComponentEntity::off::data), "ControllableEntityData", "Immortal");
-    // The health component's data: the first pointer in the component to a PamHealthComponentData.
     const reflect::Type* hcType = registry().find("PamServerHumanHealthComponent");
     const uintptr_t hc = hcType ? reinterpret_cast<uintptr_t>(getComponent(reinterpret_cast<void*>(sf), reinterpret_cast<const gn_type*>(hcType))) : 0;
-    for (uint32_t off = 8; hc && off < 0x150 && !at[1]; off += 8) at[1] = fieldAddr(ptr(hc + off), "PamHealthComponentData", "IsImmortal");
-    int set = 0;
-    for (int i = 0; i < 2; ++i) {
-        Flag& f = g_godFlags[i];
-        if (!at[i]) continue;
-        if (on) {
-            if (f.at != at[i]) f = {at[i], mem::readOr<uint8_t>(at[i])};
-            mem::write<uint8_t>(at[i], 1);
-        } else if (f.at == at[i]) {
-            mem::write<uint8_t>(at[i], f.original);
+    if (!typeIs(hc, "PamServerHumanHealthComponent")) return GN_ERR_UNAVAILABLE;
+    const uintptr_t at = ptr(ptr(hc + k::HealthComponent_ImmortalProperty));
+    if (!at) return GN_ERR_UNAVAILABLE;
+    const uint8_t now = mem::readOr<uint8_t>(at, 0xff);
+    if (now > 1) { // not a bool: refuse rather than write
+        GN_LOG("god mode: the IsImmortal property does not hold a bool (%u); not changed", now);
+        return GN_ERR_UNAVAILABLE;
+    }
+    if (on) {
+        if (g_godAt != at) {
+            g_godAt = at;
+            g_godOriginal = now;
+            GN_LOG("god mode: on (health component %llx, IsImmortal was %u)", static_cast<unsigned long long>(hc), now);
         }
-        ++set;
+        if (!now) mem::write<uint8_t>(at, 1);
+    } else if (g_godAt == at) {
+        mem::write<uint8_t>(at, g_godOriginal);
+        g_godAt = 0;
+        GN_LOG("god mode: off");
     }
-    static int logged = -1;
-    if (logged != set) {
-        logged = set;
-        GN_LOG("god mode: %s (character data Immortal %s, health data IsImmortal %s)", on ? "on" : "off", at[0] ? "found" : "NOT FOUND",
-               at[1] ? "found" : "NOT FOUND");
-    }
-    return set ? GN_OK : GN_ERR_UNAVAILABLE;
+    return GN_OK;
 }
 
 // ---- game state -------------------------------------------------------------------------------------

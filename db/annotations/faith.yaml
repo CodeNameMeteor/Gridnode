@@ -92,6 +92,7 @@ constants:
   - { name: SharedContent_Active, value: 0x280 }
   - { name: Dash_Started, value: 0xe0 }
   - { name: Loading_Flag, value: 0x4c1 }
+  - { name: HealthComponent_ImmortalProperty, value: 0xc0 }
   - { name: Character_AnimatableOwner, value: 0xd0 }
   - { name: AnimatableOwner_Animatable, value: 0x128 }
   - { name: Animatable_Pose, value: 0x30 }

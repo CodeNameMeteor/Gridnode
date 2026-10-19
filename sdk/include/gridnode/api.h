@@ -325,8 +325,10 @@ typedef struct gn_api {
      * movement every tick. For a normal move use teleport. Any thread. */
     int (*position_set)(const float pos[3]);
 
-    /* God mode: the game's own immortality flags in Faith's character data and health data (put
-     * back as they were when turned off). Server thread (run_on_server). */
+    /* God mode: sets the IsImmortal property of Faith's health component, as the game's own logic
+     * would (put back when turned off). A respawn makes a new component: call it again while god
+     * mode should stay on (cheap when nothing changed). Falls still kill: that is not damage in MEC
+     * (see GN_MOVE_LAST_GROUND_Y). Server thread (run_on_server / on_server_tick). */
     int (*god_mode)(int on);
 } gn_api;
 
