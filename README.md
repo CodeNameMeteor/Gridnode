@@ -6,9 +6,9 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M2 done.** The runtime loads into the game, checks the build and dumps the engine's
-> reflection data (9,988 types). The type database (`db/annotations`) holds everything MECMP uses,
-> and `tools/gen` generates C++ headers from it. Next (M3): the reflection, hook and threading APIs.
+> Status: **M3 in progress.** GridNode loads mods from `mods/` and gives them reflection by name
+> (9,988 engine types), entity-creation callbacks, server and client ticks, and chained pointer
+> hooks. See [docs/modding.md](docs/modding.md) and `examples/hello`.
 
 ## What's here
 
@@ -21,6 +21,7 @@ The full plan is in [docs/PLAN.md](docs/PLAN.md).
 | `tools/ghidra/` | `FrostbiteTypeDumper.java` Ghidra script |
 | `tools/gen/` | `gridnode.py`: validate the database, generate headers, set up your dump ([docs/annotations.md](docs/annotations.md)) |
 | `tools/offline_dump/` | `gn_offline_dump`: the walker run on a PE memory dump, for testing |
+| `examples/` | Example mods (`hello`) |
 | `tests/` | Host-side tests |
 | `docs/` | Plan and reference docs |
 
@@ -63,8 +64,10 @@ is present.
 
 1. Copy `gridnode.dll` and `version.dll` into the game folder (or run `gridnode_inject.exe` next to
    `gridnode.dll` after starting the game).
-2. Start the game. `gridnode.log` (next to `gridnode.dll`) reports the build check and writes
-   `gridnode-reflected.json` the first time. See [docs/dump-format.md](docs/dump-format.md).
+2. Put mods (e.g. `build/mods/hello.dll`) in a `mods` folder next to `gridnode.dll`.
+3. Start the game. `gridnode.log` (next to `gridnode.dll`) reports the build check, writes
+   `gridnode-reflected.json` the first time ([docs/dump-format.md](docs/dump-format.md)), and
+   lists the mods it loaded.
 
 If the game is in `Program Files`, Windows may redirect the log to
 `%LOCALAPPDATA%\VirtualStore\Program Files\...`; GridNode also falls back to `%LOCALAPPDATA%\GridNode`.

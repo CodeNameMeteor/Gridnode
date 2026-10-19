@@ -13,6 +13,7 @@
 #include "gridnode/reflect/layout.hpp"
 #include "gridnode/reflect/walker.hpp"
 #include "gridnode/version.hpp"
+#include "host.hpp"
 
 namespace gn::runtime {
 namespace {
@@ -40,9 +41,14 @@ std::string narrow(const std::wstring& w) {
 //   [dump]
 //   mode=auto     ; auto: write the dump when the file is missing; always; never
 //   file=gridnode-reflected.json
+//   [mods]
+//   enabled=1
+//   folder=mods   ; relative to gridnode.dll, or absolute
 struct Settings {
     std::wstring dumpMode = L"auto";
     std::wstring dumpFile;
+    bool modsEnabled = true;
+    std::wstring modsFolder;
 };
 
 Settings readSettings(const std::wstring& dir) {
@@ -55,6 +61,13 @@ Settings readSettings(const std::wstring& dir) {
     const std::wstring file = buf;
     const bool absolute = file.size() > 2 && (file[1] == L':' || (file[0] == L'\\' && file[1] == L'\\'));
     s.dumpFile = absolute ? file : dir + file;
+    s.modsEnabled = GetPrivateProfileIntW(L"mods", L"enabled", 1, ini.c_str()) != 0;
+    GetPrivateProfileStringW(L"mods", L"folder", L"mods", buf, MAX_PATH, ini.c_str());
+    std::wstring mods = buf;
+    const bool modsAbsolute = mods.size() > 2 && (mods[1] == L':' || (mods[0] == L'\\' && mods[1] == L'\\'));
+    if (!modsAbsolute) mods = dir + mods;
+    if (!mods.empty() && mods.back() != L'\\' && mods.back() != L'/') mods += L'\\';
+    s.modsFolder = mods;
     return s;
 }
 
@@ -98,22 +111,24 @@ void logImageLayout() {
     }
 }
 
-bool writeDump(const std::wstring& file) {
-    logImageLayout();
+reflect::Reflected walkTypes() {
     const DWORD t0 = GetTickCount();
     mem::ProcessMemory m;
     reflect::WalkOptions opt;
     opt.listHead = mem::rva(layout::kTypeInfoListHead);
     opt.regions = mem::imageSectionRegions();
-    const reflect::Reflected r = reflect::walk(m, opt);
+    reflect::Reflected r = reflect::walk(m, opt);
     const reflect::WalkStats& s = r.stats;
     using ull = unsigned long long;
-    GN_LOG("dump: %llu types (%llu listed), %llu accessors, vtables %llu from ClassInfo + %llu from messages + %llu from data scan "
+    GN_LOG("types: %llu (%llu listed), %llu accessors, vtables %llu from ClassInfo + %llu from messages + %llu from data scan "
            "(%llu ambiguous), %llu creators, %llu short ClassInfos, %llu unknown category, %llu unreadable scan pages, in %lu ms",
            ull(r.types.size()), ull(s.listed), ull(s.accessors), ull(s.vtablesFromClassInfo), ull(s.vtablesFromStaticInstance), ull(s.vtablesFromDataScan),
            ull(s.vtableCandidatesAmbiguous), ull(s.creators), ull(s.shortClassInfos), ull(s.unknownCategory), ull(s.unreadablePages),
            static_cast<unsigned long>(GetTickCount() - t0));
+    return r;
+}
 
+bool writeDump(const reflect::Reflected& r, const std::wstring& file) {
     reflect::DumpInfo info;
     const IMAGE_NT_HEADERS* nt = mem::ntHeaders();
     info.image = {exeName(), mem::moduleBase(), layout::kImageBase, nt->OptionalHeader.SizeOfImage, nt->FileHeader.TimeDateStamp};
@@ -151,12 +166,12 @@ void run(HMODULE self) {
     GN_LOG("GridNode %s loading into %s (base 0x%llx)", GRIDNODE_VERSION_STRING, exeName().c_str(),
            static_cast<unsigned long long>(mem::moduleBase()));
 
-    const size_t types = build::waitForTypeList(5 * 60 * 1000, &g_stop);
-    if (!types) {
+    const size_t typeCount = build::waitForTypeList(5 * 60 * 1000, &g_stop);
+    if (!typeCount) {
         GN_LOG("startup: the engine's type list never filled; GridNode stays passive");
         return;
     }
-    GN_LOG("startup: engine type list ready (%llu types)", static_cast<unsigned long long>(types));
+    GN_LOG("startup: engine type list ready (%llu types)", static_cast<unsigned long long>(typeCount));
 
     const build::Result b = build::check();
     if (!b.details.empty()) GN_LOG("build check:\n%s", b.details.c_str());
@@ -167,11 +182,20 @@ void run(HMODULE self) {
     GN_LOG("startup: build check passed%s", b.warnings ? " (with warnings)" : "");
 
     const Settings s = readSettings(moduleDir(self));
+    logImageLayout();
+    reflect::Reflected types = walkTypes();
     const bool exists = GetFileAttributesW(s.dumpFile.c_str()) != INVALID_FILE_ATTRIBUTES;
-    if (s.dumpMode == L"always" || (s.dumpMode == L"auto" && !exists)) writeDump(s.dumpFile);
+    if (s.dumpMode == L"always" || (s.dumpMode == L"auto" && !exists)) writeDump(types, s.dumpFile);
     else GN_LOG("dump: skipped (mode=%s, file %s)", narrow(s.dumpMode).c_str(), exists ? "exists" : "missing");
+    host::registry().build(std::move(types));
 
-    GN_LOG("ready");
+    const host::TickStatus ticks = host::installTicks();
+    GN_LOG("ticks: server %s, client %s", ticks.server ? "hooked" : "UNAVAILABLE", ticks.client ? "hooked" : "UNAVAILABLE");
+
+    if (s.modsEnabled) host::loadMods(s.modsFolder);
+    else GN_LOG("mods: disabled in gridnode.ini");
+
+    GN_LOG("ready (%llu hooks installed)", static_cast<unsigned long long>(host::hooks().count()));
 }
 
 void shutdown() {

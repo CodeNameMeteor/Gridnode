@@ -52,15 +52,28 @@ jobs:
             build/gridnode.dll
             build/version.dll
             build/gridnode_inject.exe
+            build/mods/*.dll
 
   windows-msvc:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Install PyYAML
-        run: python -m pip install pyyaml
-      - name: Configure and build (MSVC x64, Release, fixture dump)
+        shell: pwsh
         run: |
-          cmake -S . -B build -A x64 -DGRIDNODE_REFLECTED="${{ github.workspace }}/tools/gen/tests/fixture/reflected.json" -DGRIDNODE_ANNOTATIONS="${{ github.workspace }}/tools/gen/tests/fixture/annotations"
-          cmake --build build --config Release
-          ctest --test-dir build -C Release --output-on-failure
+          python -m pip install pyyaml
+          "PY=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+      - name: Configure, build and test (MSVC x64, Release, fixture dump)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $fx = "${{ github.workspace }}/tools/gen/tests/fixture"
+          cmake -S . -B build -A x64 "-DPython3_EXECUTABLE=$env:PY" "-DGRIDNODE_REFLECTED=$fx/reflected.json" "-DGRIDNODE_ANNOTATIONS=$fx/annotations" 2>&1 | Tee-Object -FilePath ci.log
+          if ($LASTEXITCODE -eq 0) { cmake --build build --config Release 2>&1 | Tee-Object -FilePath ci.log -Append }
+          if ($LASTEXITCODE -eq 0) { ctest --test-dir build -C Release --output-on-failure 2>&1 | Tee-Object -FilePath ci.log -Append }
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # Annotations are readable through the checks API even when the raw log is not.
+            Select-String -Path ci.log -Pattern "error|failed|FAILED|Error" | Select-Object -First 40 | ForEach-Object { "::error::$($_.Line.Trim())" }
+          }
+          exit $code

@@ -2,6 +2,11 @@
 defaults: { confidence: confirmed, sources: [mecmp, research] }
 
 globals:
+  - name: ClientGameWorld
+    va: 0x142401ca0
+    type: "void*"
+    note: The client world (set by ClientLevel_createWorld; also stored at ClientLevel+0x1e0).
+    sources: [gridnode]
   - name: ServerGameWorld
     va: 0x1425469e0
     type: "ServerGameWorld*"
@@ -31,7 +36,37 @@ hooks:
       Runs once per server simulation tick on the server game thread (N times per frame when
       catching up). dt is a float at updateInfo+0x10. MECMP's tick hook.
 
+  - name: ClientGameWorld_postUpdate
+    kind: vtable-slot
+    vtable: 0x141afe5f8
+    offset: 0x28
+    original: 0x14319f210
+    signature: "void(void* world, void* updateInfo)"
+    sources: [gridnode]
+    note: >-
+      Client counterpart of ServerGameWorld_postUpdate: runs once per client tick on the client game
+      thread (ClientLevel_update -> GameWorld_update), N times per frame when catching up. dt is a
+      float at updateInfo+0x10. The slot is the function's only reference in the image.
+
 functions:
+  - name: Client_updateFrame
+    va: 0x1431a5190
+    signature: "void*(void* client, void* result, void* frameInfo, u8 paused, void* a5)"
+    confidence: inferred
+    sources: [gridnode]
+    note: Runs clientWorldFrameTick once per client tick this frame (several when catching up).
+  - name: clientWorldFrameTick
+    va: 0x1431a23f0
+    signature: "void(void* client, void* updateInfo, u32 a3, void* a4)"
+    confidence: inferred
+    sources: [gridnode, mecmp]
+    note: Updates the client level (ClientLevel_update with the level at client+0x90), then the camera view managers.
+  - name: ClientLevel_createWorld
+    va: 0x14319cc10
+    signature: "u8(void* level, void* levelSetup)"
+    confidence: inferred
+    sources: [gridnode]
+    note: Creates the client world (0x88 bytes, vtable 0x141afe5f8, second vtable 0x141b42d30 at +0x30) and stores it in ClientGameWorld and level+0x1e0.
   - name: Server_tickFrame
     va: 0x143345f30
     signature: "void(void* server)"

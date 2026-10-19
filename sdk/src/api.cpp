@@ -1,0 +1,193 @@
+// The gn_api table handed to mods, and the runtime's singletons.
+
+#include <windows.h>
+
+#include <cstring>
+
+#include "gridnode/log.hpp"
+#include "gridnode/mem.hpp"
+#include "gridnode/version.hpp"
+#include "host.hpp"
+
+namespace gn::host {
+
+reflect::Registry& registry() {
+    static reflect::Registry r;
+    return r;
+}
+
+hook::HookTable& hooks() {
+    static hook::HookTable t({
+        [](uint64_t slot, uint64_t& v) { return mem::read(static_cast<uintptr_t>(slot), v); },
+        [](uint64_t slot, uint64_t v) { return mem::patchPointer(static_cast<uintptr_t>(slot), static_cast<uintptr_t>(v), nullptr); },
+        [](uint64_t fn) {
+            if (!mem::inImage(static_cast<uintptr_t>(fn))) return false;
+            for (const mem::Section& s : mem::imageSections())
+                if (s.region.code && fn >= s.region.begin && fn < s.region.end) return true;
+            return false;
+        },
+    });
+    return t;
+}
+
+thread::Dispatcher& server() {
+    static thread::Dispatcher d;
+    return d;
+}
+
+thread::Dispatcher& client() {
+    static thread::Dispatcher d;
+    return d;
+}
+
+namespace {
+
+const reflect::Type* T(const gn_type* t) { return reinterpret_cast<const reflect::Type*>(t); }
+const gn_type* G(const reflect::Type* t) { return reinterpret_cast<const gn_type*>(t); }
+
+int category(const reflect::Type* t) {
+    if (!t) return GN_CATEGORY_UNKNOWN;
+    switch (t->category) {
+    case reflect::Category::Primitive: return GN_CATEGORY_PRIMITIVE;
+    case reflect::Category::ValueType: return GN_CATEGORY_VALUETYPE;
+    case reflect::Category::Class: return GN_CATEGORY_CLASS;
+    case reflect::Category::Array: return GN_CATEGORY_ARRAY;
+    case reflect::Category::FixedArray: return GN_CATEGORY_FIXEDARRAY;
+    case reflect::Category::Enum: return GN_CATEGORY_ENUM;
+    case reflect::Category::Unknown: return GN_CATEGORY_UNKNOWN;
+    default: return GN_CATEGORY_OTHER;
+    }
+}
+
+void fill(const reflect::FieldInfo& fi, gn_field* out) {
+    out->name = fi.field->name.c_str();
+    out->offset = fi.field->offset;
+    out->size = fi.size;
+    out->flags = fi.field->flags;
+    out->category = static_cast<uint16_t>(category(fi.type));
+    out->type = G(fi.type);
+    out->owner = G(fi.owner);
+}
+
+void apiLog(const char* mod, const char* message) { GN_LOG("[%s] %s", mod ? mod : "?", message ? message : ""); }
+uint64_t apiModuleBase() { return mem::moduleBase(); }
+uint64_t apiRva(uint64_t va) { return mem::rva(va); }
+
+struct CallTick {
+    gn_tick_fn fn;
+    void* user;
+    void operator()(float dt) const { fn(dt, user); }
+};
+struct CallTask {
+    gn_task_fn fn;
+    void* user;
+    void operator()() const { fn(user); }
+};
+
+int apiOnServerTick(gn_tick_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    server().addListener("mod", CallTick{fn, user});
+    return GN_OK;
+}
+int apiOnClientTick(gn_tick_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    client().addListener("mod", CallTick{fn, user});
+    return GN_OK;
+}
+void apiRunOnServer(gn_task_fn fn, void* user) {
+    if (fn) server().post(CallTask{fn, user});
+}
+void apiRunOnClient(gn_task_fn fn, void* user) {
+    if (fn) client().post(CallTask{fn, user});
+}
+int apiIsServerThread() { return isServerThread() ? 1 : 0; }
+int apiIsClientThread() { return isClientThread() ? 1 : 0; }
+
+int apiHookSlot(const char* mod, uint64_t slotVa, uint64_t expectedVa, void* detour, void** original) {
+    if (!detour || !original || !slotVa) return GN_ERR_ARGUMENT;
+    std::string why;
+    const auto r = hooks().install(mod ? mod : "?", mem::rva(slotVa), expectedVa ? mem::rva(expectedVa) : 0,
+                                   reinterpret_cast<uint64_t>(detour), reinterpret_cast<uint64_t*>(original), &why);
+    if (r == hook::Result::Ok) {
+        GN_LOG("[%s] hooked slot 0x%llx", mod ? mod : "?", static_cast<unsigned long long>(slotVa));
+        return GN_OK;
+    }
+    GN_LOG("[%s] hook refused: %s", mod ? mod : "?", why.c_str());
+    return r == hook::Result::Argument ? GN_ERR_ARGUMENT : GN_ERR_SLOT;
+}
+
+const gn_type* apiTypeFind(const char* name) { return name ? G(registry().find(name)) : nullptr; }
+const gn_type* apiTypeOf(const void* object) {
+    return G(registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uint64_t>(object)));
+}
+int apiIsKindOf(const gn_type* t, const gn_type* base) { return registry().isKindOf(T(t), T(base)) ? 1 : 0; }
+const char* apiTypeName(const gn_type* t) { return t ? T(t)->name.c_str() : ""; }
+uint32_t apiTypeSize(const gn_type* t) { return t ? T(t)->size : 0; }
+int apiTypeCategory(const gn_type* t) { return category(T(t)); }
+const gn_type* apiTypeSuper(const gn_type* t) { return G(registry().super(T(t))); }
+uint64_t apiTypeVa(const gn_type* t) { return t ? mem::va(static_cast<uintptr_t>(T(t)->ti)) : 0; }
+
+int apiFieldFind(const gn_type* t, const char* name, gn_field* out) {
+    if (!t || !name || !out) return GN_ERR_ARGUMENT;
+    reflect::FieldInfo fi;
+    if (!registry().findField(T(t), name, fi)) return GN_ERR_NOT_FOUND;
+    fill(fi, out);
+    return GN_OK;
+}
+uint32_t apiFieldCount(const gn_type* t) { return t ? static_cast<uint32_t>(T(t)->fields.size()) : 0; }
+int apiFieldAt(const gn_type* t, uint32_t i, gn_field* out) {
+    if (!t || !out || i >= T(t)->fields.size()) return GN_ERR_ARGUMENT;
+    fill(registry().describe(T(t), T(t)->fields[i]), out);
+    return GN_OK;
+}
+
+int apiRead(const void* address, void* out, size_t size) {
+    return out && mem::read(reinterpret_cast<uintptr_t>(address), out, size) ? GN_OK : GN_ERR_ARGUMENT;
+}
+int apiWrite(void* address, const void* data, size_t size) {
+    return data && mem::write(reinterpret_cast<uintptr_t>(address), data, size) ? GN_OK : GN_ERR_ARGUMENT;
+}
+
+int apiOnCreated(const char* mod, const char* className, gn_created_fn fn, void* user) {
+    if (!className) return GN_ERR_ARGUMENT;
+    return onCreated(mod ? mod : "?", className, fn, user);
+}
+
+} // namespace
+
+const gn_api* api() {
+    static const gn_api table = [] {
+        gn_api a{};
+        a.version = GN_API_VERSION;
+        a.size = sizeof(gn_api);
+        a.gridnode_version = GRIDNODE_VERSION_STRING;
+        a.log = apiLog;
+        a.module_base = apiModuleBase;
+        a.rva = apiRva;
+        a.on_server_tick = apiOnServerTick;
+        a.on_client_tick = apiOnClientTick;
+        a.run_on_server = apiRunOnServer;
+        a.run_on_client = apiRunOnClient;
+        a.is_server_thread = apiIsServerThread;
+        a.is_client_thread = apiIsClientThread;
+        a.hook_slot = apiHookSlot;
+        a.type_find = apiTypeFind;
+        a.type_of = apiTypeOf;
+        a.is_kind_of = apiIsKindOf;
+        a.type_name = apiTypeName;
+        a.type_size = apiTypeSize;
+        a.type_category = apiTypeCategory;
+        a.type_super = apiTypeSuper;
+        a.type_va = apiTypeVa;
+        a.field_find = apiFieldFind;
+        a.field_count = apiFieldCount;
+        a.field_at = apiFieldAt;
+        a.read = apiRead;
+        a.write = apiWrite;
+        a.on_created = apiOnCreated;
+        return a;
+    }();
+    return &table;
+}
+
+} // namespace gn::host

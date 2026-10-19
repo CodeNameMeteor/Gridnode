@@ -27,6 +27,9 @@ endif()
 add_library(gn_reflect STATIC
   sdk/src/reflect/walker.cpp
   sdk/src/reflect/dump_json.cpp
+  sdk/src/reflect/registry.cpp
+  sdk/src/hook_table.cpp
+  sdk/src/dispatch.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -36,6 +39,11 @@ if(GRIDNODE_BUILD_TESTS)
   add_executable(reflect_walker_test tests/reflect_walker_test.cpp)
   target_link_libraries(reflect_walker_test PRIVATE gn_reflect)
   add_test(NAME reflect_walker COMMAND reflect_walker_test)
+  add_executable(runtime_core_test tests/runtime_core_test.cpp)
+  target_link_libraries(runtime_core_test PRIVATE gn_reflect)
+  add_test(NAME runtime_core COMMAND runtime_core_test)
+  find_package(Threads REQUIRED)
+  target_link_libraries(runtime_core_test PRIVATE Threads::Threads)
 endif()
 
 # --- gn_offline_dump: run the walker on a PE memory dump of the game (developer tool, any OS) -------
@@ -109,6 +117,10 @@ add_library(gridnode SHARED
   sdk/src/mem.cpp
   sdk/src/log.cpp
   sdk/src/build.cpp
+  sdk/src/api.cpp
+  sdk/src/ticks.cpp
+  sdk/src/entities.cpp
+  sdk/src/mods.cpp
 )
 target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src)
 target_link_libraries(gridnode PRIVATE gn_reflect gn_engine)
@@ -126,3 +138,13 @@ endif()
 # --- version.dll: proxy loader (put in the game folder; loads gridnode.dll from there) -------------
 add_library(version_proxy SHARED sdk/loader/version_proxy.cpp sdk/loader/version.def)
 set_target_properties(version_proxy PROPERTIES OUTPUT_NAME "version" PREFIX "")
+
+# --- example mods (output in mods/ next to gridnode.dll) ------------------------------------------
+option(GRIDNODE_BUILD_EXAMPLES "Build the example mods" ON)
+if(GRIDNODE_BUILD_EXAMPLES)
+  add_library(hello SHARED examples/hello/hello.cpp)
+  target_include_directories(hello PRIVATE sdk/include)
+  target_link_libraries(hello PRIVATE gn_engine)
+  set_target_properties(hello PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+endif()
