@@ -280,6 +280,8 @@ pub fn game_state() -> GameState {
     s
 }
 pub fn set_time_of_day(seconds: f32) -> bool { unsafe { (api().time_of_day_set.unwrap())(seconds) == 0 } }
+/// Moves Faith without a teleport (the camera stays free): noclip-style movement every tick.
+pub fn set_position(p: [f32; 3]) -> bool { unsafe { (api().position_set.unwrap())(p.as_ptr()) == 0 } }
 
 // ---- settings, console, messages ------------------------------------------------------------------
 /// A settings object by class name (`"GameTimeSettings"`); look it up each time.

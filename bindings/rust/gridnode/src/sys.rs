@@ -184,6 +184,7 @@ pub struct gn_api {
     pub tuning_set: Option<unsafe extern "C" fn(name: *const c_char, value: f32) -> c_int>,
     pub game_state: Option<unsafe extern "C" fn(out: *mut gn_game_state) -> c_int>,
     pub time_of_day_set: Option<unsafe extern "C" fn(seconds: f32) -> c_int>,
+    pub position_set: Option<unsafe extern "C" fn(pos: *const f32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -198,4 +199,4 @@ const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 456);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 464);

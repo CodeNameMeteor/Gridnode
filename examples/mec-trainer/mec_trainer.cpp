@@ -8,12 +8,13 @@
 //   - time scale, sim rate, post-processing, god mode: settings by name (GameTimeSettings, ...)
 //   - time of day: gn::setTimeOfDay, the level's own clock (checked by type)
 //   - save / load position: the game's own teleport on the server thread
-//   - noclip: the game's teleport every server tick, driven from the camera direction
+//   - noclip: gn::setPosition every client tick (no teleport, so the camera stays free)
+//   - bunny hop: ray cast + movement state on the server tick, then gn::jump()
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
 // Hotkeys (as in MEC_Trainer; ignored while the GridNode menu is open or the game is not focused):
 //   1 god mode   2 noclip   3 no stumble   4 save position   5 load position
-//   F bunny hop   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down)
+//   F arm the bunny hop   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down)
 //
 // Threads: render (window, HUD: reads atomics, posts work), client tick (movement features,
 // hotkeys), server tick (noclip and teleports). Faith's state is read on the client thread.
@@ -106,32 +107,30 @@ void loadPosition() {
     });
 }
 
-// ---- noclip: the client tick steers, the server tick moves Faith -------------------------------------
-std::mutex g_nm;
+// ---- noclip: Faith's position written directly every client tick (as MEC_Trainer did), so the camera
+// stays free; she flies where the camera looks. -----------------------------------------------------------
 std::atomic<bool> g_noclipActive{false};
-float g_noclipPos[3] = {};
+float g_noclipPos[3] = {}; // client thread only
 
 void noclipClient(const gn::Movement& m, bool keys) {
     float delta[3] = {};
     if (keys) {
-        const float* f = m.camera_forward;
-        // Left / right from the camera direction, flat on the ground.
-        float rx = -f[2], rz = f[0];
+        const float* f = m.camera_forward; // includes up / down: W flies where the camera points
+        // Right of the camera, flat on the ground.
+        float rx = f[2], rz = -f[0];
         const float len = std::sqrt(rx * rx + rz * rz);
         if (len > 1e-4f) rx /= len, rz /= len;
         if (GetAsyncKeyState('W') & 0x8000) delta[0] += f[0], delta[1] += f[1], delta[2] += f[2];
         if (GetAsyncKeyState('S') & 0x8000) delta[0] -= f[0], delta[1] -= f[1], delta[2] -= f[2];
-        if (GetAsyncKeyState('A') & 0x8000) delta[0] += rx, delta[2] += rz;
-        if (GetAsyncKeyState('D') & 0x8000) delta[0] -= rx, delta[2] -= rz;
+        if (GetAsyncKeyState('D') & 0x8000) delta[0] += rx, delta[2] += rz;
+        if (GetAsyncKeyState('A') & 0x8000) delta[0] -= rx, delta[2] -= rz;
         if (GetAsyncKeyState(VK_SPACE) & 0x8000) delta[1] += 0.6f;
         if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) || (GetAsyncKeyState('C') & 0x8000)) delta[1] -= 0.6f;
         if (GetAsyncKeyState('R') & 0x8000) g_noclipSpeed = std::min(g_noclipSpeed.load() + 0.05f, 10.f);
         if (GetAsyncKeyState('E') & 0x8000) g_noclipSpeed = std::max(g_noclipSpeed.load() - 0.05f, 0.1f);
     }
-    {
-        std::lock_guard<std::mutex> lock(g_nm);
-        for (int i = 0; i < 3; ++i) g_noclipPos[i] += delta[i] * g_noclipSpeed.load();
-    }
+    for (int i = 0; i < 3; ++i) g_noclipPos[i] += delta[i] * g_noclipSpeed.load();
+    gn::setPosition({g_noclipPos[0], g_noclipPos[1], g_noclipPos[2]});
     // Keep Faith out of falling and wall states while she floats.
     gn::Movement w{};
     w.state = 2;
@@ -141,57 +140,38 @@ void noclipClient(const gn::Movement& m, bool keys) {
                            GN_MOVE_WALL_RUNS);
 }
 
+// ---- bunny hop -------------------------------------------------------------------------------------------
+// The wall run jump window: after jumping off a wall run Faith touches the ground for a few frames
+// while her state still says jumping (8), and a jump then keeps her speed. Armed with F (once) or
+// always (Auto), the server tick casts a ray down every tick and jumps the moment both are true.
+std::atomic<bool> g_bhopArmed{false}, g_bhopAuto{false};
+std::atomic<float> g_bhopTolerance{0.10f}; // metres between her feet and the ground that count as "on it"
+std::atomic<float> g_groundDist{-1.f};     // last ray cast (-1: nothing below)
+std::atomic<int> g_bhops{0};
+DWORD g_bhopArmedAt = 0, g_lastHop = 0;
+
 void serverTick(float) {
-    if (!g_noclipActive) return;
     void* faith = gn::localServerCharacter();
-    gn::Transform t;
-    if (!faith || !gn::transformOf(faith, t)) return;
-    {
-        std::lock_guard<std::mutex> lock(g_nm);
-        for (int i = 0; i < 3; ++i) t.trans[i] = g_noclipPos[i];
-    }
-    gn::teleport(faith, t);
+    gn::Vec3 p;
+    if (!faith || !gn::positionOf(faith, p)) return;
+    gn::RayHit hit;
+    const bool hitGround = gn::raycast({p.x, p.y + 0.5f, p.z}, {p.x, p.y - 3.f, p.z}, hit);
+    const float dist = hitGround ? std::max(0.f, p.y - hit.position[1]) : -1.f;
+    g_groundDist = dist;
+    if (!g_bhopArmed && !g_bhopAuto) return;
+    if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
+    gn::Movement m;
+    if (!gn::movement(m) || m.state != 8 || dist < 0.f || dist > g_bhopTolerance) return;
+    if (GetTickCount() - g_lastHop < 250) return; // one jump per window
+    g_lastHop = GetTickCount();
+    gn::jump();
+    g_bhops.fetch_add(1);
+    g_bhopArmed = false;
 }
 
-// ---- bunny hop -----------------------------------------------------------------------------------------
-// MEC_Trainer's: take the friction away, and the moment Faith leaves the ground jump again with the
-// speed she had, then put the friction back.
-const char* const kFriction[] = {"TurningDeceleration", "AboveMaxSpeedDeceleration", "DirectionChange",
-                                 "ForwardFriction", "BackwardFriction", "StrafeFriction"};
-const float kFrictionOff[] = {0.f, 0.f, 1000.f, 0.f, 0.f, 0.f};
-bool g_bhop = false, g_bhopJumped = false;
-float g_bhopSpeed = 0.f;
-DWORD g_bhopAt = 0;
-
-void bhopStart(const gn::Movement& m) {
-    if (g_bhop || gn::gameState().content_active) return;
-    g_bhop = true;
-    g_bhopJumped = false;
-    g_bhopSpeed = m.speed + 0.1f;
-    for (int i = 0; i < 6; ++i) gn::setTuning(kFriction[i], kFrictionOff[i]);
-}
-
-void bhopTick(const gn::Movement& m) {
-    if (!g_bhop) return;
-    if (!m.on_ground && !g_bhopJumped) {
-        gn::Movement w{};
-        w.speed = g_bhopSpeed;
-        w.state = 8;
-        gn::setMovement(w, GN_MOVE_SPEED | GN_MOVE_STATE);
-        gn::jump();
-        g_bhopJumped = true;
-        g_bhopAt = GetTickCount();
-    }
-    if (g_bhopJumped && GetTickCount() - g_bhopAt > 50) {
-        g_bhop = false;
-        gn::Movement w{};
-        w.speed = g_bhopSpeed + 0.1f;
-        gn::setMovement(w, GN_MOVE_SPEED);
-        gn::Tuning t;
-        for (uint32_t i = 0; i < gn::tuningCount(); ++i) // friction back to the game's values
-            if (gn::tuningAt(i, t) && std::string(t.group) == "Running" && std::string(t.name) != "MaxRunSpeed")
-                gn::setTuning(t.name, t.default_value);
-    }
+void bhopArm() {
+    g_bhopArmed = true;
+    g_bhopArmedAt = GetTickCount();
 }
 
 // ---- client tick -----------------------------------------------------------------------------------------
@@ -240,22 +220,32 @@ void clientTick(float) {
             case 2: g_noStumble = !g_noStumble; break;
             case 3: savePosition(); break;
             case 4: loadPosition(); break;
-            case 5: bhopStart(m); break;
+            case 5: bhopArm(); break;
             }
         }
         was[i] = down;
     }
 
     // Noclip.
+    static int g_noclipGrace = 0;
     if (g_noclip && !g_noclipActive) {
-        std::lock_guard<std::mutex> lock(g_nm);
         g_noclipPos[0] = p.x, g_noclipPos[1] = p.y, g_noclipPos[2] = p.z;
         g_noclipActive = true;
     } else if (!g_noclip && g_noclipActive) {
+        // Let go where she is: standing, still, and any fall counted from here.
         g_noclipActive = false;
         gn::Movement w{};
         w.state = 2;
-        gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED);
+        w.last_ground_y = p.y;
+        gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED | GN_MOVE_LAST_GROUND_Y);
+        g_noclipGrace = 300; // and keep it that way until she lands (at most 10 s)
+    }
+    if (g_noclipGrace > 0) {
+        // The fall is measured from last_ground_y: keep it at her height until she is on the ground.
+        g_noclipGrace = m.on_ground ? 0 : g_noclipGrace - 1;
+        gn::Movement w{};
+        w.last_ground_y = p.y;
+        gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
     }
     if (g_noclipActive) {
         noclipClient(m, keys);
@@ -283,7 +273,6 @@ void clientTick(float) {
     if (g_sameWall && m.wall_count) w.wall_count = 0, fields |= GN_MOVE_WALL_COUNT;
     if (fields) gn::setMovement(w, fields);
 
-    bhopTick(m);
 }
 
 // ---- window -------------------------------------------------------------------------------------------
@@ -386,6 +375,15 @@ void trainerTab() {
     if (ImGui::Checkbox("Infinite wall runs", &v)) g_infRuns = v;
     v = g_fastLoads;
     if (ImGui::Checkbox("Fast loads", &v)) g_fastLoads = v;
+    ImGui::SeparatorText("Bunny hop (wall run jump window)");
+    if (ImGui::Button(g_bhopArmed ? "Armed..." : "Arm  [F]")) bhopArm();
+    ImGui::SameLine();
+    v = g_bhopAuto;
+    if (ImGui::Checkbox("Auto", &v)) g_bhopAuto = v;
+    float tol = g_bhopTolerance;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    if (ImGui::SliderFloat("Ground tolerance (m)", &tol, 0.f, 0.5f, "%.2f")) g_bhopTolerance = tol;
+    ImGui::TextDisabled("state %d, ground %.2f m, hops %d", g_state.load(), g_groundDist.load(), g_bhops.load());
     ImGui::SeparatorText("Position");
     if (ImGui::Button("Save  [4]")) savePosition();
     ImGui::SameLine();
@@ -451,6 +449,8 @@ void hud() {
         if (g_infClimbs) on += "InfClimbs  ";
         if (g_infRuns) on += "InfRuns  ";
         if (g_freezeTime) on += "FrozenTime  ";
+        if (g_bhopAuto) on += "AutoBhop  ";
+        else if (g_bhopArmed) on += "BhopArmed  ";
         if (!on.empty())
             ImGui::GetForegroundDrawList()->AddText(ImVec2(vp->WorkPos.x + 12.f, vp->WorkPos.y + vp->WorkSize.y - 30.f),
                                                     IM_COL32(50, 255, 120, 255), on.c_str());

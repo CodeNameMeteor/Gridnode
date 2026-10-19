@@ -271,6 +271,20 @@ int movementSet(const gn_movement* in, uint32_t fields) {
     return GN_OK;
 }
 
+// Faith's position as the animation system holds it (MEC_Trainer's playerX chain): character +0xd0
+// -> +0x128 (an Animatable, checked) -> +0x30 -> +0x50 (Vec3). Writing it moves Faith on the client
+// without a teleport, so the camera stays free (noclip).
+int positionSet(const float pos[3]) {
+    if (!pos) return GN_ERR_ARGUMENT;
+    const uintptr_t c = reinterpret_cast<uintptr_t>(localClientCharacter());
+    if (!c) return GN_ERR_UNAVAILABLE;
+    const uintptr_t anim = ptr(ptr(c + k::Character_AnimatableOwner) + k::AnimatableOwner_Animatable);
+    if (!typeIs(anim, "Animatable")) return GN_ERR_UNAVAILABLE;
+    const uintptr_t pose = ptr(anim + k::Animatable_Pose);
+    if (!pose) return GN_ERR_UNAVAILABLE;
+    return mem::write(pose + k::Pose_Position, pos, 3 * sizeof(float)) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
 // ---- game state -------------------------------------------------------------------------------------
 namespace {
 uintptr_t timeOfDayClock() {

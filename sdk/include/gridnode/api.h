@@ -319,6 +319,11 @@ typedef struct gn_api {
     /* ---- game state ------------------------------------------------------------------------------ */
     int (*game_state)(gn_game_state* out);
     int (*time_of_day_set)(float seconds); /* the level's clock; GN_ERR_UNAVAILABLE without one */
+
+    /* Moves Faith by writing the position the animation system holds for her (no teleport: the
+     * camera and her state carry on; physics may push her back out of geometry). For noclip-style
+     * movement every tick. For a normal move use teleport. Any thread. */
+    int (*position_set)(const float pos[3]);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

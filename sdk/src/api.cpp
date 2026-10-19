@@ -282,6 +282,7 @@ const gn_api* api() {
         a.tuning_set = tuningSet;
         a.game_state = gameStateGet;
         a.time_of_day_set = timeOfDaySet;
+        a.position_set = positionSet;
         return a;
     }();
     return &table;

@@ -71,6 +71,7 @@ int tuningAt(uint32_t index, gn_tuning* out);
 int tuningSet(const char* name, float value);
 int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
+int positionSet(const float pos[3]);
 
 // Settings and console (settings.cpp).
 struct SettingsEntry {

@@ -281,6 +281,11 @@ inline GameState gameState() {
     return s;
 }
 inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) == GN_OK; }
+// Moves Faith without a teleport (the camera stays free): for noclip-style movement every tick.
+inline bool setPosition(const Vec3& p) {
+    const float a[3] = {p.x, p.y, p.z};
+    return api().position_set(a) == GN_OK;
+}
 
 } // namespace gn
 
