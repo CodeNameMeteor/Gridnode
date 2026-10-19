@@ -273,30 +273,28 @@ void armDiff() {
         gn::log("diff: no Faith");
         return;
     }
-    uint64_t input = 0, ctx = 0;
-    gn::read(reinterpret_cast<const void*>(gn::rva(0x14256D7C0)), input);
-    gn::read(reinterpret_cast<const void*>(gn::rva(0x142401CB0)), ctx);
+    // Roots: Faith, and her ClientPlayer (Faith +0x238; also ClientGameContext +0x68 -> +0x568).
+    uint64_t player = 0;
+    gn::read(static_cast<char*>(cf) + 0x238, player);
     std::vector<std::pair<std::string, uint64_t>> roots = {{"clientFaith", reinterpret_cast<uint64_t>(cf)},
-                                                           {"inputDevices", input},
-                                                           {"clientGameContext", ctx}};
+                                                           {"clientPlayer", player}};
     std::unordered_set<uint64_t> seen;
     for (size_t r = 0; r < roots.size(); ++r) {
         g_snap.rootNames.push_back(roots[r].first);
         if (roots[r].second && seen.insert(roots[r].second).second) g_snap.nodes.push_back({roots[r].second, -1, 0, 0, static_cast<int>(r)});
     }
-    std::vector<uint64_t> buf(kSpan / 8);
+    std::vector<uint64_t> data;
     for (size_t i = 0; i < g_snap.nodes.size(); ++i) {
         const Node n = g_snap.nodes[i];
-        uint32_t span = n.root == 1 && n.depth == 0 ? 0x8000 : kSpan; // the input object is big
-        std::vector<uint64_t> big;
-        uint64_t* data = buf.data();
-        if (span > kSpan) {
-            big.resize(span / 8);
-            data = big.data();
-        }
-        while (span >= 0x40 && gn::api().read(reinterpret_cast<const void*>(n.addr), data, span) != GN_OK) span /= 2;
+        // Only the object itself: its reflected size when known, so neighbours in memory are not mistaken for it.
+        gn::Type ty = gn::Type::of(reinterpret_cast<void*>(n.addr));
+        uint32_t span = ty && ty.size() >= 0x10 ? ty.size() : 0x200;
+        if (n.root == 1 && n.depth == 0) span = 0x3000; // ClientPlayer is big and not reflected in full
+        span = (span + 7) & ~7u;
+        data.assign(span / 8, 0);
+        while (span >= 0x40 && gn::api().read(reinterpret_cast<const void*>(n.addr), data.data(), span) != GN_OK) span /= 2;
         g_snap.spans.push_back(span >= 0x40 ? span : 0);
-        if (span < 0x40 || n.depth >= 3 || g_snap.nodes.size() >= 30000) continue;
+        if (span < 0x40 || n.depth >= 3 || g_snap.nodes.size() >= 40000) continue;
         for (uint32_t k = 0; k < span / 8; ++k) {
             const uint64_t p = data[k];
             if (!heapPtr(p) || !seen.insert(p).second) continue;
@@ -339,8 +337,9 @@ void diffTick() {
                         }
                         float f;
                         memcpy(&f, &B[k], 4);
-                        gn::log("diff: %s %s+%llx  held = %u / %g", g_snap.rootNames[g_snap.nodes[i].root].c_str(), path.c_str(),
-                                static_cast<unsigned long long>(k * 4), B[k], f);
+                        gn::Type own = gn::Type::of(reinterpret_cast<void*>(g_snap.nodes[i].addr));
+                        gn::log("diff: %s %s+%llx [%s]  held = %u / %g", g_snap.rootNames[g_snap.nodes[i].root].c_str(), path.c_str(),
+                                static_cast<unsigned long long>(k * 4), own ? own.name() : "?", B[k], f);
                         ++hits;
                     }
                 }
