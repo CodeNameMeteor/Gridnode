@@ -23,6 +23,21 @@ DEFAULT_DUMP = os.path.join(ROOT, "db", "reflected", "gridnode-reflected.json")
 TYPES_OUT = os.path.join(ROOT, "sdk", "include", "gridnode", "generated", "types.hpp")
 
 
+class UserError(Exception):
+    pass
+
+
+def _find(path: str | None, what: str) -> str | None:
+    """A path as given (relative to the current folder), else relative to the repository root, so
+    the commands work from any folder."""
+    if path is None:
+        return None
+    for candidate in (path, os.path.join(ROOT, path)):
+        if os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    raise UserError(f"{what} not found: {path}\n  (looked in {os.getcwd()} and in the repository root {ROOT})")
+
+
 def _load(ann_dir: str, reflected_path: str | None, quiet=False):
     db, p = annotations.load(ann_dir)
     r = reflected.Reflected.load(reflected_path) if reflected_path else None
@@ -52,6 +67,17 @@ def _write(path: str, text: str):
 
 
 def main(argv=None) -> int:
+    try:
+        return _main(argv)
+    except UserError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+def _main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="gridnode", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--annotations", default=ANNOTATIONS, help="annotation folder (default: db/annotations)")
     ap.add_argument("--version", action="version", version=f"gridnode-gen {__version__}")
@@ -82,7 +108,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     if a.cmd == "validate":
-        db, r, p = _load(a.annotations, a.reflected)
+        db, r, p = _load(a.annotations, _find(a.reflected, "dump"))
         n = len(db.classes) + len(db.structs) + len(db.globals) + len(db.functions) + len(db.hooks)
         print(f"{len(db.files)} files, {len(db.classes)} classes, {len(db.structs)} structs, {len(db.globals)} globals, "
               f"{len(db.functions)} functions, {len(db.hooks)} hooks ({n} items): "
@@ -98,10 +124,8 @@ def main(argv=None) -> int:
         return 0
 
     if a.cmd in ("types", "setup"):
-        dump = a.reflected if a.cmd == "types" else a.dump
-        if not os.path.exists(dump):
-            print(f"error: no dump at {dump}. Make one with gridnode.dll (docs/dump-format.md).", file=sys.stderr)
-            return 1
+        dump = _find(a.reflected if a.cmd == "types" else a.dump,
+                     "dump (make one with gridnode.dll, see docs/dump-format.md)")
         db, r, p = _load(a.annotations, dump)
         if p.errors:
             print("fix the errors above first", file=sys.stderr)
@@ -123,7 +147,7 @@ def main(argv=None) -> int:
         db, _, p = _load(a.annotations, None, quiet=True)
         if p.errors:
             return 1
-        img = pe_image.PeImage(a.image)
+        img = pe_image.PeImage(_find(a.image, "image"))
         q, n = verify_image.check(db, img)
         for e_ in q.errors:
             print("error:", e_, file=sys.stderr)
@@ -137,5 +161,6 @@ def main(argv=None) -> int:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         sys.path.insert(0, here)
         import compare_dumps
-        return compare_dumps.main([a.gridnode, a.ghidra] + (["--strict"] if a.strict else []))
+        return compare_dumps.main([_find(a.gridnode, "GridNode dump"), _find(a.ghidra, "Ghidra dump")] +
+                                  (["--strict"] if a.strict else []))
     return 2

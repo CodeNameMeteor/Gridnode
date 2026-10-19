@@ -34,6 +34,22 @@ def write_annotations(d: str, text: str):
         f.write(textwrap.dedent(text))
 
 
+class Cli(unittest.TestCase):
+    def test_missing_dump_is_a_message_not_a_traceback(self):
+        from gridnode_gen import cli
+        self.assertEqual(cli.main(["validate", "--reflected", "no/such/file.json"]), 1)
+
+    def test_paths_relative_to_repo_root(self):
+        from gridnode_gen import cli
+        old = os.getcwd()
+        try:
+            os.chdir(HERE)  # not the repository root
+            rel = os.path.relpath(os.path.join(FIXTURE, "reflected.json"), ROOT)
+            self.assertEqual(cli._find(rel, "dump"), os.path.join(FIXTURE, "reflected.json"))
+        finally:
+            os.chdir(old)
+
+
 class TypeLanguage(unittest.TestCase):
     def test_types(self):
         t = parse_type("const LinearTransform*")
