@@ -40,7 +40,7 @@ structs:
     sources: [gridnode]
     note: "Constructed by 0x1432f8aa0. Read an action: 0x1432fc490 (float) / 0x1432fc330 (digital); set: 0x143301620."
     members:
-      - { offset: 0x350, name: analog, type: "f32[120]" }
+      - { offset: 0x350, name: analog, type: "f32[6]", note: "One float per analog action: 6 in Catalyst (the registry's analogCount). The constructor clears 0x350..0x530." }
       - { offset: 0x4b8, name: digitalBits, type: u64 }
 
 functions:

@@ -347,6 +347,10 @@ public class GridNodeSync extends GhidraScript {
 			if (s.getSymbolType() != SymbolType.LABEL || s.getSource() != SourceType.USER_DEFINED || s.isExternal()) {
 				continue;
 			}
+			// A label at a function's entry is the function's own name, already exported above.
+			if (getFunctionAt(s.getAddress()) != null) {
+				continue;
+			}
 			JsonObject o = new JsonObject();
 			o.addProperty("name", qualified(s));
 			o.addProperty("va", s.getAddress().getOffset());

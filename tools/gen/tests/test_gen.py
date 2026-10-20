@@ -310,7 +310,8 @@ class GhidraSync(unittest.TestCase):
                  "signatureUserDefined": True},
                 {"name": "odd", "va": 0x140123460, "prototype": "?? broken", "signatureUserDefined": True},
             ],
-            "labels": [{"name": "g_thing", "va": 0x142000010, "type": "pointer"}],
+            "labels": [{"name": "g_thing", "va": 0x142000010, "type": "pointer"},
+                       {"name": "Thing::update", "va": 0x140123450, "type": ""}],  # label at a function entry
             "structs": [],
         }
         text, counts = ghidra_sync.from_ghidra(export, self.db)

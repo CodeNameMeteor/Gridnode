@@ -164,7 +164,12 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
     for c in db.classes.values():
         if c.vtable:
             known_vas.setdefault(c.vtable, f"{c.name}::vftable")
-    taken = set(db.functions) | set(db.globals) | set(db.code)
+    for h in db.hooks.values():
+        known_vas.setdefault(h.original, h.name)   # the function a hook replaces
+        known_vas.setdefault(h.slot, f"{h.name}_slot")
+    # Every name an annotation already uses (symbols, hooks, types, constants) is taken.
+    taken = (set(db.functions) | set(db.globals) | set(db.code) | set(db.hooks) | set(db.classes) | set(db.structs)
+             | set(db.constants))
 
     funcs, globs, renamed, members = [], [], [], {}
     for f in doc.get("functions", []):
@@ -181,8 +186,11 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
         note = f"Named in Ghidra as {name}." + ("" if sig else f" Prototype not carried over: {f.get('prototype', '?')}")
         funcs.append({"name": ident, "va": va, "signature": sig or "void()", "note": note,
                       "confidence": "inferred" if sig else "hypothesis"})
+    function_vas = {int(f["va"]) for f in doc.get("functions", [])}
     for g in doc.get("labels", []):
         va, name = int(g["va"]), g["name"]
+        if va in function_vas:  # a label at a function's entry (older exports): the function covers it
+            continue
         if va in known_vas:
             if known_vas[va].split("::")[-1] != name.split("::")[-1]:
                 renamed.append((va, known_vas[va], name))
