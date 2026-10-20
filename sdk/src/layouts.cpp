@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "gridnode/engine.hpp"
@@ -535,20 +536,6 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
 }
 
-// Client thread: the game's own placement of every copy of the member (what the group's
-// transform-changed does per member), from the physics instances or InstanceTransforms.
-void replaceMemberByGame(const GroupProp& g) {
-    static const uint32_t partRange = memberField("PhysicsPartRange");
-    if (!g.block || !g.member || !g.clientGroup) return;
-    const uintptr_t space = mem::readOr<uintptr_t>(g.clientGroup + e::cls::ComponentEntity::off::transformSpace);
-    uint8_t sel[2] = {};
-    if (!space || !mem::read(space + 9, sel, 2)) return;
-    const uintptr_t groupTransform = space + 0x10 + (sel[0] + 2u * sel[1]) * 0x20;
-    const uint32_t first = mem::readOr<uint32_t>(g.member + partRange);
-    GN_LOG("layouts: group part %u: the game's placement for its member (block %llx, first part %u)", g.part, static_cast<unsigned long long>(g.block), first);
-    reinterpret_cast<void (*)(uintptr_t, uintptr_t, uint32_t)>(mem::rva(e::function::ClientStaticModelGroup_placeMember))(g.block, groupTransform, first);
-}
-
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
 void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     gn_transform G{};
@@ -673,6 +660,91 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
     return g.clientGroup != 0;
 }
 
+// ---- standalone copies of group props (hide and replace) -------------------------------------------
+// Entities do not keep their bus; it is in their creation info (+0x10), so GridNode records it when
+// a group is created.
+void setStatus(const std::string& s);
+std::mutex g_busM;
+std::unordered_map<uintptr_t, uintptr_t> g_groupBus; // group entity -> its bus (g_busM)
+
+void onCreatedGroup(void* entity, void* ci, void*) {
+    if (!entity || !ci) return;
+    const uintptr_t bus = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10);
+    if (!bus) return;
+    std::lock_guard<std::mutex> lock(g_busM);
+    g_groupBus[reinterpret_cast<uintptr_t>(entity)] = bus;
+}
+
+uintptr_t busOf(uintptr_t group) {
+    std::lock_guard<std::mutex> lock(g_busM);
+    const auto it = g_groupBus.find(group);
+    return it == g_groupBus.end() ? 0 : it->second;
+}
+
+uintptr_t memberType(uintptr_t member) {
+    static const uint32_t off = memberField("MemberType");
+    return member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
+}
+
+// Creates and initialises an entity from `data` on the server (as levelSublevel_spawnEntityGroup
+// does). Server thread.
+uintptr_t spawnServer(uintptr_t data, uintptr_t bus, const gn_transform& at) {
+    alignas(16) uint8_t ci[0x200] = {};
+    alignas(16) gn_transform t = at;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ServerEntityCreationInfo_ctor))(ci, data, bus, &t);
+    const uintptr_t entity = reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::entityCreator_spawnIntoBus))(ci, 0);
+    if (!entity) return 0;
+    alignas(16) uint8_t init[0x40] = {};
+    reinterpret_cast<void (*)(uint8_t*, uint64_t, uint64_t)>(mem::rva(e::function::ServerEntityInitInfo_ctor))(init, 0, 0);
+    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::Entity_init))(entity, init);
+    return entity;
+}
+
+// The same on the client (as the client group does for a destroyed part). Client thread.
+uintptr_t spawnClient(uintptr_t data, uintptr_t bus, const gn_transform& at) {
+    alignas(16) uint8_t ci[0x200] = {};
+    alignas(16) gn_transform t = at;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ClientEntityCreationInfo_ctor))(ci, 0, bus, &t);
+    uintptr_t result[3] = {};
+    reinterpret_cast<void (*)(uintptr_t*, uint8_t*, uintptr_t, uint64_t, uint64_t)>(mem::rva(e::function::ClientEntity_spawn))(result, ci, data, 0, 0);
+    if (result[2]) reinterpret_cast<void (*)(uintptr_t)>(mem::rva(e::function::EntityBus_release))(result[2]);
+    const uintptr_t entity = result[0];
+    if (!entity) return 0;
+    alignas(16) uint8_t init[0x40] = {};
+    reinterpret_cast<void (*)(uint8_t*)>(mem::rva(e::function::ClientEntityInitInfo_ctor))(init);
+    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::Entity_init))(entity, init);
+    return entity;
+}
+
+void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform& at);
+
+// Server thread: hide the group copy and put a standalone entity of its member type in its place.
+void makeStandalone(const GroupProp& g, const gn_transform& world) {
+    const uintptr_t data = memberType(g.member);
+    const uintptr_t sbus = busOf(g.serverGroup), cbus = busOf(g.clientGroup);
+    const reflect::Type* dt = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    GN_LOG("layouts: make standalone: part %u, data %llx (%s), server bus %llx, client bus %llx", g.part, static_cast<unsigned long long>(data),
+           dt ? dt->name.c_str() : "-", static_cast<unsigned long long>(sbus), static_cast<unsigned long long>(cbus));
+    if (!data || !sbus || !cbus) return setStatus("Make standalone: the group's data or bus is unknown (pick again after the level reloads)");
+    const uintptr_t se = spawnServer(data, sbus, world);
+    const reflect::Type* st = se ? registry().typeOf(mem::ProcessMemory(), se) : nullptr;
+    GN_LOG("layouts: make standalone: server entity %llx (%s)", static_cast<unsigned long long>(se), st ? st->name.c_str() : "-");
+    if (!se) return setStatus("Make standalone: the server did not create the entity");
+    // Hide the group copy: its collision and render object far below the level.
+    gn_transform away = world;
+    away.trans[1] -= 15000.f;
+    moveGroupProp(g, away);
+    alignas(16) gn_transform w = world;
+    client().post([data, cbus, w, se] {
+        const uintptr_t ce = spawnClient(data, cbus, w);
+        const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+        GN_LOG("layouts: make standalone: client entity %llx (%s)", static_cast<unsigned long long>(ce), ct ? ct->name.c_str() : "-");
+        selectSpawned(se, ce, w);
+    });
+}
+
 // ---- the editor (render thread; game work is posted to the realms) -------------------------------------
 struct Selected {
     std::string kind;
@@ -681,6 +753,7 @@ struct Selected {
     gn_transform orig{};   // where the level had it (rotation included)
     std::vector<std::pair<uintptr_t, const reflect::Type*>> entities; // its server and client entity
     bool group = false;    // a prop inside a static model group (experimental; not saved)
+    bool spawned = false;  // a standalone copy GridNode made (not saved yet)
     GroupProp gp;
 };
 std::mutex g_selM;
@@ -714,6 +787,26 @@ std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
         if (match) return {p, t};
     }
     return {0, nullptr};
+}
+
+// Client thread, after a standalone copy was made: select it (both halves) for editing.
+void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform& at) {
+    Selected s;
+    s.spawned = true;
+    for (uintptr_t e : {serverEnt, clientEnt}) {
+        const reflect::Type* t = e ? registry().typeOf(mem::ProcessMemory(), e) : nullptr;
+        if (t) s.entities.push_back({e, t});
+        if (t && s.kind.empty()) s.kind = kindOf(t->name);
+    }
+    s.now = s.orig = at;
+    memcpy(s.at, at.trans, sizeof(s.at));
+    char b[200];
+    snprintf(b, sizeof(b), "Made a standalone %s (%llu entities) in place of the group prop. Move it as usual; not saved to layouts yet.",
+             s.kind.c_str(), static_cast<unsigned long long>(s.entities.size()));
+    std::lock_guard<std::mutex> lock(g_selM);
+    g_sel = s;
+    g_haveSel = !s.entities.empty();
+    g_status = b;
 }
 
 // Server thread: a ray from the camera along its view; the object whose collision it hits.
@@ -848,6 +941,7 @@ void moveSelection(const gn_transform& to) {
         return;
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, to);
+    if (s.spawned) return; // standalone copies are not saved to layouts yet
     std::lock_guard<std::mutex> lock(g_m);
     for (Edit& ed : g_edits)
         if (ed.kind == s.kind && dist2(ed.at, s.at) <= kMatch * kMatch) {
@@ -910,6 +1004,8 @@ void start(const std::wstring& dir) {
     g_dir = dir + L"layouts\\";
     for (const char* cls : {"ServerStaticModelEntity", "ClientStaticModelEntity"})
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
+    for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
+        onCreated("gridnode", cls, &onCreatedGroup, nullptr);
 }
 
 // GridNode's thread, when a level starts: its layout, if any.
@@ -926,6 +1022,10 @@ void onLevel(const std::string& level) {
         g_haveSel = false;
     }
     g_sweptThisLevel = false;
+    {
+        std::lock_guard<std::mutex> lock(g_busM);
+        g_groupBus.clear();
+    }
     if (!edits.empty()) GN_LOG("layouts: %llu edits for %s", static_cast<unsigned long long>(edits.size()), level.c_str());
 }
 
@@ -995,9 +1095,11 @@ void draw(bool* open) {
         if (ImGui::Button("Put back where the level had it")) resetSelection();
         if (s.group) {
             ImGui::SameLine();
-            if (ImGui::Button("Re-place member (game code)")) {
+            if (ImGui::Button("Make standalone")) {
                 const GroupProp gp = s.gp;
-                client().post([gp] { replaceMemberByGame(gp); });
+                const gn_transform at = s.orig;
+                setStatus("Making a standalone copy...");
+                server().post([gp, at] { makeStandalone(gp, at); });
             }
         }
         ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);

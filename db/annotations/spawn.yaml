@@ -105,6 +105,24 @@ functions:
     confidence: inferred
     sources: [research]
     note: Base ctor with ClientGameWorld and realm 0. Used by the client static model group when a part is destroyed (0x143190730).
+  - name: Entity_init
+    va: 0x1431661c0
+    signature: "void(void* entity, void* initInfo)"
+    confidence: inferred
+    sources: [research]
+    note: "Returns if the entity's flags (+0x18) have 0x8 (already initialised); else vtable +0x78 (or +0x90 with flag 0x40)."
+  - name: ServerEntityInitInfo_ctor
+    va: 0x14335cb50
+    signature: "void(void* info, u64 a2, u64 a3)"
+    confidence: inferred
+    sources: [research]
+    note: "0x30 bytes: vtable 0x141b477a8, a2, a3, 0, u32 1, u8 1 (+0x24), u8 1 (+0x28). levelSublevel_spawnEntityGroup builds one per entity it spawned and calls Entity_init."
+  - name: ClientEntityInitInfo_ctor
+    va: 0x1431c0460
+    signature: "void(void* info)"
+    confidence: inferred
+    sources: [research]
+    note: "0x30 bytes: vtable 0x141b01f58, 0, 0, 0, u32 0, u8 1 (+0x24), u16 1 (+0x28)."
   - name: ClientEntity_spawn
     va: 0x1431c4830
     signature: "void*(void* result, EntityCreationInfo* ci, void* data, u64 a4, u64 a5)"
