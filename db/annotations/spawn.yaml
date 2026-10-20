@@ -93,8 +93,24 @@ functions:
     signature: "void(void* bus)"
   - name: ServerEntityCreationInfo_ctor
     va: 0x14335cab0
-    signature: "void(EntityCreationInfo* ci, void* player, void* bus, const LinearTransform* transform)"
+    signature: "void(EntityCreationInfo* ci, void* data, void* bus, const LinearTransform* transform)"
     confidence: inferred
+    note: >-
+      Base ctor with the physics query manager and realm 1; stores the transform at +0x40 and
+      `data` at +0xd0 (the entity data to create). Used with entityCreator_spawnIntoBus by
+      spawnSingleEntityFromSublevelData (0x142ca6260).
+  - name: ClientEntityCreationInfo_ctor
+    va: 0x1431c03b0
+    signature: "void(EntityCreationInfo* ci, void* data, void* bus, const LinearTransform* transform)"
+    confidence: inferred
+    sources: [research]
+    note: Base ctor with ClientGameWorld and realm 0. Used by the client static model group when a part is destroyed (0x143190730).
+  - name: ClientEntity_spawn
+    va: 0x1431c4830
+    signature: "void*(void* result, EntityCreationInfo* ci, void* data, u64 a4, u64 a5)"
+    confidence: inferred
+    sources: [research]
+    note: "Creates a client entity from `data`; result[0] is the entity, result[2] (+0x10) a bus reference to release (0x143190730)."
   - name: Blueprint_instantiate
     va: 0x14335e390
     signature: "void(void* result, EntityCreationInfo* ci, void* blueprint, void* referenceData, u64 a5)"
@@ -138,7 +154,11 @@ functions:
     sources: [ghidra]
   - name: entityCreator_spawnIntoBus
     va: 0x14335e240
-    note: "Named in Ghidra as entityCreator_spawnIntoBus. Signature not known yet."
+    signature: "void*(EntityCreationInfo* ci, void* parentBus)"
+    note: >-
+      Named in Ghidra as entityCreator_spawnIntoBus. Returns the created entity (0 while
+      entity spawning is disabled). ci->data's vtable +0x28 (realm) gives the creator, whose
+      vtable +8 creates; the data's own Transform is combined with ci->transform (0x143167120).
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_Blueprint_instantiateImpl

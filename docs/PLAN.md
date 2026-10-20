@@ -418,13 +418,16 @@ Findings while doing steps 2 and 5:
 - Confirmed in game 2026-10-20: a moved prop's collision follows (server 1 body, client 2), and
   picking selects the exact prop hit. A ray into a group reports the instance in the hit's part
   (shape key): different props in one group give different parts.
-- Group props (research 2026-10-20): a ray's part goes through the GroupRigidBody's part map
-  (+0x110) to an instance of its compound shape (+0x58, instances at +0x60, 0x80 each). The client
-  group re-places its render objects from those instances (or the member's InstanceTransforms) in
-  its transform-changed function. GridNode writes the instance and calls that function; the
-  compound's culling tree and boundary are not updated yet, so collision may be lost away from the
-  original place. Alternative if that fails: hide the copy and spawn a standalone copy of its
-  `MemberType` there.
+- Group props (research and tests 2026-10-20): a ray's part goes through the GroupRigidBody's
+  part map (+0x110) to an instance of its compound shape (+0x58, instances at +0x60, 0x80 each).
+  Writing the instance moves the copy's **collision** (confirmed, also for large moves). The
+  copy's render object (a RigidMeshEntity per copy) only drives culling: moving it hides the copy
+  everywhere, because the drawn mesh comes from batches built when the level loads. Decision:
+  props in groups are edited by **hide and replace**. The copy is hidden (instance and render
+  object moved far away), and a standalone entity is spawned from the member's `MemberType`
+  data at the same place (server: ServerEntityCreationInfo_ctor + entityCreator_spawnIntoBus;
+  client: ClientEntityCreationInfo_ctor + ClientEntity_spawn, as the group does for destroyed
+  parts). This is also M7 step 3.
 - Most level props are copies inside StaticModelGroups, whose collision is one Havok
   `hknpStaticCompoundShape` (the `GroupRigidBody`), one instance per copy. Notes on that and other
   object facts from the Frosty–Unity Pipeline are in `docs/research/frosty-unity-pipeline.md`.
