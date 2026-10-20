@@ -118,4 +118,10 @@ constants:
   - { name: Entity_Flags, value: 0x18, confidence: inferred, sources: [research], note: "u32 flags of an entity." }
   - { name: EntityFlag_NotifyTransform, value: 0x8, confidence: inferred, sources: [research], note: "SpatialEntity_setTransform calls vtable +0xe0 (transform changed) when set." }
   - { name: EntityFlag_TeleportPhysics, value: 0x8000000, confidence: inferred, sources: [research], note: "A physics entity's transform-changed (0x1431cbcd0) moves its physics object (vtable +0xf0) only when set: the runtime form of TeleportPhysicsOnTransformChanges." }
-  - { name: PhysicsEntity_Physics, value: 0x60, confidence: inferred, sources: [research], note: "ServerPhysicsEntity / ClientPhysicsEntity: the physics object (collision)." }
+  - { name: PhysicsEntity_Physics, value: 0x60, confidence: inferred, sources: [research], note: "ServerPhysicsEntity / ClientPhysicsEntity: its physics component (ServerStaticModelPhysicsComponent for a static model). Its vtable +0xf0 (0x1434e2470) only refreshes the broadphase from the bodies' current transforms; it does not move them." }
+  - { name: PhysicsComponent_BodyIds, value: 0x30, confidence: inferred, sources: [research], note: "u32* array of body ids (the same ids a ray hit reports)." }
+  - { name: PhysicsComponent_Manager, value: 0x58, confidence: inferred, sources: [research], note: "PhysicsManager*." }
+  - { name: PhysicsComponent_BodyCount, value: 0x60, confidence: inferred, sources: [research], note: "u16." }
+  - { name: PhysicsManager_Owners, value: 0xf0, confidence: inferred, sources: [research], note: "Owner table indexed by bits 16..23 of a body id (0x1434ee790); an owner's PhysicsOwner_Objects is indexed by the low 16 bits." }
+  - { name: RigidBody_vf_getTransform, value: 0x170, confidence: inferred, sources: [research], note: "LinearTransform*(RigidBody*, LinearTransform* out): from the Havok body (0x1434f13f0)." }
+  - { name: RigidBody_vf_setTransform, value: 0x178, confidence: inferred, sources: [research], note: "void(RigidBody*, const LinearTransform*, bool teleport): hknpWorld setBodyTransform (0x1434f21e0)." }

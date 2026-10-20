@@ -89,43 +89,82 @@ void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& 
     (isServerClass(type->name) ? g_serverQ : g_clientQ).push_back({entity, type, to});
 }
 
-// A physics entity's collision follows its transform only when the entity's flags say so: the
-// transform-changed notification (flag NotifyTransform) reaches the physics entity, which moves its
-// physics object only with flag TeleportPhysics (set at creation from the data's
-// TeleportPhysicsOnTransformChanges, which is off for level props). Both are set on the objects
-// edits move, and only on those.
-// Research: what an object is and what it points to (types of its first qwords), for the log.
-void describe(const char* tag, uintptr_t obj) {
-    if (!obj) return;
-    const uintptr_t vt = mem::readOr<uintptr_t>(obj);
-    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
-    GN_LOG("layouts: %s %llx: %s, vtable %llx, vf+0xf0 %llx", tag, static_cast<unsigned long long>(obj), t ? t->name.c_str() : "no reflected type",
-           static_cast<unsigned long long>(vt), static_cast<unsigned long long>(vt ? mem::readOr<uintptr_t>(vt + 0xf0) : 0));
-    for (uint32_t off = 8; off < 0xa0; off += 8) {
-        const uintptr_t q = mem::readOr<uintptr_t>(obj + off);
-        if (q < 0x10000) continue;
-        const reflect::Type* qt = registry().typeOf(mem::ProcessMemory(), q);
-        const uintptr_t qvt = mem::readOr<uintptr_t>(q);
-        GN_LOG("layouts:   +%02x %llx %s (vtable %llx)", off, static_cast<unsigned long long>(q), qt ? qt->name.c_str() : "-",
-               static_cast<unsigned long long>(mem::inImage(qvt) ? qvt : 0));
+// ---- collision bodies ----------------------------------------------------------------------------------
+// A physics entity's component lists its bodies by id; an id leads to its RigidBody through the
+// physics manager's owner table (bits 16..23) and that owner's object table (low 16 bits). Moving an
+// entity does not move its bodies (the component only refreshes their bounds), so edits move them
+// with RigidBody's own setTransform.
+template <class F>
+void forEachBody(uintptr_t entity, F&& fn) {
+    namespace c = e::constant;
+    static const reflect::Type* rigid = registry().find("RigidBody");
+    const uintptr_t comp = mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics);
+    if (!comp || !rigid) return;
+    const uint16_t count = mem::readOr<uint16_t>(comp + c::PhysicsComponent_BodyCount);
+    const uintptr_t ids = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_BodyIds);
+    const uintptr_t manager = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_Manager);
+    const uintptr_t owners = manager ? mem::readOr<uintptr_t>(manager + c::PhysicsManager_Owners) : 0;
+    if (!ids || !owners || count > 64) return;
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t id = mem::readOr<uint32_t>(ids + i * 4u, 0xffffffffu);
+        if (id == 0xffffffffu) continue;
+        const uintptr_t owner = mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8);
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects) : 0;
+        const uintptr_t body = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8) : 0;
+        const reflect::Type* bt = body ? registry().typeOf(mem::ProcessMemory(), body) : nullptr;
+        fn(id, bt && registry().isKindOf(bt, rigid) ? body : 0);
     }
 }
 
-void letPhysicsFollow(uintptr_t entity, const reflect::Type* t) {
+// `p` (a point or a direction) from `from`'s frame into `to`'s. Rows may be scaled, so the local
+// coordinates are dot / |row|^2.
+void reframe(const gn_transform& from, const gn_transform& to, const float* p, bool point, float* out) {
+    float v[3] = {p[0], p[1], p[2]};
+    if (point)
+        for (int k = 0; k < 3; ++k) v[k] -= from.trans[k];
+    const float* rows[3] = {from.right, from.up, from.forward};
+    const float* rowsTo[3] = {to.right, to.up, to.forward};
+    float l[3];
+    for (int r = 0; r < 3; ++r) {
+        const float* b = rows[r];
+        const float n = b[0] * b[0] + b[1] * b[1] + b[2] * b[2];
+        l[r] = n > 1e-12f ? (v[0] * b[0] + v[1] * b[1] + v[2] * b[2]) / n : 0.f;
+    }
+    for (int k = 0; k < 3; ++k) out[k] = l[0] * rowsTo[0][k] + l[1] * rowsTo[1][k] + l[2] * rowsTo[2][k] + (point ? to.trans[k] : 0.f);
+}
+
+void normalize(float* v) {
+    const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (n > 1e-6f)
+        for (int k = 0; k < 3; ++k) v[k] /= n;
+}
+
+// Moves the bodies of `entity` from `before` to `after`, each keeping its place relative to the
+// entity. On the entity's realm thread.
+void moveBodies(uintptr_t entity, const reflect::Type* t, const gn_transform& before, const gn_transform& after) {
     namespace c = e::constant;
-    static const reflect::Type* server = registry().find("ServerPhysicsEntity");
-    static const reflect::Type* client = registry().find("ClientPhysicsEntity");
-    if (!t || !((server && registry().isKindOf(t, server)) || (client && registry().isKindOf(t, client)))) return;
-    uint32_t flags = 0;
-    if (!mem::read(entity + c::Entity_Flags, flags)) return;
-    const uint32_t want = flags | c::EntityFlag_NotifyTransform | c::EntityFlag_TeleportPhysics;
+    int moved = 0, total = 0;
+    forEachBody(entity, [&](uint32_t, uintptr_t body) {
+        ++total;
+        if (!body) return;
+        const uintptr_t vt = mem::readOr<uintptr_t>(body);
+        const uintptr_t get = vt ? mem::readOr<uintptr_t>(vt + c::RigidBody_vf_getTransform) : 0;
+        const uintptr_t set = vt ? mem::readOr<uintptr_t>(vt + c::RigidBody_vf_setTransform) : 0;
+        if (!mem::inImage(get) || !mem::inImage(set)) return;
+        alignas(16) gn_transform was{}, now{};
+        reinterpret_cast<void* (*)(uintptr_t, gn_transform*)>(get)(body, &was);
+        if (!std::isfinite(was.trans[0]) || !std::isfinite(was.trans[1]) || !std::isfinite(was.trans[2])) return;
+        reframe(before, after, was.right, false, now.right);
+        reframe(before, after, was.up, false, now.up);
+        reframe(before, after, was.forward, false, now.forward);
+        reframe(before, after, was.trans, true, now.trans);
+        normalize(now.right), normalize(now.up), normalize(now.forward); // bodies carry no scale
+        reinterpret_cast<void (*)(uintptr_t, const gn_transform*, bool)>(set)(body, &now, true);
+        ++moved;
+    });
     static std::atomic<int> said{0};
     if (said.fetch_add(1) < 6)
-        GN_LOG("layouts: %s %llx: flags %08x -> %08x, physics object %llx", t->name.c_str(), static_cast<unsigned long long>(entity), flags,
-               want, static_cast<unsigned long long>(mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics)));
-    if (want != flags) mem::write<uint32_t>(entity + c::Entity_Flags, want);
-    static std::atomic<int> described{0};
-    if (described.fetch_add(1) < 2) describe(t->name.c_str(), mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics));
+        GN_LOG("layouts: %s %llx: moved %d of %d collision bodies", t->name.c_str(), static_cast<unsigned long long>(entity), moved, total);
 }
 
 void runQueue(std::deque<Move>& q) {
@@ -137,8 +176,10 @@ void runQueue(std::deque<Move>& q) {
     for (const Move& m : work) {
         // Still the same object (not destroyed and reused since)?
         if (registry().typeOf(mem::ProcessMemory(), m.entity) != m.type) continue;
-        letPhysicsFollow(m.entity, m.type);
+        gn_transform before{};
+        const bool had = entityTransform(reinterpret_cast<void*>(m.entity), before);
         entitySetTransform(reinterpret_cast<void*>(m.entity), &m.to);
+        if (had) moveBodies(m.entity, m.type, before, m.to);
     }
 }
 
@@ -308,20 +349,15 @@ void collectPair(Selected& s, const float* pos) {
     }
 }
 
-// The entity whose collision a ray hit: a physics entity holds its physics object at
-// PhysicsEntity_Physics; failing that, an entity the object points back to.
-std::pair<uintptr_t, const reflect::Type*> entityOfPhysics(uintptr_t object) {
-    if (!object) return {0, nullptr};
+// The entity whose collision a ray hit: the server physics entity that lists the hit body's id.
+std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
+    if (body == 0xffffffffu) return {0, nullptr};
     static const reflect::Type* physicsEntity = registry().find("ServerPhysicsEntity");
-    const auto tracked = inspector::tracked();
-    for (const auto& [p, t] : tracked)
-        if (t && physicsEntity && registry().isKindOf(t, physicsEntity) && mem::readOr<uintptr_t>(p + e::constant::PhysicsEntity_Physics) == object)
-            return {p, t};
-    for (uint32_t off = 0; off < 0x100; off += 8) {
-        const uintptr_t q = mem::readOr<uintptr_t>(object + off);
-        if (!q) continue;
-        for (const auto& [p, t] : tracked)
-            if (p == q && t && isServerClass(t->name) && t->name.find("Character") == std::string::npos) return {p, t};
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || !physicsEntity || !registry().isKindOf(t, physicsEntity)) continue;
+        bool match = false;
+        forEachBody(p, [&](uint32_t id, uintptr_t) { match = match || id == body; });
+        if (match) return {p, t};
     }
     return {0, nullptr};
 }
@@ -353,7 +389,7 @@ void pick() {
         const int r = raycastObject(from, to, &hit, &object, &body);
         if (r == GN_ERR_NOT_FOUND) return setStatus("Pick: nothing in front of the camera (200 m)");
         if (r != GN_OK) return setStatus("Pick: ray casts are unavailable");
-        auto [entity, type] = entityOfPhysics(object);
+        auto [entity, type] = entityOfBody(body);
         static std::atomic<int> diag{0};
         if (diag.fetch_add(1) < 6) {
             const reflect::Type* ot = object ? registry().typeOf(mem::ProcessMemory(), object) : nullptr;
@@ -361,7 +397,6 @@ void pick() {
                    static_cast<unsigned long long>(object), static_cast<unsigned long long>(object ? mem::readOr<uintptr_t>(object) : 0),
                    ot ? ot->name.c_str() : "no reflected type", type ? type->name.c_str() : "no entity",
                    static_cast<unsigned long long>(entity));
-            if (diag.load() <= 2) describe("hit object", object);
         }
         bool guessed = false;
         if (!type) { // no physics entity owns what was hit: the nearest object to the hit, said so

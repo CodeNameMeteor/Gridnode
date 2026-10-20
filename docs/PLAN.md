@@ -409,12 +409,14 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 
 Findings while doing steps 2 and 5:
 
-- A static model's collision follows `SpatialEntity_setTransform` only when the entity's flags
-  have TeleportPhysics (`0x8000000`, from the data's `TeleportPhysicsOnTransformChanges` at
-  creation, off for level props) and NotifyTransform (`0x8`). Setting the data field later does
-  nothing; GridNode sets the entity flags on the objects it moves.
-- Picking uses `Physics_castRay` from the view camera, which reports the body hit; the body leads
-  to the physics object and its entity (`PhysicsEntity_Physics`). The first version picked the
+- A static model's collision does not follow `SpatialEntity_setTransform`. The entity's physics
+  component (`ServerStaticModelPhysicsComponent`) only refreshes the broadphase from its bodies'
+  current transforms. GridNode moves each body itself with `RigidBody`'s setTransform (vtable
+  +0x178, Havok's setBodyTransform), keeping its offset from the entity. Bodies are found from
+  the component's body ids. Props merged into a level's `GroupRigidBody` cannot be moved one by one
+  this way.
+- Picking uses `Physics_castRay` from the view camera, which reports the body hit; the body id
+  is matched against each physics entity's component body ids. The first version picked the
   nearest entity origin to the hit, which chose objects behind walls.
 
 ### M6 notes
