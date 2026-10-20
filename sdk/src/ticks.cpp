@@ -29,6 +29,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_serverOrig)(world, updateInfo);
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     messagesServerTick();
+    layouts::serverTick();
     server().dispatch(dtOf(updateInfo));
 }
 
@@ -38,6 +39,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     worldClientTick();
     messagesClientTick();
     faithClientTick();
+    layouts::clientTick();
     client().dispatch(dtOf(updateInfo));
 }
 

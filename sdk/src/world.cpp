@@ -410,6 +410,7 @@ void pollLevel() {
     }
     if (!now.empty()) {
         GN_LOG("level: started %s", now.c_str());
+        layouts::onLevel(now); // its layout, before its objects are created
         settingsList();    // logs how many settings objects the engine holds
         consoleCommands(); // and how many commands (when that changed)
         callLevel(ls, now, true);

@@ -353,6 +353,7 @@ bool init(IDXGISwapChain* sc) {
 bool g_showInspector = false;
 bool g_showConsole = false;
 bool g_showMetrics = false;
+bool g_showLayouts = false;
 
 void drawMain() {
     ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
@@ -366,6 +367,7 @@ void drawMain() {
         ImGui::Separator();
         if (g_settings.inspector) ImGui::Checkbox("Inspector", &g_showInspector);
         ImGui::Checkbox("Console", &g_showConsole);
+        ImGui::Checkbox("Layout editor", &g_showLayouts);
         ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
@@ -398,6 +400,7 @@ void drawMain() {
     if (g_showInspector && g_settings.inspector) inspector::draw(&g_showInspector);
     if (g_showConsole) inspector::drawConsole(&g_showConsole);
     if (g_showMetrics) ImGui::ShowMetricsWindow(&g_showMetrics);
+    if (g_showLayouts) layouts::draw(&g_showLayouts);
 }
 
 void callMods(bool open) {

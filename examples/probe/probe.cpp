@@ -440,7 +440,7 @@ struct Moved {
 std::mutex g_movedM;
 std::vector<Moved> g_moved;
 
-void nearTest() {
+[[maybe_unused]] void nearTest() {
     void* cf = gn::localClientCharacter();
     gn::Vec3 p;
     if (!cf || !gn::positionOf(cf, p)) return;
@@ -466,7 +466,7 @@ void nearTest() {
 }
 
 // Raise the nearest server and client entity that is not a character by 3 m for 10 s.
-void moveTest(bool up) {
+[[maybe_unused]] void moveTest(bool up) {
     if (up) {
         for (int realm = 0; realm < 2; ++realm) {
             const char* want = realm ? "Client" : "Server";
@@ -593,9 +593,7 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        if (before < 5.f && t >= 5.f) nearTest(); // M7 step 2
-        if (before < 8.f && t >= 8.f) moveTest(true);
-        if (before < 18.f && t >= 18.f) moveTest(false);
+        (void)before; // the M7 experiments are done (near / move: 2026-10-20)
         static bool was12 = false;
         const bool down12 = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
         if (down12 && !was12 && g_watch <= 0) {

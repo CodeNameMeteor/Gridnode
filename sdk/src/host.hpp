@@ -81,6 +81,15 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user);
 int entitySetTransform(void* entity, const gn_transform* to);
 void assetRelease(void* asset);
 
+// Layouts (layouts.cpp, M7): level edits applied at runtime, and their editor.
+namespace layouts {
+void start(const std::wstring& gridnodeDir);
+void onLevel(const std::string& level); // GridNode's thread, when a level starts
+void serverTick();
+void clientTick();
+void draw(bool* open); // render thread
+} // namespace layouts
+
 // Settings and console (settings.cpp).
 struct SettingsEntry {
     const reflect::Type* type = nullptr;
