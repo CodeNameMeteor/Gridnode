@@ -350,7 +350,7 @@ void onCreatedModel(void* entity, void* ci, void*) {
     if (const Edit* ed = editFor(t->name, at)) queueMove(reinterpret_cast<uintptr_t>(entity), t, ed->to);
 }
 
-void applyGroupEdits(const std::vector<Edit>& edits);
+void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing = false);
 
 // Objects that already exist when a layout is loaded: matched by where they are now.
 void applyToExisting() {
@@ -1059,21 +1059,29 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
     sp.source = t.source;
     memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
     sp.ownerServer = t.ownerServer, sp.ownerClient = t.ownerClient;
+    {   // recorded now (its client half follows), so nothing places it a second time meanwhile
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        g_spawned.push_back(sp);
+    }
     alignas(16) gn_transform w = to;
     client().post([sp, w, select]() mutable {
         sp.client = spawnClient(sp.data, sp.clientBus, w);
         sp.clientType = sp.client ? registry().typeOf(mem::ProcessMemory(), sp.client) : nullptr;
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
-            g_spawned.push_back(sp);
+            for (Spawned& rec : g_spawned)
+                if (rec.server == sp.server) rec.client = sp.client, rec.clientType = sp.clientType;
         }
         if (select) selectCopy(sp, w);
     });
 }
 
-// Server thread: the level's saved copies and standalone copies of group props.
-void applyGroupEdits(const std::vector<Edit>& edits) {
+// Server thread: the level's saved copies and standalone copies of group props. With onlyMissing,
+// only what is not there (any more) is placed, quietly when nothing can be: after part of the level
+// streamed out and back in, which destroys the copies made in it.
+void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing) {
     int made = 0, missing = 0, copies = 0, lost = 0;
+    std::unordered_map<std::string, std::pair<bool, Template>> resolved; // one lookup per source
     // Copies first: a copy of a group prop finds its source in the group before that prop is made standalone.
     for (const Edit& ed : edits) {
         if (ed.kind != "Copy") continue;
@@ -1082,25 +1090,33 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (const Spawned& sp : g_spawned)
                 if (sp.copyId == ed.copyId && !sp.hidden) {
-                    if (sp.serverType) queueMove(sp.server, sp.serverType, ed.to);
-                    if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, ed.to);
+                    if (!onlyMissing) {
+                        if (sp.serverType) queueMove(sp.server, sp.serverType, ed.to);
+                        if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, ed.to);
+                    }
                     moved = true;
                 }
         }
         if (moved) {
-            ++copies;
+            if (!onlyMissing) ++copies;
             continue;
         }
         Template t;
-        if (!resolveSource(ed.source, ed.at, t)) {
-            GN_LOG("layouts: copy of %s at (%.2f, %.2f, %.2f): the source was not found", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
+        char key[160];
+        snprintf(key, sizeof(key), "%s|%.3f|%.3f|%.3f", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
+        auto memo = resolved.find(key);
+        if (memo == resolved.end()) memo = resolved.emplace(key, std::make_pair(resolveSource(ed.source, ed.at, t), t)).first;
+        t = memo->second.second;
+        if (!memo->second.first) {
+            if (!onlyMissing) GN_LOG("layouts: copy of %s at (%.2f, %.2f, %.2f): the source was not found", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
             ++lost;
             continue;
         }
         spawnCopy(t, ed.to, ed.copyId, false);
         ++copies;
     }
-    if (copies || lost) GN_LOG("layouts: %d copies placed from the layout, %d sources not found", copies, lost);
+    if (onlyMissing ? copies > 0 : (copies || lost))
+        GN_LOG("layouts: %d copies placed%s, %d sources not found", copies, onlyMissing ? " again (their part of the level was reloaded)" : " from the layout", lost);
     for (const Edit& ed : edits) {
         if (ed.kind != "GroupProp") continue;
         Spawned existing{};
@@ -1111,6 +1127,7 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
                 if (sp.copyId < 0 && !sp.hidden && dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
         }
         if (have) { // made standalone earlier this level: move that copy
+            if (onlyMissing) continue;
             if (existing.serverType) queueMove(existing.server, existing.serverType, ed.to);
             if (existing.client && existing.clientType) queueMove(existing.client, existing.clientType, ed.to);
             ++made;
@@ -1125,7 +1142,9 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
         makeStandalone(g, orig, ed.to, false);
         ++made;
     }
-    if (made || missing) GN_LOG("layouts: %d group props made standalone from the layout, %d not found", made, missing);
+    if (onlyMissing ? made > 0 : (made || missing))
+        GN_LOG("layouts: %d group props made standalone%s, %d not found", made, onlyMissing ? " again (their part of the level was reloaded)" : " from the layout",
+               missing);
 }
 
 // ---- the editor (render thread; game work is posted to the realms) -------------------------------------
@@ -1914,7 +1933,39 @@ void onLevel(const std::string& level) {
     if (!name.empty()) GN_LOG("layouts: auto-loading \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
 }
 
-void serverTick() { runQueue(g_serverQ); }
+// Server thread, every 2 s: copies (and standalone stand-ins) whose part of the level streamed out
+// are gone with it; forget them, and place what the layout has again once its source is back.
+void maintainSpawned() {
+    size_t dead = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        const auto alive = [](const Spawned& sp) {
+            return sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType;
+        };
+        const size_t before = g_spawned.size();
+        g_spawned.erase(std::remove_if(g_spawned.begin(), g_spawned.end(), [&](const Spawned& sp) { return !alive(sp); }), g_spawned.end());
+        dead = before - g_spawned.size();
+    }
+    if (dead) GN_LOG("layouts: %llu copies were destroyed with their part of the level", static_cast<unsigned long long>(dead));
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (g_level != levelName()) return;
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Copy" || ed.kind == "GroupProp") edits.push_back(ed);
+    }
+    if (!edits.empty() && localServerCharacter()) applyGroupEdits(edits, true);
+}
+
+void serverTick() {
+    runQueue(g_serverQ);
+    static DWORD last = 0;
+    const DWORD now = GetTickCount();
+    if (now - last >= 2000) {
+        last = now;
+        maintainSpawned();
+    }
+}
 
 void clientTick() {
     runQueue(g_clientQ);
@@ -2818,7 +2869,32 @@ bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const cha
     if (s.group) {
         int index = -1;
         float wmn[3], wmx[3];
-        if (groupInstance(s.gp.serverBody, s.gp.part, &index) && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
+        const uintptr_t inst = groupInstance(s.gp.serverBody, s.gp.part, &index);
+        static int diag = 0;
+        if (diag++ < 6) { // diagnostics: the compound shape's tree as it is in memory
+            namespace c = e::constant;
+            const uintptr_t shape = mem::readOr<uintptr_t>(s.gp.serverBody + c::GroupRigidBody_Shape);
+            const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
+            uint64_t th[8] = {};
+            if (tree) mem::read(tree, th, sizeof(th));
+            float sb[8] = {};
+            if (shape) mem::read(shape + 0x80, sb, sizeof(sb));
+            GN_LOG("layouts: outline diag: body %llx shape %llx instance %d (%llx) tree %llx: %llx %llx %llx %llx %llx %llx %llx %llx; shape box (%.1f %.1f %.1f)..(%.1f %.1f %.1f)",
+                   static_cast<unsigned long long>(s.gp.serverBody), static_cast<unsigned long long>(shape), index, static_cast<unsigned long long>(inst),
+                   static_cast<unsigned long long>(tree), (unsigned long long)th[0], (unsigned long long)th[1], (unsigned long long)th[2],
+                   (unsigned long long)th[3], (unsigned long long)th[4], (unsigned long long)th[5], (unsigned long long)th[6], (unsigned long long)th[7],
+                   sb[0], sb[1], sb[2], sb[4], sb[5], sb[6]);
+            const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
+            const uint16_t root = tree ? mem::readOr<uint16_t>(tree + c::CompoundTree_Root) : 0;
+            for (int i = 0; nodes && i < 3; ++i) {
+                const uintptr_t nd = nodes + (i == 0 ? root : i) * 0x20u;
+                float f[8] = {};
+                mem::read(nd, f, sizeof(f));
+                GN_LOG("layouts: outline diag: node %u: (%.2f %.2f %.2f) .. (%.2f %.2f %.2f) children %u %u", i == 0 ? root : i, f[0], f[1], f[2], f[4],
+                       f[5], f[6], mem::readOr<uint16_t>(nd + 0x1c), mem::readOr<uint16_t>(nd + 0x1e));
+            }
+        }
+        if (inst && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
             localFromWorld(s.orig, wmn, wmx, mn, mx);
             if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
             return *from = "the group's collision tree", true;
