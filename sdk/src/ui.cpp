@@ -108,6 +108,9 @@ std::atomic<int> g_wheel{0};
 // Free-camera look (layouts): while on, raw mouse movement turns the camera, not the cursor.
 std::atomic<bool> g_lookCapture{false};
 std::atomic<float> g_lookX{0}, g_lookY{0};
+// Free camera with the menu closed: the game gets no keyboard or mouse, GridNode takes them as if
+// the menu were open (keys still reach ImGui), and the mouse always looks.
+std::atomic<bool> g_capture{false};
 
 void refreshMouseScale() {
     int speed = 10;
@@ -214,7 +217,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     if (msg == WM_DEVICECHANGE && g_ready) queueImGui(hwnd, msg, w, l);
-    if (g_open && g_ready) {
+    if ((g_open || g_capture) && g_ready) {
         // Key releases still reach the game, so a key held when the menu opened is released there.
         if (keyUp) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
         if (msg == WM_INPUT) {
@@ -433,7 +436,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui_ImplDX11_NewFrame();
         deliverImGuiMsgs();
         ImGui_ImplWin32_NewFrame();
-        if (g_open && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
+        if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
         const bool open = g_open.load();
         layouts::frame(open); // the free camera
@@ -524,6 +527,7 @@ bool menuOpen() { return g_open.load(); }
 void setLookCapture(bool on) {
     if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;
 }
+void setInputCapture(bool on) { g_capture = on; }
 void takeLook(float& dx, float& dy) {
     dx = g_lookX.exchange(0.f);
     dy = g_lookY.exchange(0.f);

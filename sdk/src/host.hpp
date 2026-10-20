@@ -150,6 +150,7 @@ int check(const char* mod, const char* version, size_t io, size_t style, size_t 
 bool menuOpen();
 void toggleMenu();
 void setLookCapture(bool on);            // raw mouse movement goes to takeLook, not the cursor
+void setInputCapture(bool on);           // free camera with the menu closed: the game gets no input
 void takeLook(float& dx, float& dy);     // movement since the last call (raw counts)
 std::string keyName(int vk);
 int keyFromName(const std::string& name);

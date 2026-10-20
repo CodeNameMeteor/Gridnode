@@ -1466,7 +1466,8 @@ bool startFreeCam() {
 
 // Render thread, every frame.
 void freeCamFrame(bool menuOpen) {
-    const bool want = g_cam.enabled && menuOpen && localClientCharacter() != nullptr;
+    // On whether or not the menu is open; with it closed the mouse always looks and the game gets no input.
+    const bool want = g_cam.enabled && localClientCharacter() != nullptr;
     if (want && !g_cam.active) {
         if (!startFreeCam()) return;
         g_cam.active = true;
@@ -1476,6 +1477,7 @@ void freeCamFrame(bool menuOpen) {
         g_cam.active = false;
         g_cam.looking = false;
         ui::setLookCapture(false);
+        ui::setInputCapture(false);
         {
             std::lock_guard<std::mutex> lock(g_camM);
             g_camApply = false;
@@ -1484,6 +1486,16 @@ void freeCamFrame(bool menuOpen) {
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
+    if (!menuOpen) { // a reminder of how to get back, while flying with the menu closed
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ImGui::GetFontSize()), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+        ImGui::SetNextWindowBgAlpha(0.5f);
+        ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::TextUnformatted("Free camera: mouse looks, WASD moves, Q/E down/up, Shift faster, Ctrl slower, wheel changes speed.");
+        ImGui::TextUnformatted("Open the menu and untick Free camera (Layout editor) to go back to Faith.");
+        ImGui::End();
+    }
     if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
     if (ImGui::GetFrameCount() % 120 == 0) { // diagnostics while the free camera is being made to work
         namespace m = e::st::ClientCameraViewManager::off;
@@ -1500,8 +1512,13 @@ void freeCamFrame(bool menuOpen) {
                a[0], a[1], a[2], b[0], b[1], b[2]);
     } // a level change or cutscene changes the active camera
     ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    ui::setInputCapture(!menuOpen);
+    if (!menuOpen) {
+        g_cam.looking = true;
+    } else {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    }
     ui::setLookCapture(g_cam.looking);
     float dx = 0.f, dy = 0.f;
     ui::takeLook(dx, dy);
@@ -1595,7 +1612,9 @@ void draw(bool* open) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
         ImGui::SliderFloat("speed", &g_cam.speed, 0.5f, 200.f, "%.1f m/s", ImGuiSliderFlags_Logarithmic);
-        ImGui::TextDisabled("Hold right mouse to look; WASD move, Q/E down/up, Shift faster, Ctrl slower; wheel while looking: speed.");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("Close the menu to fly: the mouse looks, WASD move, Q/E down/up, Shift faster, Ctrl slower, wheel: speed. With the menu open, hold right mouse to look and click objects to pick them.");
+        ImGui::PopTextWrapPos();
     }
     ImGui::TextDisabled("Left-click an object in the world to pick it.");
     ImGui::SeparatorText("Layouts");
