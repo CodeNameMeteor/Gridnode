@@ -402,7 +402,7 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    level position (`GroupProp` for standalone copies of group props). Loading is manual from the
    editor (Load / Delete / Save as / Unload); an option loads the last used layout when a level
    starts (`layouts/settings.txt`, `layouts/<level>/last.txt`). Unload puts moved objects back and
-   hides standalone copies (spawned entities are not destroyed yet).
+   returns standalone copies to their group prop's own placement (a moved group copy cannot be shown again, so the copy stands in for it); loading reuses them.
 5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
    list of loaded blueprints, delete, undo, save.
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).

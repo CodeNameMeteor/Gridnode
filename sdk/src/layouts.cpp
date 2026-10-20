@@ -841,6 +841,19 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
     int made = 0, missing = 0;
     for (const Edit& ed : edits) {
         if (ed.kind != "GroupProp") continue;
+        Spawned existing{};
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
+        }
+        if (have) { // made standalone earlier this level: move that copy
+            if (existing.serverType) queueMove(existing.server, existing.serverType, ed.to);
+            if (existing.client && existing.clientType) queueMove(existing.client, existing.clientType, ed.to);
+            ++made;
+            continue;
+        }
         GroupProp g;
         gn_transform orig{};
         if (!findGroupProp(ed.at, g, orig)) {
@@ -903,9 +916,9 @@ void clearSelection() {
     g_haveSel = false;
 }
 
-// Puts the level back as the game has it: moved objects return to their own placement, standalone
-// copies are moved far below the level and their group copies come back. (Spawned entities are
-// hidden, not destroyed.)
+// Puts the level back as the game has it: moved objects return to their own placement. A group
+// prop's drawn copy cannot be shown again once moved (it is drawn from batches built at load), so a
+// standalone copy stays and returns to the group prop's own placement, standing in for it.
 void unloadLayout() {
     std::vector<Edit> edits;
     {
@@ -919,7 +932,7 @@ void unloadLayout() {
     std::vector<Spawned> spawned;
     {
         std::lock_guard<std::mutex> lock(g_spawnM);
-        spawned.swap(g_spawned);
+        spawned = g_spawned; // they stay: the group copies they replace cannot be shown again
     }
     clearSelection();
     int n = 0;
@@ -935,18 +948,13 @@ void unloadLayout() {
                 break;
             }
     }
+    // A standalone copy stands in for its group prop: back to the prop's own placement.
     for (const Spawned& sp : spawned) {
-        gn_transform away{};
-        if (sp.serverType && entityTransform(reinterpret_cast<void*>(sp.server), away)) {
-            away.trans[1] -= 15000.f;
-            queueMove(sp.server, sp.serverType, away);
-            if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
-        }
-        const GroupProp g = sp.g;
-        alignas(16) const gn_transform back = sp.orig;
-        server().post([g, back] { moveGroupProp(g, back); });
+        if (sp.serverType) queueMove(sp.server, sp.serverType, sp.orig);
+        if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, sp.orig);
     }
-    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies removed)", n, static_cast<unsigned long long>(spawned.size()));
+    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies back in their group prop's place)", n,
+           static_cast<unsigned long long>(spawned.size()));
 }
 
 // Loads a saved layout of the current level and applies it (unloading what is applied first).
@@ -1108,6 +1116,15 @@ void pick() {
                         s.orig = s.now;
                         memcpy(s.orig.trans, ed.at, sizeof(ed.at));
                     }
+                }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.server == entity) {
+                    s.spawned = true;
+                    s.orig = sp.orig;
+                    memcpy(s.at, sp.orig.trans, sizeof(s.at));
                 }
         }
         collectPair(s, s.now.trans);
