@@ -503,31 +503,6 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
                static_cast<unsigned long long>(obj), static_cast<unsigned long long>(vt), static_cast<unsigned long long>(g.block),
                static_cast<unsigned long long>(g.block ? mem::readOr<uintptr_t>(g.block + 0xc8) : 0), static_cast<unsigned long long>(renderWorld));
     if (!mem::inImage(setT) || !renderWorld) return;
-    static std::atomic<int> diag{0};
-    if (diag.fetch_add(1) < 3) {
-        // Research: is this the drawn copy? Where it is now, its render handles, and the class
-        // check 0x14318fbc0 applies to objects from the component (ids in [*0x142843238, *0x14284323a]).
-        float at[16] = {};
-        mem::read(obj + 0x10, at, sizeof(at));
-        const uintptr_t typeFn = mem::readOr<uintptr_t>(vt);
-        const uintptr_t ci = mem::inImage(typeFn) ? reinterpret_cast<uintptr_t (*)(uintptr_t)>(typeFn)(obj) : 0;
-        GN_LOG("layouts: group part %u: render object at (%.2f, %.2f, %.2f) [copy at (%.2f, %.2f, %.2f)], radius %.2f, handles +0x78 %08x +0x84 %08x "
-               "+0x88 %08x +0x90 %04x +0x98 %04x, class id %u (range %u..%u), mesh %llx",
-               g.part, at[12], at[13], at[14], world.trans[0], world.trans[1], world.trans[2], mem::readOr<float>(obj + 0x5c),
-               mem::readOr<uint32_t>(obj + 0x78), mem::readOr<uint32_t>(obj + 0x84), mem::readOr<uint32_t>(obj + 0x88),
-               mem::readOr<uint16_t>(obj + 0x90), mem::readOr<uint16_t>(obj + 0x98), ci ? mem::readOr<uint16_t>(ci + 0x28) : 0,
-               mem::readOr<uint16_t>(mem::rva(0x142843238)), mem::readOr<uint16_t>(mem::rva(0x14284323a)),
-               static_cast<unsigned long long>(mem::readOr<uintptr_t>(obj + 0x60)));
-        // And what the block's other fields hold (render data for the member).
-        for (uint32_t off = 0; off < 0x130; off += 8) {
-            const uintptr_t q = mem::readOr<uintptr_t>(g.block + off);
-            if (q < 0x10000) continue;
-            const reflect::Type* qt = registry().typeOf(mem::ProcessMemory(), q);
-            const uintptr_t qvt = mem::readOr<uintptr_t>(q);
-            GN_LOG("layouts:   block +%03x %llx %s (vtable %llx)", off, static_cast<unsigned long long>(q), qt ? qt->name.c_str() : "-",
-                   static_cast<unsigned long long>(mem::inImage(qvt) ? qvt : 0));
-        }
-    }
     alignas(16) gn_transform t = world;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
@@ -617,6 +592,29 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     client().post([gp, w] { placeCopy(gp, w); });
 }
 
+// Research: pointers in an entity that look like an entity bus (no vtable; parent bus at +0x08,
+// reference count at +0x30, reference data at +0x38; 0x1431411d0 / 0x14313ffe0).
+void logBusCandidates(const char* tag, uintptr_t entity) {
+    static const reflect::Type* container = registry().find("DataContainer");
+    int found = 0;
+    for (uint32_t off = 0x08; off <= 0x100; off += 8) {
+        const uintptr_t b = mem::readOr<uintptr_t>(entity + off);
+        if (b < 0x10000 || mem::inImage(mem::readOr<uintptr_t>(b))) continue; // buses have no vtable
+        const int32_t refs = mem::readOr<int32_t>(b + 0x30);
+        const uintptr_t data = mem::readOr<uintptr_t>(b + 0x38);
+        const reflect::Type* dt = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+        if (refs < 1 || refs > 1000000 || !dt || !container || !registry().isKindOf(dt, container)) continue;
+        const uintptr_t parent = mem::readOr<uintptr_t>(b + 0x08);
+        const uintptr_t parentData = parent ? mem::readOr<uintptr_t>(parent + 0x38) : 0;
+        const reflect::Type* pt = parentData ? registry().typeOf(mem::ProcessMemory(), parentData) : nullptr;
+        GN_LOG("layouts: %s %llx +%02x: bus %llx (refs %d, id %u, data %s, parent %llx %s)", tag, static_cast<unsigned long long>(entity), off,
+               static_cast<unsigned long long>(b), refs, mem::readOr<uint32_t>(b + 0x58) & 0x1ffffff, dt->name.c_str(),
+               static_cast<unsigned long long>(parent), pt ? pt->name.c_str() : "-");
+        ++found;
+    }
+    if (!found) GN_LOG("layouts: %s %llx: no entity bus among its first 0x100 bytes", tag, static_cast<unsigned long long>(entity));
+}
+
 // Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
 bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupProp& g, gn_transform& world) {
     g = GroupProp{};
@@ -655,6 +653,23 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
            g.part, index, world.trans[0], world.trans[1], world.trans[2], G.trans[0], G.trans[1], G.trans[2], static_cast<unsigned long long>(shape),
            static_cast<unsigned long long>(clientShape), shape == clientShape ? "shared" : "separate", static_cast<unsigned long long>(g.clientGroup),
            static_cast<unsigned long long>(g.member), g.copy, memberTransform(g.member, g.copy) ? " (has its own InstanceTransform)" : "");
+    static std::atomic<int> probes{0};
+    if (probes.fetch_add(1) < 2) {
+        logBusCandidates("server group", serverGroup);
+        if (g.clientGroup) logBusCandidates("client group", g.clientGroup);
+        // A standalone static model next to it, for comparison.
+        for (const auto& [p, t] : inspector::tracked())
+            if (t && t->name == "ServerStaticModelEntity") {
+                logBusCandidates("server static model", p);
+                break;
+            }
+        if (g.member) {
+            static const uint32_t typeOff = memberField("MemberType");
+            const uintptr_t mt = typeOff != 0xffffffffu ? mem::readOr<uintptr_t>(g.member + typeOff) : 0;
+            const reflect::Type* mtt = mt ? registry().typeOf(mem::ProcessMemory(), mt) : nullptr;
+            GN_LOG("layouts: group part %u: member type %llx %s", g.part, static_cast<unsigned long long>(mt), mtt ? mtt->name.c_str() : "-");
+        }
+    }
     return g.clientGroup != 0;
 }
 
