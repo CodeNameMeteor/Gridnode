@@ -2947,29 +2947,6 @@ bool isMeshEntity(uintptr_t p) {
     return t && t->name.size() > 10 && t->name.compare(t->name.size() - 10, 10, "MeshEntity") == 0;
 }
 
-// A mesh entity reachable from [base, base + size): directly, or up to `depth` pointers down
-// (arrays of render objects included: their entries are pointers too).
-uintptr_t findMesh(uintptr_t base, uint32_t size, int depth) {
-    for (uint32_t off = 0; off < size; off += 8) {
-        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
-        if (isMeshEntity(p)) return p;
-    }
-    if (depth <= 0) return 0;
-    for (uint32_t off = 0; off < size; off += 8) {
-        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
-        if (p < 0x10000 || (p & 7) || mem::inImage(p)) continue;
-        if (const uintptr_t q = findMesh(p, 0x180, depth - 1)) return q;
-    }
-    return 0;
-}
-
-// The render object of a standalone model's client entity.
-uintptr_t meshEntityOf(uintptr_t ent) {
-    if (!ent) return 0;
-    if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1)) return m;
-    return findMesh(ent + 0x18, 0x2e8, 2);
-}
-
 // A render object's world transform (+0x10: right, up, forward, translation rows).
 bool meshTransform(uintptr_t ro, gn_transform& t) {
     float m[16];
@@ -2978,62 +2955,68 @@ bool meshTransform(uintptr_t ro, gn_transform& t) {
     return true;
 }
 
-// The render object that draws this selection: for a group prop, the one of its member's render
-// objects (the block's +0xc8 list, one per copy) nearest to where the prop is; for a standalone
-// model, its client entity's.
-uintptr_t drawnObjectOf(const Selected& s) {
-    uintptr_t best = 0;
-    float bestD = 4.f; // within 2 m
-    auto consider = [&](uintptr_t ro) {
-        gn_transform t{};
-        if (!isMeshEntity(ro) || !meshTransform(ro, t)) return;
-        const float d = dist2(t.trans, s.now.trans);
-        if (d < bestD) bestD = d, best = ro;
-    };
-    if (s.group && s.gp.block) {
-        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
-        if (isMeshEntity(list)) consider(list);
-        else if (list > 0x10000 && !(list & 7))
-            for (uint32_t k = 0; k < 512; ++k) {
-                const uintptr_t ro = mem::readOr<uintptr_t>(list + k * 8);
-                if (!ro) break;
-                consider(ro);
-            }
-        if (!best) consider(findMesh(s.gp.block, 0x130, 2));
-        return best;
-    }
-    for (const auto& [ent, ty] : s.entities)
-        if (!isServerClass(ty->name)) consider(meshEntityOf(ent));
-    return best;
+// A mesh entity that is drawn at `where` (within 0.75 m): any other is some other object's.
+bool meshAt(uintptr_t ro, const float* where) {
+    gn_transform t{};
+    return isMeshEntity(ro) && meshTransform(ro, t) && dist2(t.trans, where) < 0.5625f;
 }
 
-bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
-    // The visible mesh's box first: a group member's mesh entity (from its render block; every copy
-    // shares the mesh), or a standalone model's.
-    if (s.group && s.gp.block && meshBox(findMesh(s.gp.block, 0x130, 2), mn, mx)) {
-        if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
-        return *from = "the mesh", true;
+// A mesh entity drawn at `where`, reachable from [base, base + size): directly, or up to `depth`
+// pointers down.
+uintptr_t findMesh(uintptr_t base, uint32_t size, int depth, const float* where) {
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (meshAt(p, where)) return p;
+    }
+    if (depth <= 0) return 0;
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (p < 0x10000 || (p & 7) || mem::inImage(p)) continue;
+        if (const uintptr_t q = findMesh(p, 0x180, depth - 1, where)) return q;
+    }
+    return 0;
+}
+
+// The render object that draws this selection, found by reading only (any thread): for a group
+// prop, its member's render object list (the block's +0xc8, one per copy); for a standalone model,
+// one its client entity points to. Only one drawn where the selection is counts.
+uintptr_t drawnObjectOf(const Selected& s) {
+    const float* at = s.now.trans;
+    if (s.group) {
+        if (!s.gp.block) return 0;
+        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
+        if (list > 0x10000 && !(list & 7)) {
+            const uintptr_t ro = mem::readOr<uintptr_t>(list + s.gp.copy * 8u);
+            if (meshAt(ro, at)) return ro;
+        }
+        return findMesh(s.gp.block, 0x130, 1, at);
     }
     for (const auto& [ent, ty] : s.entities) {
         if (isServerClass(ty->name)) continue;
-        if (meshBox(meshEntityOf(ent), mn, mx)) {
-            if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
-            return *from = "the mesh", true;
-        }
+        if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1, at)) return m;
+        if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 2, at)) return m;
     }
+    return 0;
+}
+
+// The outline's render object asked of the game on the client thread (a group copy's comes from its
+// physics component, a call), for the selection `key`.
+std::atomic<uintptr_t> g_outRoKey{0}, g_outRo{0};
+
+bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
     const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
     if (it != g_dataBox.end()) {
         memcpy(mn, it->second.data(), sizeof(float) * 3);
         memcpy(mx, it->second.data() + 3, sizeof(float) * 3);
-        return *from = "its source's mesh", true;
+        return *from = "its model's mesh (seen before)", true;
     }
-    // Last: the collision box (the group's tree), which can differ from what is drawn.
+    // Until the mesh is found: the collision box (the group's tree), which can differ from what is drawn.
     if (s.group) {
         int index = -1;
         float wmn[3], wmx[3];
         if (groupInstance(s.gp.serverBody, s.gp.part, &index) && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
             localFromWorld(s.orig, wmn, wmx, mn, mx);
-            return *from = "the collision (the mesh's box was not found)", true;
+            return *from = "the collision, until the mesh is found", true;
         }
     }
     return false;
@@ -3105,25 +3088,36 @@ void drawOutline() {
     static uintptr_t ro = 0;
     static uintptr_t roKey = 0;
     static double roAt = -10.0;
-    if (key != roKey || (!ro && ImGui::GetTime() - roAt > 2.0)) {
-        const bool changed = key != roKey;
-        roKey = key, roAt = ImGui::GetTime();
-        ro = drawnObjectOf(s);
+    static bool asked = false;
+    auto adopt = [&](uintptr_t found, const char* how) {
+        ro = found;
         float rmn[3], rmx[3];
-        if (ro && meshBox(ro, rmn, rmx)) {
+        if (meshBox(ro, rmn, rmx)) {
             memcpy(mn, rmn, sizeof(rmn)), memcpy(mx, rmx, sizeof(rmx)), box = true;
+            if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
         }
-        if (changed) {
-            gn_transform r{};
-            if (ro && meshTransform(ro, r))
-                GN_LOG("layouts: outline: render object %llx at (%.2f %.2f %.2f) right (%.2f %.2f %.2f) up (%.2f %.2f %.2f) fwd (%.2f %.2f %.2f); "
-                       "physics right (%.2f %.2f %.2f) up (%.2f %.2f %.2f) fwd (%.2f %.2f %.2f)",
-                       (unsigned long long)ro, r.trans[0], r.trans[1], r.trans[2], r.right[0], r.right[1], r.right[2], r.up[0], r.up[1], r.up[2],
-                       r.forward[0], r.forward[1], r.forward[2], s.now.right[0], s.now.right[1], s.now.right[2], s.now.up[0], s.now.up[1],
-                       s.now.up[2], s.now.forward[0], s.now.forward[1], s.now.forward[2]);
-            else
-                GN_LOG("layouts: outline: no render object found; drawn with the physics transform");
+        GN_LOG("layouts: outline: render object %llx (%s), mesh box (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", (unsigned long long)ro, how, mn[0], mn[1],
+               mn[2], mx[0], mx[1], mx[2]);
+    };
+    if (key != roKey) {
+        roKey = key, roAt = ImGui::GetTime(), ro = 0, asked = false;
+        if (const uintptr_t found = drawnObjectOf(s)) adopt(found, "read");
+        else if (s.group) {
+            asked = true;
+            g_outRo = 0;
+            g_outRoKey = key;
+            const GroupProp gp = s.gp;
+            float at[3] = {s.now.trans[0], s.now.trans[1], s.now.trans[2]};
+            client().post([gp, at, key] {
+                const uintptr_t r = renderObjectOf(gp);
+                if (g_outRoKey.load() == key) g_outRo = meshAt(r, at) ? r : 0;
+            });
         }
+    } else if (!ro && asked && g_outRoKey.load() == key && g_outRo.load()) {
+        adopt(g_outRo.load(), "asked the game");
+    } else if (!ro && ImGui::GetTime() - roAt > 2.0) {
+        roAt = ImGui::GetTime();
+        if (const uintptr_t found = drawnObjectOf(s)) adopt(found, "read");
     }
     gn_transform rt{};
     const gn_transform& t = ro && meshTransform(ro, rt) ? rt : s.now;
