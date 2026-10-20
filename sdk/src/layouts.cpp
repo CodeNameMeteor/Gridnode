@@ -1294,11 +1294,14 @@ void clientTick() {
 // Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
 constexpr size_t kCamSlots = 160;     // entries copied; the camera classes have well under that
 constexpr size_t kCamFrameSlot = 0x68 / 8;
+constexpr size_t kCamOutputSlot = 0x70 / 8; // computeTransforms(camera, info, LinearTransform out[2]) (MECMP)
 uintptr_t g_camFakeVtbl[kCamSlots + 1]; // [0] is the RTTI slot in front of the table
 uintptr_t g_camObject = 0;           // the camera object wearing the copy (client thread)
 uintptr_t g_camOrigVtbl = 0;         // its own vtable
 using CamFrameFn = void (*)(void*, void*);
 CamFrameFn g_camOrigFrame = nullptr;
+using CamOutputFn = void (*)(void*, void*, void*);
+CamOutputFn g_camOrigOutput = nullptr;
 
 std::mutex g_camM;
 bool g_camApply = false;             // (g_camM)
@@ -1325,7 +1328,26 @@ uintptr_t firstViewManager() {
     return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
 }
 
-std::atomic<unsigned> g_camCalls{0}; // diagnostics: how often the game ran the camera's update
+std::atomic<unsigned> g_camCalls{0}, g_camOutputs{0}; // diagnostics: how often the game ran the camera's update / output
+
+bool takeCamT(gn_transform& t) {
+    std::lock_guard<std::mutex> lock(g_camM);
+    if (!g_camApply) return false;
+    t = g_camT;
+    return true;
+}
+
+// The camera's transform output: everything that asks the camera where it is (its own update, and
+// whatever else calls this slot) gets the free camera.
+void camOutput(void* self, void* info, void* out) {
+    g_camOutputs.fetch_add(1, std::memory_order_relaxed);
+    if (g_camOrigOutput) g_camOrigOutput(self, info, out);
+    alignas(16) gn_transform t{};
+    if (!out || !takeCamT(t)) return;
+    auto* o = static_cast<gn_transform*>(out);
+    o[0] = t;
+    o[1] = t;
+}
 
 void camFrameUpdate(void* self, void* info) {
     g_camCalls.fetch_add(1, std::memory_order_relaxed);
@@ -1364,6 +1386,11 @@ void hookCamera() {
         g_camOrigVtbl = vt;
         g_camOrigFrame = reinterpret_cast<CamFrameFn>(g_camFakeVtbl[1 + kCamFrameSlot]);
         g_camFakeVtbl[1 + kCamFrameSlot] = reinterpret_cast<uintptr_t>(&camFrameUpdate);
+        g_camOrigOutput = reinterpret_cast<CamOutputFn>(g_camFakeVtbl[1 + kCamOutputSlot]);
+        if (mem::inImage(reinterpret_cast<uintptr_t>(g_camOrigOutput)))
+            g_camFakeVtbl[1 + kCamOutputSlot] = reinterpret_cast<uintptr_t>(&camOutput);
+        else
+            g_camOrigOutput = nullptr;
         GN_LOG("layouts: free camera drives camera %llx (vtable %llx)", static_cast<unsigned long long>(cam),
                static_cast<unsigned long long>(vt));
     }
@@ -1504,9 +1531,9 @@ void freeCamFrame(bool menuOpen) {
         float a[3] = {}, b[3] = {}, c3[3] = {};
         if (mgr) mem::read(mgr + m::transform + 0x30, a, sizeof(a)), mem::read(mgr + 0x120 + 0x30, b, sizeof(b));
         if (cam) mem::read(cam + e::st::CameraObject::off::transform + 0x30, c3, sizeof(c3));
-        GN_LOG("layouts: free camera check: updates %u, camera %llx (ours %llx, vtable %s), flag %u; want (%.1f %.1f %.1f) "
+        GN_LOG("layouts: free camera check: updates %u, outputs %u, camera %llx (ours %llx, vtable %s), flag %u; want (%.1f %.1f %.1f) "
                "camera (%.1f %.1f %.1f) view (%.1f %.1f %.1f) view2 (%.1f %.1f %.1f)",
-               g_camCalls.exchange(0), static_cast<unsigned long long>(cam), static_cast<unsigned long long>(g_camObject),
+               g_camCalls.exchange(0), g_camOutputs.exchange(0), static_cast<unsigned long long>(cam), static_cast<unsigned long long>(g_camObject),
                cam && mem::readOr<uintptr_t>(cam) == reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]) ? "copy" : "original",
                mgr ? mem::readOr<uint8_t>(mgr + m::updating) : 0u, g_cam.pos[0], g_cam.pos[1], g_cam.pos[2], c3[0], c3[1], c3[2],
                a[0], a[1], a[2], b[0], b[1], b[2]);
