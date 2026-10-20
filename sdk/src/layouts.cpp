@@ -182,8 +182,9 @@ Bind g_binds[] = {
     {"flip", "Flip upside down", 'H', true, false, 'H'},
     {"upright", "Stand upright again", 'U', true, false, 'U'},
     {"undo", "Undo (with Ctrl; also with the menu open)", 'Z', true, false, 'Z'},
+    {"teleport", "Teleport Faith to the crosshair (and back to her)", 'T', true, false, 'T'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -2191,6 +2192,7 @@ void freeCamFrame(bool menuOpen) {
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
         ImGui::Separator();
+        row(k(kTeleport), "teleport Faith here");
         row(k(kFreeCam), "back to Faith");
         Selected cur;
         if (selection(cur)) {
@@ -2296,6 +2298,88 @@ void pickCentre() {
     if (centreRay(ray)) pick(ray);
     else pick();
 }
+// ---- teleports (the game's own: ServerCharacterEntity_teleport, as its teleport entities use) ------
+// Faith at `pos`, facing along `facing` (horizontal). Server thread does the move.
+void teleportFaith(const float* pos, const float* facing, const std::string& what) {
+    float f[3] = {facing[0], 0.f, facing[2]};
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[2] = 1.f;
+    normalize(f);
+    alignas(16) gn_transform t{};
+    t.up[1] = 1.f;
+    t.forward[0] = f[0], t.forward[2] = f[2];
+    t.right[0] = f[2], t.right[2] = -f[0]; // up x forward
+    memcpy(t.trans, pos, sizeof(float) * 3);
+    t.trans[3] = 1.f;
+    server().post([t, what] {
+        void* faith = localServerCharacter();
+        const int r = faith ? teleport(faith, &t) : GN_ERR_NOT_FOUND;
+        GN_LOG("layouts: teleport to %s (%.2f, %.2f, %.2f): %s", what.c_str(), t.trans[0], t.trans[1], t.trans[2], r == GN_OK ? "done" : "failed");
+        setStatus(r == GN_OK ? "Teleported Faith to " + what + "." : "Teleport failed (no character, or the game's teleport is not as expected).");
+    });
+}
+
+// Faith where the crosshair points (on what it hits, or at the camera when it hits nothing within
+// 200 m), facing the way the camera looks; then the view goes back to her.
+void teleportCrosshair() {
+    float ray[6];
+    if (!centreRay(ray)) return setStatus("Teleport: no camera");
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(ray));
+    g_cam.enabled = false; // back to Faith's view
+    server().post([r] {
+        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+        gn_ray_hit hit{};
+        float pos[3] = {r[0], r[1], r[2]};
+        const bool onSomething = raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK;
+        if (onSomething) {
+            // A little back from the surface and up, so she stands on it rather than in it.
+            for (int k = 0; k < 3; ++k) pos[k] = hit.position[k] - r[3 + k] * 0.3f;
+            pos[1] = std::max(pos[1], hit.position[1]) + 0.05f;
+        }
+        const float facing[3] = {r[3], 0.f, r[5]};
+        teleportFaith(pos, facing, onSomething ? "the crosshair" : "the camera");
+    });
+}
+
+// Teleport points: named places per level (layouts\<level>\teleports.txt: name|x|y|z|yaw).
+struct TeleportPoint {
+    std::string name;
+    float pos[3] = {};
+    float yaw = 0.f; // radians, atan2(forward.x, forward.z)
+};
+
+std::wstring teleportFile(const std::string& level) { return levelDir(level) + L"teleports.txt"; }
+
+std::vector<TeleportPoint> loadTeleports(const std::string& level) {
+    std::vector<TeleportPoint> out;
+    FILE* f = _wfopen(teleportFile(level).c_str(), L"rb");
+    if (!f) return out;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        const size_t bar = l.find('|');
+        if (bar == std::string::npos || l[0] == '#') continue;
+        TeleportPoint p;
+        p.name = l.substr(0, bar);
+        if (sscanf(l.c_str() + bar + 1, "%f|%f|%f|%f", &p.pos[0], &p.pos[1], &p.pos[2], &p.yaw) >= 3) out.push_back(p);
+    }
+    fclose(f);
+    return out;
+}
+
+void saveTeleports(const std::string& level, const std::vector<TeleportPoint>& pts) {
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    CreateDirectoryW(levelDir(level).c_str(), nullptr);
+    std::string o = "# GridNode teleport points: name|x|y|z|yaw (radians)\n";
+    for (const TeleportPoint& p : pts) {
+        char b[256];
+        snprintf(b, sizeof(b), "%s|%.3f|%.3f|%.3f|%.4f\n", p.name.c_str(), p.pos[0], p.pos[1], p.pos[2], p.yaw);
+        o += b;
+    }
+    writeLine(teleportFile(level), o);
+}
+
 void pasteCentre() {
     float ray[6];
     if (centreRay(ray)) pasteAt(ray);
@@ -2360,6 +2444,58 @@ void draw(bool* open) {
         ImGui::PopTextWrapPos();
     }
     ImGui::TextDisabled("Left-click an object in the world to pick it.");
+    ImGui::SeparatorText("Teleport");
+    {
+        static std::vector<TeleportPoint> points;
+        static std::string pointsFor;
+        if (pointsFor != level) points = level.empty() ? std::vector<TeleportPoint>{} : loadTeleports(level), pointsFor = level;
+        ImGui::BeginDisabled(!g_cam.active);
+        if (ImGui::Button("Teleport Faith to the crosshair")) teleportCrosshair();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled(g_cam.active ? "(%s while flying)" : "(fly the free camera to use it; %s)", ui::keyName(g_binds[kTeleport].vk).c_str());
+        static char pname[48] = "";
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+        ImGui::InputTextWithHint("##pname", "name", pname, sizeof(pname));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(level.empty() || !localClientCharacter());
+        if (ImGui::Button("Save Faith's position")) {
+            gn_transform ft{};
+            if (void* faith = localClientCharacter(); faith && entityTransform(faith, ft)) {
+                TeleportPoint p;
+                p.name = *pname ? std::string(pname) : "point " + std::to_string(points.size() + 1);
+                for (char& c : p.name)
+                    if (c == '|') c = '/';
+                memcpy(p.pos, ft.trans, sizeof(p.pos));
+                p.yaw = std::atan2(ft.forward[0], ft.forward[2]);
+                points.push_back(p);
+                saveTeleports(level, points);
+                pname[0] = 0;
+            }
+        }
+        ImGui::EndDisabled();
+        int remove = -1;
+        for (size_t i = 0; i < points.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i) + 7000);
+            if (ImGui::SmallButton("Go")) {
+                const float facing[3] = {std::sin(points[i].yaw), 0.f, std::cos(points[i].yaw)};
+                g_cam.enabled = false;
+                teleportFaith(points[i].pos, facing, "\"" + points[i].name + "\"");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            ImGui::SameLine();
+            ImGui::Text("%s", points[i].name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%.0f, %.0f, %.0f)", points[i].pos[0], points[i].pos[1], points[i].pos[2]);
+            ImGui::PopID();
+        }
+        if (remove >= 0) {
+            points.erase(points.begin() + remove);
+            saveTeleports(level, points);
+        }
+        if (points.empty()) ImGui::TextDisabled("No teleport points saved for this level.");
+    }
     ImGui::SeparatorText("Layouts");
     if (loaded.empty()) ImGui::Text("%s", count ? "Unsaved edits" : "The level as the game has it");
     else ImGui::Text("Layout \"%s\"", loaded.c_str());
@@ -2597,6 +2733,7 @@ void keysFrame(bool menuOpen) {
     if (fire[kCopy]) copySelection();
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
+    if (fire[kTeleport]) teleportCrosshair();
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
     for (int i = kFwd; i <= kUpright; ++i)
         if (fire[i]) nudge(i - kFwd, scale);
