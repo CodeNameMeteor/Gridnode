@@ -2409,6 +2409,16 @@ void nudge(int dir, float scale) {
         const float* axis = dir < 2 ? f : side;
         const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
         for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
+        static int said = 0;
+        if (said++ < 12) {
+            gn_transform cam{};
+            const bool haveCam = cameraTransform(cam);
+            GN_LOG("layouts: nudge %d: look (%.2f %.2f %.2f) right (%.2f %.2f %.2f) -> along (%.2f %.2f %.2f); game view right (%.2f %.2f %.2f) "
+                   "forward (%.2f %.2f %.2f); free camera %d",
+                   dir, d[0], d[1], d[2], r[0], r[1], r[2], axis[0] * sign, axis[1] * sign, axis[2] * sign, haveCam ? cam.right[0] : 0.f,
+                   haveCam ? cam.right[1] : 0.f, haveCam ? cam.right[2] : 0.f, haveCam ? cam.forward[0] : 0.f, haveCam ? cam.forward[1] : 0.f,
+                   haveCam ? cam.forward[2] : 0.f, g_cam.active ? 1 : 0);
+        }
     }
     moveSelection(t);
 }
@@ -2765,29 +2775,44 @@ uintptr_t selectionData(const Selected& s) {
     return 0;
 }
 
-// The local box of a StaticModelEntityData (false when it has no physics parts).
-bool localBox(uintptr_t data, float* mn, float* mx) {
+// A plausible local box: 8 floats min (x y z w), max (x y z w).
+bool boxAt(uintptr_t p, float* mn, float* mx) {
+    float b[8];
+    if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
+    for (int k = 0; k < 3; ++k)
+        if (b[4 + k] < b[k] || b[4 + k] - b[k] > 5000.f || std::fabs(b[k]) > 5000.f) return false;
+    if (b[4] - b[0] + b[5] - b[1] + b[6] - b[2] < 1e-3f) return false;
+    memcpy(mn, b, sizeof(float) * 3);
+    memcpy(mx, b + 4, sizeof(float) * 3);
+    return true;
+}
+
+// The mesh's local box, as the renderer culls with it: StaticModelEntityData.Mesh (a MeshAsset) ->
+// its MeshSetResource, resolved at runtime to the mesh set, which starts with its bounding box (the
+// MeshSet header, as Frosty reads it). For a group prop, also through the copy's render object:
+// RenderObject_buildUpdate copies its local box from *(**(object +0x60) +0x20).
+bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
     static const reflect::Type* smd = registry().find("StaticModelEntityData");
-    static uint32_t partsOff = 0xffffffffu;
-    if (partsOff == 0xffffffffu && smd) {
+    static const reflect::Type* ma = registry().find("MeshAsset");
+    static uint32_t meshOff = 0xffffffffu, setOff = 0xffffffffu;
+    if (meshOff == 0xffffffffu) {
         reflect::FieldInfo fi;
-        partsOff = registry().findField(smd, "PhysicsPartInfos", fi) ? fi.field->offset : 0xfffffffeu;
+        meshOff = smd && registry().findField(smd, "Mesh", fi) ? fi.field->offset : 0xfffffffeu;
+        setOff = ma && registry().findField(ma, "MeshSetResource", fi) ? fi.field->offset : 0xfffffffeu;
     }
-    if (!data || partsOff >= 0xfffffffeu) return false;
-    const uintptr_t arr = mem::readOr<uintptr_t>(data + partsOff);
-    const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0; // Frostbite arrays: the count before the elements
-    bool any = false;
-    for (uint32_t i = 0; i < n && i < 256; ++i) {
-        float b[12]; // Aabb min (4), max (4), Translation (4)
-        if (!mem::read(arr + i * 48u, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) continue;
-        if (b[4] < b[0] || b[5] < b[1] || b[6] < b[2]) continue;
-        for (int k = 0; k < 3; ++k) {
-            mn[k] = any ? std::min(mn[k], b[k]) : b[k];
-            mx[k] = any ? std::max(mx[k], b[4 + k]) : b[4 + k];
-        }
-        any = true;
+    if (data && meshOff < 0xfffffffeu && setOff < 0xfffffffeu) {
+        const uintptr_t mesh = mem::readOr<uintptr_t>(data + meshOff);
+        const uintptr_t set = mesh ? mem::readOr<uintptr_t>(mesh + setOff) : 0;
+        if (boxAt(set, mn, mx)) return *from = "mesh set", true;
     }
-    return any;
+    if (s.group && s.gp.block) {
+        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
+        const uintptr_t ro = list ? mem::readOr<uintptr_t>(list + s.gp.copy * 8u) : 0;
+        const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
+        const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
+        if (boxAt(x ? mem::readOr<uintptr_t>(x + 0x20) : 0, mn, mx)) return *from = "render object", true;
+    }
+    return false;
 }
 
 // World point -> screen; false behind the camera.
@@ -2835,14 +2860,14 @@ void drawOutline() {
     View v;
     if (!currentView(v)) return;
     const uintptr_t data = selectionData(s);
-    float mn[3], mx[3];
-    const bool box = localBox(data, mn, mx);
+    float mn[3] = {}, mx[3] = {};
+    const char* from = "no box found";
+    const bool box = localBox(data, s, mn, mx, &from);
     static uintptr_t said = 0;
     if (data != said) { // once per object type: what the box came from
         said = data;
-        GN_LOG("layouts: outline: data %llx, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", static_cast<unsigned long long>(data),
-               box ? "physics parts box" : "no physics parts", box ? mn[0] : 0.f, box ? mn[1] : 0.f, box ? mn[2] : 0.f, box ? mx[0] : 0.f,
-               box ? mx[1] : 0.f, box ? mx[2] : 0.f);
+        GN_LOG("layouts: outline: data %llx, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", static_cast<unsigned long long>(data), from, mn[0], mn[1],
+               mn[2], mx[0], mx[1], mx[2]);
     }
     const gn_transform& t = s.now;
     auto world = [&](float x, float y, float z, float* o) {
