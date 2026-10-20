@@ -426,8 +426,12 @@ Findings while doing steps 2 and 5:
   props in groups are edited by **hide and replace**. The copy is hidden (instance and render
   object moved far away), and a standalone entity is spawned from the member's `MemberType`
   data at the same place (server: ServerEntityCreationInfo_ctor + entityCreator_spawnIntoBus;
-  client: ClientEntityCreationInfo_ctor + ClientEntity_spawn, as the group does for destroyed
-  parts). This is also M7 step 3.
+  client: ClientEntityCreationInfo_ctor + ClientEntity_spawnIntoBus, then Entity_init with the
+  realm's init info, as the game does for sublevel entities and destroyed parts; the bus is the
+  group's, recorded from its creation info). **Confirmed in game 2026-10-20**: the standalone copy
+  renders, collides and moves like any prop. Layout files save it as `kind: GroupProp` keyed by
+  the copy's original position; on load the copy is found among the groups' instances, hidden
+  and replaced. This is the first part of M7 step 3 (spawning).
 - Most level props are copies inside StaticModelGroups, whose collision is one Havok
   `hknpStaticCompoundShape` (the `GroupRigidBody`), one instance per copy. Notes on that and other
   object facts from the Frosty–Unity Pipeline are in `docs/research/frosty-unity-pipeline.md`.
