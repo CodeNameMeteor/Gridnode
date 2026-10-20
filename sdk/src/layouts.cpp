@@ -383,6 +383,13 @@ std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
 
 // Server thread: a ray from the camera along its view; the object whose collision it hits.
 void pick() {
+    {
+        // A new pick replaces the selection, even when it finds nothing to select: otherwise the
+        // editor keeps showing (and moving) the previous object under a "not supported" message.
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_haveSel = false;
+        g_status = "Picking...";
+    }
     server().post([] {
         gn_transform cam{};
         gn_movement mv{};
