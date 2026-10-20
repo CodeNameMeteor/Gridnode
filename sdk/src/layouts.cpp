@@ -2409,16 +2409,6 @@ void nudge(int dir, float scale) {
         const float* axis = dir < 2 ? f : side;
         const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
         for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
-        static int said = 0;
-        if (said++ < 12) {
-            gn_transform cam{};
-            const bool haveCam = cameraTransform(cam);
-            GN_LOG("layouts: nudge %d: look (%.2f %.2f %.2f) right (%.2f %.2f %.2f) -> along (%.2f %.2f %.2f); game view right (%.2f %.2f %.2f) "
-                   "forward (%.2f %.2f %.2f); free camera %d",
-                   dir, d[0], d[1], d[2], r[0], r[1], r[2], axis[0] * sign, axis[1] * sign, axis[2] * sign, haveCam ? cam.right[0] : 0.f,
-                   haveCam ? cam.right[1] : 0.f, haveCam ? cam.right[2] : 0.f, haveCam ? cam.forward[0] : 0.f, haveCam ? cam.forward[1] : 0.f,
-                   haveCam ? cam.forward[2] : 0.f, g_cam.active ? 1 : 0);
-        }
     }
     moveSelection(t);
 }
@@ -2775,42 +2765,53 @@ uintptr_t selectionData(const Selected& s) {
     return 0;
 }
 
-// A plausible local box: 8 floats min (x y z w), max (x y z w).
+// A plausible local box: 8 floats min (x y z w), max (x y z w), solid in at least two directions.
 bool boxAt(uintptr_t p, float* mn, float* mx) {
     float b[8];
     if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
-    for (int k = 0; k < 3; ++k)
+    int solid = 0;
+    for (int k = 0; k < 3; ++k) {
         if (b[4 + k] < b[k] || b[4 + k] - b[k] > 5000.f || std::fabs(b[k]) > 5000.f) return false;
-    if (b[4] - b[0] + b[5] - b[1] + b[6] - b[2] < 1e-3f) return false;
+        if (b[4 + k] - b[k] > 0.01f) ++solid;
+    }
+    if (solid < 2) return false;
     memcpy(mn, b, sizeof(float) * 3);
     memcpy(mx, b + 4, sizeof(float) * 3);
     return true;
 }
 
-// The mesh's local box, as the renderer culls with it: StaticModelEntityData.Mesh (a MeshAsset) ->
-// its MeshSetResource, resolved at runtime to the mesh set, which starts with its bounding box (the
-// MeshSet header, as Frosty reads it). For a group prop, also through the copy's render object:
-// RenderObject_buildUpdate copies its local box from *(**(object +0x60) +0x20).
-bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
-    static const reflect::Type* smd = registry().find("StaticModelEntityData");
-    static const reflect::Type* ma = registry().find("MeshAsset");
-    static uint32_t meshOff = 0xffffffffu, setOff = 0xffffffffu;
-    if (meshOff == 0xffffffffu) {
-        reflect::FieldInfo fi;
-        meshOff = smd && registry().findField(smd, "Mesh", fi) ? fi.field->offset : 0xfffffffeu;
-        setOff = ma && registry().findField(ma, "MeshSetResource", fi) ? fi.field->offset : 0xfffffffeu;
-    }
-    if (data && meshOff < 0xfffffffeu && setOff < 0xfffffffeu) {
-        const uintptr_t mesh = mem::readOr<uintptr_t>(data + meshOff);
-        const uintptr_t set = mesh ? mem::readOr<uintptr_t>(mesh + setOff) : 0;
-        if (boxAt(set, mn, mx)) return *from = "mesh set", true;
-    }
+// A render object's local box: RenderObject_buildUpdate (0x143769330) sends the object's transform
+// (+0x10) and the box at *(**(object + 0x60) + 0x20), which the renderer culls with.
+bool renderObjectBox(uintptr_t ro, float* mn, float* mx) {
+    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
+    const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
+    return boxAt(x ? mem::readOr<uintptr_t>(x + 0x20) : 0, mn, mx);
+}
+
+// The selection's local box. A group prop: its copy's render object. A standalone model: a render
+// object the client entity points to (directly or one level down) whose transform is the entity's.
+bool localBox(uintptr_t, const Selected& s, float* mn, float* mx, const char** from) {
     if (s.group && s.gp.block) {
         const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
-        const uintptr_t ro = list ? mem::readOr<uintptr_t>(list + s.gp.copy * 8u) : 0;
-        const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
-        const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
-        if (boxAt(x ? mem::readOr<uintptr_t>(x + 0x20) : 0, mn, mx)) return *from = "render object", true;
+        if (renderObjectBox(list ? mem::readOr<uintptr_t>(list + s.gp.copy * 8u) : 0, mn, mx)) return *from = "group copy's render object", true;
+    }
+    for (const auto& [ent, ty] : s.entities) {
+        if (isServerClass(ty->name)) continue;
+        gn_transform et{};
+        if (!entityTransform(reinterpret_cast<void*>(ent), et)) continue;
+        auto matches = [&](uintptr_t ro) {
+            float pos[3];
+            return ro && mem::read(ro + 0x10 + 0x30, pos, sizeof(pos)) && dist2(pos, et.trans) < 0.01f && renderObjectBox(ro, mn, mx);
+        };
+        for (uint32_t off = 0x18; off < 0x400; off += 8) {
+            const uintptr_t p = mem::readOr<uintptr_t>(ent + off);
+            if (p < 0x10000 || (p & 7)) continue;
+            if (matches(p)) return *from = "entity's render object", true;
+            for (uint32_t off2 = 0; off2 < 0x200; off2 += 8) { // one level down (a component, a list)
+                const uintptr_t q = mem::readOr<uintptr_t>(p + off2);
+                if (q >= 0x10000 && !(q & 7) && matches(q)) return *from = "entity's render object (nested)", true;
+            }
+        }
     }
     return false;
 }
@@ -2860,14 +2861,21 @@ void drawOutline() {
     View v;
     if (!currentView(v)) return;
     const uintptr_t data = selectionData(s);
-    float mn[3] = {}, mx[3] = {};
-    const char* from = "no box found";
-    const bool box = localBox(data, s, mn, mx, &from);
-    static uintptr_t said = 0;
-    if (data != said) { // once per object type: what the box came from
-        said = data;
-        GN_LOG("layouts: outline: data %llx, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", static_cast<unsigned long long>(data), from, mn[0], mn[1],
-               mn[2], mx[0], mx[1], mx[2]);
+    // The box is looked up when the selection changes (and again every 2 s while none is found).
+    static uintptr_t cacheKey = 0;
+    static double cacheAt = -10.0;
+    static bool box = false;
+    static float mn[3] = {}, mx[3] = {};
+    const uintptr_t key = s.group ? s.gp.serverGroup ^ (uintptr_t(s.gp.part) << 3) : s.entities.empty() ? 0 : s.entities[0].first;
+    if (key != cacheKey || (!box && ImGui::GetTime() - cacheAt > 2.0)) {
+        const bool changed = key != cacheKey;
+        cacheKey = key;
+        cacheAt = ImGui::GetTime();
+        const char* from = "no box found";
+        box = localBox(data, s, mn, mx, &from);
+        if (changed)
+            GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, box ? mn[0] : 0.f, box ? mn[1] : 0.f,
+                   box ? mn[2] : 0.f, box ? mx[0] : 0.f, box ? mx[1] : 0.f, box ? mx[2] : 0.f);
     }
     const gn_transform& t = s.now;
     auto world = [&](float x, float y, float z, float* o) {
