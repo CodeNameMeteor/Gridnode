@@ -31,6 +31,38 @@ structs:
       - { offset: 0x0a, name: selectB, type: u8 }
 
 functions:
+  # Entity events (from the first recording, 2026-10-20; docs/research/recording-teleport.md).
+  - name: EntityBus_fireEvent
+    va: 0x14314e4a0
+    signature: "void(void* bus, void* sourcePeer, void* event)"
+    note: >-
+      Sends an event from a peer through its bus: walks the bus data's event connections (+0x68 ->
+      +0x120, or +0x148 when bus+0x3c bit 28) for the source and event id (event +8), sets the
+      target event id and delivers each (EntityBus_deliverEvent). Event ids are djb2-xor hashes of
+      the event names ("Out" = 0xb87df4b).
+    confidence: inferred
+    sources: [ghidra, recording]
+  - name: EntityBus_deliverEvent
+    va: 0x14314eac0
+    signature: "void(void* bus, void* connection, void* event)"
+    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent."
+    confidence: inferred
+    sources: [ghidra]
+  - name: EntityBusPeer_sendEvent
+    va: 0x143134460
+    signature: "void(int realm, void* peer, void* event)"
+    note: "Calls the peer's vtable +0x20 (its onEvent) on the right thread, or queues it for that realm (0x143127d20)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ServerEventSync_onReachedClient
+    va: 0x143364ba0
+    signature: "void(void* listener, const Message* message)"
+    note: >-
+      Server handler of EventSyncReachedClientMessage (type id 0x458f8b20) sent by a client when it
+      reaches an event sync point (e.g. confirming fast travel on the map): finds the sync entity by
+      the message's ids (+0x48, +0x50, +0x60) and fires its "Out" event.
+    confidence: inferred
+    sources: [ghidra, recording]
   - name: SpatialEntity_setTransform
     va: 0x1432eb1f0
     signature: "void(void* entity, const LinearTransform* transform, u8 notify)"

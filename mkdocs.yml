@@ -51,4 +51,5 @@ nav:
       - assets-assessment.md
       - research/frosty-unity-pipeline.md
       - research/mecmp-camera-and-collision.md
+      - research/recording-teleport.md
   # @generated-nav
