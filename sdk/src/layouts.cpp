@@ -977,7 +977,7 @@ bool templateAlive(const Template& t) {
     return dt && smd && registry().isKindOf(dt, smd);
 }
 
-void selectCopy(const Spawned& sp, const gn_transform& now);
+void selectCopy(const Spawned& sp, const gn_transform& now, bool add = false);
 void hideCopy(int copyId);
 
 // The template for a source named in a layout file (server thread).
@@ -1028,7 +1028,7 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
 }
 
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
-void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select) {
+void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select, bool addSel = false) {
     if (!templateAlive(t)) {
         if (select) GN_LOG("layouts: copy %d of %s: the part of the level it comes from is no longer loaded", copyId, t.source.c_str());
         if (select) setStatus("That object's part of the level is no longer loaded (it streams in and out as you move). "
@@ -1047,7 +1047,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
                 if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, to);
                 if (select) {
                     const Spawned copy = sp;
-                    client().post([copy, to] { selectCopy(copy, to); });
+                    client().post([copy, to, addSel] { selectCopy(copy, to, addSel); });
                 }
                 return;
             }
@@ -1073,7 +1073,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
         g_spawned.push_back(sp);
     }
     alignas(16) gn_transform w = to;
-    client().post([sp, w, select]() mutable {
+    client().post([sp, w, select, addSel]() mutable {
         sp.client = spawnClient(sp.data, sp.clientBus, w);
         sp.clientType = sp.client ? registry().typeOf(mem::ProcessMemory(), sp.client) : nullptr;
         {
@@ -1081,7 +1081,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
             for (Spawned& rec : g_spawned)
                 if (rec.server == sp.server) rec.client = sp.client, rec.clientType = sp.clientType;
         }
-        if (select) selectCopy(sp, w);
+        if (select) selectCopy(sp, w, addSel);
     });
 }
 
@@ -1171,11 +1171,64 @@ struct Selected {
 std::mutex g_selM;
 Selected g_sel;            // (g_selM)
 bool g_haveSel = false;    // (g_selM)
+std::vector<Selected> g_extra; // (g_selM) the rest of a multiple selection (Shift+pick); g_sel leads
 std::string g_status;      // (g_selM)
 
 void setStatus(const std::string& s) {
     std::lock_guard<std::mutex> lock(g_selM);
     g_status = s;
+}
+
+// Whether two selections are the same object.
+bool sameObject(const Selected& a, const Selected& b) {
+    if (a.group || b.group) return a.group && b.group && a.gp.serverGroup == b.gp.serverGroup && a.gp.part == b.gp.part;
+    if (a.copyId >= 0 || b.copyId >= 0) return a.copyId == b.copyId;
+    for (const auto& x : a.entities)
+        for (const auto& y : b.entities)
+            if (x.first == y.first) return true;
+    return false;
+}
+
+// g_selM held: `s` becomes the selection, or with `add` joins it (and leaves it when it is already in).
+void setPickedLocked(const Selected& s, bool add) {
+    if (!add || !g_haveSel) {
+        g_extra.clear();
+        g_sel = s;
+        g_haveSel = true;
+        return;
+    }
+    if (sameObject(g_sel, s)) {
+        if (g_extra.empty()) {
+            g_haveSel = false;
+        } else {
+            g_sel = g_extra.back();
+            g_extra.pop_back();
+        }
+        return;
+    }
+    for (size_t i = 0; i < g_extra.size(); ++i)
+        if (sameObject(g_extra[i], s)) {
+            g_extra.erase(g_extra.begin() + static_cast<long>(i));
+            return;
+        }
+    g_extra.push_back(g_sel);
+    g_sel = s;
+}
+
+// Everything selected, the leading object first.
+std::vector<Selected> selectionAll() {
+    std::lock_guard<std::mutex> lock(g_selM);
+    std::vector<Selected> out;
+    if (!g_haveSel) return out;
+    out.push_back(g_sel);
+    out.insert(out.end(), g_extra.begin(), g_extra.end());
+    return out;
+}
+
+// g_selM held: " (N selected)" when more than one is.
+std::string countNoteLocked() {
+    if (!g_haveSel || g_extra.empty()) return "";
+    return " (" + std::to_string(g_extra.size() + 1) + " selected)";
 }
 
 // Every entity of the same kind at the same place (the server and client halves of one object).
@@ -1207,6 +1260,7 @@ void clearUndo();
 void clearSelection() {
     std::lock_guard<std::mutex> lock(g_selM);
     g_haveSel = false;
+    g_extra.clear();
 }
 
 // Puts the level back as the game has it: moved objects return to their own placement. A group
@@ -1306,13 +1360,14 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
     snprintf(b, sizeof(b), "Made a standalone %s (%llu entities) in place of the group prop. Move it as usual.",
              s.kind.c_str(), static_cast<unsigned long long>(s.entities.size()));
     std::lock_guard<std::mutex> lock(g_selM);
+    g_extra.clear();
     g_sel = s;
     g_haveSel = !s.entities.empty();
     g_status = b;
 }
 
-// Client thread, after a copy was placed: select it for editing.
-void selectCopy(const Spawned& sp, const gn_transform& now) {
+// Client thread, after a copy was placed: select it for editing (with `add`, alongside the selection).
+void selectCopy(const Spawned& sp, const gn_transform& now, bool add) {
     Selected s;
     s.copyId = sp.copyId;
     for (uintptr_t e : {sp.server, sp.client}) {
@@ -1325,14 +1380,15 @@ void selectCopy(const Spawned& sp, const gn_transform& now) {
     char b[160];
     snprintf(b, sizeof(b), "Placed a copy (%s). Move it as usual; \"Remove this copy\" takes it away.", s.kind.c_str());
     std::lock_guard<std::mutex> lock(g_selM);
-    g_sel = s;
-    g_haveSel = !s.entities.empty();
-    g_status = b;
+    if (s.entities.empty()) return;
+    setPickedLocked(s, add);
+    g_status = b + countNoteLocked();
 }
 
 // Server thread: a ray from the camera along its view; the object whose collision it hits.
 // `ray` (from, direction; 6 floats) or, if null, the camera's view.
-void pick(const float* ray = nullptr) {
+// With `add` (Shift held), what is picked joins the selection, or leaves it if it is already in.
+void pick(const float* ray = nullptr, bool add = false) {
     std::array<float, 6> given{};
     const bool haveRay = ray != nullptr;
     if (ray) memcpy(given.data(), ray, sizeof(float) * 6);
@@ -1340,10 +1396,10 @@ void pick(const float* ray = nullptr) {
         // A new pick replaces the selection, even when it finds nothing to select: otherwise the
         // editor keeps showing (and moving) the previous object under a "not supported" message.
         std::lock_guard<std::mutex> lock(g_selM);
-        g_haveSel = false;
+        if (!add) g_haveSel = false, g_extra.clear();
         g_status = "Picking...";
     }
-    server().post([haveRay, given] {
+    server().post([haveRay, given, add] {
         gn_transform cam{};
         gn_movement mv{};
         const bool haveMove = movementGet(&mv) == GN_OK;
@@ -1413,9 +1469,8 @@ void pick(const float* ray = nullptr) {
             snprintf(b, sizeof(b), "Picked a prop inside a static model group (part %u), %.1f m away. Experimental: small moves only, not saved.",
                      s.gp.part, hit.distance);
             std::lock_guard<std::mutex> lock(g_selM);
-            g_sel = s;
-            g_haveSel = true;
-            g_status = b;
+            setPickedLocked(s, add);
+            g_status = b + countNoteLocked();
             return;
         }
         Selected s;
@@ -1473,9 +1528,8 @@ void pick(const float* ray = nullptr) {
                  static_cast<unsigned long long>(s.entities.size()), hit.distance,
                  guessed ? " (a guess: the nearest object to the hit)" : "");
         std::lock_guard<std::mutex> lock(g_selM);
-        g_sel = s;
-        g_haveSel = true;
-        g_status = b;
+        setPickedLocked(s, add);
+        g_status = b + countNoteLocked();
     });
 }
 
@@ -1496,27 +1550,40 @@ struct UndoStep {
     int copyId = -1;          // Placed / Removed
     uintptr_t server = 0;     // Removed: the parked copy's server entity
     double time = 0;
+    int batch = 0;            // steps made together (a multiple selection) are undone together
 };
 std::mutex g_undoM;
 std::vector<UndoStep> g_undo; // (g_undoM)
-constexpr size_t kMaxUndo = 200;
+int g_undoBatch = 0;          // (g_undoM)
+constexpr size_t kMaxUndo = 400;
 
-void pushUndo(UndoStep st) {
-    st.time = static_cast<double>(GetTickCount64()) / 1000.0;
+// Steps made together. Moves of the same objects in quick succession (a held key, a drag) are one step.
+void pushUndoBatch(std::vector<UndoStep> steps) {
+    if (steps.empty()) return;
+    const double now = static_cast<double>(GetTickCount64()) / 1000.0;
     std::lock_guard<std::mutex> lock(g_undoM);
-    if (st.kind == UndoStep::Move && !g_undo.empty()) {
-        const UndoStep& last = g_undo.back();
-        const bool same = last.kind == UndoStep::Move && last.target.copyId == st.target.copyId && last.target.group == st.target.group &&
-                          (st.target.group ? last.target.gp.part == st.target.gp.part && last.target.gp.serverGroup == st.target.gp.serverGroup
-                                           : !last.target.entities.empty() && !st.target.entities.empty() &&
-                                                 last.target.entities[0].first == st.target.entities[0].first);
-        if (same && st.time - last.time < 0.7) {
-            g_undo.back().time = st.time; // the same move continuing: keep where it started
+    bool allMoves = true;
+    for (const UndoStep& st : steps) allMoves = allMoves && st.kind == UndoStep::Move;
+    if (allMoves && g_undo.size() >= steps.size()) {
+        const size_t base = g_undo.size() - steps.size();
+        const int b = g_undo[base].batch;
+        bool same = base == 0 || g_undo[base - 1].batch != b;
+        for (size_t i = 0; same && i < steps.size(); ++i) {
+            const UndoStep& last = g_undo[base + i];
+            same = last.kind == UndoStep::Move && last.batch == b && now - last.time < 0.7 && sameObject(last.target, steps[i].target);
+        }
+        if (same) { // the same move continuing: keep where it started
+            for (size_t i = 0; i < steps.size(); ++i) g_undo[base + i].time = now;
             return;
         }
     }
-    g_undo.push_back(std::move(st));
-    if (g_undo.size() > kMaxUndo) g_undo.erase(g_undo.begin());
+    const int b = ++g_undoBatch;
+    for (UndoStep& st : steps) {
+        st.time = now;
+        st.batch = b;
+        g_undo.push_back(std::move(st));
+    }
+    while (g_undo.size() > kMaxUndo) g_undo.erase(g_undo.begin());
 }
 
 void clearUndo() {
@@ -1526,7 +1593,9 @@ void clearUndo() {
 
 size_t undoCount() {
     std::lock_guard<std::mutex> lock(g_undoM);
-    return g_undo.size();
+    size_t n = 0;
+    for (size_t i = 0; i < g_undo.size(); ++i) n += i == 0 || g_undo[i].batch != g_undo[i - 1].batch;
+    return n;
 }
 
 // The selection's edit as it is now (g_m held).
@@ -1539,26 +1608,17 @@ Edit* editOf(const Selected& s) {
     return nullptr;
 }
 
-void recordMove(const Selected& s) {
+UndoStep moveStep(const Selected& s) {
     UndoStep st;
     st.kind = UndoStep::Move;
     st.target = s;
-    {
-        std::lock_guard<std::mutex> lock(g_m);
-        if (const Edit* ed = editOf(s)) st.hadEdit = true, st.edit = *ed;
-    }
-    pushUndo(std::move(st));
+    std::lock_guard<std::mutex> lock(g_m);
+    if (const Edit* ed = editOf(s)) st.hadEdit = true, st.edit = *ed;
+    return st;
 }
 
-void moveSelection(const gn_transform& to, bool record = true) {
-    Selected s;
-    {
-        std::lock_guard<std::mutex> lock(g_selM);
-        if (!g_haveSel) return;
-        s = g_sel; // where it is before this move
-        g_sel.now = to;
-    }
-    if (record) recordMove(s);
+// One object to `to` (both realms), and its edit.
+void moveObject(Selected s, const gn_transform& to) {
     s.now = to;
     if (s.group) {
         const GroupProp gp = s.gp;
@@ -1590,6 +1650,57 @@ void moveSelection(const gn_transform& to, bool record = true) {
     g_dirty = true;
 }
 
+// `t` carried along by a change of `o` into `n` (as if fixed to it): the rest of a multiple
+// selection moves and turns with the leading object, about its position.
+gn_transform carry(const gn_transform& o, const gn_transform& n, const gn_transform& t) {
+    const float* orows[3] = {o.right, o.up, o.forward};
+    const float* nrows[3] = {n.right, n.up, n.forward};
+    auto map = [&](const float* v, float* out) {
+        float r[3] = {0.f, 0.f, 0.f};
+        for (int i = 0; i < 3; ++i) {
+            const float l2 = orows[i][0] * orows[i][0] + orows[i][1] * orows[i][1] + orows[i][2] * orows[i][2];
+            if (l2 < 1e-12f) continue;
+            const float c = (v[0] * orows[i][0] + v[1] * orows[i][1] + v[2] * orows[i][2]) / l2;
+            for (int k = 0; k < 3; ++k) r[k] += c * nrows[i][k];
+        }
+        out[0] = r[0], out[1] = r[1], out[2] = r[2];
+    };
+    gn_transform out = t;
+    map(t.right, out.right);
+    map(t.up, out.up);
+    map(t.forward, out.forward);
+    const float d[3] = {t.trans[0] - o.trans[0], t.trans[1] - o.trans[1], t.trans[2] - o.trans[2]};
+    float m[3];
+    map(d, m);
+    for (int k = 0; k < 3; ++k) out.trans[k] = n.trans[k] + m[k];
+    return out;
+}
+
+// Moves the selection: the leading object to `to`, the rest of it along (records the edits). Group
+// props are not moved (they are made standalone first).
+void moveSelection(const gn_transform& to, bool record = true) {
+    std::vector<std::pair<Selected, gn_transform>> moves; // object as it was, where it goes
+    {
+        std::lock_guard<std::mutex> lock(g_selM);
+        if (!g_haveSel) return;
+        const gn_transform from = g_sel.now;
+        moves.push_back({g_sel, to});
+        g_sel.now = to;
+        for (Selected& e : g_extra) {
+            const gn_transform next = carry(from, to, e.now);
+            if (!e.group) moves.push_back({e, next});
+            e.now = next;
+        }
+    }
+    if (moves.size() > 1 && moves[0].first.group) moves.erase(moves.begin()); // the lead is a group prop: only the rest move
+    if (record) {
+        std::vector<UndoStep> steps;
+        for (const auto& [obj, where] : moves) steps.push_back(moveStep(obj));
+        pushUndoBatch(std::move(steps));
+    }
+    for (const auto& [obj, where] : moves) moveObject(obj, where);
+}
+
 // A copy is taken away: parked below the level (entities cannot be destroyed yet) for reuse.
 void hideCopy(int copyId) {
     std::lock_guard<std::mutex> lock(g_spawnM);
@@ -1606,15 +1717,10 @@ void hideCopy(int copyId) {
         }
 }
 
-void resetSelection() {
-    Selected s;
-    {
-        std::lock_guard<std::mutex> lock(g_selM);
-        if (!g_haveSel) return;
-        s = g_sel;
-    }
+// One object put back (a copy: taken away); its undo step. False when there is nothing to undo.
+bool resetObject(const Selected& s, UndoStep& st) {
     if (s.copyId >= 0) {
-        UndoStep st;
+        st = UndoStep{};
         st.kind = UndoStep::Removed;
         st.copyId = s.copyId;
         for (const auto& [p, t] : s.entities)
@@ -1623,7 +1729,6 @@ void resetSelection() {
             std::lock_guard<std::mutex> lock(g_m);
             if (const Edit* ed = editOf(s)) st.edit = *ed;
         }
-        if (st.server && st.edit.kind == "Copy") pushUndo(st);
         hideCopy(s.copyId);
         {
             std::lock_guard<std::mutex> lock(g_m);
@@ -1631,12 +1736,9 @@ void resetSelection() {
                           g_edits.end());
             g_dirty = true;
         }
-        std::lock_guard<std::mutex> lock(g_selM);
-        g_haveSel = false;
-        g_status = "Removed the copy.";
-        return;
+        return st.server && st.edit.kind == "Copy";
     }
-    recordMove(s);
+    st = moveStep(s);
     const gn_transform back = s.orig;
     if (s.group) {
         const GroupProp gp = s.gp;
@@ -1645,10 +1747,6 @@ void resetSelection() {
     for (const auto& [p, t] : s.entities) queueMove(p, t, back);
     GN_LOG("layouts: %s put back at (%.2f, %.2f, %.2f) (%llu entities)", s.kind.c_str(), back.trans[0], back.trans[1], back.trans[2],
            static_cast<unsigned long long>(s.entities.size()));
-    {
-        std::lock_guard<std::mutex> lock(g_selM);
-        g_sel.now = back;
-    }
     const std::string key = editKind(s);
     std::lock_guard<std::mutex> lock(g_m);
     for (size_t i = 0; i < g_edits.size(); ++i)
@@ -1657,17 +1755,35 @@ void resetSelection() {
             g_dirty = true;
             break;
         }
+    return true;
 }
 
-// Takes back the last step.
-void undo() {
-    UndoStep st;
-    {
-        std::lock_guard<std::mutex> lock(g_undoM);
-        if (g_undo.empty()) return setStatus("Nothing to undo.");
-        st = g_undo.back();
-        g_undo.pop_back();
+// Everything selected put back where the level had it; copies taken away.
+void resetSelection() {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return;
+    std::vector<UndoStep> steps;
+    int removed = 0;
+    for (const Selected& s : all) {
+        UndoStep st;
+        if (resetObject(s, st)) steps.push_back(std::move(st));
+        removed += s.copyId >= 0;
     }
+    pushUndoBatch(std::move(steps));
+    std::lock_guard<std::mutex> lock(g_selM);
+    std::vector<Selected> keep; // copies leave the selection; the rest stay, back in place
+    for (Selected s : all)
+        if (s.copyId < 0) s.now = s.orig, keep.push_back(s);
+    g_haveSel = !keep.empty();
+    if (g_haveSel) g_sel = keep[0], g_extra.assign(keep.begin() + 1, keep.end());
+    else g_extra.clear();
+    g_status = removed && removed == static_cast<int>(all.size()) ? (removed == 1 ? "Removed the copy." : "Removed the copies.")
+             : removed ? "Put back; copies removed."
+                       : "Put back where the level had it.";
+}
+
+// Takes back one step; a moved object (as it was) is added to `moved`.
+void undoStep(const UndoStep& st, std::vector<Selected>& moved, bool& addSel) {
     if (st.kind == UndoStep::Placed) { // take the copy away
         hideCopy(st.copyId);
         {
@@ -1677,7 +1793,11 @@ void undo() {
             g_dirty = true;
         }
         std::lock_guard<std::mutex> lock(g_selM);
-        if (g_haveSel && g_sel.copyId == st.copyId) g_haveSel = false;
+        if (g_haveSel && g_sel.copyId == st.copyId) {
+            if (g_extra.empty()) g_haveSel = false;
+            else g_sel = g_extra.back(), g_extra.pop_back();
+        }
+        g_extra.erase(std::remove_if(g_extra.begin(), g_extra.end(), [&](const Selected& e) { return e.copyId == st.copyId; }), g_extra.end());
         g_status = "Undone: the copy placed last is gone.";
         return;
     }
@@ -1703,7 +1823,8 @@ void undo() {
             g_edits.push_back(st.edit);
             g_dirty = true;
         }
-        selectCopy(back, st.edit.to);
+        selectCopy(back, st.edit.to, addSel);
+        addSel = true;
         setStatus("Undone: the removed copy is back.");
         return;
     }
@@ -1724,10 +1845,32 @@ void undo() {
         else if (ed) g_edits.erase(g_edits.begin() + (ed - g_edits.data()));
         g_dirty = true;
     }
+    moved.push_back(s);
+}
+
+// Takes back the last step (all of it, when it moved several objects at once).
+void undo() {
+    std::vector<UndoStep> steps;
+    {
+        std::lock_guard<std::mutex> lock(g_undoM);
+        if (g_undo.empty()) return setStatus("Nothing to undo.");
+        const int b = g_undo.back().batch;
+        while (!g_undo.empty() && g_undo.back().batch == b) {
+            steps.push_back(g_undo.back());
+            g_undo.pop_back();
+        }
+    }
+    std::reverse(steps.begin(), steps.end()); // as they were made: the leading object first
+    std::vector<Selected> moved;
+    bool addSel = false;
+    for (const UndoStep& st : steps) undoStep(st, moved, addSel);
+    if (moved.empty()) return;
     std::lock_guard<std::mutex> lock(g_selM);
-    g_sel = s; // the moved object is selected again, where it was
+    g_sel = moved[0]; // the moved objects are selected again, where they were
+    g_extra.assign(moved.begin() + 1, moved.end());
     g_haveSel = true;
-    g_status = "Undone: " + s.kind + " is back where it was.";
+    g_status = moved.size() == 1 ? "Undone: " + moved[0].kind + " is back where it was."
+                                 : "Undone: " + std::to_string(moved.size()) + " objects are back where they were.";
 }
 
 // ---- copy and paste ----------------------------------------------------------------------------------
@@ -1794,62 +1937,94 @@ bool selection(Selected& s) {
     return g_haveSel;
 }
 
-// Copy: the selection becomes the template that Paste places.
+std::vector<Template> g_clipAll; // (g_selM) everything copied, the leading object first
+
+// Copy: the selection becomes the templates that Paste places (several keep where they are from
+// each other).
 void copySelection() {
-    Selected s;
-    if (!selection(s)) return setStatus("Copy: pick an object first");
-    server().post([s] {
-        Template t;
-        if (!templateOf(s, t)) return setStatus("Copy: GridNode cannot make copies of this object (only static models and group props)");
-        t.label = describe(t, s);
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Copy: pick an object first");
+    server().post([all] {
+        std::vector<Template> ts;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t)) continue;
+            t.label = describe(t, s);
+            ts.push_back(t);
+        }
+        if (ts.empty()) return setStatus("Copy: GridNode cannot make copies of this object (only static models and group props)");
+        const size_t skipped = all.size() - ts.size();
         std::lock_guard<std::mutex> lock(g_selM);
-        g_clip = t;
+        g_clip = ts[0];
+        if (ts.size() > 1) g_clip.label = std::to_string(ts.size()) + " objects, from " + ts[0].label;
+        g_clipAll = ts;
         g_haveClip = true;
-        g_status = "Copied " + t.label + ". Paste places a new one where the crosshair points.";
+        g_status = "Copied " + g_clip.label + ". Paste places new ones where the crosshair points." +
+                   (skipped ? " (" + std::to_string(skipped) + " could not be copied.)" : std::string());
     });
 }
 
-// Paste: a new copy of the template where the ray (from, direction) hits, or 10 m along it.
+// Places copies of `ts` (the first at `lead`, the rest where they were from it) as one undo step,
+// selected together.
+void placeCopies(const std::vector<Template>& ts, const std::vector<gn_transform>& places) {
+    std::vector<UndoStep> steps;
+    std::vector<int> ids;
+    for (size_t i = 0; i < ts.size(); ++i) {
+        const int id = addCopyEdit(ts[i], places[i]);
+        UndoStep st;
+        st.kind = UndoStep::Placed;
+        st.copyId = id;
+        steps.push_back(st);
+        ids.push_back(id);
+    }
+    pushUndoBatch(std::move(steps));
+    for (size_t i = 0; i < ts.size(); ++i) spawnCopy(ts[i], places[i], ids[i], true, i > 0);
+}
+
+// Paste: new copies of what was copied where the ray (from, direction) hits, or 10 m along it.
 void pasteAt(const float* ray) {
     std::array<float, 6> r{};
     memcpy(r.data(), ray, sizeof(float) * 6);
     server().post([r] {
-        Template t;
+        std::vector<Template> ts;
         {
             std::lock_guard<std::mutex> lock(g_selM);
-            if (!g_haveClip) return void(g_status = "Paste: copy an object first");
-            t = g_clip;
+            if (!g_haveClip || g_clipAll.empty()) return void(g_status = "Paste: copy an object first");
+            ts = g_clipAll;
         }
         const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
         gn_ray_hit hit{};
-        alignas(16) gn_transform place = t.place;
+        float lead[3];
         if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK)
-            memcpy(place.trans, hit.position, sizeof(float) * 3);
+            memcpy(lead, hit.position, sizeof(lead));
         else
-            for (int k = 0; k < 3; ++k) place.trans[k] = r[k] + r[3 + k] * 10.f;
-        place.trans[3] = 1.f;
-        const int id = addCopyEdit(t, place);
-        UndoStep st;
-        st.kind = UndoStep::Placed;
-        st.copyId = id;
-        pushUndo(st);
-        spawnCopy(t, place, id, true);
+            for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
+        std::vector<gn_transform> places;
+        for (const Template& t : ts) {
+            alignas(16) gn_transform place = t.place;
+            for (int k = 0; k < 3; ++k) place.trans[k] = lead[k] + (t.place.trans[k] - ts[0].place.trans[k]);
+            place.trans[3] = 1.f;
+            places.push_back(place);
+        }
+        placeCopies(ts, places);
     });
 }
 
-// Duplicate: a new copy of the selection in the same place (selected, ready to move).
+// Duplicate: new copies of the selection in the same places (selected, ready to move).
 void duplicateSelection() {
-    Selected s;
-    if (!selection(s)) return setStatus("Duplicate: pick an object first");
-    server().post([s] {
-        Template t;
-        if (!templateOf(s, t)) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
-        const int id = addCopyEdit(t, s.now);
-        UndoStep st;
-        st.kind = UndoStep::Placed;
-        st.copyId = id;
-        pushUndo(st);
-        spawnCopy(t, s.now, id, true);
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Duplicate: pick an object first");
+    server().post([all] {
+        std::vector<Template> ts;
+        std::vector<gn_transform> places;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t)) continue;
+            ts.push_back(t);
+            places.push_back(s.now);
+        }
+        if (ts.empty()) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
+        placeCopies(ts, places);
     });
 }
 
@@ -2260,6 +2435,7 @@ void freeCamFrame(bool menuOpen) {
         row("Wheel", "flying speed");
         ImGui::Separator();
         row("Click / " + k(kPick), "pick at the crosshair");
+        row("Shift + click", "add to / take from the selection");
         row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
         row(k(kUp) + " / " + k(kDown), "move it up / down");
         row(k(kTurnL) + " / " + k(kTurnR), "turn it");
@@ -2277,8 +2453,10 @@ void freeCamFrame(bool menuOpen) {
         Selected cur;
         if (selection(cur)) {
             ImGui::Separator();
+            const size_t n = selectionAll().size();
             ImGui::Text("Selected: %s", cur.group ? "a group prop (Make standalone in the menu to move it)"
                                        : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
+            if (n > 1) ImGui::Text("and %llu more (they move and turn with it)", static_cast<unsigned long long>(n - 1));
         }
         ImGui::End();
     }
@@ -2373,10 +2551,10 @@ bool cursorRay(float* ray) {
 }
 bool centreRay(float* ray) { return viewRay(0.f, 0.f, ray); }
 
-void pickCentre() {
+void pickCentre(bool add = false) {
     float ray[6];
-    if (centreRay(ray)) pick(ray);
-    else pick();
+    if (centreRay(ray)) pick(ray, add);
+    else pick(nullptr, add);
 }
 // ---- teleports (the game's own: ServerCharacterEntity_teleport, as its teleport entities use) ------
 // Faith at `pos`, facing along `facing` (horizontal). Server thread does the move.
@@ -2470,7 +2648,12 @@ void pasteCentre() {
 // 6 / 7 turn left / right. Shift: 4 steps, Ctrl: a quarter.
 void nudge(int dir, float scale) {
     Selected s;
-    if (!selection(s) || s.group) return;
+    if (!selection(s)) return;
+    if (s.group) { // a group prop leads: only the rest of the selection can move
+        bool movable = false;
+        for (const Selected& e : selectionAll()) movable = movable || !e.group;
+        if (!movable) return setStatus("Group props move once made standalone (Make standalone in the menu).");
+    }
     float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
     if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return;
     gn_transform t = s.now;
@@ -2706,7 +2889,11 @@ void draw(bool* open) {
         ImGui::SameLine();
         if (ImGui::Button("Stand upright")) nudge(13, 1.f);
         ImGui::TextDisabled("Directions follow the camera. Shift: 4 steps, Ctrl: a quarter.");
-        if (ImGui::Button(s.copyId >= 0 ? "Remove this copy" : "Put back where the level had it")) resetSelection();
+        const size_t selected = selectionAll().size();
+        if (selected > 1) ImGui::TextDisabled("%llu objects selected (Shift+click adds or takes away); they move and turn with this one.",
+                                              static_cast<unsigned long long>(selected));
+        if (ImGui::Button(selected > 1 ? "Put them all back (copies: remove)" : s.copyId >= 0 ? "Remove this copy" : "Put back where the level had it"))
+            resetSelection();
         if (s.copyId < 0) ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
     } else {
         ImGui::TextDisabled("Point the camera at an object and press Pick.");
@@ -2809,7 +2996,8 @@ void keysFrame(bool menuOpen) {
     }
     fire[kUndo] = false;
     if (!flying) return;
-    if (fire[kPick]) pickCentre();
+    const bool adding = io.KeyShift || keyHeld(VK_SHIFT);
+    if (fire[kPick]) pickCentre(adding);
     if (fire[kCopy]) copySelection();
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
@@ -2819,7 +3007,7 @@ void keysFrame(bool menuOpen) {
         if (fire[i]) nudge(i - kFwd, scale);
     // With the menu closed: a left click picks what the crosshair points at, and the crosshair shows.
     if (!menuOpen) {
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) pickCentre();
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) pickCentre(adding);
         const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const float k = ImGui::GetFontSize() * 0.5f;
@@ -3001,7 +3189,8 @@ uintptr_t drawnObjectOf(const Selected& s) {
 
 // The outline's render object asked of the game on the client thread (a group copy's comes from its
 // physics component, a call), for the selection `key`.
-std::atomic<uintptr_t> g_outRoKey{0}, g_outRo{0};
+std::mutex g_outAskM;
+std::unordered_map<uintptr_t, uintptr_t> g_outAsk; // (g_outAskM) selection key -> render object (0: none yet)
 
 bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
     const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
@@ -3061,104 +3250,136 @@ void line3d(ImDrawList* dl, const View& v, const float* a, const float* b, ImU32
     dl->AddLine(project(v, p), project(v, q), col, thick);
 }
 
-void drawOutline() {
-    Selected s;
-    if (!selection(s)) return;
-    View v;
-    if (!currentView(v)) return;
+// One selected object's outline, looked up once and kept while it stays selected (render thread).
+struct Outline {
+    bool box = false;
+    float mn[3] = {}, mx[3] = {};
+    uintptr_t ro = 0;     // the render object that draws it, when found
+    double boxAt = -10.0, roAt = -10.0;
+    bool asked = false;   // asked the game for it (a group prop's copy)
+};
+std::unordered_map<uintptr_t, Outline> g_outlines;
+
+uintptr_t outlineKey(const Selected& s) {
+    return s.group ? s.gp.serverGroup ^ (uintptr_t(s.gp.part) << 3) : s.entities.empty() ? 0 : s.entities[0].first;
+}
+
+void drawOne(const View& v, const Selected& s, bool lead) {
+    const uintptr_t key = outlineKey(s);
+    const bool fresh = g_outlines.find(key) == g_outlines.end();
+    Outline& o = g_outlines[key];
     const uintptr_t data = selectionData(s);
-    // The box is looked up when the selection changes (and again every 2 s while none is found).
-    static uintptr_t cacheKey = 0;
-    static double cacheAt = -10.0;
-    static bool box = false;
-    static float mn[3] = {}, mx[3] = {};
-    const uintptr_t key = s.group ? s.gp.serverGroup ^ (uintptr_t(s.gp.part) << 3) : s.entities.empty() ? 0 : s.entities[0].first;
-    if (key != cacheKey || (!box && ImGui::GetTime() - cacheAt > 2.0)) {
-        const bool changed = key != cacheKey;
-        cacheKey = key;
-        cacheAt = ImGui::GetTime();
+    const double now = ImGui::GetTime();
+    // The box: its model's mesh once seen, else the collision; again every 2 s while there is none.
+    if (fresh || (!o.box && now - o.boxAt > 2.0)) {
+        o.boxAt = now;
         const char* from = "no box found";
-        box = localBox(data, s, mn, mx, &from);
-        if (changed)
-            GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, box ? mn[0] : 0.f, box ? mn[1] : 0.f,
-                   box ? mn[2] : 0.f, box ? mx[0] : 0.f, box ? mx[1] : 0.f, box ? mx[2] : 0.f);
+        o.box = localBox(data, s, o.mn, o.mx, &from);
+        if (fresh)
+            GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, o.mn[0], o.mn[1], o.mn[2], o.mx[0], o.mx[1],
+                   o.mx[2]);
     }
-    // Drawn in the render object's own transform when it is found (what is on screen), else in the
-    // selection's (the physics transform).
-    static uintptr_t ro = 0;
-    static uintptr_t roKey = 0;
-    static double roAt = -10.0;
-    static bool asked = false;
+    // Drawn in the render object's own transform when it is found (what is on screen).
     auto adopt = [&](uintptr_t found, const char* how) {
-        ro = found;
+        o.ro = found;
         float rmn[3], rmx[3];
-        if (meshBox(ro, rmn, rmx)) {
-            memcpy(mn, rmn, sizeof(rmn)), memcpy(mx, rmx, sizeof(rmx)), box = true;
-            if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
+        if (meshBox(found, rmn, rmx)) {
+            memcpy(o.mn, rmn, sizeof(rmn)), memcpy(o.mx, rmx, sizeof(rmx)), o.box = true;
+            if (data) g_dataBox[data] = {rmn[0], rmn[1], rmn[2], rmx[0], rmx[1], rmx[2]};
         }
-        GN_LOG("layouts: outline: render object %llx (%s), mesh box (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", (unsigned long long)ro, how, mn[0], mn[1],
-               mn[2], mx[0], mx[1], mx[2]);
+        GN_LOG("layouts: outline: render object %llx (%s), mesh box (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", (unsigned long long)found, how, o.mn[0],
+               o.mn[1], o.mn[2], o.mx[0], o.mx[1], o.mx[2]);
     };
-    if (key != roKey) {
-        roKey = key, roAt = ImGui::GetTime(), ro = 0, asked = false;
-        if (const uintptr_t found = drawnObjectOf(s)) adopt(found, "read");
-        else if (s.group) {
-            asked = true;
-            g_outRo = 0;
-            g_outRoKey = key;
+    if (fresh) {
+        o.roAt = now;
+        if (const uintptr_t found = drawnObjectOf(s)) {
+            adopt(found, "read");
+        } else if (s.group) {
+            o.asked = true;
+            {
+                std::lock_guard<std::mutex> lock(g_outAskM);
+                g_outAsk[key] = 0;
+            }
             const GroupProp gp = s.gp;
             float at[3] = {s.now.trans[0], s.now.trans[1], s.now.trans[2]};
             client().post([gp, at, key] {
                 const uintptr_t r = renderObjectOf(gp);
-                if (g_outRoKey.load() == key) g_outRo = meshAt(r, at) ? r : 0;
+                std::lock_guard<std::mutex> lock(g_outAskM);
+                const auto it = g_outAsk.find(key);
+                if (it != g_outAsk.end() && meshAt(r, at)) it->second = r;
             });
         }
-    } else if (!ro && asked && g_outRoKey.load() == key && g_outRo.load()) {
-        adopt(g_outRo.load(), "asked the game");
-    } else if (!ro && ImGui::GetTime() - roAt > 2.0) {
-        roAt = ImGui::GetTime();
+    } else if (!o.ro && o.asked) {
+        uintptr_t got = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_outAskM);
+            const auto it = g_outAsk.find(key);
+            if (it != g_outAsk.end() && it->second) got = it->second, g_outAsk.erase(it);
+        }
+        if (got) adopt(got, "asked the game"), o.asked = false;
+    } else if (!o.ro && now - o.roAt > 2.0) {
+        o.roAt = now;
         if (const uintptr_t found = drawnObjectOf(s)) adopt(found, "read");
     }
     gn_transform rt{};
-    const gn_transform& t = ro && meshTransform(ro, rt) ? rt : s.now;
-    auto world = [&](float x, float y, float z, float* o) {
-        for (int k = 0; k < 3; ++k) o[k] = t.trans[k] + x * t.right[k] + y * t.up[k] + z * t.forward[k];
+    const gn_transform& t = o.ro && meshTransform(o.ro, rt) ? rt : s.now;
+    auto world = [&](float x, float y, float z, float* out) {
+        for (int k = 0; k < 3; ++k) out[k] = t.trans[k] + x * t.right[k] + y * t.up[k] + z * t.forward[k];
     };
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
-    const ImU32 col = IM_COL32(255, 200, 60, 230);
-    if (box) {
+    // The leading object (what moves and turns the rest) yellow, the rest of the selection light blue.
+    const ImU32 col = lead ? IM_COL32(255, 200, 60, 230) : IM_COL32(120, 200, 255, 210);
+    if (o.box) {
         float c[8][3];
-        for (int i = 0; i < 8; ++i) world(i & 1 ? mx[0] : mn[0], i & 2 ? mx[1] : mn[1], i & 4 ? mx[2] : mn[2], c[i]);
+        for (int i = 0; i < 8; ++i) world(i & 1 ? o.mx[0] : o.mn[0], i & 2 ? o.mx[1] : o.mn[1], i & 4 ? o.mx[2] : o.mn[2], c[i]);
         static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-        for (const auto& e : edges) line3d(dl, v, c[e[0]], c[e[1]], col, 2.f);
+        for (const auto& e : edges) line3d(dl, v, c[e[0]], c[e[1]], col, lead ? 2.f : 1.5f);
     }
+    float pv[3];
+    world(0, 0, 0, pv);
+    if (depthOf(v, pv) > kNear) dl->AddCircleFilled(project(v, pv), lead ? 3.5f : 2.5f, col);
+    if (!lead) return;
     // Its own axes from the middle of its box (its pivot, often a corner, is the small dot): right red,
     // up green, forward blue.
     float len = 1.f, c0[3] = {0, 0, 0};
-    if (box) {
-        len = std::max(0.5f, 0.35f * std::max({mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]}));
-        for (int k = 0; k < 3; ++k) c0[k] = 0.5f * (mn[k] + mx[k]);
+    if (o.box) {
+        len = std::max(0.5f, 0.35f * std::max({o.mx[0] - o.mn[0], o.mx[1] - o.mn[1], o.mx[2] - o.mn[2]}));
+        for (int k = 0; k < 3; ++k) c0[k] = 0.5f * (o.mn[k] + o.mx[k]);
     }
-    float o[3], a[3], pv[3];
-    world(0, 0, 0, pv);
-    if (depthOf(v, pv) > kNear) dl->AddCircleFilled(project(v, pv), 3.5f, col);
+    float org[3], a[3];
     auto axisEnd = [&](int k, float f, float* out) {
         world(c0[0] + (k == 0 ? len * f : 0), c0[1] + (k == 1 ? len * f : 0), c0[2] + (k == 2 ? len * f : 0), out);
     };
-    world(c0[0], c0[1], c0[2], o);
-    axisEnd(0, 1.f, a);
-    line3d(dl, v, o, a, IM_COL32(240, 70, 70, 230), 2.f);
-    axisEnd(1, 1.f, a);
-    line3d(dl, v, o, a, IM_COL32(80, 220, 80, 230), 2.f);
-    axisEnd(2, 1.f, a);
-    line3d(dl, v, o, a, IM_COL32(80, 140, 255, 230), 2.f);
-    // Letters at the tips, so a direction can be named: X right (red), Y up (green), Z forward (blue).
+    world(c0[0], c0[1], c0[2], org);
     static const char* names[3] = {"X", "Y", "Z"};
     static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
     for (int k = 0; k < 3; ++k) {
+        axisEnd(k, 1.f, a);
+        line3d(dl, v, org, a, cols[k], 2.f);
         axisEnd(k, 1.1f, a);
         if (depthOf(v, a) > kNear) dl->AddText(project(v, a), cols[k], names[k]);
     }
+}
+
+// The selection's outlines, shown while the free camera is on.
+void drawOutline() {
+    const std::vector<Selected> all = g_cam.enabled ? selectionAll() : std::vector<Selected>{};
+    // Forget the outlines of what is no longer selected.
+    for (auto it = g_outlines.begin(); it != g_outlines.end();) {
+        bool keep = false;
+        for (const Selected& s : all) keep = keep || outlineKey(s) == it->first;
+        if (keep) {
+            ++it;
+        } else {
+            std::lock_guard<std::mutex> lock(g_outAskM);
+            g_outAsk.erase(it->first);
+            it = g_outlines.erase(it);
+        }
+    }
+    if (all.empty()) return;
+    View v;
+    if (!currentView(v)) return;
+    for (size_t i = all.size(); i-- > 0;) drawOne(v, all[i], i == 0); // the lead last, on top
 }
 
 void frame(bool menuOpen) {
@@ -3169,7 +3390,7 @@ void frame(bool menuOpen) {
     const ImGuiIO& io = ImGui::GetIO();
     if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
         float ray[6];
-        if (cursorRay(ray)) pick(ray);
+        if (cursorRay(ray)) pick(ray, io.KeyShift);
     }
 }
 
