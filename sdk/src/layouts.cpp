@@ -2765,53 +2765,70 @@ uintptr_t selectionData(const Selected& s) {
     return 0;
 }
 
-// A plausible local box: 8 floats min (x y z w), max (x y z w), solid in at least two directions.
-bool boxAt(uintptr_t p, float* mn, float* mx) {
-    float b[8];
-    if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
-    int solid = 0;
-    for (int k = 0; k < 3; ++k) {
-        if (b[4 + k] < b[k] || b[4 + k] - b[k] > 5000.f || std::fabs(b[k]) > 5000.f) return false;
-        if (b[4 + k] - b[k] > 0.01f) ++solid;
-    }
-    if (solid < 2) return false;
-    memcpy(mn, b, sizeof(float) * 3);
-    memcpy(mx, b + 4, sizeof(float) * 3);
-    return true;
-}
-
-// A render object's local box: RenderObject_buildUpdate (0x143769330) sends the object's transform
-// (+0x10) and the box at *(**(object + 0x60) + 0x20), which the renderer culls with.
-bool renderObjectBox(uintptr_t ro, float* mn, float* mx) {
-    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
-    const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
-    return boxAt(x ? mem::readOr<uintptr_t>(x + 0x20) : 0, mn, mx);
-}
-
-// The selection's local box. A group prop: its copy's render object. A standalone model: a render
-// object the client entity points to (directly or one level down) whose transform is the entity's.
-bool localBox(uintptr_t, const Selected& s, float* mn, float* mx, const char** from) {
-    if (s.group && s.gp.block) {
-        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
-        if (renderObjectBox(list ? mem::readOr<uintptr_t>(list + s.gp.copy * 8u) : 0, mn, mx)) return *from = "group copy's render object", true;
-    }
-    for (const auto& [ent, ty] : s.entities) {
-        if (isServerClass(ty->name)) continue;
-        gn_transform et{};
-        if (!entityTransform(reinterpret_cast<void*>(ent), et)) continue;
-        auto matches = [&](uintptr_t ro) {
-            float pos[3];
-            return ro && mem::read(ro + 0x10 + 0x30, pos, sizeof(pos)) && dist2(pos, et.trans) < 0.01f && renderObjectBox(ro, mn, mx);
-        };
-        for (uint32_t off = 0x18; off < 0x400; off += 8) {
-            const uintptr_t p = mem::readOr<uintptr_t>(ent + off);
-            if (p < 0x10000 || (p & 7)) continue;
-            if (matches(p)) return *from = "entity's render object", true;
-            for (uint32_t off2 = 0; off2 < 0x200; off2 += 8) { // one level down (a component, a list)
-                const uintptr_t q = mem::readOr<uintptr_t>(p + off2);
-                if (q >= 0x10000 && !(q & 7) && matches(q)) return *from = "entity's render object (nested)", true;
-            }
+// A group prop's box, from the group's collision: the compound shape keeps a bounding volume tree
+// of its instances (hknpStaticCompoundShape's box update, 0x143ea8e00), whose leaves hold each
+// instance's box in the compound's space (the world: groups sit at the origin).
+bool instanceWorldBox(uintptr_t body, int instance, float* mn, float* mx) {
+    namespace c = e::constant;
+    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
+    const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
+    const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
+    if (!nodes || instance < 0) return false;
+    uint16_t stack[128];
+    int n = 0;
+    stack[n++] = mem::readOr<uint16_t>(tree + c::CompoundTree_Root);
+    for (int guard = 0; n > 0 && guard < 200000; ++guard) {
+        const uintptr_t node = nodes + stack[--n] * 0x20u;
+        float b[8];
+        if (!mem::read(node, b, sizeof(b))) return false;
+        const uint16_t left = mem::readOr<uint16_t>(node + 0x1c), right = mem::readOr<uint16_t>(node + 0x1e);
+        if (left == 0) {
+            if (right != instance) continue;
+            memcpy(mn, b, sizeof(float) * 3);
+            memcpy(mx, b + 4, sizeof(float) * 3);
+            return finite(mn, 3) && finite(mx, 3) && mx[0] >= mn[0] && mx[1] >= mn[1] && mx[2] >= mn[2];
         }
+        if (n + 2 > 128) return false;
+        stack[n++] = left;
+        stack[n++] = right;
+    }
+    return false;
+}
+
+// A world box as a box in an object's own frame (the box around its corners there).
+void localFromWorld(const gn_transform& t, const float* wmn, const float* wmx, float* mn, float* mx) {
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    for (int i = 0; i < 8; ++i) {
+        const float w[3] = {i & 1 ? wmx[0] : wmn[0], i & 2 ? wmx[1] : wmn[1], i & 4 ? wmx[2] : wmn[2]};
+        float l[3];
+        reframe(t, I, w, true, l);
+        for (int k = 0; k < 3; ++k) {
+            mn[k] = i ? std::min(mn[k], l[k]) : l[k];
+            mx[k] = i ? std::max(mx[k], l[k]) : l[k];
+        }
+    }
+}
+
+// Local boxes learnt from group props, by their StaticModelEntityData: a standalone copy (or any
+// static model with that data) uses its prop's box. Render thread.
+std::unordered_map<uintptr_t, std::array<float, 6>> g_dataBox;
+
+bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
+    if (s.group) {
+        int index = -1;
+        float wmn[3], wmx[3];
+        if (groupInstance(s.gp.serverBody, s.gp.part, &index) && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
+            localFromWorld(s.orig, wmn, wmx, mn, mx);
+            if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
+            return *from = "the group's collision tree", true;
+        }
+    }
+    const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
+    if (it != g_dataBox.end()) {
+        memcpy(mn, it->second.data(), sizeof(float) * 3);
+        memcpy(mx, it->second.data() + 3, sizeof(float) * 3);
+        return *from = "its group prop's box", true;
     }
     return false;
 }

@@ -140,6 +140,9 @@ constants:
   - { name: GroupRigidBody_BodyIndex, value: 0x50, confidence: inferred, sources: [research], note: "i32 Havok body index (hknpWorld bodies, 0x90 each)." }
   - { name: GroupRigidBody_Shape, value: 0x58, confidence: inferred, sources: [research], note: "hknpStaticCompoundShape* of the group." }
   - { name: GroupRigidBody_PartToInstance, value: 0x110, confidence: inferred, sources: [research], note: "Array of 4-byte entries; the low i16 of entry [part] is the compound instance index (0x1434eda80)." }
+  - { name: CompoundShape_Tree, value: 0xc0, confidence: inferred, sources: [ghidra], note: "The instances' bounding volume tree (hknpStaticCompoundShape box update 0x143ea8e00): nodes at tree +0x10 (0x20 each: float min +0x00, max +0x10, u16 child +0x1c (0 = leaf), u16 second child / instance index +0x1e); root index at tree +0x30 (u16). A leaf's box is its instance's box in the compound's space. The compound's own box is at +0x80 (min) / +0x90 (max)." }
+  - { name: CompoundTree_Nodes, value: 0x10, confidence: inferred, sources: [ghidra] }
+  - { name: CompoundTree_Root, value: 0x30, confidence: inferred, sources: [ghidra] }
   - { name: CompoundShape_Instances, value: 0x60, confidence: inferred, sources: [research], note: "hknpShapeInstance array (0x80 each): rotation rows +0x00/+0x10/+0x20 (unit), translation +0x30, scale +0x40, shape +0x50 (0x143f50740 builds the scaled transform)." }
   - { name: ShapeInstance_Size, value: 0x80, confidence: inferred, sources: [research] }
   - { name: ShapeInstance_Scale, value: 0x40, confidence: inferred, sources: [research] }
