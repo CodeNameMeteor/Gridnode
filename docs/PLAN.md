@@ -406,15 +406,41 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
    list of loaded blueprints, delete, undo, save.
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).
-7. **Editing on the go** (asked for 2026-10-20): a free camera (detached from Faith, WASD + mouse,
-   Faith frozen in place) and mouse selection (a ray from the cursor through the view, outlined
-   selection), with a move / rotate gizmo (ImGuizmo) instead of number fields. First version
-   2026-10-20: the free camera works while the menu is open (the game gets no input then): right
-   mouse to look (raw mouse diverted from the overlay cursor), WASD/QE; it is applied by a node
-   GridNode links into the view manager's post-update listener list (+0x1b90), writing the view
-   transform (+0x90) and the active camera's (+0x10). Left click on the world picks along the
-   cursor ray (FOV +0x80, aspect from the display). The engine's own FreeCamera (GameView +0xc8,
-   activated through a camera context) is an alternative not used.
+7. **Editing on the go** (asked for 2026-10-20; free camera **confirmed in game** 2026-10-20): a
+   free camera detached from Faith, F7 or the editor's checkbox. It flies with the menu closed
+   (mouse looks, the game gets no input, Faith stays put) and keeps its place with the menu open
+   (right mouse to look, left click picks along the cursor ray). It is applied through a copy of
+   the active camera's vtable on that one object: +0x70 (computeTransforms, the slot MECMP's
+   third person uses) and +0x68 (its update) return the free camera, and Faith's view-mode
+   interface (+0x1d8) answers 1, so her third-person body shows. Writing the view manager's
+   copies from the post-update listeners did nothing: the renderer asks the camera itself.
+   Still to do: a move / rotate gizmo (ImGuizmo) and a selection outline.
+8. **Keys, copies and steps** (asked for 2026-10-20, first version done): rebindable keys
+   (`layouts/settings.txt`): F7 free camera; while it flies R or a click picks at the crosshair, C
+   copies, V pastes at the crosshair, arrows / PageUp / PageDown move the selection relative to
+   the view, Z / X turn it (Shift 4 steps, Ctrl a quarter); the editor has the same as buttons and
+   a Duplicate in place. A copy is a new entity made from the source's data on its entity buses
+   (static models: StaticModelEntityData and the buses recorded at creation; group props: the
+   member's MemberType). Layout files save it as `kind: Copy` with `source` (the source's kind or
+   `GroupProp`) and `at` (its level position); copies are placed before group props are made
+   standalone so their sources are still found. Removing a copy parks it 15 km below for reuse
+   (entities cannot be destroyed yet). Next: a library of copied objects that lasts across levels.
+
+### M8 plan (recordings for research), asked for 2026-10-20
+
+Record what the game does around an event (a KSEC, a door, a checkpoint) instead of guessing:
+start recording, play, pause, export, and comb the export with Ghidra.
+
+1. **Message recorder**: every message on the three message managers with its time, category,
+   type name, the realm, and its reflected fields (values, and pointers named by their type);
+   a ring buffer with a pause, and an export to `recordings/<time>.jsonl`.
+2. **Entity events**: entities created and destroyed (type, data name, blueprint, transform),
+   and events between entities (the event connections the engine fires, by name hash and target).
+3. **Markers**: a key that drops a named marker into the recording ("got KSEC here").
+4. **Calls**: optionally which engine functions ran, from GridNode's existing hooks (creators,
+   ticks), with return addresses so Ghidra can find the callers.
+5. **Reading it back**: a tool that summarises an export (counts per type, what changed around a
+   marker) and maps addresses to the annotations, so a recording can go straight to Ghidra work.
 
 Findings while doing steps 2 and 5:
 
