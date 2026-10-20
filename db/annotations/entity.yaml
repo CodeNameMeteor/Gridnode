@@ -37,3 +37,44 @@ functions:
     note: >-
       Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
       +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: entityObject_initWithParentTransform
+    va: 0x1431411d0
+    note: "Named in Ghidra as entityObject_initWithParentTransform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: findObjectVariationInParentChain
+    va: 0x14314bf90
+    note: "Named in Ghidra as findObjectVariationInParentChain. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_Component_ctor
+    va: 0x14315f9e0
+    note: "Named in Ghidra as fb_Component_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Entity_sendMessageToComponents
+    va: 0x14316bec0
+    note: "Named in Ghidra as Entity_sendMessageToComponents. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Updater_ctor
+    va: 0x143170780
+    note: "Named in Ghidra as Updater_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_UpdateManager_runPass
+    va: 0x143176840
+    note: "Named in Ghidra as fb_UpdateManager_runPass. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientGameComponent_ctor
+    va: 0x1431c0490
+    note: "Named in Ghidra as ClientGameComponent_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: GameComponent_ctor
+    va: 0x1432db630
+    note: "Named in Ghidra as GameComponent_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

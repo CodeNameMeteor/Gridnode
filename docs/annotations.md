@@ -48,7 +48,9 @@ Members, globals and signatures use a small type language:
 | `f32[4]`, `u8[0x10]` | fixed arrays |
 
 A signature is `ret(type name, type name, ...)`; names are optional. For virtuals, `this` is
-implicit.
+implicit. A function may leave its signature out while it is not known (a name from Ghidra, say):
+it then gets an address in `engine.hpp` but no function pointer type, so nothing can call it by
+mistake.
 
 ### classes
 

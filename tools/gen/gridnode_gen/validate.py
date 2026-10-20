@@ -97,7 +97,7 @@ def _unknown_types(db: Database, r: Reflected | None, p: Problems, warn_only: bo
     for g in db.globals.values():
         need(_named(g.type), f"{g.meta.file} global {g.name}")
     for f in db.functions.values():
-        for n in f.signature.named_types():
+        for n in (f.signature.named_types() if f.signature else ()):
             need(n, f"{f.meta.file} function {f.name}")
     for h in db.hooks.values():
         if h.signature:

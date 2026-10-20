@@ -71,3 +71,34 @@ functions:
   - name: Message_ctor
     va: 0x142a37120
     signature: "Message*(Message* message, u32 category, u32 typeId, u32 realm)"
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: Message_dtor
+    va: 0x142d4e9a0
+    note: "Named in Ghidra as Message_dtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: messageDispatchByTypeId
+    va: 0x14345c650
+    note: "Named in Ghidra as messageDispatchByTypeId. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientStartSingleplayerMessage_ctor
+    va: 0x14465aa10
+    note: "Named in Ghidra as ClientStartSingleplayerMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientCharacterLocalPlayerSetMessage_ctor
+    va: 0x14465c540
+    note: "Named in Ghidra as ClientCharacterLocalPlayerSetMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientPlayerLocalSetMessage_ctor
+    va: 0x14465cd80
+    note: "Named in Ghidra as ClientPlayerLocalSetMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CharacterToComponentsOnTeleportedMessage_ctor
+    va: 0x1446a0cd0
+    note: "Named in Ghidra as CharacterToComponentsOnTeleportedMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

@@ -1,0 +1,60 @@
+# Sound and voice over.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+
+globals:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_voiceOverSystem
+    va: 0x1423e3150
+    type: "u64"
+    note: "Labelled in Ghidra as g_voiceOverSystem."
+    confidence: hypothesis
+    sources: [ghidra]
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: fb_SoundEntity_SoundEntity_onEvent
+    va: 0x14301a170
+    note: "Named in Ghidra as fb::SoundEntity::SoundEntity_onEvent. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VoiceOverSystem_cancelConversation
+    va: 0x143042720
+    note: "Named in Ghidra as VoiceOverSystem_cancelConversation. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VoiceOverSystem_setPronunciation
+    va: 0x143046760
+    note: "Named in Ghidra as VoiceOverSystem_setPronunciation. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VoiceOverSystem_setSources
+    va: 0x1430467f0
+    note: "Named in Ghidra as VoiceOverSystem_setSources. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VoiceOverSystem_setTakeControls
+    va: 0x143046940
+    note: "Named in Ghidra as VoiceOverSystem_setTakeControls. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VoiceOverSystem_submitConversation
+    va: 0x1430477f0
+    note: "Named in Ghidra as VoiceOverSystem_submitConversation. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_VoiceOverConversationEntity_VoiceOverConversationEntity_onEvent
+    va: 0x1432bc760
+    note: "Named in Ghidra as fb::VoiceOverConversationEntity::VoiceOverConversationEntity_onEvent. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: initDecodeChannelsAndTables
+    va: 0x143444020
+    note: "Named in Ghidra as initDecodeChannelsAndTables. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: initDecodeTablesNoChannels
+    va: 0x1434456e0
+    note: "Named in Ghidra as initDecodeTablesNoChannels. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

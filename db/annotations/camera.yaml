@@ -31,3 +31,21 @@ code:
   - name: CameraViewManagers_load
     va: 0x1431a24fb
     note: "mov rcx,[ClientCameraViewManagers] in clientWorldFrameTick."
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: CameraSettingsBlend_setTarget
+    va: 0x1431f5b80
+    note: "Named in Ghidra as CameraSettingsBlend_setTarget. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientCameraViewManagers_postSimUpdateAll
+    va: 0x14327c200
+    note: "Named in Ghidra as ClientCameraViewManagers_postSimUpdateAll. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientCameraViewManager_postSimUpdate
+    va: 0x14327c2a0
+    note: "Named in Ghidra as ClientCameraViewManager_postSimUpdate. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

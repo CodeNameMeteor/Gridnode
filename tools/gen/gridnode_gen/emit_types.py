@@ -360,7 +360,8 @@ class Generator:
         w("// ---- function pointer types (call through gn::mem::rva of the VA in gridnode/engine.hpp) ----\n")
         w("namespace gn::fn {\n")
         for f in sorted(self.db.functions.values(), key=lambda f: f.name):
-            w(f"using {f.name} = {fptr(f.signature)};\n")
+            if f.signature is not None:
+                w(f"using {f.name} = {fptr(f.signature)};\n")
         for h in sorted(self.db.hooks.values(), key=lambda h: h.name):
             if h.signature:
                 w(f"using {h.name} = {fptr(h.signature)};\n")

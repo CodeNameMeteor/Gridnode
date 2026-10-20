@@ -100,6 +100,132 @@ functions:
     signature: "void(void* result, EntityCreationInfo* ci, void* blueprint, void* referenceData, u64 a5)"
     confidence: inferred
     note: No-op unless BlueprintInstantiationEnabled is set.
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: spawnSingleEntityFromSublevelData
+    va: 0x142ca6260
+    note: "Named in Ghidra as spawnSingleEntityFromSublevelData. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: entityBus_createForLayerOrBlueprint
+    va: 0x143146140
+    note: "Named in Ghidra as entityBus_createForLayerOrBlueprint. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EntityCreator_ctor
+    va: 0x14315fed0
+    note: "Named in Ghidra as EntityCreator_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EntityCreators_bindRealm
+    va: 0x143161af0
+    note: "Named in Ghidra as EntityCreators_bindRealm. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_EntityCreationInfo_baseCtor
+    va: 0x1432db740
+    note: "Named in Ghidra as fb_EntityCreationInfo_baseCtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: levelLoad_spawnFromRecords
+    va: 0x14333f9b0
+    note: "Named in Ghidra as levelLoad_spawnFromRecords. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: levelLoad_collectSpawnRecords
+    va: 0x143343580
+    note: "Named in Ghidra as levelLoad_collectSpawnRecords. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: entityCreator_spawnIntoBus
+    va: 0x14335e240
+    note: "Named in Ghidra as entityCreator_spawnIntoBus. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_Blueprint_instantiateImpl
+    va: 0x14335e400
+    note: "Named in Ghidra as fb_Blueprint_instantiateImpl. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: entityCreator_spawnWithLinearTransform
+    va: 0x14335eb70
+    note: "Named in Ghidra as entityCreator_spawnWithLinearTransform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: blueprint_instantiateContents
+    va: 0x143361260
+    note: "Named in Ghidra as blueprint_instantiateContents. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: spawnEntityFromRecord_LinearTransform
+    va: 0x143363a40
+    note: "Named in Ghidra as spawnEntityFromRecord_LinearTransform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: entityLoader_resolveBlueprintThenSpawn
+    va: 0x143366660
+    note: "Named in Ghidra as entityLoader_resolveBlueprintThenSpawn. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerCharacterSpawnEntity_ctor
+    va: 0x14337c600
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerCharacterSpawnEntity_dtor
+    va: 0x14337d620
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_dtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerCharacterSpawnEntity_belowMaxCount
+    va: 0x1433804a0
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_belowMaxCount. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerCharacterSpawnEntity_clearSpawnArea
+    va: 0x143381b10
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_clearSpawnArea. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sublevelRecord_spawnWithTableTransform
+    va: 0x1433a61a0
+    note: "Named in Ghidra as sublevelRecord_spawnWithTableTransform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sublevelHierarchy_spawnBangerGroupEntry
+    va: 0x1433e71d0
+    note: "Named in Ghidra as sublevelHierarchy_spawnBangerGroupEntry. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sublevel_spawnGroupIntoNewBus
+    va: 0x1433e72b0
+    note: "Named in Ghidra as sublevel_spawnGroupIntoNewBus. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sublevel_spawnGroupDefaultBus
+    va: 0x1433e73d0
+    note: "Named in Ghidra as sublevel_spawnGroupDefaultBus. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: levelSublevel_spawnEntityGroup
+    va: 0x1433e7480
+    note: "Named in Ghidra as levelSublevel_spawnEntityGroup. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sublevelRecord_spawnNextInChain
+    va: 0x1438fe430
+    note: "Named in Ghidra as sublevelRecord_spawnNextInChain. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerCharacterSpawnEntity_ctor
+    va: 0x143953860
+    note: "Named in Ghidra as PamServerCharacterSpawnEntity_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerCustomizeProjectionCharacterEntity_factory
+    va: 0x143a7b5a0
+    note: "Named in Ghidra as PamServerCustomizeProjectionCharacterEntity_factory. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
 
 globals:
   - name: BlueprintInstantiationEnabled

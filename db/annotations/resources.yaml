@@ -1,0 +1,535 @@
+# Resources: file system, superbundles, bundles, CAS, manifests, EBX reading, compression, signatures.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+
+globals:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_platformInfo
+    va: 0x142564920
+    type: "u64"
+    note: "Labelled in Ghidra as g_platformInfo."
+    confidence: hypothesis
+    sources: [ghidra]
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: sha1Init
+    va: 0x14292a000
+    note: "Named in Ghidra as sha1Init. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sha1Transform
+    va: 0x14292a050
+    note: "Named in Ghidra as sha1Transform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sha1Update
+    va: 0x14292b3d0
+    note: "Named in Ghidra as sha1Update. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: sha1Final
+    va: 0x14292b520
+    note: "Named in Ghidra as sha1Final. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: mountInitFsArchives
+    va: 0x142a2b110
+    note: "Named in Ghidra as mountInitFsArchives. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getBundlePlatformFolderName
+    va: 0x142a4e480
+    note: "Named in Ghidra as getBundlePlatformFolderName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ArchiveReader_ctor
+    va: 0x142a6d040
+    note: "Named in Ghidra as ArchiveReader_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ArchiveReader_dtor
+    va: 0x142a6d760
+    note: "Named in Ghidra as ArchiveReader_dtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ArchiveReader_deletingDtor
+    va: 0x142a6efb0
+    note: "Named in Ghidra as ArchiveReader_deletingDtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: rebuildRecordLookupMap_global
+    va: 0x142a6f9d0
+    note: "Named in Ghidra as rebuildRecordLookupMap_global. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: XmlNode_findChild
+    va: 0x142a70cb0
+    note: "Named in Ghidra as XmlNode_findChild. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: XmlNode_findNextSibling
+    va: 0x142a70f40
+    note: "Named in Ghidra as XmlNode_findNextSibling. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: formatGuidString
+    va: 0x142a71070
+    note: "Named in Ghidra as formatGuidString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: superbundleLayout_buildIndexAndGroups
+    va: 0x142a712d0
+    note: "Named in Ghidra as superbundleLayout_buildIndexAndGroups. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DbxDocument_loadFromStream
+    va: 0x142a71ec0
+    note: "Named in Ghidra as DbxDocument_loadFromStream. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: BinaryXml_readStringTableAndRoot
+    va: 0x142a721b0
+    note: "Named in Ghidra as BinaryXml_readStringTableAndRoot. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: buildSuperbundleAndChunkTables
+    va: 0x142a72720
+    note: "Named in Ghidra as buildSuperbundleAndChunkTables. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: BinaryXml_readNodeRecursive
+    va: 0x142a735c0
+    note: "Named in Ghidra as BinaryXml_readNodeRecursive. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ArchiveReader_skipCurrentEntry
+    va: 0x142a74dc0
+    note: "Named in Ghidra as ArchiveReader_skipCurrentEntry. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: buildResourceGroupTable
+    va: 0x142a7c970
+    note: "Named in Ghidra as buildResourceGroupTable. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasBlockHeader_byteswapAndUpgrade
+    va: 0x142a7e1a0
+    note: "Named in Ghidra as CasBlockHeader_byteswapAndUpgrade. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: LZ4_decompress_safe
+    va: 0x142a80490
+    note: "Named in Ghidra as LZ4_decompress_safe. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getVirtualFileSystem
+    va: 0x142aab650
+    note: "Named in Ghidra as getVirtualFileSystem. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: superbundleLayout_createDomains
+    va: 0x142aabc10
+    note: "Named in Ghidra as superbundleLayout_createDomains. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: selectAndLoadSuperbundleLayout
+    va: 0x142aabf60
+    note: "Named in Ghidra as selectAndLoadSuperbundleLayout. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadSuperbundleLayoutPatchThenData
+    va: 0x142aac140
+    note: "Named in Ghidra as loadSuperbundleLayoutPatchThenData. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceGroup_ctor
+    va: 0x142ab7d00
+    note: "Named in Ghidra as ResourceGroup_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_ctor
+    va: 0x142ab8190
+    note: "Named in Ghidra as ResourceManager_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceHandler_ctorAndRegister
+    va: 0x142ab86c0
+    note: "Named in Ghidra as ResourceHandler_ctorAndRegister. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: BundleManager_initFields
+    va: 0x142ab8780
+    note: "Named in Ghidra as BundleManager_initFields. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_destroyContents
+    va: 0x142ab8b30
+    note: "Named in Ghidra as resourceGroup_destroyContents. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_shutdown
+    va: 0x142ab8ed0
+    note: "Named in Ghidra as ResourceManager_shutdown. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_ignoreResourceType
+    va: 0x142aba0f0
+    note: "Named in Ghidra as ResourceManager_ignoreResourceType. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactory_register
+    va: 0x142aba190
+    note: "Named in Ghidra as ResourceFactory_register. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_allocHandle
+    va: 0x142aba6b0
+    note: "Named in Ghidra as resourceGroup_allocHandle. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceManager_unregisterGroup
+    va: 0x142aba910
+    note: "Named in Ghidra as resourceManager_unregisterGroup. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_retireHandle
+    va: 0x142abaac0
+    note: "Named in Ghidra as resourceGroup_retireHandle. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_releaseHandle
+    va: 0x142abab00
+    note: "Named in Ghidra as resourceGroup_releaseHandle. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_findOrCreateEntry
+    va: 0x142abb2f0
+    note: "Named in Ghidra as resourceGroup_findOrCreateEntry. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_lookupWithFallback
+    va: 0x142abb350
+    note: "Named in Ghidra as resourceGroup_lookupWithFallback. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_isReady
+    va: 0x142abb590
+    note: "Named in Ghidra as resourceGroup_isReady. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_registerBundleGroup
+    va: 0x142abc370
+    note: "Named in Ghidra as ResourceManager_registerBundleGroup. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_unregisterId
+    va: 0x142abe090
+    note: "Named in Ghidra as resourceGroup_unregisterId. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_nameForId
+    va: 0x142abe490
+    note: "Named in Ghidra as resourceGroup_nameForId. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ioBufferPool_acquire
+    va: 0x142abe6d0
+    note: "Named in Ghidra as ioBufferPool_acquire. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ioQueue_init
+    va: 0x142abed50
+    note: "Named in Ghidra as ioQueue_init. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ioWorker_dispatchCompletedBlock
+    va: 0x142abf0d0
+    note: "Named in Ghidra as ioWorker_dispatchCompletedBlock. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundleManager_setActiveBundleSlot
+    va: 0x142abf1e0
+    note: "Named in Ghidra as bundleManager_setActiveBundleSlot. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ioRequest_finishSlot
+    va: 0x142abf250
+    note: "Named in Ghidra as ioRequest_finishSlot. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ioQueueWorkerThread
+    va: 0x142abf2c0
+    note: "Named in Ghidra as ioQueueWorkerThread. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundleReadRequest_stateMachineStep
+    va: 0x142abf3f0
+    note: "Named in Ghidra as bundleReadRequest_stateMachineStep. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasBlock_decompress
+    va: 0x142ac09a0
+    note: "Named in Ghidra as CasBlock_decompress. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasBlock_readHeader
+    va: 0x142ac23c0
+    note: "Named in Ghidra as CasBlock_readHeader. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: BundleManager_ctor
+    va: 0x142ac2700
+    note: "Named in Ghidra as BundleManager_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundleLoadScheduler_onIoBlockComplete
+    va: 0x142ac3640
+    note: "Named in Ghidra as bundleLoadScheduler_onIoBlockComplete. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resolveBundleOrChunkPath
+    va: 0x142ac3990
+    note: "Named in Ghidra as resolveBundleOrChunkPath. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasStream_readNextBlock
+    va: 0x142ac3f80
+    note: "Named in Ghidra as CasStream_readNextBlock. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: jsonUnescapeStringToBuffer
+    va: 0x142acbf50
+    note: "Named in Ghidra as jsonUnescapeStringToBuffer. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: installSourceDomain_ctor
+    va: 0x142ad1bf0
+    note: "Named in Ghidra as installSourceDomain_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: SuperbundleLayoutFile_ctor
+    va: 0x142ad1d70
+    note: "Named in Ghidra as SuperbundleLayoutFile_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: stringMap_findOrInsertCI
+    va: 0x142ad3e10
+    note: "Named in Ghidra as stringMap_findOrInsertCI. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: SignedFile_verifyToDbObject
+    va: 0x142ad5ec0
+    note: "Named in Ghidra as SignedFile_verifyToDbObject. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: BundleManifest_parseEbxResChunkEntries
+    va: 0x142ad78c0
+    note: "Named in Ghidra as BundleManifest_parseEbxResChunkEntries. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Bundle_buildBinaryHeaderFromManifest
+    va: 0x142ad8250
+    note: "Named in Ghidra as Bundle_buildBinaryHeaderFromManifest. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasCatalog_addEntry
+    va: 0x142ad9230
+    note: "Named in Ghidra as CasCatalog_addEntry. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasCatalog_openCasFiles
+    va: 0x142ad9b30
+    note: "Named in Ghidra as CasCatalog_openCasFiles. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasCatalog_mountFolder
+    va: 0x142ad9d00
+    note: "Named in Ghidra as CasCatalog_mountFolder. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasCatalog_resolveSha1Locations
+    va: 0x142ad9f50
+    note: "Named in Ghidra as CasCatalog_resolveSha1Locations. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Superbundle_mountTocAndSb
+    va: 0x142adad60
+    note: "Named in Ghidra as Superbundle_mountTocAndSb. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: mountTree_addDomainAtPath
+    va: 0x142adb780
+    note: "Named in Ghidra as mountTree_addDomainAtPath. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: installManifest_load
+    va: 0x142adc600
+    note: "Named in Ghidra as installManifest_load. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: parseInstallManifest
+    va: 0x142adc760
+    note: "Named in Ghidra as parseInstallManifest. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: installManifest_parseHeader
+    va: 0x142adcb40
+    note: "Named in Ghidra as installManifest_parseHeader. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: CasCatalog_loadAndVerify
+    va: 0x142add280
+    note: "Named in Ghidra as CasCatalog_loadAndVerify. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: SignedFile_verifyAndSkipHeader
+    va: 0x142add400
+    note: "Named in Ghidra as SignedFile_verifyAndSkipHeader. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundlePath_buildFromHierarchy
+    va: 0x142add970
+    note: "Named in Ghidra as bundlePath_buildFromHierarchy. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: installManifest_setupSources
+    va: 0x142ade5e0
+    note: "Named in Ghidra as installManifest_setupSources. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Frostbite_verifyRsaSha1Signature
+    va: 0x142ade930
+    note: "Named in Ghidra as Frostbite_verifyRsaSha1Signature. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundleSource_readHeaderAndName
+    va: 0x142adea90
+    note: "Named in Ghidra as bundleSource_readHeaderAndName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: bundleSource_openWithHeader
+    va: 0x142adf470
+    note: "Named in Ghidra as bundleSource_openWithHeader. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceManager_addDomainFromLayout
+    va: 0x142ae0760
+    note: "Named in Ghidra as resourceManager_addDomainFromLayout. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: VirtualFileSystem_openForRead
+    va: 0x142ae0a60
+    note: "Named in Ghidra as VirtualFileSystem_openForRead. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceDomain_ctor
+    va: 0x142ae68c0
+    note: "Named in Ghidra as ResourceDomain_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: RuntimeDatabaseDomain_ctor
+    va: 0x142ae6aa0
+    note: "Named in Ghidra as RuntimeDatabaseDomain_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DbManifest_ctor
+    va: 0x142ae6ce0
+    note: "Named in Ghidra as DbManifest_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DbManifest_clearEntries
+    va: 0x142ae7850
+    note: "Named in Ghidra as DbManifest_clearEntries. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: RuntimeDatabaseDomain_deletingDtor
+    va: 0x142ae7a20
+    note: "Named in Ghidra as RuntimeDatabaseDomain_deletingDtor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: manifest_insertKey16Node
+    va: 0x142ae83b0
+    note: "Named in Ghidra as manifest_insertKey16Node. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_getOrCreateDomainForGroup
+    va: 0x142ae9dd0
+    note: "Named in Ghidra as ResourceManager_getOrCreateDomainForGroup. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_loadManifestByName
+    va: 0x142aea170
+    note: "Named in Ghidra as ResourceManager_loadManifestByName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceManager_findManifestByName
+    va: 0x142aeaee0
+    note: "Named in Ghidra as ResourceManager_findManifestByName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: domain_findEntryWithParents
+    va: 0x142aeb0c0
+    note: "Named in Ghidra as domain_findEntryWithParents. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: manifest_findEntryByU64Key
+    va: 0x142aeb410
+    note: "Named in Ghidra as manifest_findEntryByU64Key. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: domain_lookupRecordByKey
+    va: 0x142aeb4f0
+    note: "Named in Ghidra as domain_lookupRecordByKey. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: manifest_findEntryByKey16_local
+    va: 0x142aeb5e0
+    note: "Named in Ghidra as manifest_findEntryByKey16_local. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: manifest_findEntryByKey16_recursive
+    va: 0x142aeb710
+    note: "Named in Ghidra as manifest_findEntryByKey16_recursive. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Res_applyPointerRelocations
+    va: 0x142aebb20
+    note: "Named in Ghidra as Res_applyPointerRelocations. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: resourceGroup_entryObject
+    va: 0x142aec640
+    note: "Named in Ghidra as resourceGroup_entryObject. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EbxReader_finalizeInstances
+    va: 0x142aec880
+    note: "Named in Ghidra as EbxReader_finalizeInstances. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EbxReader_resolveTypesAndLayout
+    va: 0x142aec910
+    note: "Named in Ghidra as EbxReader_resolveTypesAndLayout. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceDomain_loadDatabaseDescription
+    va: 0x142aef1d0
+    note: "Named in Ghidra as ResourceDomain_loadDatabaseDescription. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EbxReader_feedStream
+    va: 0x142af0620
+    note: "Named in Ghidra as EbxReader_feedStream. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: manifest_addEntryNamedWithKeys
+    va: 0x142af2950
+    note: "Named in Ghidra as manifest_addEntryNamedWithKeys. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: zlib_inflate
+    va: 0x142c84cf0
+    note: "Named in Ghidra as zlib_inflate. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

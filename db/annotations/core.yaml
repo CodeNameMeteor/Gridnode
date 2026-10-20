@@ -6,6 +6,19 @@ globals:
     va: 0x14215d028
     type: "TypeInfo*"
     note: Head of the engine's singly linked list of every runtime TypeInfo (next at +0x08).
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_soundSystem
+    va: 0x1423dd580
+    type: "u64"
+    note: "Labelled in Ghidra as g_soundSystem."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_soundEntityCommonUpdater
+    va: 0x1423e2f20
+    type: "u64"
+    note: "Labelled in Ghidra as g_soundEntityCommonUpdater."
+    confidence: hypothesis
+    sources: [ghidra]
 
 functions:
   - name: Arena_allocFromMember
@@ -23,6 +36,52 @@ functions:
     signature: "void(void* netState, u64 bits)"
     note: Marks replicated state dirty so the server sends it to the client.
     sources: [mecmp, research]
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: emptyStub
+    va: 0x142a1c590
+    note: "Named in Ghidra as emptyStub. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: identityPassthrough
+    va: 0x142a1e1d0
+    note: "Named in Ghidra as identityPassthrough. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: introSortRange
+    va: 0x142a22af0
+    note: "Named in Ghidra as introSortRange. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: notifyListenersPair
+    va: 0x142a2eda0
+    note: "Named in Ghidra as notifyListenersPair. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: notifyListenersSingle
+    va: 0x142a2ee40
+    note: "Named in Ghidra as notifyListenersSingle. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: poolAlloc
+    va: 0x142a770c0
+    note: "Named in Ghidra as poolAlloc. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: poolFree
+    va: 0x142a78220
+    note: "Named in Ghidra as poolFree. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: returnFalse
+    va: 0x143207f00
+    note: "Named in Ghidra as returnFalse. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: forEachStridedElement
+    va: 0x143c88338
+    note: "Named in Ghidra as forEachStridedElement. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
 
 structs:
   - name: TypeInfo

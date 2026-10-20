@@ -162,5 +162,7 @@ def emit(db: Database) -> str:
 
 
 def _sig_text(sig) -> str:
+    if sig is None:
+        return "signature not known yet"
     params = ", ".join(str(p.type) + (f" {p.name}" if p.name else "") for p in sig.params)
     return f"{sig.returns}({params})"

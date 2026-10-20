@@ -326,3 +326,16 @@ class GhidraSync(unittest.TestCase):
                 f.write(text)
             _, p = annotations.load(d)
             self.assertEqual(p.errors, [])
+
+
+class OptionalSignature(unittest.TestCase):
+    def test_function_without_signature(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_annotations(d, """
+                functions:
+                  - { name: Mystery, va: 0x140001000, note: "named in Ghidra" }
+            """)
+            db, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
+            self.assertIsNone(db.functions["Mystery"].signature)
+            self.assertIn("Mystery = 0x140001000", emit_engine.emit(db))

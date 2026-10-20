@@ -1,0 +1,116 @@
+# Online services (Blaze, presence, social play, EA). Documented only: GridNode leaves online play alone.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+
+globals:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_networkedMessageUpdater
+    va: 0x14255c2f0
+    type: "u64"
+    note: "Labelled in Ghidra as g_networkedMessageUpdater."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_ownPresenceUser
+    va: 0x14257cc68
+    type: "u64"
+    note: "Labelled in Ghidra as g_ownPresenceUser."
+    confidence: hypothesis
+    sources: [ghidra]
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: OnlineId_copyConstruct
+    va: 0x1432f8cd0
+    note: "Named in Ghidra as OnlineId_copyConstruct. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: NamedChallengeStats_onFinished
+    va: 0x1439deb10
+    note: "Named in Ghidra as NamedChallengeStats_onFinished. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamOnlineConnectionDialog_onMessage
+    va: 0x1439fee40
+    note: "Named in Ghidra as PamOnlineConnectionDialog_onMessage. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: SocialPlay_buildPlayingUgcPresenceJson
+    va: 0x143a14ff0
+    note: "Named in Ghidra as SocialPlay_buildPlayingUgcPresenceJson. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamClientPresenceInfoManagerEntity_factory
+    va: 0x143a35310
+    note: "Named in Ghidra as PamClientPresenceInfoManagerEntity_factory. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamClientPresenceInfoManagerEntity_ctor
+    va: 0x143a38de0
+    note: "Named in Ghidra as PamClientPresenceInfoManagerEntity_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PresenceInfoManager_onSlotPermissions
+    va: 0x143a4aa00
+    note: "Named in Ghidra as PresenceInfoManager_onSlotPermissions. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PresenceInfoManager_publishOwnWorldPosition
+    va: 0x143a4dad0
+    note: "Named in Ghidra as PresenceInfoManager_publishOwnWorldPosition. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PresenceInfoManager_requestSlotPermissions
+    va: 0x143a4ddd0
+    note: "Named in Ghidra as PresenceInfoManager_requestSlotPermissions. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PresenceInfoManager_update
+    va: 0x143a50b80
+    note: "Named in Ghidra as PresenceInfoManager_update. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ChallengeMarker_start
+    va: 0x143a57770
+    note: "Named in Ghidra as ChallengeMarker_start. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerChallengeMarkerEntity_factory
+    va: 0x143a7b400
+    note: "Named in Ghidra as PamServerChallengeMarkerEntity_factory. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerChallengeMarkerEntity_onMessage
+    va: 0x143a8a280
+    note: "Named in Ghidra as PamServerChallengeMarkerEntity_onMessage. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Blaze_GameManager_Game_ctor
+    va: 0x144067da0
+    note: "Named in Ghidra as Blaze_GameManager_Game_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EACUP_loadXInputGetState
+    va: 0x144101e10
+    note: "Named in Ghidra as EACUP_loadXInputGetState. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EACUP_controllerDetectLoop
+    va: 0x144102730
+    note: "Named in Ghidra as EACUP_controllerDetectLoop. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamSocialPlayChallengeFinishedMessage_ctor
+    va: 0x144733550
+    note: "Named in Ghidra as PamSocialPlayChallengeFinishedMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamSocialPlayNamedChallengeFinishedMessage_ctor
+    va: 0x144733a30
+    note: "Named in Ghidra as PamSocialPlayNamedChallengeFinishedMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: NetworkPamMapTrackerPlacedMessage_ctor
+    va: 0x144753330
+    note: "Named in Ghidra as NetworkPamMapTrackerPlacedMessage_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

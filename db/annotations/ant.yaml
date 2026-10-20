@@ -1,0 +1,156 @@
+# ANT, the animation and movement system: driver and processor asset definitions.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: ant_initPamplonaSubsystem
+    va: 0x142f23700
+    note: "Named in Ghidra as ant_initPamplonaSubsystem. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineAlignmentCollisionDriverAsset
+    va: 0x142f2cc10
+    note: "Named in Ghidra as ant_defineAlignmentCollisionDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineCoilDriverAsset
+    va: 0x142f2e650
+    note: "Named in Ghidra as ant_defineCoilDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineCollisionDriverAsset
+    va: 0x142f2e790
+    note: "Named in Ghidra as ant_defineCollisionDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineDashCombatDriverAsset
+    va: 0x142f2f490
+    note: "Named in Ghidra as ant_defineDashCombatDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineDashCompensationDriverAsset
+    va: 0x142f2f6f0
+    note: "Named in Ghidra as ant_defineDashCompensationDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineDashDriverAsset
+    va: 0x142f2f8e0
+    note: "Named in Ghidra as ant_defineDashDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineFallingDriverAsset
+    va: 0x142f2fbe0
+    note: "Named in Ghidra as ant_defineFallingDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineFollowLedgeDriverAsset
+    va: 0x142f30ae0
+    note: "Named in Ghidra as ant_defineFollowLedgeDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineFollowSplineDriverAsset
+    va: 0x142f30bf0
+    note: "Named in Ghidra as ant_defineFollowSplineDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineFootPlantEventDriverAsset
+    va: 0x142f30d00
+    note: "Named in Ghidra as ant_defineFootPlantEventDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineGravityEquationDriverAsset
+    va: 0x142f30f00
+    note: "Named in Ghidra as ant_defineGravityEquationDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineIntoLedgeAlignDriverAsset
+    va: 0x142f31490
+    note: "Named in Ghidra as ant_defineIntoLedgeAlignDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineIntoSplineDriverAsset
+    va: 0x142f31520
+    note: "Named in Ghidra as ant_defineIntoSplineDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineLedgeAlignDriverAsset
+    va: 0x142f316a0
+    note: "Named in Ghidra as ant_defineLedgeAlignDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineMagropePullUpDriverAsset
+    va: 0x142f32270
+    note: "Named in Ghidra as ant_defineMagropePullUpDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineMagropeSwingDriverAsset
+    va: 0x142f325e0
+    note: "Named in Ghidra as ant_defineMagropeSwingDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_definePamplonaMoverAsset
+    va: 0x142f35a10
+    note: "Named in Ghidra as ant_definePamplonaMoverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_definePamplonaPhysicsAsset
+    va: 0x142f35ac0
+    note: "Named in Ghidra as ant_definePamplonaPhysicsAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineSmoothAlignmentDriverAsset
+    va: 0x142f36440
+    note: "Named in Ghidra as ant_defineSmoothAlignmentDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineSoftLandingFallDriverAsset
+    va: 0x142f36720
+    note: "Named in Ghidra as ant_defineSoftLandingFallDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineSplineDriverAsset
+    va: 0x142f368c0
+    note: "Named in Ghidra as ant_defineSplineDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineSpringboardDriverAsset
+    va: 0x142f36ae0
+    note: "Named in Ghidra as ant_defineSpringboardDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineSwingJumpDriverAsset
+    va: 0x142f37070
+    note: "Named in Ghidra as ant_defineSwingJumpDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineUncontrolledSlideDriveAsset
+    va: 0x142f373b0
+    note: "Named in Ghidra as ant_defineUncontrolledSlideDriveAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineVaultDriverAsset
+    va: 0x142f377e0
+    note: "Named in Ghidra as ant_defineVaultDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineWalkingDriverAsset
+    va: 0x142f37a20
+    note: "Named in Ghidra as ant_defineWalkingDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_defineWallrunDriverAsset
+    va: 0x142f37d00
+    note: "Named in Ghidra as ant_defineWallrunDriverAsset. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_registerAllPamplonaDriverDefinitions
+    va: 0x142f38640
+    note: "Named in Ghidra as ant_registerAllPamplonaDriverDefinitions. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ant_registerPamplonaDriversAndProcessors
+    va: 0x142f38b10
+    note: "Named in Ghidra as ant_registerPamplonaDriversAndProcessors. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

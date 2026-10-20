@@ -71,6 +71,47 @@ functions:
     va: 0x143378830
     signature: "void(ServerCharacterEntity* character, const LinearTransform* transform)"
     note: The game's own teleport (as ServerTeleportEntity_teleportPlayer 0x143391430 uses it). The transform must be 16-byte aligned. Server game thread.
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: ServerCharacterHealthComponent_registerForUpdate
+    va: 0x14336c390
+    note: "Named in Ghidra as ServerCharacterHealthComponent_registerForUpdate. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerCharacterEntity_applyCustomizeData
+    va: 0x14336c860
+    note: "Named in Ghidra as ServerCharacterEntity_applyCustomizeData. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerTeleportEntity_clampTargetAboveGround
+    va: 0x143381370
+    note: "Named in Ghidra as ServerTeleportEntity_clampTargetAboveGround. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerTeleportEntity_getTargetTransform
+    va: 0x143387070
+    note: "Named in Ghidra as ServerTeleportEntity_getTargetTransform. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerTeleportEntity_teleportCharacter
+    va: 0x143391600
+    note: "Named in Ghidra as ServerTeleportEntity_teleportCharacter. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerHealthComponent_ctor
+    va: 0x14391e410
+    note: "Named in Ghidra as PamServerHealthComponent_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamServerHumanHealthComponent_ctor
+    va: 0x14391e530
+    note: "Named in Ghidra as PamServerHumanHealthComponent_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: HealthComponent_connectIsImmortal
+    va: 0x14474f280
+    note: "Named in Ghidra as HealthComponent_connectIsImmortal. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
 
 constants:
   - { name: PlayerBlueprint, value: "Characters/FaithCharacter" }

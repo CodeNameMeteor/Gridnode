@@ -32,6 +32,42 @@ functions:
       The ray caster behind the game's ray cast entities (ServerRaycastEntity). world is unused.
       Physics: ServerGameWorld+0x50 -> +0xf0 -> +0x18 (getter 0x1434ee940). A plain ray goes on to
       0x1434e27f0 with collision filter 9.
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: PhysicsQuery_raycastNamed
+    va: 0x1432e6730
+    note: "Named in Ghidra as PhysicsQuery_raycastNamed. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerTeleportEntity_clearPhysicsAtTarget
+    va: 0x143381560
+    note: "Named in Ghidra as ServerTeleportEntity_clearPhysicsAtTarget. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Physics_castRay
+    va: 0x1434e27f0
+    note: "Named in Ghidra as Physics_castRay. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PhysicsHolder_getPhysics
+    va: 0x1434ee940
+    note: "Named in Ghidra as PhysicsHolder_getPhysics. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Physics_castRayCollectHits
+    va: 0x14351a1a0
+    note: "Named in Ghidra as Physics_castRayCollectHits. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ServerRaycastEntity_update
+    va: 0x143a204b0
+    note: "Named in Ghidra as ServerRaycastEntity_update. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: RaycastEntity_buildQuery
+    va: 0x143a22330
+    note: "Named in Ghidra as RaycastEntity_buildQuery. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
 
 constants:
   - { name: World_PhysicsManager, value: 0x50 }

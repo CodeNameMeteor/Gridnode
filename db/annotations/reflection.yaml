@@ -1,0 +1,207 @@
+# The engine's reflection (TypeInfo / ClassInfo) and static registries.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+
+globals:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_typeRegistryFinalized
+    va: 0x14215d04d
+    type: "u8"
+    note: "Labelled in Ghidra as g_typeRegistryFinalized."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_typeInfoRuntimeIdCounter
+    va: 0x14215eb94
+    type: "u16"
+    note: "Labelled in Ghidra as g_typeInfoRuntimeIdCounter."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_classInfoByClassId
+    va: 0x14215f0f8
+    type: "u64"
+    note: "Labelled in Ghidra as g_classInfoByClassId."
+    confidence: hypothesis
+    sources: [ghidra]
+
+functions:
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: registerStaticGameMainNode
+    va: 0x142943230
+    note: "Named in Ghidra as registerStaticGameMainNode. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: registerTypeInfo_PamClientCharacterEntity
+    va: 0x1429993f0
+    note: "Named in Ghidra as registerTypeInfo_PamClientCharacterEntity. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: registerPamClientUIMissionInfoTypes
+    va: 0x1429b3920
+    note: "Named in Ghidra as registerPamClientUIMissionInfoTypes. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_ctor
+    va: 0x142a3d400
+    note: "Named in Ghidra as TypeInfo_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_assignClassIdsRecursive
+    va: 0x142a408b0
+    note: "Named in Ghidra as ClassInfo_assignClassIdsRecursive. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: findStaticRegistryNodeByName
+    va: 0x142a41dd0
+    note: "Named in Ghidra as findStaticRegistryNodeByName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_findByName
+    va: 0x142a41ea0
+    note: "Named in Ghidra as TypeInfo_findByName. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_findByNameHash
+    va: 0x142a41fe0
+    note: "Named in Ghidra as TypeInfo_findByNameHash. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeRegistry_finalizeAndAssignClassIds
+    va: 0x142a42090
+    note: "Named in Ghidra as TypeRegistry_finalizeAndAssignClassIds. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypedValue_getValuePtr
+    va: 0x142a424b0
+    note: "Named in Ghidra as TypedValue_getValuePtr. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_getFieldList
+    va: 0x142a425e0
+    note: "Named in Ghidra as TypeInfo_getFieldList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_countAll
+    va: 0x142a42760
+    note: "Named in Ghidra as TypeInfo_countAll. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ValueTypeInfo_buildFieldList
+    va: 0x142a42a30
+    note: "Named in Ghidra as ValueTypeInfo_buildFieldList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_valueFromString
+    va: 0x142a44c60
+    note: "Named in Ghidra as TypeInfo_valueFromString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: pushStaticRegistryNode
+    va: 0x142a46450
+    note: "Named in Ghidra as pushStaticRegistryNode. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: fb_ClientGamegroupService_TypeInfo_linkIntoGlobalList
+    va: 0x142a46480
+    note: "Named in Ghidra as fb::ClientGamegroupService::TypeInfo_linkIntoGlobalList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EnumTypeInfo_valueToString
+    va: 0x142a49050
+    note: "Named in Ghidra as EnumTypeInfo_valueToString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_valueToString
+    va: 0x142a49650
+    note: "Named in Ghidra as TypeInfo_valueToString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ValueTypeInfo_valueToString
+    va: 0x142a49740
+    note: "Named in Ghidra as ValueTypeInfo_valueToString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_resolveFieldPath
+    va: 0x142a7d620
+    note: "Named in Ghidra as TypeInfo_resolveFieldPath. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_ctor
+    va: 0x142a82440
+    note: "Named in Ghidra as ClassInfo_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_addChildToSuper
+    va: 0x142a84da0
+    note: "Named in Ghidra as ClassInfo_addChildToSuper. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DbObject_getField
+    va: 0x142a8bc90
+    note: "Named in Ghidra as DbObject_getField. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_countInheritedFields
+    va: 0x142a8c750
+    note: "Named in Ghidra as ClassInfo_countInheritedFields. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_getFieldList
+    va: 0x142a8c860
+    note: "Named in Ghidra as ClassInfo_getFieldList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TypeInfo_getClassIdRange
+    va: 0x142a8ed50
+    note: "Named in Ghidra as TypeInfo_getClassIdRange. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_buildFieldList
+    va: 0x142a8faf0
+    note: "Named in Ghidra as ClassInfo_buildFieldList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_fillFieldList
+    va: 0x142a8fba0
+    note: "Named in Ghidra as ClassInfo_fillFieldList. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: initGlobalIdWithCallback
+    va: 0x142a92410
+    note: "Named in Ghidra as initGlobalIdWithCallback. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ArrayTypeInfo_valueToString
+    va: 0x142a92620
+    note: "Named in Ghidra as ArrayTypeInfo_valueToString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClassInfo_valueToString
+    va: 0x142a92840
+    note: "Named in Ghidra as ClassInfo_valueToString. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getStaticCompartment
+    va: 0x142abad00
+    note: "Named in Ghidra as getStaticCompartment. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Partition_findByNameInStaticCompartment
+    va: 0x142aeb310
+    note: "Named in Ghidra as Partition_findByNameInStaticCompartment. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getObjectFieldAt8
+    va: 0x142ba2340
+    note: "Named in Ghidra as getObjectFieldAt8. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getOrInitSlotValue
+    va: 0x143c884d0
+    note: "Named in Ghidra as getOrInitSlotValue. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: getRegistryStatus
+    va: 0x143c885a0
+    note: "Named in Ghidra as getRegistryStatus. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

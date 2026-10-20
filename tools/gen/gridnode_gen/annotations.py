@@ -86,7 +86,7 @@ class Global:
 class Function:
     name: str
     va: int
-    signature: Signature
+    signature: Signature | None  # None: not known yet (a name only; no function pointer type)
     meta: Meta
 
 
@@ -370,10 +370,10 @@ def _load_file(doc: dict, d: dict, fn: str, db: Database, p: Problems):
     for f_ in doc.get("functions", []) or []:
         w = f"{fn} function {f_.get('name', '?')}"
         _check_keys(f_, {"name", "va", "signature", "note", "confidence", "sources"}, p, w)
-        sig = _sig(f_.get("signature"), p, w)
+        sig = _sig(f_.get("signature"), p, w) if "signature" in f_ else None
         try:
-            if sig is None:
-                raise ValueError("signature is required")
+            if "signature" in f_ and sig is None:
+                raise ValueError("signature does not parse")
             db.functions[f_["name"]] = Function(f_["name"], _int(f_.get("va"), "va"), sig, _meta(f_, d, fn, p, w))
         except (ValueError, KeyError) as e:
             p.error(w, str(e))

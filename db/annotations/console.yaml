@@ -7,6 +7,13 @@ globals:
     type: "SettingsManager*"
     confidence: confirmed
     note: Read by every settings getter (e.g. 0x142a2ceb0 for GameTimeSettings).
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: g_consoleEnabledForPlatform
+    va: 0x1420f2b30
+    type: "u8"
+    note: "Labelled in Ghidra as g_consoleEnabledForPlatform."
+    confidence: hypothesis
+    sources: [ghidra]
 
 code:
   - name: SettingsManager_load
@@ -106,3 +113,9 @@ functions:
     va: 0x142a65670
     signature: "void(void* allocator, void* p, i32 size)"
     note: "How callers free an EngineString: free(&s.allocator, s.begin, capacity - begin) when capacity - begin > 1."
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: SettingsManager_registerSettings
+    va: 0x142ab0820
+    note: "Named in Ghidra as SettingsManager_registerSettings. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]

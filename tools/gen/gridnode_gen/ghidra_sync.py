@@ -183,9 +183,12 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
             continue
         taken.add(ident)
         sig = _sig_from_ghidra(f.get("prototype", ""), known_types) if f.get("signatureUserDefined") else None
-        note = f"Named in Ghidra as {name}." + ("" if sig else f" Prototype not carried over: {f.get('prototype', '?')}")
-        funcs.append({"name": ident, "va": va, "signature": sig or "void()", "note": note,
-                      "confidence": "inferred" if sig else "hypothesis"})
+        note = f"Named in Ghidra as {name}." + ("" if sig else " Signature not known yet.")
+        entry = {"name": ident, "va": va}
+        if sig:
+            entry["signature"] = sig
+        entry["note"] = note
+        funcs.append(entry)
     function_vas = {int(f["va"]) for f in doc.get("functions", [])}
     for g in doc.get("labels", []):
         va, name = int(g["va"]), g["name"]

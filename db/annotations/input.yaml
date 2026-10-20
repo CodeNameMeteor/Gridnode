@@ -17,6 +17,31 @@ globals:
     type: "EntryInputActionRegistry*"
     confidence: inferred
     sources: [gridnode]
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: mouseImpl_g_mouseScrollWheelScaling
+    va: 0x141b00af0
+    type: "u32"
+    note: "Labelled in Ghidra as mouseImpl_g_mouseScrollWheelScaling."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_pfnXInputSetState
+    va: 0x14256d7d0
+    type: "u64"
+    note: "Labelled in Ghidra as g_pfnXInputSetState."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_pfnXInputGetCapabilities
+    va: 0x14256d7e8
+    type: "u64"
+    note: "Labelled in Ghidra as g_pfnXInputGetCapabilities."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_EACUP_pfnXInputGetState
+    va: 0x142607db8
+    type: "u64"
+    note: "Labelled in Ghidra as g_EACUP_pfnXInputGetState."
+    confidence: hypothesis
+    sources: [ghidra]
 
 code:
   - name: XInputGetState_store
@@ -91,6 +116,77 @@ functions:
       character it calls 0x14391b970, which reads the movement actions: analog 0x1dcfd4cd/cc
       (move), 0x436f6516/17 (look), digital 0x2884e120..0x2884e136, 0x578abcc, 0xb5adb0e5,
       0xb5a0a981 (buttons, one of them jump) into the ANT input (0x142bc5540).
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: InputManMouse_getLevelImpl
+    va: 0x1431afaa0
+    note: "Named in Ghidra as InputManMouse_getLevelImpl. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputManMouse_getLevelInternal
+    va: 0x1431b0350
+    note: "Named in Ghidra as InputManMouse_getLevelInternal. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputManMouse_getLevelJoySim
+    va: 0x1431b0600
+    note: "Named in Ghidra as InputManMouse_getLevelJoySim. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientPlayerInput_initDevicesAndBindings
+    va: 0x1431b94a0
+    note: "Named in Ghidra as ClientPlayerInput_initDevicesAndBindings. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputMappings_evalDigitalAction
+    va: 0x1431b9c90
+    note: "Named in Ghidra as InputMappings_evalDigitalAction. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientPlayerInput_evalActionByConcept
+    va: 0x1431ba230
+    note: "Named in Ghidra as ClientPlayerInput_evalActionByConcept. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: mouseImpl_processExcessInput
+    va: 0x1431bb850
+    note: "Named in Ghidra as mouseImpl_processExcessInput. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputManager_updateAllDevices
+    va: 0x1431be660
+    note: "Named in Ghidra as InputManager_updateAllDevices. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EntryInputState_ctor
+    va: 0x1432f8aa0
+    note: "Named in Ghidra as EntryInputState_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: EntryInputActionRegistry_set
+    va: 0x1432fd340
+    note: "Named in Ghidra as EntryInputActionRegistry_set. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadVertexShaderTableAndInputLayouts
+    va: 0x14359b800
+    note: "Named in Ghidra as loadVertexShaderTableAndInputLayouts. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputDevices_ctor
+    va: 0x1437b7ba0
+    note: "Named in Ghidra as InputDevices_ctor. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: XInput_loadFunctions
+    va: 0x1437ba6c0
+    note: "Named in Ghidra as XInput_loadFunctions. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: InputDevice_pollPad
+    va: 0x1437bbdd0
+    note: "Named in Ghidra as InputDevice_pollPad. Signature not known yet."
+    confidence: hypothesis
+    sources: [ghidra]
 
 constants:
   - { name: ClientPlayer_Character, value: 0x14a0 }
