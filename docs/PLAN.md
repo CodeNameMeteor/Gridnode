@@ -397,9 +397,12 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    check render and collision follow.
 3. **Spawn and remove**: instantiate a blueprint at a transform on the server and client
    (`Blueprint_instantiate`, creation info, entity bus), and remove what was spawned.
-4. **Layout files**: YAML next to the mod (`layouts/<level>.yaml`): entries of blueprint path,
-   transform and overrides; applied when the level has loaded; changes to the level's own entities
-   by a stable id.
+4. **Layout files**: YAML in `layouts/<level>/<name>.yaml` next to gridnode.dll, any number per
+   level (the older single `layouts/<level>.yaml` reads as "default"). Edits are keyed by kind and
+   level position (`GroupProp` for standalone copies of group props). Loading is manual from the
+   editor (Load / Delete / Save as / Unload); an option loads the last used layout when a level
+   starts (`layouts/settings.txt`, `layouts/<level>/last.txt`). Unload puts moved objects back and
+   hides standalone copies (spawned entities are not destroyed yet).
 5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
    list of loaded blueprints, delete, undo, save.
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).

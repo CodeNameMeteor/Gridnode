@@ -21,6 +21,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <algorithm>
+#include <cctype>
 #include <unordered_map>
 #include <vector>
 
@@ -49,6 +51,8 @@ std::string g_level;            // the level the edits are for (g_m)
 std::vector<Edit> g_edits;      // (g_m)
 bool g_dirty = false;           // unsaved changes (g_m)
 std::wstring g_dir;             // layouts folder
+std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
+std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
 
 std::atomic<bool> g_sweptThisLevel{false}; // existing objects matched since the level started
 constexpr float kMatch = 0.05f; // metres: how close a created object must be to an edit's position
@@ -72,11 +76,83 @@ float dist2(const float* a, const float* b) {
     return dx * dx + dy * dy + dz * dz;
 }
 
-std::wstring fileFor(const std::string& level) {
+std::wstring widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }
+std::string narrowName(const std::wstring& s) {
+    std::string o;
+    for (wchar_t c : s) o += c < 128 ? static_cast<char>(c) : '_';
+    return o;
+}
+
+std::wstring levelKey(const std::string& level) {
     std::wstring name;
     for (char c : level) name += (c == '/' || c == '\\' || c == ':') ? L'_' : static_cast<wchar_t>(c);
-    return g_dir + name + L".yaml";
+    return name;
 }
+
+// layouts\<level>\<name>.yaml; the single file per level of earlier versions (layouts\<level>.yaml)
+// reads as the layout "default".
+std::wstring levelDir(const std::string& level) { return g_dir + levelKey(level) + L"\\"; }
+std::wstring legacyFile(const std::string& level) { return g_dir + levelKey(level) + L".yaml"; }
+std::wstring fileFor(const std::string& level, const std::string& name) {
+    const std::wstring f = levelDir(level) + widen(name) + L".yaml";
+    if (name == "default" && GetFileAttributesW(f.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(legacyFile(level).c_str()) != INVALID_FILE_ATTRIBUTES)
+        return legacyFile(level);
+    return f;
+}
+
+bool validName(const std::string& n) {
+    if (n.empty() || n.size() > 60) return false;
+    for (char c : n)
+        if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == ' ' || c == '.')) return false;
+    return n[0] != '.' && n[0] != ' ';
+}
+
+std::vector<std::string> listLayouts(const std::string& level) {
+    std::vector<std::string> out;
+    WIN32_FIND_DATAW fd{};
+    HANDLE h = FindFirstFileW((levelDir(level) + L"*.yaml").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            std::wstring n = fd.cFileName;
+            n.resize(n.size() - 5);
+            out.push_back(narrowName(n));
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    if (GetFileAttributesW(legacyFile(level).c_str()) != INVALID_FILE_ATTRIBUTES &&
+        std::find(out.begin(), out.end(), "default") == out.end())
+        out.push_back("default");
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Small settings: auto-load (layouts\settings.txt) and each level's last used layout (last.txt).
+bool readFlag(const std::wstring& file) {
+    FILE* f = _wfopen(file.c_str(), L"rb");
+    if (!f) return false;
+    char b[64] = {};
+    fgets(b, sizeof(b), f);
+    fclose(f);
+    return strstr(b, "autoload=1") != nullptr;
+}
+std::string readLine(const std::wstring& file) {
+    FILE* f = _wfopen(file.c_str(), L"rb");
+    if (!f) return {};
+    char b[128] = {};
+    fgets(b, sizeof(b), f);
+    fclose(f);
+    std::string s = b;
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+void writeLine(const std::wstring& file, const std::string& line) {
+    FILE* f = _wfopen(file.c_str(), L"wb");
+    if (!f) return;
+    fwrite(line.data(), 1, line.size(), f);
+    fclose(f);
+}
+std::atomic<bool> g_autoload{false};
 
 // ---- moves, done on the right thread ----------------------------------------------------------------
 struct Move {
@@ -210,10 +286,11 @@ void applyGroupEdits(const std::vector<Edit>& edits);
 
 // Objects that already exist when a layout is loaded: matched by where they are now.
 void applyToExisting() {
-    std::vector<Edit> edits;
+    std::vector<Edit> edits, previous;
     {
         std::lock_guard<std::mutex> lock(g_m);
         edits = g_edits;
+        previous = g_previous;
     }
     if (edits.empty()) return;
     int n = 0;
@@ -222,8 +299,12 @@ void applyToExisting() {
         gn_transform now{};
         if (!entityTransform(reinterpret_cast<void*>(p), now)) continue;
         const std::string k = kindOf(t->name);
+        // An object a just-unloaded layout moved may not be back yet: it counts as being at its level position.
+        float at[3] = {now.trans[0], now.trans[1], now.trans[2]};
+        for (const Edit& old : previous)
+            if (old.kind == k && dist2(old.to.trans, now.trans) <= kMatch * kMatch) memcpy(at, old.at, sizeof(at));
         for (const Edit& ed : edits)
-            if (ed.kind == k && dist2(ed.at, now.trans) <= kMatch * kMatch) {
+            if (ed.kind == k && dist2(ed.at, at) <= kMatch * kMatch) {
                 queueMove(p, t, ed.to);
                 ++n;
                 break;
@@ -240,7 +321,7 @@ std::string fmtVec(const float* v) {
     return b;
 }
 
-bool save() {
+bool save(const std::string& name) {
     std::string level;
     std::vector<Edit> edits;
     {
@@ -248,8 +329,9 @@ bool save() {
         level = g_level;
         edits = g_edits;
     }
-    if (level.empty()) return false;
+    if (level.empty() || !validName(name)) return false;
     CreateDirectoryW(g_dir.c_str(), nullptr);
+    CreateDirectoryW(levelDir(level).c_str(), nullptr);
     std::string o = "# GridNode layout: changes GridNode applies to this level when it loads.\n";
     o += "level: " + level + "\nedits:\n";
     for (const Edit& ed : edits) {
@@ -265,7 +347,7 @@ bool save() {
             o += "    original_forward: " + fmtVec(ed.from.forward) + "\n";
         }
     }
-    const std::wstring file = fileFor(level);
+    const std::wstring file = levelDir(level) + widen(name) + L".yaml";
     FILE* f = _wfopen(file.c_str(), L"wb");
     if (!f) {
         GN_LOG("layouts: cannot write the layout for %s", level.c_str());
@@ -273,11 +355,14 @@ bool save() {
     }
     fwrite(o.data(), 1, o.size(), f);
     fclose(f);
+    if (name == "default") DeleteFileW(legacyFile(level).c_str()); // now saved in the level's folder
+    writeLine(levelDir(level) + L"last.txt", name);
     {
         std::lock_guard<std::mutex> lock(g_m);
         g_dirty = false;
+        g_name = name;
     }
-    GN_LOG("layouts: saved %llu edits for %s", static_cast<unsigned long long>(edits.size()), level.c_str());
+    GN_LOG("layouts: saved %llu edits for %s as \"%s\"", static_cast<unsigned long long>(edits.size()), level.c_str(), name.c_str());
     return true;
 }
 
@@ -286,9 +371,9 @@ bool parseVec(const std::string& s, float* v) {
 }
 
 // The level's layout file, if there is one (strict: an edit with a bad line is skipped and logged).
-std::vector<Edit> load(const std::string& level) {
+std::vector<Edit> load(const std::string& level, const std::string& name) {
     std::vector<Edit> out;
-    FILE* f = _wfopen(fileFor(level).c_str(), L"rb");
+    FILE* f = _wfopen(fileFor(level, name).c_str(), L"rb");
     if (!f) return out;
     char line[512];
     Edit cur;
@@ -334,6 +419,11 @@ std::vector<Edit> load(const std::string& level) {
     }
     flush();
     fclose(f);
+    for (Edit& ed : out)
+        if (!ed.haveFrom) { // older files: the level position with the edit's rotation
+            ed.from = ed.to;
+            memcpy(ed.from.trans, ed.at, sizeof(ed.at));
+        }
     return out;
 }
 
@@ -583,6 +673,16 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
 // Entities do not keep their bus; it is in their creation info (+0x10), so GridNode records it when
 // a group is created.
 void setStatus(const std::string& s);
+struct Spawned {
+    GroupProp g;
+    gn_transform orig{};          // the group copy's own placement
+    uintptr_t server = 0, client = 0;
+    const reflect::Type* serverType = nullptr;
+    const reflect::Type* clientType = nullptr;
+};
+std::mutex g_spawnM;
+std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
+
 std::mutex g_busM;
 std::unordered_map<uintptr_t, uintptr_t> g_groupBus; // group entity -> its bus (g_busM)
 
@@ -661,10 +761,21 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
     away.trans[1] -= 15000.f;
     moveGroupProp(g, away);
     alignas(16) gn_transform o = orig, w = to;
-    client().post([data, cbus, o, w, se, select] {
+    client().post([g, data, cbus, o, w, se, select] {
         const uintptr_t ce = spawnClient(data, cbus, w);
         const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
         GN_LOG("layouts: make standalone: client entity %llx (%s)", static_cast<unsigned long long>(ce), ct ? ct->name.c_str() : "-");
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            Spawned sp;
+            sp.g = g;
+            sp.orig = o;
+            sp.server = se;
+            sp.client = ce;
+            sp.serverType = registry().typeOf(mem::ProcessMemory(), se);
+            sp.clientType = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+            g_spawned.push_back(sp);
+        }
         if (select) selectSpawned(se, ce, o, w);
     });
 }
@@ -784,6 +895,92 @@ std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
         if (match) return {p, t};
     }
     return {0, nullptr};
+}
+
+// ---- loading and unloading layouts ----------------------------------------------------------------------
+void clearSelection() {
+    std::lock_guard<std::mutex> lock(g_selM);
+    g_haveSel = false;
+}
+
+// Puts the level back as the game has it: moved objects return to their own placement, standalone
+// copies are moved far below the level and their group copies come back. (Spawned entities are
+// hidden, not destroyed.)
+void unloadLayout() {
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        edits = g_edits;
+        g_previous = edits;
+        g_edits.clear();
+        g_name.clear();
+        g_dirty = false;
+    }
+    std::vector<Spawned> spawned;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        spawned.swap(g_spawned);
+    }
+    clearSelection();
+    int n = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t) continue;
+        gn_transform now{};
+        if (!entityTransform(reinterpret_cast<void*>(p), now)) continue;
+        const std::string k = kindOf(t->name);
+        for (const Edit& ed : edits)
+            if (ed.kind == k && dist2(ed.to.trans, now.trans) <= kMatch * kMatch) {
+                queueMove(p, t, ed.from);
+                ++n;
+                break;
+            }
+    }
+    for (const Spawned& sp : spawned) {
+        gn_transform away{};
+        if (sp.serverType && entityTransform(reinterpret_cast<void*>(sp.server), away)) {
+            away.trans[1] -= 15000.f;
+            queueMove(sp.server, sp.serverType, away);
+            if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
+        }
+        const GroupProp g = sp.g;
+        alignas(16) const gn_transform back = sp.orig;
+        server().post([g, back] { moveGroupProp(g, back); });
+    }
+    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies removed)", n, static_cast<unsigned long long>(spawned.size()));
+}
+
+// Loads a saved layout of the current level and applies it (unloading what is applied first).
+void loadLayout(const std::string& name) {
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+    }
+    if (level.empty()) return;
+    unloadLayout();
+    std::vector<Edit> edits = load(level, name);
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        g_edits = edits;
+        g_name = name;
+        g_dirty = false;
+    }
+    writeLine(levelDir(level) + L"last.txt", name);
+    GN_LOG("layouts: loaded \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
+    std::thread([] { applyToExisting(); }).detach();
+}
+
+void deleteLayout(const std::string& name) {
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+        if (g_name == name) g_name.clear(); // what is applied stays applied, unsaved
+    }
+    DeleteFileW((levelDir(level) + widen(name) + L".yaml").c_str());
+    if (name == "default") DeleteFileW(legacyFile(level).c_str());
+    if (readLine(levelDir(level) + L"last.txt") == name) DeleteFileW((levelDir(level) + L"last.txt").c_str());
+    GN_LOG("layouts: deleted \"%s\" for %s", name.c_str(), level.c_str());
 }
 
 // Client thread, after a standalone copy was made: select it (both halves) for editing.
@@ -1010,16 +1207,30 @@ void start(const std::wstring& dir) {
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
         onCreated("gridnode", cls, &onCreatedGroup, nullptr);
+    g_autoload = readFlag(g_dir + L"settings.txt");
 }
 
-// GridNode's thread, when a level starts: its layout, if any.
+// GridNode's thread, when a level starts: with auto-load on, the layout last used for it.
 void onLevel(const std::string& level) {
-    std::vector<Edit> edits = load(level);
+    std::string name;
+    if (g_autoload.load()) {
+        name = readLine(levelDir(level) + L"last.txt");
+        const std::vector<std::string> saved = listLayouts(level);
+        if (std::find(saved.begin(), saved.end(), name) == saved.end())
+            name = std::find(saved.begin(), saved.end(), "default") != saved.end() ? "default" : "";
+    }
+    std::vector<Edit> edits = name.empty() ? std::vector<Edit>{} : load(level, name);
     {
         std::lock_guard<std::mutex> lock(g_m);
         g_level = level;
         g_edits = edits;
+        g_previous.clear();
+        g_name = name;
         g_dirty = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        g_spawned.clear();
     }
     {
         std::lock_guard<std::mutex> lock(g_selM);
@@ -1030,7 +1241,7 @@ void onLevel(const std::string& level) {
         std::lock_guard<std::mutex> lock(g_busM);
         g_groupBus.clear();
     }
-    if (!edits.empty()) GN_LOG("layouts: %llu edits for %s", static_cast<unsigned long long>(edits.size()), level.c_str());
+    if (!name.empty()) GN_LOG("layouts: auto-loading \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
 }
 
 void serverTick() { runQueue(g_serverQ); }
@@ -1057,21 +1268,73 @@ void draw(bool* open) {
     }
     size_t count;
     bool dirty;
-    std::string level;
+    std::string level, loaded;
     {
         std::lock_guard<std::mutex> lock(g_m);
         count = g_edits.size();
         dirty = g_dirty;
         level = g_level;
+        loaded = g_name;
     }
     ImGui::TextDisabled("%s", level.empty() ? "no level" : level.c_str());
-    ImGui::Text("%llu edit%s%s", static_cast<unsigned long long>(count), count == 1 ? "" : "s", dirty ? " (not saved)" : "");
-    if (ImGui::Button("Save")) save();
+    ImGui::SeparatorText("Layouts");
+    if (loaded.empty()) ImGui::Text("%s", count ? "Unsaved edits" : "The level as the game has it");
+    else ImGui::Text("Layout \"%s\"", loaded.c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Reload from file")) {
-        onLevel(level);
-        std::thread([] { applyToExisting(); }).detach();
+    ImGui::TextDisabled("%llu edit%s%s", static_cast<unsigned long long>(count), count == 1 ? "" : "s", dirty ? ", not saved" : "");
+    static char nameBuf[64] = "default";
+    static std::string shownFor;
+    if (shownFor != level + "|" + loaded) { // follow the loaded layout's name
+        shownFor = level + "|" + loaded;
+        if (!loaded.empty()) snprintf(nameBuf, sizeof(nameBuf), "%s", loaded.c_str());
     }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputText("##name", nameBuf, sizeof(nameBuf));
+    ImGui::SameLine();
+    const bool nameOk = validName(nameBuf);
+    ImGui::BeginDisabled(!nameOk || level.empty());
+    if (ImGui::Button("Save as")) save(nameBuf);
+    ImGui::EndDisabled();
+    if (!nameOk) ImGui::TextDisabled("Names: letters, digits, space, - _ . (up to 60)");
+    bool autoload = g_autoload.load();
+    if (ImGui::Checkbox("Load the last used layout when a level starts", &autoload)) {
+        g_autoload = autoload;
+        CreateDirectoryW(g_dir.c_str(), nullptr);
+        writeLine(g_dir + L"settings.txt", autoload ? "autoload=1\n" : "autoload=0\n");
+    }
+    // The level's saved layouts (listed again at most once a second).
+    static std::vector<std::string> saved;
+    static double listedAt = -10.0;
+    static std::string listedFor;
+    if (ImGui::GetTime() - listedAt > 1.0 || listedFor != level) {
+        saved = level.empty() ? std::vector<std::string>{} : listLayouts(level);
+        listedAt = ImGui::GetTime();
+        listedFor = level;
+    }
+    static std::string confirmDelete;
+    for (const std::string& n : saved) {
+        ImGui::PushID(n.c_str());
+        ImGui::BulletText("%s%s", n.c_str(), n == loaded ? " (loaded)" : "");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Load")) loadLayout(n);
+        ImGui::SameLine();
+        if (confirmDelete == n) {
+            if (ImGui::SmallButton("Really delete")) {
+                deleteLayout(n);
+                confirmDelete.clear();
+                listedAt = -10.0;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Keep")) confirmDelete.clear();
+        } else if (ImGui::SmallButton("Delete")) {
+            confirmDelete = n;
+        }
+        ImGui::PopID();
+    }
+    if (saved.empty()) ImGui::TextDisabled("No saved layouts for this level.");
+    ImGui::BeginDisabled(count == 0 && loaded.empty());
+    if (ImGui::Button("Unload (put the level back)")) unloadLayout();
+    ImGui::EndDisabled();
     ImGui::SeparatorText("Object");
     if (ImGui::Button("Pick what the camera points at")) pick();
     Selected s;
