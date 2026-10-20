@@ -181,8 +181,9 @@ Bind g_binds[] = {
     {"tiptoward", "Tip toward", 'L', true, true, 'L'},
     {"flip", "Flip upside down", 'H', true, false, 'H'},
     {"upright", "Stand upright again", 'U', true, false, 'U'},
+    {"undo", "Undo (with Ctrl; also with the menu open)", 'Z', true, false, 'Z'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -764,6 +765,9 @@ struct Spawned {
     bool hidden = false;          // a removed copy, parked below the level for reuse
     std::string source;           // a copy's source kind and level position
     float sourceAt[3] = {};
+    // The entities the data and buses belong to (a group or a static model): when the part of the
+    // level they are in streams out, the data and buses go with it.
+    uintptr_t ownerServer = 0, ownerClient = 0;
 };
 std::mutex g_spawnM;
 std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
@@ -868,6 +872,7 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
             sp.data = data;
             sp.serverBus = busOf(g.serverGroup);
             sp.clientBus = cbus;
+            sp.ownerServer = g.serverGroup, sp.ownerClient = g.clientGroup;
             g_spawned.push_back(sp);
         }
         if (select) selectSpawned(se, ce, o, w);
@@ -940,7 +945,27 @@ struct Template {
     float at[3] = {};     // the source's level position
     gn_transform place{}; // the source's placement when copied (rotation for pasting)
     std::string label;
+    uintptr_t ownerServer = 0, ownerClient = 0; // whose data and buses these are (see Spawned)
+    const reflect::Type* ownerServerType = nullptr;
+    const reflect::Type* ownerClientType = nullptr;
 };
+
+void setOwners(Template& t, uintptr_t server, uintptr_t client) {
+    t.ownerServer = server, t.ownerClient = client;
+    t.ownerServerType = server ? registry().typeOf(mem::ProcessMemory(), server) : nullptr;
+    t.ownerClientType = client ? registry().typeOf(mem::ProcessMemory(), client) : nullptr;
+}
+
+// Still usable: its owners are alive (an entity's vtable still says its class) and its data is
+// still a StaticModelEntityData. A streamed-out part of the level frees all three.
+bool templateAlive(const Template& t) {
+    static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    if (!t.ownerServer || !t.ownerClient || !t.ownerServerType || !t.ownerClientType) return false;
+    if (registry().typeOf(mem::ProcessMemory(), t.ownerServer) != t.ownerServerType) return false;
+    if (registry().typeOf(mem::ProcessMemory(), t.ownerClient) != t.ownerClientType) return false;
+    const reflect::Type* dt = t.data ? registry().typeOf(mem::ProcessMemory(), t.data) : nullptr;
+    return dt && smd && registry().isKindOf(dt, smd);
+}
 
 void selectCopy(const Spawned& sp, const gn_transform& now);
 void hideCopy(int copyId);
@@ -956,7 +981,8 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
             for (const Spawned& sp : g_spawned)
                 if (sp.copyId < 0 && dist2(sp.orig.trans, at) <= kMatch * kMatch && sp.data) {
                     t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus, t.place = sp.orig;
-                    return true;
+                    setOwners(t, sp.ownerServer, sp.ownerClient);
+                    return templateAlive(t);
                 }
         }
         GroupProp g;
@@ -966,6 +992,7 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
         t.serverBus = busOf(g.serverGroup);
         t.clientBus = busOf(g.clientGroup);
         t.place = orig;
+        setOwners(t, g.serverGroup, g.clientGroup);
         return t.data && t.serverBus && t.clientBus;
     }
     // A standalone object of the level: where it is now (moved by an edit, or where the level put it).
@@ -986,15 +1013,22 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
     t.data = server ? dataOf(server, "StaticModelEntityData") : 0;
     t.serverBus = server ? busOf(server) : 0;
     t.clientBus = client ? busOf(client) : 0;
+    setOwners(t, server, client);
     return t.data && t.serverBus && t.clientBus;
 }
 
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
 void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select) {
+    if (!templateAlive(t)) {
+        GN_LOG("layouts: copy %d of %s: the part of the level it comes from is no longer loaded", copyId, t.source.c_str());
+        if (select) setStatus("That object's part of the level is no longer loaded (it streams in and out as you move). "
+                              "Fly back to it and copy it again.");
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(g_spawnM);
         for (Spawned& sp : g_spawned)
-            if (sp.hidden && sp.data == t.data) {
+            if (sp.hidden && sp.data == t.data && sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType) {
                 sp.hidden = false;
                 sp.copyId = copyId;
                 sp.source = t.source;
@@ -1023,6 +1057,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
     sp.copyId = copyId;
     sp.source = t.source;
     memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
+    sp.ownerServer = t.ownerServer, sp.ownerClient = t.ownerClient;
     alignas(16) gn_transform w = to;
     client().post([sp, w, select]() mutable {
         sp.client = spawnClient(sp.data, sp.clientBus, w);
@@ -1137,6 +1172,8 @@ std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
     return {0, nullptr};
 }
 
+void clearUndo();
+
 // ---- loading and unloading layouts ----------------------------------------------------------------------
 void clearSelection() {
     std::lock_guard<std::mutex> lock(g_selM);
@@ -1162,6 +1199,7 @@ void unloadLayout() {
         spawned = g_spawned; // they stay: the group copies they replace cannot be shown again
     }
     clearSelection();
+    clearUndo(); // the steps were for the layout that is gone
     int n = 0;
     for (const auto& [p, t] : inspector::tracked()) {
         if (!t) continue;
@@ -1417,14 +1455,82 @@ void pick(const float* ray = nullptr) {
 // copy's original position in its group.
 std::string editKind(const Selected& s) { return s.spawned ? "GroupProp" : s.kind; }
 
-void moveSelection(const gn_transform& to) {
+// ---- undo -------------------------------------------------------------------------------------------
+// Each change to the layout leaves a step: a move (the object's placement and its edit before), a copy
+// placed (taken away again) or a copy removed (brought back). Moves of one object in quick
+// succession (a held key, a drag) are one step.
+struct UndoStep {
+    enum Kind { Move, Placed, Removed } kind = Move;
+    Selected target;          // Move: the object, `now` = where it was
+    bool hadEdit = false;     // Move: whether it had an edit, and the edit as it was
+    Edit edit;                // Move: that edit; Removed: the copy's edit
+    int copyId = -1;          // Placed / Removed
+    uintptr_t server = 0;     // Removed: the parked copy's server entity
+    double time = 0;
+};
+std::mutex g_undoM;
+std::vector<UndoStep> g_undo; // (g_undoM)
+constexpr size_t kMaxUndo = 200;
+
+void pushUndo(UndoStep st) {
+    st.time = static_cast<double>(GetTickCount64()) / 1000.0;
+    std::lock_guard<std::mutex> lock(g_undoM);
+    if (st.kind == UndoStep::Move && !g_undo.empty()) {
+        const UndoStep& last = g_undo.back();
+        const bool same = last.kind == UndoStep::Move && last.target.copyId == st.target.copyId && last.target.group == st.target.group &&
+                          (st.target.group ? last.target.gp.part == st.target.gp.part && last.target.gp.serverGroup == st.target.gp.serverGroup
+                                           : !last.target.entities.empty() && !st.target.entities.empty() &&
+                                                 last.target.entities[0].first == st.target.entities[0].first);
+        if (same && st.time - last.time < 0.7) {
+            g_undo.back().time = st.time; // the same move continuing: keep where it started
+            return;
+        }
+    }
+    g_undo.push_back(std::move(st));
+    if (g_undo.size() > kMaxUndo) g_undo.erase(g_undo.begin());
+}
+
+void clearUndo() {
+    std::lock_guard<std::mutex> lock(g_undoM);
+    g_undo.clear();
+}
+
+size_t undoCount() {
+    std::lock_guard<std::mutex> lock(g_undoM);
+    return g_undo.size();
+}
+
+// The selection's edit as it is now (g_m held).
+Edit* editOf(const Selected& s) {
+    for (Edit& ed : g_edits) {
+        if (s.copyId >= 0 ? (ed.kind == "Copy" && ed.copyId == s.copyId)
+                          : (ed.kind == editKind(s) && dist2(ed.at, s.at) <= kMatch * kMatch))
+            return &ed;
+    }
+    return nullptr;
+}
+
+void recordMove(const Selected& s) {
+    UndoStep st;
+    st.kind = UndoStep::Move;
+    st.target = s;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (const Edit* ed = editOf(s)) st.hadEdit = true, st.edit = *ed;
+    }
+    pushUndo(std::move(st));
+}
+
+void moveSelection(const gn_transform& to, bool record = true) {
     Selected s;
     {
         std::lock_guard<std::mutex> lock(g_selM);
         if (!g_haveSel) return;
+        s = g_sel; // where it is before this move
         g_sel.now = to;
-        s = g_sel;
     }
+    if (record) recordMove(s);
+    s.now = to;
     if (s.group) {
         const GroupProp gp = s.gp;
         server().post([gp, to] { moveGroupProp(gp, to); });
@@ -1460,8 +1566,9 @@ void hideCopy(int copyId) {
     std::lock_guard<std::mutex> lock(g_spawnM);
     for (Spawned& sp : g_spawned)
         if (sp.copyId == copyId && !sp.hidden) {
-            gn_transform away{};
-            if (!entityTransform(reinterpret_cast<void*>(sp.server), away)) away = sp.orig;
+            gn_transform away = sp.orig;
+            if (sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType)
+                entityTransform(reinterpret_cast<void*>(sp.server), away);
             away.trans[1] -= 15000.f;
             if (sp.serverType) queueMove(sp.server, sp.serverType, away);
             if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
@@ -1478,6 +1585,16 @@ void resetSelection() {
         s = g_sel;
     }
     if (s.copyId >= 0) {
+        UndoStep st;
+        st.kind = UndoStep::Removed;
+        st.copyId = s.copyId;
+        for (const auto& [p, t] : s.entities)
+            if (isServerClass(t->name)) st.server = p;
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            if (const Edit* ed = editOf(s)) st.edit = *ed;
+        }
+        if (st.server && st.edit.kind == "Copy") pushUndo(st);
         hideCopy(s.copyId);
         {
             std::lock_guard<std::mutex> lock(g_m);
@@ -1490,6 +1607,7 @@ void resetSelection() {
         g_status = "Removed the copy.";
         return;
     }
+    recordMove(s);
     const gn_transform back = s.orig;
     if (s.group) {
         const GroupProp gp = s.gp;
@@ -1512,6 +1630,77 @@ void resetSelection() {
         }
 }
 
+// Takes back the last step.
+void undo() {
+    UndoStep st;
+    {
+        std::lock_guard<std::mutex> lock(g_undoM);
+        if (g_undo.empty()) return setStatus("Nothing to undo.");
+        st = g_undo.back();
+        g_undo.pop_back();
+    }
+    if (st.kind == UndoStep::Placed) { // take the copy away
+        hideCopy(st.copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& ed) { return ed.kind == "Copy" && ed.copyId == st.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+        }
+        std::lock_guard<std::mutex> lock(g_selM);
+        if (g_haveSel && g_sel.copyId == st.copyId) g_haveSel = false;
+        g_status = "Undone: the copy placed last is gone.";
+        return;
+    }
+    if (st.kind == UndoStep::Removed) { // bring the parked copy back
+        Spawned back{};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (Spawned& sp : g_spawned)
+                if (sp.server == st.server && sp.hidden && sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType) {
+                    sp.hidden = false;
+                    sp.copyId = st.copyId;
+                    if (sp.serverType) queueMove(sp.server, sp.serverType, st.edit.to);
+                    if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, st.edit.to);
+                    back = sp;
+                    found = true;
+                    break;
+                }
+        }
+        if (!found) return setStatus("Undo: that copy is gone (its part of the level was unloaded).");
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.push_back(st.edit);
+            g_dirty = true;
+        }
+        selectCopy(back, st.edit.to);
+        setStatus("Undone: the removed copy is back.");
+        return;
+    }
+    // A move: the object back where it was, and its edit as it was.
+    const Selected& s = st.target;
+    if (s.group) {
+        const GroupProp gp = s.gp;
+        const gn_transform to = s.now;
+        server().post([gp, to] { moveGroupProp(gp, to); });
+    } else {
+        for (const auto& [p, t] : s.entities) queueMove(p, t, s.now);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Edit* ed = editOf(s);
+        if (st.hadEdit && ed) *ed = st.edit;
+        else if (st.hadEdit) g_edits.push_back(st.edit);
+        else if (ed) g_edits.erase(g_edits.begin() + (ed - g_edits.data()));
+        g_dirty = true;
+    }
+    std::lock_guard<std::mutex> lock(g_selM);
+    g_sel = s; // the moved object is selected again, where it was
+    g_haveSel = true;
+    g_status = "Undone: " + s.kind + " is back where it was.";
+}
+
 // ---- copy and paste ----------------------------------------------------------------------------------
 Template g_clip;          // (g_selM)
 bool g_haveClip = false;  // (g_selM)
@@ -1526,6 +1715,7 @@ bool templateOf(const Selected& s, Template& t) {
                                              : (sp.copyId < 0 && !s.entities.empty() && (sp.server == s.entities[0].first || sp.client == s.entities[0].first));
             if (!match || !sp.data) continue;
             t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus;
+            setOwners(t, sp.ownerServer, sp.ownerClient);
             if (sp.copyId >= 0) t.source = sp.source, memcpy(t.at, sp.sourceAt, sizeof(t.at));
             else t.source = "GroupProp", memcpy(t.at, sp.orig.trans, sizeof(t.at));
             t.place = s.now;
@@ -1540,6 +1730,7 @@ bool templateOf(const Selected& s, Template& t) {
         t.source = "GroupProp";
         memcpy(t.at, s.at, sizeof(t.at));
         t.place = s.now;
+        setOwners(t, s.gp.serverGroup, s.gp.clientGroup);
         return t.data && t.serverBus && t.clientBus;
     }
     return resolveSource(s.kind, s.at, t);
@@ -1608,7 +1799,12 @@ void pasteAt(const float* ray) {
         else
             for (int k = 0; k < 3; ++k) place.trans[k] = r[k] + r[3 + k] * 10.f;
         place.trans[3] = 1.f;
-        spawnCopy(t, place, addCopyEdit(t, place), true);
+        const int id = addCopyEdit(t, place);
+        UndoStep st;
+        st.kind = UndoStep::Placed;
+        st.copyId = id;
+        pushUndo(st);
+        spawnCopy(t, place, id, true);
     });
 }
 
@@ -1619,7 +1815,12 @@ void duplicateSelection() {
     server().post([s] {
         Template t;
         if (!templateOf(s, t)) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
-        spawnCopy(t, s.now, addCopyEdit(t, s.now), true);
+        const int id = addCopyEdit(t, s.now);
+        UndoStep st;
+        st.kind = UndoStep::Placed;
+        st.copyId = id;
+        pushUndo(st);
+        spawnCopy(t, s.now, id, true);
     });
 }
 
@@ -1695,6 +1896,10 @@ void onLevel(const std::string& level) {
     {
         std::lock_guard<std::mutex> lock(g_spawnM);
         g_spawned.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_undoM);
+        g_undo.clear();
     }
     {
         std::lock_guard<std::mutex> lock(g_selM);
@@ -1981,6 +2186,7 @@ void freeCamFrame(bool menuOpen) {
         row(k(kTipAway) + " / " + k(kTipToward), "tip it away / toward");
         row(k(kFlip), "flip it upside down");
         row(k(kUpright), "stand it upright");
+        row("Ctrl+" + k(kUndo), "undo");
         row(k(kCopy), "copy");
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
@@ -2213,6 +2419,13 @@ void draw(bool* open) {
     ImGui::EndDisabled();
     ImGui::SeparatorText("Object");
     if (ImGui::Button("Pick what the camera points at")) pickCentre();
+    ImGui::SameLine();
+    const size_t steps = undoCount();
+    ImGui::BeginDisabled(steps == 0);
+    if (ImGui::Button("Undo")) undo();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%llu step%s", static_cast<unsigned long long>(steps), steps == 1 ? "" : "s");
     Selected s;
     bool have, haveClip;
     std::string status, clip;
@@ -2371,7 +2584,14 @@ void keysFrame(bool menuOpen) {
     if (bindPressed(kFreeCam) && localClientCharacter()) g_cam.enabled = !g_cam.enabled;
     const bool flying = g_cam.active;
     bool fire[kBindCount] = {};
-    for (int i = kPick; i < kBindCount; ++i) fire[i] = bindPressed(i) && flying;
+    for (int i = kPick; i < kBindCount; ++i) fire[i] = bindPressed(i);
+    // Undo: Ctrl + its key, while flying or with the menu open. With Ctrl held the key does nothing else.
+    if (io.KeyCtrl || keyHeld(VK_CONTROL)) {
+        if (fire[kUndo] && (flying || menuOpen)) undo();
+        for (int i = kPick; i < kBindCount; ++i)
+            if (g_binds[i].vk == g_binds[kUndo].vk) fire[i] = false;
+    }
+    fire[kUndo] = false;
     if (!flying) return;
     if (fire[kPick]) pickCentre();
     if (fire[kCopy]) copySelection();
