@@ -125,3 +125,17 @@ constants:
   - { name: PhysicsManager_Owners, value: 0xf0, confidence: inferred, sources: [research], note: "Owner table indexed by bits 16..23 of a body id (0x1434ee790); an owner's PhysicsOwner_Objects is indexed by the low 16 bits." }
   - { name: RigidBody_vf_getTransform, value: 0x170, confidence: inferred, sources: [research], note: "LinearTransform*(RigidBody*, LinearTransform* out): from the Havok body (0x1434f13f0)." }
   - { name: RigidBody_vf_setTransform, value: 0x178, confidence: inferred, sources: [research], note: "void(RigidBody*, const LinearTransform*, bool teleport): hknpWorld setBodyTransform (0x1434f21e0)." }
+  # Static model groups: one GroupRigidBody (Havok hknpStaticCompoundShape) for all copies of all
+  # members; research 2026-10-20 (0x1434eda80, 0x1434f2020, 0x14318fbc0, 0x143193690).
+  - { name: GroupRigidBody_BodyIndex, value: 0x50, confidence: inferred, sources: [research], note: "i32 Havok body index (hknpWorld bodies, 0x90 each)." }
+  - { name: GroupRigidBody_Shape, value: 0x58, confidence: inferred, sources: [research], note: "hknpStaticCompoundShape* of the group." }
+  - { name: GroupRigidBody_PartToInstance, value: 0x110, confidence: inferred, sources: [research], note: "Array of 4-byte entries; the low i16 of entry [part] is the compound instance index (0x1434eda80)." }
+  - { name: CompoundShape_Instances, value: 0x60, confidence: inferred, sources: [research], note: "hknpShapeInstance array (0x80 each): rotation rows +0x00/+0x10/+0x20 (unit), translation +0x30, scale +0x40, shape +0x50 (0x143f50740 builds the scaled transform)." }
+  - { name: ShapeInstance_Size, value: 0x80, confidence: inferred, sources: [research] }
+  - { name: ShapeInstance_Scale, value: 0x40, confidence: inferred, sources: [research] }
+  - { name: ClientStaticModelGroup_Members, value: 0xe0, confidence: inferred, sources: [research], note: "Array of render blocks, one per member (0x130 each); count is the i32 at +0xec." }
+  - { name: ClientStaticModelGroup_MemberCount, value: 0xec, confidence: inferred, sources: [research] }
+  - { name: GroupMemberBlock_Size, value: 0x130, confidence: inferred, sources: [research], note: "+0x18 StaticModelGroupMemberData*, +0x20 physics component, +0xc8 render objects (or null: asked from the component, vtable +0x210), +0x120 active (u8)." }
+  - { name: GroupMemberBlock_Member, value: 0x18, confidence: inferred, sources: [research] }
+  - { name: GroupMemberBlock_Active, value: 0x120, confidence: inferred, sources: [research] }
+  - { name: SpatialEntity_vf_transformChanged, value: 0xe0, confidence: inferred, sources: [research], note: "Called by SpatialEntity_setTransform when the entity's NotifyTransform flag is set; the client static model group's (0x143193690) re-places every member's render objects from InstanceTransforms or, when there are none, from the physics part transforms." }

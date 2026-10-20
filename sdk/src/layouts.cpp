@@ -340,6 +340,217 @@ std::vector<Edit> load(const std::string& level) {
     return out;
 }
 
+// ---- props inside static model groups (experimental) -------------------------------------------------
+// A group is one entity per realm at the world origin with one GroupRigidBody: a Havok compound shape
+// with one instance per copy of each member. A ray hit's part names the copy; the body maps it to
+// its instance. The client group re-places its render objects from the instances when told its
+// transform changed (InstanceTransforms in the member data take precedence when a member has them).
+struct GroupProp {
+    uintptr_t serverGroup = 0, clientGroup = 0;
+    uintptr_t serverBody = 0, clientBody = 0; // GroupRigidBody
+    uint32_t part = 0;
+    uintptr_t member = 0;                     // StaticModelGroupMemberData (client block's)
+    uint32_t copy = 0;                        // index of this copy within the member
+};
+
+bool finite(const float* v, int n) {
+    for (int i = 0; i < n; ++i)
+        if (!std::isfinite(v[i])) return false;
+    return true;
+}
+
+// A reflected field's offset in StaticModelGroupMemberData (from the game's own type info).
+uint32_t memberField(const char* name) {
+    static const reflect::Type* t = registry().find("StaticModelGroupMemberData");
+    reflect::FieldInfo fi;
+    return t && registry().findField(t, name, fi) ? fi.field->offset : 0xffffffffu;
+}
+
+uintptr_t dataOf(uintptr_t entity, const char* typeName) {
+    const reflect::Type* want = registry().find(typeName);
+    if (!want) return 0;
+    for (uint32_t off = 0x18; off <= 0x60; off += 8) {
+        const uintptr_t d = mem::readOr<uintptr_t>(entity + off);
+        const reflect::Type* t = d ? registry().typeOf(mem::ProcessMemory(), d) : nullptr;
+        if (t && registry().isKindOf(t, want)) return d;
+    }
+    return 0;
+}
+
+// The group body behind an entity's physics component (any body type).
+uintptr_t groupBodyOf(uintptr_t entity) {
+    namespace c = e::constant;
+    static const reflect::Type* groupBody = registry().find("GroupRigidBody");
+    const uintptr_t comp = mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics);
+    if (!comp || !groupBody) return 0;
+    const uint16_t count = mem::readOr<uint16_t>(comp + c::PhysicsComponent_BodyCount);
+    const uintptr_t ids = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_BodyIds);
+    const uintptr_t manager = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_Manager);
+    const uintptr_t owners = manager ? mem::readOr<uintptr_t>(manager + c::PhysicsManager_Owners) : 0;
+    if (!ids || !owners || count > 64) return 0;
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t id = mem::readOr<uint32_t>(ids + i * 4u, 0xffffffffu);
+        const uintptr_t owner = id != 0xffffffffu ? mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8) : 0;
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects) : 0;
+        const uintptr_t body = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8) : 0;
+        const reflect::Type* bt = body ? registry().typeOf(mem::ProcessMemory(), body) : nullptr;
+        if (bt && registry().isKindOf(bt, groupBody)) return body;
+    }
+    return 0;
+}
+
+// The compound instance of `part` in a group body (0 if unknown).
+uintptr_t groupInstance(uintptr_t body, uint32_t part, int* indexOut = nullptr) {
+    namespace c = e::constant;
+    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
+    const uintptr_t map = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_PartToInstance) : 0;
+    const uintptr_t instances = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Instances) : 0;
+    if (!map || !instances || part > 0xffff) return 0;
+    const int16_t index = mem::readOr<int16_t>(map + part * 4u, -1);
+    if (index < 0) return 0;
+    if (indexOut) *indexOut = index;
+    return instances + static_cast<uintptr_t>(index) * c::ShapeInstance_Size;
+}
+
+// An instance's transform (scale folded into the rows, as the game's 0x143f50740 does).
+bool readInstance(uintptr_t inst, gn_transform& out) {
+    float m[20];
+    if (!inst || !mem::read(inst, m, sizeof(m)) || !finite(m, 3) || !finite(m + 12, 3) || !finite(m + 16, 3)) return false;
+    for (int k = 0; k < 3; ++k) {
+        out.right[k] = m[k] * m[16];
+        out.up[k] = m[4 + k] * m[17];
+        out.forward[k] = m[8 + k] * m[18];
+        out.trans[k] = m[12 + k];
+    }
+    return true;
+}
+
+// Writes rotation (unit rows), scale and translation; the w lanes (other data) are kept.
+void writeInstance(uintptr_t inst, const gn_transform& t) {
+    float m[20];
+    if (!inst || !mem::read(inst, m, sizeof(m))) return;
+    const float* rows[3] = {t.right, t.up, t.forward};
+    for (int r = 0; r < 3; ++r) {
+        const float n = std::sqrt(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
+        if (n < 1e-6f) return;
+        for (int k = 0; k < 3; ++k) m[r * 4 + k] = rows[r][k] / n;
+        m[16 + r] = n;
+    }
+    for (int k = 0; k < 3; ++k) m[12 + k] = t.trans[k];
+    mem::write(inst, m, sizeof(m));
+}
+
+// The client block's member and copy index for `part`.
+bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t& copy) {
+    namespace c = e::constant;
+    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
+                          copies = memberField("InstanceCount");
+    if (partRange == 0xffffffffu || perCopy == 0xffffffffu || copies == 0xffffffffu) return false;
+    const uintptr_t blocks = mem::readOr<uintptr_t>(clientGroup + c::ClientStaticModelGroup_Members);
+    const int32_t count = mem::readOr<int32_t>(clientGroup + c::ClientStaticModelGroup_MemberCount);
+    if (!blocks || count <= 0 || count > 4096) return false;
+    for (int32_t b = 0; b < count; ++b) {
+        const uintptr_t block = blocks + static_cast<uintptr_t>(b) * c::GroupMemberBlock_Size;
+        const uintptr_t m = mem::readOr<uintptr_t>(block + c::GroupMemberBlock_Member);
+        if (!m) continue;
+        const uint32_t first = mem::readOr<uint32_t>(m + partRange);
+        const uint32_t per = mem::readOr<uint32_t>(m + perCopy);
+        const uint32_t n = mem::readOr<uint32_t>(m + copies);
+        if (per == 0 || part < first || part >= first + per * n) continue;
+        member = m;
+        copy = (part - first) / per;
+        return true;
+    }
+    return false;
+}
+
+// The member's own InstanceTransforms entry for the copy, if the member has them (0 if not).
+uintptr_t memberTransform(uintptr_t member, uint32_t copy) {
+    static const uint32_t off = memberField("InstanceTransforms");
+    const uintptr_t arr = member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
+    const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
+    return copy < n ? arr + copy * 0x40u : 0;
+}
+
+// Server thread: puts the copy at `world`, then has the client group re-place its render objects.
+void moveGroupProp(const GroupProp& g, const gn_transform& world) {
+    gn_transform G{};
+    if (!entityTransform(reinterpret_cast<void*>(g.serverGroup), G)) return;
+    alignas(16) gn_transform local{};
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    reframe(G, I, world.right, false, local.right);
+    reframe(G, I, world.up, false, local.up);
+    reframe(G, I, world.forward, false, local.forward);
+    reframe(G, I, world.trans, true, local.trans);
+    const uintptr_t si = groupInstance(g.serverBody, g.part);
+    const uintptr_t ci = groupInstance(g.clientBody, g.part);
+    writeInstance(si, local);
+    if (ci && ci != si) writeInstance(ci, local);
+    if (const uintptr_t mt = memberTransform(g.member, g.copy)) {
+        alignas(16) gn_transform row = local;
+        row.right[3] = row.up[3] = row.forward[3] = 0.f, row.trans[3] = 1.f;
+        mem::write(mt, &row, sizeof(row));
+    }
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 20)
+        GN_LOG("layouts: group part %u -> (%.2f, %.2f, %.2f): server instance %llx, client instance %llx%s", g.part, local.trans[0], local.trans[1],
+               local.trans[2], static_cast<unsigned long long>(si), static_cast<unsigned long long>(ci),
+               memberTransform(g.member, g.copy) ? ", member transform too" : "");
+    const uintptr_t clientGroup = g.clientGroup;
+    client().post([clientGroup] {
+        static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
+        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), clientGroup);
+        if (!t || !cg || !registry().isKindOf(t, cg)) return;
+        const uintptr_t vt = mem::readOr<uintptr_t>(clientGroup);
+        const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + e::constant::SpatialEntity_vf_transformChanged) : 0;
+        if (!mem::inImage(fn)) return;
+        struct alignas(8) Change { uint64_t a = 0; uint8_t notify = 0; uint8_t one = 1; uint8_t pad[6] = {}; } change;
+        reinterpret_cast<void (*)(uintptr_t, Change*)>(fn)(clientGroup, &change);
+    });
+}
+
+// Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
+bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupProp& g, gn_transform& world) {
+    g = GroupProp{};
+    g.serverGroup = serverGroup;
+    g.serverBody = body;
+    g.part = part & 0xffff;
+    int index = -1;
+    const uintptr_t si = groupInstance(body, g.part, &index);
+    gn_transform local{}, G{};
+    if (!si || !readInstance(si, local) || !entityTransform(reinterpret_cast<void*>(serverGroup), G)) {
+        GN_LOG("layouts: group part %u: no instance (body %llx)", g.part, static_cast<unsigned long long>(body));
+        return false;
+    }
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    reframe(I, G, local.right, false, world.right);
+    reframe(I, G, local.up, false, world.up);
+    reframe(I, G, local.forward, false, world.forward);
+    reframe(I, G, local.trans, true, world.trans);
+    // The client half: the client group made from the same data.
+    const uintptr_t data = dataOf(serverGroup, "StaticModelGroupEntityData");
+    static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
+    for (const auto& [p, t] : inspector::tracked())
+        if (t && cg && registry().isKindOf(t, cg) && data && dataOf(p, "StaticModelGroupEntityData") == data) {
+            g.clientGroup = p;
+            break;
+        }
+    if (g.clientGroup) {
+        g.clientBody = groupBodyOf(g.clientGroup);
+        memberOf(g.clientGroup, g.part, g.member, g.copy);
+    }
+    const uintptr_t shape = mem::readOr<uintptr_t>(body + e::constant::GroupRigidBody_Shape);
+    const uintptr_t clientShape = g.clientBody ? mem::readOr<uintptr_t>(g.clientBody + e::constant::GroupRigidBody_Shape) : 0;
+    GN_LOG("layouts: group part %u = instance %d at (%.2f, %.2f, %.2f), group at (%.2f, %.2f, %.2f); shape %llx (client %llx, %s), client group %llx, "
+           "member %llx copy %u%s",
+           g.part, index, world.trans[0], world.trans[1], world.trans[2], G.trans[0], G.trans[1], G.trans[2], static_cast<unsigned long long>(shape),
+           static_cast<unsigned long long>(clientShape), shape == clientShape ? "shared" : "separate", static_cast<unsigned long long>(g.clientGroup),
+           static_cast<unsigned long long>(g.member), g.copy, memberTransform(g.member, g.copy) ? " (has its own InstanceTransform)" : "");
+    return g.clientGroup != 0;
+}
+
 // ---- the editor (render thread; game work is posted to the realms) -------------------------------------
 struct Selected {
     std::string kind;
@@ -347,6 +558,8 @@ struct Selected {
     gn_transform now{};    // where it is
     gn_transform orig{};   // where the level had it (rotation included)
     std::vector<std::pair<uintptr_t, const reflect::Type*>> entities; // its server and client entity
+    bool group = false;    // a prop inside a static model group (experimental; not saved)
+    GroupProp gp;
 };
 std::mutex g_selM;
 Selected g_sel;            // (g_selM)
@@ -442,10 +655,25 @@ void pick() {
         // A static model group is many props sharing one entity (placed at the world origin) and one
         // collision body; moving it moves all of them. Props inside a group are not editable yet.
         if (type && type->name.find("StaticModelGroup") != std::string::npos) {
+            Selected s;
+            gn_transform world{};
+            if (!pickGroupProp(entity, object, part, s.gp, world)) {
+                char b[160];
+                snprintf(b, sizeof(b), "Pick: a prop in a static model group (part %u) that GridNode cannot edit", part & 0xffffu);
+                return setStatus(b);
+            }
+            s.group = true;
+            s.kind = "Group prop";
+            s.now = s.orig = world;
+            memcpy(s.at, world.trans, sizeof(s.at));
             char b[200];
-            snprintf(b, sizeof(b), "Pick: that prop is part of a static model group (instance %u); moving props inside groups is not supported yet",
-                     part & 0xffffu);
-            return setStatus(b);
+            snprintf(b, sizeof(b), "Picked a prop inside a static model group (part %u), %.1f m away. Experimental: small moves only, not saved.",
+                     s.gp.part, hit.distance);
+            std::lock_guard<std::mutex> lock(g_selM);
+            g_sel = s;
+            g_haveSel = true;
+            g_status = b;
+            return;
         }
         Selected s;
         if (!type || !entityTransform(reinterpret_cast<void*>(entity), s.now)) {
@@ -492,6 +720,11 @@ void moveSelection(const gn_transform& to) {
         g_sel.now = to;
         s = g_sel;
     }
+    if (s.group) {
+        const GroupProp gp = s.gp;
+        server().post([gp, to] { moveGroupProp(gp, to); });
+        return;
+    }
     for (const auto& [p, t] : s.entities) queueMove(p, t, to);
     std::lock_guard<std::mutex> lock(g_m);
     for (Edit& ed : g_edits)
@@ -518,6 +751,10 @@ void resetSelection() {
         s = g_sel;
     }
     const gn_transform back = s.orig;
+    if (s.group) {
+        const GroupProp gp = s.gp;
+        server().post([gp, back] { moveGroupProp(gp, back); });
+    }
     for (const auto& [p, t] : s.entities) queueMove(p, t, back);
     GN_LOG("layouts: %s put back at (%.2f, %.2f, %.2f) (%llu entities)", s.kind.c_str(), back.trans[0], back.trans[1], back.trans[2],
            static_cast<unsigned long long>(s.entities.size()));
