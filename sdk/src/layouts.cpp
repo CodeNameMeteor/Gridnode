@@ -336,11 +336,13 @@ const Edit* editFor(const std::string& cls, const float* at) {
 }
 
 void recordBus(uintptr_t entity, uintptr_t bus);
+std::atomic<uint32_t> g_groupGen{0}; // bumped when a model or group is created (part of the level loaded)
 
 // Creation of a static model (any realm): match against the layout by its creation transform.
 void onCreatedModel(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
     recordBus(reinterpret_cast<uintptr_t>(entity), mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10)); // for copies
+    g_groupGen.fetch_add(1);
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
     if (!t) return;
     float at[3];
@@ -782,8 +784,10 @@ void recordBus(uintptr_t entity, uintptr_t bus) {
     g_groupBus[entity] = bus;
 }
 
+
 void onCreatedGroup(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
+    g_groupGen.fetch_add(1);
     const uintptr_t bus = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10);
     if (!bus) return;
     std::lock_guard<std::mutex> lock(g_busM);
@@ -890,15 +894,20 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
                           copies = memberField("InstanceCount");
     if (!sg || !cg || partRange == 0xffffffffu) return false;
     const auto tracked = inspector::tracked();
-    for (const auto& [server, st] : tracked) {
-        if (!st || !registry().isKindOf(st, sg)) continue;
+    // Client groups by their data, once (pairing each server group by scanning everything was slow).
+    std::unordered_map<uintptr_t, uintptr_t> clientByData;
+    std::vector<uintptr_t> servers;
+    for (const auto& [p, t] : tracked) {
+        if (!t) continue;
+        if (registry().isKindOf(t, cg)) {
+            if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByData.emplace(d, p);
+        } else if (registry().isKindOf(t, sg))
+            servers.push_back(p);
+    }
+    for (const uintptr_t server : servers) {
         const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
-        uintptr_t client = 0;
-        for (const auto& [p, t] : tracked)
-            if (t && registry().isKindOf(t, cg) && data && dataOf(p, "StaticModelGroupEntityData") == data) {
-                client = p;
-                break;
-            }
+        const auto ci = data ? clientByData.find(data) : clientByData.end();
+        const uintptr_t client = ci == clientByData.end() ? 0 : ci->second;
         const uintptr_t serverBody = groupBodyOf(server);
         gn_transform G{};
         if (!client || !serverBody || !entityTransform(reinterpret_cast<void*>(server), G)) continue;
@@ -994,7 +1003,7 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
         t.clientBus = busOf(g.clientGroup);
         t.place = orig;
         setOwners(t, g.serverGroup, g.clientGroup);
-        return t.data && t.serverBus && t.clientBus;
+        return t.data && t.serverBus && t.clientBus && templateAlive(t);
     }
     // A standalone object of the level: where it is now (moved by an edit, or where the level put it).
     float now[3] = {at[0], at[1], at[2]};
@@ -1015,13 +1024,13 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
     t.serverBus = server ? busOf(server) : 0;
     t.clientBus = client ? busOf(client) : 0;
     setOwners(t, server, client);
-    return t.data && t.serverBus && t.clientBus;
+    return t.data && t.serverBus && t.clientBus && templateAlive(t);
 }
 
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
 void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select) {
     if (!templateAlive(t)) {
-        GN_LOG("layouts: copy %d of %s: the part of the level it comes from is no longer loaded", copyId, t.source.c_str());
+        if (select) GN_LOG("layouts: copy %d of %s: the part of the level it comes from is no longer loaded", copyId, t.source.c_str());
         if (select) setStatus("That object's part of the level is no longer loaded (it streams in and out as you move). "
                               "Fly back to it and copy it again.");
         return;
@@ -1935,6 +1944,9 @@ void onLevel(const std::string& level) {
 
 // Server thread, every 2 s: copies (and standalone stand-ins) whose part of the level streamed out
 // are gone with it; forget them, and place what the layout has again once its source is back.
+// Looking for sources walks every loaded group, so it runs only when something changed (a copy was
+// destroyed, or a group was created since the last look), and never more often than 25 times what
+// the last look took, so the game keeps its frame rate while sources are away.
 void maintainSpawned() {
     size_t dead = 0;
     {
@@ -1946,7 +1958,16 @@ void maintainSpawned() {
         g_spawned.erase(std::remove_if(g_spawned.begin(), g_spawned.end(), [&](const Spawned& sp) { return !alive(sp); }), g_spawned.end());
         dead = before - g_spawned.size();
     }
-    if (dead) GN_LOG("layouts: %llu copies were destroyed with their part of the level", static_cast<unsigned long long>(dead));
+    if (dead) GN_LOG("layouts: %llu copies were destroyed with their part of the level; they come back when it loads again",
+                     static_cast<unsigned long long>(dead));
+    static uint32_t seenGen = 0;
+    static bool pending = false; // something is still missing
+    static ULONGLONG nextLook = 0;
+    const uint32_t gen = g_groupGen.load();
+    if (dead) pending = true;
+    if (gen != seenGen) pending = true;
+    const ULONGLONG now = GetTickCount64();
+    if (!pending || now < nextLook) return;
     std::vector<Edit> edits;
     {
         std::lock_guard<std::mutex> lock(g_m);
@@ -1954,7 +1975,15 @@ void maintainSpawned() {
         for (const Edit& ed : g_edits)
             if (ed.kind == "Copy" || ed.kind == "GroupProp") edits.push_back(ed);
     }
-    if (!edits.empty() && localServerCharacter()) applyGroupEdits(edits, true);
+    if (edits.empty() || !localServerCharacter()) return;
+    seenGen = gen;
+    pending = false;
+    const ULONGLONG t0 = GetTickCount64();
+    applyGroupEdits(edits, true);
+    const ULONGLONG took = GetTickCount64() - t0;
+    nextLook = GetTickCount64() + std::max<ULONGLONG>(2000, took * 25);
+    static int slow = 0;
+    if (took > 100 && slow++ < 5) GN_LOG("layouts: looking for copies' sources took %llu ms; next look in %llu s at the earliest", took, (nextLook - GetTickCount64()) / 1000);
 }
 
 void serverTick() {
