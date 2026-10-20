@@ -6,7 +6,7 @@ documents everything it knows about the engine.
 
 The full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-> Status: **M5 done**, M6 (docs, GridNodeSync) in progress. Docs: `python tools/gen/gridnode.py docs --build`
+> Status: **M6 done** (docs, GridNodeSync, Frosty assessment). Next: M7 (custom maps). Docs: `python tools/gen/gridnode.py docs --build`
 > (see [docs/building.md](docs/building.md#these-docs)); CI publishes the site as the `docs-site` artifact. GridNode loads mods from `mods/` and gives them reflection by name
 > (9,988 engine types), entity-creation callbacks, server and client ticks, chained pointer hooks,
 > a world API (local characters, transforms, teleport, components, level events) and a Dear ImGui

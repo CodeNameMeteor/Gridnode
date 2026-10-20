@@ -353,7 +353,7 @@ Each milestone ends with something testable in game.
 | **M4.5** ✅ | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
 | **M5** ✅ | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision (deferred, then skipped) | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M5.5** | MEC_Trainer port (follow-up: `jump()` from the player's own jump binding instead of Space): keys and `jump()`, Faith's movement, movement tuning by name, game state (API 6); `examples/probe` research mod; `examples/mec-trainer` | The trainer's features work through GridNode with no raw pointer chains in the mod |
-| **M6** | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
+| **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
@@ -385,6 +385,19 @@ Findings (Ghidra):
   is the `MessageManager` global (+0x10 listener registry). Plan: register a GridNode listener
   object through the engine's own registration (no hook), filtered by category; mods receive the
   message with its fields readable by name.
+
+### M6 notes
+
+- Docs: MkDocs Material site (`gridnode.py docs`): guides, engine notes, a generated page per
+  annotation file; with the user's dump, a local-only reference page per engine module (9,988 types,
+  66 pages). CI builds the published part strictly and uploads it as `docs-site`.
+- GridNodeSync (Ghidra 12.0.3): import applies annotations; export brings user names back
+  (`gridnode.py ghidra-import` -> `db/ghidra-inbox.yaml`). First real round trip 2026-10-20: a
+  prototype, a global and two struct members came back and are now annotated; the user's earlier
+  work (449 functions, 21 globals) sits in the inbox for sorting; 25 names differ from GridNode's.
+- Frosty: CC BY-NC-ND (no code reuse); supports Catalyst for assets and packaging, not levels.
+  Recommended M7 order in `docs/assets-assessment.md`.
+- Lua skipped (2026-10-20).
 
 ### M5 notes
 

@@ -6,6 +6,12 @@ globals:
     va: 0x14256d7e0
     type: "void*"
     note: The game's XInputGetState, stored once by 0x1437ba6c0. Swapping it is a pointer hook.
+  - name: EntryInputAnalogSignedMask
+    va: 0x142108c88
+    type: u64
+    confidence: inferred
+    sources: [gridnode, ghidra]
+    note: "Copied from the registry (+0xa8) by 0x1432fd340; EntryInputState_set clears an analog value's sign unless its bit is set."
   - name: EntryInputActionRegistryPtr
     va: 0x1424aa1a0
     type: "EntryInputActionRegistry*"
@@ -42,6 +48,8 @@ structs:
     members:
       - { offset: 0x350, name: analog, type: "f32[6]", note: "One float per analog action: 6 in Catalyst (the registry's analogCount). The constructor clears 0x350..0x530." }
       - { offset: 0x4b8, name: digitalBits, type: u64 }
+      - { offset: 0x4e0, name: analogScale, type: f32, sources: [gridnode, ghidra], note: "Set to 1.0 by the constructor (0x143300860)." }
+      - { offset: 0x52c, name: lastAction, type: i32, sources: [gridnode, ghidra], note: "Set to -1 by the constructor (0x143300860)." }
 
 functions:
   - name: EntryInputState_getAnalog
@@ -66,6 +74,12 @@ functions:
     confidence: inferred
     sources: [gridnode]
     note: Returns ClientPlayer +0x14c0, making it (poolAlloc 0x530 + 0x1432f8aa0) the first time; sets flag 0x20 in +0x1520.
+  - name: PamClientAntInput_processCharacter
+    va: 0x14391b970
+    signature: "void(i64* character, void* inputState, f32 dt, f32 scale)"
+    confidence: inferred
+    sources: [gridnode, ghidra]
+    note: "Per character: reads the move and look actions (analog) and the button actions (digital) and hands them to the ANT input (0x142b8a7a0, 0x142bc5540). Named in Ghidra; first GridNodeSync round trip."
   - name: PamClientAntInputComponent_onInput
     va: 0x143911c80
     signature: "void(void* inputListener, EntryInputState* state, void* player)"
