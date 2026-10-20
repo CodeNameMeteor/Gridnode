@@ -42,6 +42,8 @@ def label(ev):
     if k == "created":
         bp = ev.get("blueprint")
         return "new " + ev.get("type", "?") + (f" [{bp}]" if bp else "")
+    if k == "event":
+        return f"event {ev.get('event', '?')} -> {ev.get('target', '?')}"
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":

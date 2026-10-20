@@ -12,6 +12,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <utility>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -40,7 +42,7 @@ constexpr uint64_t kImageBase = 0x140000000ull;
 constexpr size_t kMaxEvents = 250000;
 constexpr int kStackFrames = 16;
 
-enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel };
+enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent };
 
 struct Ref {           // a pointer found in a message, with what it pointed to then
     uint16_t off;
@@ -66,6 +68,8 @@ struct Event {
     std::string blueprint;         // the bus's blueprint (by name), if it has one
     float pos[3] = {};
     bool havePos = false;
+    // event (ptr / type: the entity it was delivered to)
+    uint32_t eventId = 0;
     // marker / level
     std::string text;
     std::vector<uint64_t> stack;   // image VAs of game frames, innermost first
@@ -76,11 +80,12 @@ std::deque<Event> g_events;        // (g_m)
 uint64_t g_seq = 0;                // (g_m)
 uint64_t g_dropped = 0;            // (g_m) the oldest, beyond kMaxEvents
 std::atomic<bool> g_recording{false};
-std::atomic<bool> g_wantMessages{true}, g_wantCreated{true}, g_wantStacks{true};
+std::atomic<bool> g_wantMessages{true}, g_wantCreated{true}, g_wantStacks{true}, g_wantEvents{true};
 LARGE_INTEGER g_freq{}, g_t0{};
 std::wstring g_dir;
 std::string g_lastExport;          // render thread
 std::unordered_map<uint32_t, bool> g_ignored; // message type ids not recorded (g_m)
+std::unordered_map<const Type*, bool> g_ignoredTargets; // entity classes whose events are not recorded (g_m)
 std::string g_level;               // (g_m)
 
 double now() {
@@ -197,6 +202,135 @@ void onCreated(void* entity, void* ci, void*) {
     push(std::move(ev));
 }
 
+// ---- events between entities ------------------------------------------------------------------
+// An entity receives an event through its vtable +0x20 (EntityBusPeer onEvent), called by
+// EntityBusPeer_sendEvent after EntityBus_fireEvent followed the bus's event connections. The event
+// is an EntityEvent {vtable, +8 id, +0xc kind}; ids are djb2-xor hashes of the event names. GridNode
+// wraps that slot in every entity vtable (a pointer swap per vtable, through the hook table, as for
+// creators), the first time events are recorded; the wrappers do nothing while not recording.
+using OnEventFn = void (*)(void* peer, void* event, void* a3, void* a4);
+constexpr size_t kEventPool = 4096;
+constexpr uint64_t kOnEventSlot = 0x20;
+std::array<uint64_t, kEventPool> g_eventOrig{};
+
+void onEvent(void* peer, void* event);
+
+template <size_t I> void eventDetour(void* peer, void* event, void* a3, void* a4) {
+    if (g_recording.load(std::memory_order_relaxed) && g_wantEvents.load(std::memory_order_relaxed)) onEvent(peer, event);
+    reinterpret_cast<OnEventFn>(g_eventOrig[I])(peer, event, a3, a4);
+}
+template <size_t... I> constexpr std::array<OnEventFn, sizeof...(I)> makeEventDetours(std::index_sequence<I...>) {
+    return {&eventDetour<I>...};
+}
+const std::array<OnEventFn, kEventPool> g_eventDetours = makeEventDetours(std::make_index_sequence<kEventPool>{});
+std::atomic<bool> g_eventsHooked{false};
+
+// Wraps onEvent in every vtable of an EntityBusPeer class (checked: its slot 0 says so, slot +0x20
+// is game code). Once.
+void hookEvents() {
+    if (g_eventsHooked.exchange(true)) return;
+    const Type* peer = registry().find("EntityBusPeer");
+    if (!peer) {
+        GN_LOG("recorder: no EntityBusPeer type; events between entities are not recorded");
+        return;
+    }
+    std::vector<uint64_t> vtables;
+    for (const Type& t : registry().data().types) {
+        if (t.category != reflect::Category::Class || !registry().isKindOf(&t, peer)) continue;
+        for (uint64_t va : t.vtables) {
+            const uintptr_t vt = static_cast<uintptr_t>(va - kImageBase) + mem::moduleBase();
+            uintptr_t fake = vt; // an "object" whose vtable is vt: its type must be an EntityBusPeer
+            const Type* vtType = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(&fake));
+            if (!vtType || !registry().isKindOf(vtType, peer)) continue;
+            if (!mem::inImage(mem::readOr<uintptr_t>(vt + kOnEventSlot))) continue;
+            vtables.push_back(vt);
+        }
+    }
+    std::sort(vtables.begin(), vtables.end());
+    vtables.erase(std::unique(vtables.begin(), vtables.end()), vtables.end());
+    size_t used = 0, failed = 0;
+    for (uintptr_t vt : vtables) {
+        if (used == kEventPool) break;
+        std::string why;
+        const auto r = hooks().install("recorder", vt + kOnEventSlot, 0, reinterpret_cast<uint64_t>(g_eventDetours[used]), &g_eventOrig[used], &why);
+        if (r == hook::Result::Ok) ++used;
+        else if (failed++ < 5) GN_LOG("recorder: onEvent of vtable 0x%llx: %s", static_cast<unsigned long long>(mem::va(vt)), why.c_str());
+    }
+    GN_LOG("recorder: events between entities: onEvent wrapped in %llu entity vtables (%llu failed, %llu found)",
+           static_cast<unsigned long long>(used), static_cast<unsigned long long>(failed), static_cast<unsigned long long>(vtables.size()));
+}
+
+uint32_t djb2(const std::string& s) {
+    uint32_t h = 5381;
+    for (unsigned char c : s) h = (h * 33) ^ c;
+    return h;
+}
+
+// Event names from their hashes: every reflected type, field and enum value name, common event
+// words, and recordings\event-names.txt (one name per line) if present.
+const std::unordered_map<uint32_t, std::string>& eventNames() {
+    static const std::unordered_map<uint32_t, std::string> names = [] {
+        std::unordered_map<uint32_t, std::string> m;
+        auto add = [&](const std::string& n) {
+            if (!n.empty()) m.emplace(djb2(n), n);
+        };
+        for (const Type& t : registry().data().types) {
+            add(t.name);
+            for (const reflect::Field& f : t.fields) add(f.name);
+            for (const reflect::EnumValue& v : t.values) add(v.name);
+        }
+        static const char* const kCommon[] = {
+            "In", "Out", "Start", "Stop", "Enable", "Disable", "Enabled", "Disabled", "Reset", "Trigger", "Triggered", "OnTrigger",
+            "OnTriggered", "OnStart", "OnStop", "OnEnter", "OnExit", "OnEnable", "OnDisable", "OnFinished", "OnCompleted", "Finished",
+            "Completed", "Activate", "Deactivate", "Activated", "Deactivated", "Show", "Hide", "Open", "Close", "Opened", "Closed",
+            "Spawn", "Unspawn", "OnSpawn", "OnUnspawn", "OnSpawned", "OnUnspawned", "OnKilled", "OnDestroyed", "OnPlay", "Play",
+            "Pause", "Resume", "OnTrue", "OnFalse", "True", "False", "Set", "Clear", "Toggle", "Next", "Previous", "Begin", "End",
+            "OnBegin", "OnEnd", "Load", "Unload", "OnLoaded", "OnUnloaded", "Loaded", "Unloaded", "Success", "Failure", "OnSuccess",
+            "OnFailure", "Cancel", "OnCancel", "Confirm", "OnConfirm", "Select", "OnSelect", "Pickup", "OnPickup", "Collected",
+            "OnCollected", "Teleport", "OnTeleport", "Respawn", "OnRespawn", "Checkpoint", "OnCheckpoint", "Save", "OnSave"};
+        for (const char* n : kCommon) add(n);
+        FILE* f = _wfopen((g_dir + L"event-names.txt").c_str(), L"rb");
+        if (f) {
+            char line[256];
+            while (fgets(line, sizeof(line), f)) {
+                std::string n = line;
+                while (!n.empty() && (n.back() == '\n' || n.back() == '\r' || n.back() == ' ')) n.pop_back();
+                add(n);
+            }
+            fclose(f);
+        }
+        return m;
+    }();
+    return names;
+}
+
+std::string eventName(uint32_t id) {
+    const auto& m = eventNames();
+    const auto it = m.find(id);
+    if (it != m.end()) return it->second;
+    char b[16];
+    snprintf(b, sizeof(b), "%08x", id);
+    return b;
+}
+
+void onEvent(void* peer, void* event) {
+    if (!peer || !event) return;
+    const Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(peer));
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (t && g_ignoredTargets.count(t)) return;
+    }
+    Event ev;
+    ev.t = now();
+    ev.kind = kEvent;
+    ev.thread = GetCurrentThreadId();
+    ev.ptr = reinterpret_cast<uintptr_t>(peer);
+    ev.type = t;
+    ev.eventId = mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(event) + 8);
+    captureStack(ev.stack);
+    push(std::move(ev));
+}
+
 void marker(const std::string& name) {
     Event ev;
     ev.t = now();
@@ -217,6 +351,7 @@ void setRecording(bool on) {
         std::lock_guard<std::mutex> lock(g_m);
         if (g_events.empty()) QueryPerformanceCounter(&g_t0); // time 0 is the start of a new recording
     }
+    if (on && g_wantEvents.load()) hookEvents();
     g_recording = on;
     if (on) messageTap(&onMessage);
     GN_LOG("recorder: %s", on ? "recording" : "paused");
@@ -341,6 +476,13 @@ std::string toJson(const Event& ev) {
         break;
     case kMarker: o += ",\"kind\":\"marker\",\"name\":" + jsonStr(ev.text); break;
     case kLevel: o += ",\"kind\":\"level\",\"level\":" + jsonStr(ev.text); break;
+    case kEvent: {
+        char id[16];
+        snprintf(id, sizeof(id), "%08x", ev.eventId);
+        o += ",\"kind\":\"event\",\"event\":" + jsonStr(eventName(ev.eventId)) + ",\"event_id\":\"" + id + "\",\"target\":" +
+             jsonStr(ev.type ? ev.type->name : "?") + ",\"ptr\":" + hexAddr(ev.ptr);
+        break;
+    }
     }
     if (ev.havePos) o += ",\"pos\":[" + num(ev.pos[0]) + "," + num(ev.pos[1]) + "," + num(ev.pos[2]) + "]";
     if (!ev.stack.empty()) {
@@ -482,6 +624,12 @@ void draw(bool* open) {
     ImGui::SameLine();
     if (ImGui::Checkbox("Entities created", &c)) g_wantCreated = c;
     ImGui::SameLine();
+    bool ev = g_wantEvents.load();
+    if (ImGui::Checkbox("Entity events", &ev)) {
+        g_wantEvents = ev;
+        if (ev && rec) hookEvents();
+    }
+    ImGui::SameLine();
     if (ImGui::Checkbox("Call stacks", &s)) g_wantStacks = s;
 
     ImGui::SeparatorText("Markers");
@@ -506,7 +654,7 @@ void draw(bool* open) {
     if (!g_lastExport.empty()) ImGui::TextDisabled("Last export: %s", g_lastExport.c_str());
 
     ImGui::SeparatorText("Ignore");
-    ImGui::TextDisabled("Message types not recorded (frequent ones you do not need). Right-click a message below to ignore its type.");
+    ImGui::TextDisabled("Not recorded (frequent ones you do not need). Right-click a message or an event below to ignore its type or class.");
     std::vector<uint32_t> ignored;
     {
         std::lock_guard<std::mutex> lock(g_m);
@@ -522,7 +670,21 @@ void draw(bool* open) {
         ImGui::PopID();
         ImGui::SameLine();
     }
-    if (ignored.empty()) ImGui::TextDisabled("(none)");
+    std::vector<const Type*> ignoredT;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const auto& kv : g_ignoredTargets) ignoredT.push_back(kv.first);
+    }
+    for (const Type* t : ignoredT) {
+        ImGui::PushID(t);
+        if (ImGui::SmallButton(("events to " + t->name + "  x").c_str())) {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_ignoredTargets.erase(t);
+        }
+        ImGui::PopID();
+        ImGui::SameLine();
+    }
+    if (ignored.empty() && ignoredT.empty()) ImGui::TextDisabled("(none)");
     else ImGui::NewLine();
 
     ImGui::SeparatorText("Latest");
@@ -535,7 +697,7 @@ void draw(bool* open) {
                 const Event& src = g_events[i];
                 Event lite; // without the bytes and the stack
                 lite.seq = src.seq, lite.t = src.t, lite.kind = src.kind, lite.manager = src.manager, lite.typeId = src.typeId;
-                lite.type = src.type, lite.blueprint = src.blueprint, lite.text = src.text;
+                lite.type = src.type, lite.blueprint = src.blueprint, lite.text = src.text, lite.eventId = src.eventId;
                 tail.push_back(std::move(lite));
             }
         }
@@ -564,6 +726,18 @@ void draw(bool* open) {
                 snprintf(line, sizeof(line), "%9.3f  ---- %s ----", ev.t, ev.text.c_str());
                 ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "%s", line);
                 break;
+            case kEvent: {
+                snprintf(line, sizeof(line), "%9.3f  event  %s -> %s", ev.t, eventName(ev.eventId).c_str(), ev.type ? ev.type->name.c_str() : "?");
+                ImGui::TextColored(ImVec4(0.6f, 1.f, 0.6f, 1.f), "%s", line);
+                if (ImGui::BeginPopupContextItem(std::to_string(ev.seq).c_str())) {
+                    if (ImGui::MenuItem("Do not record events to this class") && ev.type) {
+                        std::lock_guard<std::mutex> lock(g_m);
+                        g_ignoredTargets[ev.type] = true;
+                    }
+                    ImGui::EndPopup();
+                }
+                break;
+            }
             case kLevel:
                 snprintf(line, sizeof(line), "%9.3f  level %s", ev.t, ev.text.c_str());
                 ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.f, 1.f), "%s", line);
