@@ -350,6 +350,7 @@ struct GroupProp {
     uintptr_t serverBody = 0, clientBody = 0; // GroupRigidBody
     uint32_t part = 0;
     uintptr_t member = 0;                     // StaticModelGroupMemberData (client block's)
+    uintptr_t block = 0;                      // the client group's render block for the member
     uint32_t copy = 0;                        // index of this copy within the member
 };
 
@@ -441,7 +442,7 @@ void writeInstance(uintptr_t inst, const gn_transform& t) {
 }
 
 // The client block's member and copy index for `part`.
-bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t& copy) {
+bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t& copy, uintptr_t& blockOut) {
     namespace c = e::constant;
     static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
                           copies = memberField("InstanceCount");
@@ -459,6 +460,7 @@ bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t&
         if (per == 0 || part < first || part >= first + per * n) continue;
         member = m;
         copy = (part - first) / per;
+        blockOut = block;
         return true;
     }
     return false;
@@ -470,6 +472,53 @@ uintptr_t memberTransform(uintptr_t member, uint32_t copy) {
     const uintptr_t arr = member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
     const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
     return copy < n ? arr + copy * 0x40u : 0;
+}
+
+// The render object of the copy (client thread): the block's cached list, or the physics
+// component's object for the copy's first part (how 0x14318fbc0 gathers them).
+uintptr_t renderObjectOf(const GroupProp& g) {
+    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance");
+    if (!g.block || !g.member) return 0;
+    if (const uintptr_t list = mem::readOr<uintptr_t>(g.block + 0xc8)) return mem::readOr<uintptr_t>(list + g.copy * 8u);
+    const uintptr_t comp = mem::readOr<uintptr_t>(g.block + 0x20);
+    const uintptr_t vt = comp ? mem::readOr<uintptr_t>(comp) : 0;
+    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + 0x210) : 0;
+    if (!mem::inImage(fn)) return 0;
+    const uint32_t part = mem::readOr<uint32_t>(g.member + partRange) + mem::readOr<uint32_t>(g.member + perCopy) * g.copy;
+    return reinterpret_cast<uintptr_t (*)(uintptr_t, uint32_t)>(fn)(comp, part);
+}
+
+// Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
+// transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
+// (0x1436d6ce0 with *(0x1424a9b98)+0x48).
+void placeCopy(const GroupProp& g, const gn_transform& world) {
+    const uintptr_t obj = renderObjectOf(g);
+    const uintptr_t vt = obj ? mem::readOr<uintptr_t>(obj) : 0;
+    const uintptr_t setT = vt ? mem::readOr<uintptr_t>(vt + 0x10) : 0;
+    const uintptr_t renderRoot = mem::readOr<uintptr_t>(mem::rva(e::global::RenderRoot));
+    const uintptr_t renderWorld = renderRoot ? mem::readOr<uintptr_t>(renderRoot + 0x48) : 0;
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 6)
+        GN_LOG("layouts: group part %u: render object %llx (vtable %llx), block %llx, list %llx, render world %llx", g.part,
+               static_cast<unsigned long long>(obj), static_cast<unsigned long long>(vt), static_cast<unsigned long long>(g.block),
+               static_cast<unsigned long long>(g.block ? mem::readOr<uintptr_t>(g.block + 0xc8) : 0), static_cast<unsigned long long>(renderWorld));
+    if (!mem::inImage(setT) || !renderWorld) return;
+    alignas(16) gn_transform t = world;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
+    alignas(16) uint8_t update[0x100] = {};
+    // Set before building, as 0x14318fbc0 does (offsets from its local at rsp-0x148).
+    const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(0x141a4e8dc));
+    memcpy(update + 0x60, &lodScale, 4);
+    update[0x88] = update[0x89] = 0;
+    update[0x8d] = 2;
+    update[0x8e] = 0;
+    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderObject_buildUpdate))(obj, update);
+    const uintptr_t objPlus8 = obj + 8;
+    memcpy(update + 0x70, &objPlus8, 8);
+    const uint32_t tag = mem::readOr<uint32_t>(obj + 0x8c);
+    memcpy(update + 0x90, &tag, 4);
+    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
 }
 
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
@@ -485,6 +534,19 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     reframe(G, I, world.trans, true, local.trans);
     const uintptr_t si = groupInstance(g.serverBody, g.part);
     const uintptr_t ci = groupInstance(g.clientBody, g.part);
+    {
+        static std::atomic<int> checked{0};
+        float before[20] = {}, after[20] = {};
+        gn_transform cur{};
+        if (checked.fetch_add(1) < 1 && mem::read(si, before, sizeof(before)) && readInstance(si, cur)) {
+            writeInstance(si, cur); // a read-write round trip must not change the instance
+            mem::read(si, after, sizeof(after));
+            int diff = 0;
+            for (int k = 0; k < 20; ++k) diff += std::fabs(before[k] - after[k]) > 1e-5f;
+            GN_LOG("layouts: group instance round trip: %d of 20 floats changed (scale %.3f %.3f %.3f, w %.3f %.3f %.3f %.3f)", diff, before[16],
+                   before[17], before[18], before[3], before[7], before[11], before[15]);
+        }
+    }
     writeInstance(si, local);
     if (ci && ci != si) writeInstance(ci, local);
     if (const uintptr_t mt = memberTransform(g.member, g.copy)) {
@@ -497,17 +559,9 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
         GN_LOG("layouts: group part %u -> (%.2f, %.2f, %.2f): server instance %llx, client instance %llx%s", g.part, local.trans[0], local.trans[1],
                local.trans[2], static_cast<unsigned long long>(si), static_cast<unsigned long long>(ci),
                memberTransform(g.member, g.copy) ? ", member transform too" : "");
-    const uintptr_t clientGroup = g.clientGroup;
-    client().post([clientGroup] {
-        static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
-        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), clientGroup);
-        if (!t || !cg || !registry().isKindOf(t, cg)) return;
-        const uintptr_t vt = mem::readOr<uintptr_t>(clientGroup);
-        const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + e::constant::SpatialEntity_vf_transformChanged) : 0;
-        if (!mem::inImage(fn)) return;
-        struct alignas(8) Change { uint64_t a = 0; uint8_t notify = 0; uint8_t one = 1; uint8_t pad[6] = {}; } change;
-        reinterpret_cast<void (*)(uintptr_t, Change*)>(fn)(clientGroup, &change);
-    });
+    const GroupProp gp = g;
+    alignas(16) gn_transform w = world;
+    client().post([gp, w] { placeCopy(gp, w); });
 }
 
 // Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
@@ -539,7 +593,7 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
         }
     if (g.clientGroup) {
         g.clientBody = groupBodyOf(g.clientGroup);
-        memberOf(g.clientGroup, g.part, g.member, g.copy);
+        memberOf(g.clientGroup, g.part, g.member, g.copy, g.block);
     }
     const uintptr_t shape = mem::readOr<uintptr_t>(body + e::constant::GroupRigidBody_Shape);
     const uintptr_t clientShape = g.clientBody ? mem::readOr<uintptr_t>(g.clientBody + e::constant::GroupRigidBody_Shape) : 0;

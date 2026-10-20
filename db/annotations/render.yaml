@@ -3,6 +3,12 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 globals:
+  - name: RenderRoot
+    va: 0x1424a9b98
+    type: "void*"
+    note: "+0x48 is the render world that static model groups hand render-object updates to (0x14318fbc0)."
+    confidence: inferred
+    sources: [research]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: g_renderDevice
     va: 0x142563300
@@ -36,6 +42,27 @@ globals:
     sources: [ghidra]
 
 functions:
+  - name: ClientStaticModelGroup_placeMember
+    va: 0x14318fbc0
+    signature: "void(void* block, const LinearTransform* group, u32 firstPart)"
+    note: >-
+      Places one member's render objects: per copy, InstanceTransforms[i] (or the physics part
+      transform) times the group transform; object vtable +0x10 sets it, RenderObject_buildUpdate
+      and RenderWorld_submitUpdate push it. Called per member by the group's transform-changed
+      function (0x143193690), which passes this function's (void) result as the next member's first
+      part, so GridNode does not call that function.
+    confidence: inferred
+    sources: [research]
+  - name: RenderObject_buildUpdate
+    va: 0x143769330
+    signature: "void(void* object, u8* update)"
+    confidence: inferred
+    sources: [research]
+  - name: RenderWorld_submitUpdate
+    va: 0x1436d6ce0
+    signature: "void(void* renderWorld, u8* update)"
+    confidence: inferred
+    sources: [research]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: DebugRenderShader_initParamIds
     va: 0x142988e40
