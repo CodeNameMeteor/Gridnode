@@ -1285,26 +1285,24 @@ void clientTick() {
     }
 }
 
-// ---- free camera (render thread drives it; a camera post-update listener applies it) ---------------
-// While the menu is open the game gets no input, so Faith stands still. The free camera writes its
-// transform into the view after the game's camera update each frame: GridNode links a node into
-// the view manager's post-update listener list (a {vtable, next} list the game walks), no code is
-// patched. Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
-struct CamNode {
-    void* const* vtbl;
-    CamNode* next;
-};
-void onCameraUpdated(CamNode* node, void* info);
-void camNoop(CamNode*, void*, void*) {} // other slots, should the game call one (e.g. a destructor)
-void* const g_camVtbl[8] = {reinterpret_cast<void*>(&onCameraUpdated), reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
-                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
-                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop)};
-CamNode g_camNode{g_camVtbl, nullptr};
-uintptr_t g_camLinkedTo = 0;         // the view manager the node is in (client thread)
+// ---- free camera (render thread drives it; the active camera's frame update applies it) -----------
+// While the menu is open the game gets no input, so Faith stands still. Each frame the view manager
+// asks the active camera to update itself (camera vtable +0x68), which writes the camera's two
+// transforms (+0x10 and +0x50), and then copies them into the view the renderer uses. GridNode gives
+// the active camera object a copy of its vtable whose +0x68 entry calls the game's own update and then
+// writes the free camera's transform: a pointer swap on that one object, no code is patched.
+// Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
+constexpr size_t kCamSlots = 160;     // entries copied; the camera classes have well under that
+constexpr size_t kCamFrameSlot = 0x68 / 8;
+uintptr_t g_camFakeVtbl[kCamSlots + 1]; // [0] is the RTTI slot in front of the table
+uintptr_t g_camObject = 0;           // the camera object wearing the copy (client thread)
+uintptr_t g_camOrigVtbl = 0;         // its own vtable
+using CamFrameFn = void (*)(void*, void*);
+CamFrameFn g_camOrigFrame = nullptr;
 
 std::mutex g_camM;
 bool g_camApply = false;             // (g_camM)
-gn_transform g_camT{};               // (g_camM) what the listener writes
+gn_transform g_camT{};               // (g_camM) what the camera update writes
 
 struct FreeCam {
     bool enabled = false;
@@ -1327,60 +1325,48 @@ uintptr_t firstViewManager() {
     return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
 }
 
-void onCameraUpdated(CamNode*, void*) {
+void camFrameUpdate(void* self, void* info) {
+    if (g_camOrigFrame) g_camOrigFrame(self, info);
     alignas(16) gn_transform t{};
     {
         std::lock_guard<std::mutex> lock(g_camM);
         if (!g_camApply) return;
         t = g_camT;
     }
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = firstViewManager();
-    if (!mgr) return;
-    mem::write(mgr + m::transform, &t, sizeof(t));
-    const uintptr_t camera = mem::readOr<uintptr_t>(mgr + m::activeCamera);
-    if (camera) mem::write(camera + e::st::CameraObject::off::transform, &t, sizeof(t));
+    const uintptr_t cam = reinterpret_cast<uintptr_t>(self);
+    namespace c = e::st::CameraObject::off;
+    mem::write(cam + c::transform, &t, sizeof(t));
+    mem::write(cam + c::viewTransform, &t, sizeof(t));
 }
 
-// Client thread: link / unlink the node at the end of the listener list.
-void linkCameraNode() {
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = firstViewManager();
-    if (!mgr) return;
-    const uintptr_t headAt = mgr + m::postUpdateListeners;
-    for (uintptr_t q = mem::readOr<uintptr_t>(headAt), guard = 0; q && guard < 1000; q = mem::readOr<uintptr_t>(q + 8), ++guard)
-        if (q == reinterpret_cast<uintptr_t>(&g_camNode)) return; // already in this manager's list
-    g_camNode.next = nullptr;
-    uintptr_t p = mem::readOr<uintptr_t>(headAt);
-    if (!p) {
-        mem::write<uintptr_t>(headAt, reinterpret_cast<uintptr_t>(&g_camNode));
-    } else {
-        for (int guard = 0; guard < 1000; ++guard) {
-            const uintptr_t next = mem::readOr<uintptr_t>(p + 8);
-            if (!next) break;
-            p = next;
-        }
-        mem::write<uintptr_t>(p + 8, reinterpret_cast<uintptr_t>(&g_camNode));
-    }
-    g_camLinkedTo = mgr;
+void unhookCamera() {
+    if (g_camObject && mem::readOr<uintptr_t>(g_camObject) == reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]))
+        mem::write<uintptr_t>(g_camObject, g_camOrigVtbl);
+    g_camObject = 0;
 }
 
-void unlinkCameraNode() {
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = g_camLinkedTo;
-    g_camLinkedTo = 0;
-    if (!mgr || mgr != firstViewManager()) return; // that manager is gone with its list
-    const uintptr_t self = reinterpret_cast<uintptr_t>(&g_camNode);
-    uintptr_t at = mgr + m::postUpdateListeners; // the address holding the pointer to the current node
-    for (int guard = 0; guard < 1000; ++guard) {
-        const uintptr_t p = mem::readOr<uintptr_t>(at);
-        if (!p) return;
-        if (p == self) {
-            mem::write<uintptr_t>(at, reinterpret_cast<uintptr_t>(g_camNode.next));
-            return;
-        }
-        at = p + 8;
+// Client thread: put the copy on the view manager's active camera (again after it changes).
+void hookCamera() {
+    const uintptr_t mgr = firstViewManager();
+    const uintptr_t cam = mgr ? mem::readOr<uintptr_t>(mgr + e::st::ClientCameraViewManager::off::activeCamera) : 0;
+    const uintptr_t fake = reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]);
+    if (!cam) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(cam);
+    if (vt == fake) return;
+    if (cam != g_camObject) unhookCamera();
+    if (!mem::inImage(vt)) return;
+    if (vt != g_camOrigVtbl) {
+        // A new camera class: build its copy (only while no object wears the old one).
+        for (size_t k = 0; k <= kCamSlots; ++k) g_camFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
+        g_camOrigVtbl = vt;
+        g_camOrigFrame = reinterpret_cast<CamFrameFn>(g_camFakeVtbl[1 + kCamFrameSlot]);
+        g_camFakeVtbl[1 + kCamFrameSlot] = reinterpret_cast<uintptr_t>(&camFrameUpdate);
+        GN_LOG("layouts: free camera drives camera %llx (vtable %llx)", static_cast<unsigned long long>(cam),
+               static_cast<unsigned long long>(vt));
     }
+    if (!g_camOrigFrame) return;
+    mem::write<uintptr_t>(cam, fake);
+    g_camObject = cam;
 }
 
 void lookDir(float yaw, float pitch, float* d) {
@@ -1439,7 +1425,7 @@ void freeCamFrame(bool menuOpen) {
     if (want && !g_cam.active) {
         if (!startFreeCam()) return;
         g_cam.active = true;
-        client().post([] { linkCameraNode(); });
+        client().post([] { hookCamera(); });
         GN_LOG("layouts: free camera on at (%.1f, %.1f, %.1f)", g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]);
     } else if (!want && g_cam.active) {
         g_cam.active = false;
@@ -1449,11 +1435,11 @@ void freeCamFrame(bool menuOpen) {
             std::lock_guard<std::mutex> lock(g_camM);
             g_camApply = false;
         }
-        client().post([] { unlinkCameraNode(); });
+        client().post([] { unhookCamera(); });
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { linkCameraNode(); }); // a level change makes a new view manager
+    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); }); // a level change or cutscene changes the active camera
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;

@@ -29,6 +29,7 @@ structs:
     opaque: true
     members:
       - { offset: 0x10, name: transform, type: LinearTransform, sources: [mecmp] }
+      - { offset: 0x50, name: viewTransform, type: LinearTransform, note: "Second copy the camera writes with +0x10 (Camera_setTransforms 0x14332bc40 / 0x14332bbd0); the view manager copies +0x10..+0x9f to its +0x90..+0x11f each frame.", confidence: inferred, sources: [ghidra] }
       - { offset: 0xac, name: baseFovYDegrees, type: f32, note: "The camera's own vertical FOV before the player's setting (55)." }
 
 code:
@@ -47,6 +48,11 @@ functions:
     va: 0x14327c200
     note: "Named in Ghidra as ClientCameraViewManagers_postSimUpdateAll. Signature not known yet."
     confidence: hypothesis
+    sources: [ghidra]
+  - name: ClientCameraViewManager_frameUpdate
+    va: 0x14327ba00
+    note: "Per frame (from ClientCameraViewManagers_frameUpdateAll 0x14327b940): calls the active camera's vtable +0x68 (its own update, e.g. FPSCamera writes +0x10/+0x50), then copies camera +0x10..+0x9f into manager +0x90..+0x11f and on to +0x120. Writes made in postSimUpdate's listeners are overwritten here."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientCameraViewManager_postSimUpdate
     va: 0x14327c2a0
