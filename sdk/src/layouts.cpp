@@ -706,11 +706,11 @@ uintptr_t spawnClient(uintptr_t data, uintptr_t bus, const gn_transform& at) {
     alignas(16) uint8_t ci[0x200] = {};
     alignas(16) gn_transform t = at;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
-    reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ClientEntityCreationInfo_ctor))(ci, 0, bus, &t);
-    uintptr_t result[3] = {};
-    reinterpret_cast<void (*)(uintptr_t*, uint8_t*, uintptr_t, uint64_t, uint64_t)>(mem::rva(e::function::ClientEntity_spawn))(result, ci, data, 0, 0);
-    if (result[2]) reinterpret_cast<void (*)(uintptr_t)>(mem::rva(e::function::EntityBus_release))(result[2]);
+    reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ClientEntityCreationInfo_ctor))(ci, data, bus, &t);
+    GN_LOG("layouts: make standalone: client creation info ready");
+    const uintptr_t result[1] = {reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::ClientEntity_spawnIntoBus))(ci, 0)};
     const uintptr_t entity = result[0];
+    GN_LOG("layouts: make standalone: client entity created %llx", static_cast<unsigned long long>(entity));
     if (!entity) return 0;
     alignas(16) uint8_t init[0x40] = {};
     reinterpret_cast<void (*)(uint8_t*)>(mem::rva(e::function::ClientEntityInitInfo_ctor))(init);

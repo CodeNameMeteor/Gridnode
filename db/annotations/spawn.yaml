@@ -123,12 +123,18 @@ functions:
     confidence: inferred
     sources: [research]
     note: "0x30 bytes: vtable 0x141b01f58, 0, 0, 0, u32 0, u8 1 (+0x24), u16 1 (+0x28)."
-  - name: ClientEntity_spawn
+  - name: ClientEntity_spawnBlueprint
     va: 0x1431c4830
-    signature: "void*(void* result, EntityCreationInfo* ci, void* data, u64 a4, u64 a5)"
+    signature: "void*(void* result, EntityCreationInfo* ci, void* blueprint, u64 a4, u64 a5)"
     confidence: inferred
     sources: [research]
-    note: "Creates a client entity from `data`; result[0] is the entity, result[2] (+0x10) a bus reference to release (0x143190730)."
+    note: "Spawns a blueprint (creates a bus for it); result[0] is the root entity, result[2] (+0x10) a bus reference to release. Not for plain entity data (crashed)."
+  - name: ClientEntity_spawnIntoBus
+    va: 0x1431c44b0
+    signature: "void*(EntityCreationInfo* ci, void* parentBus)"
+    confidence: inferred
+    sources: [research]
+    note: "Client counterpart of entityCreator_spawnIntoBus: creates the entity for ci->data (+0xd0). Used by the client static model group for destroyed parts."
   - name: Blueprint_instantiate
     va: 0x14335e390
     signature: "void(void* result, EntityCreationInfo* ci, void* blueprint, void* referenceData, u64 a5)"

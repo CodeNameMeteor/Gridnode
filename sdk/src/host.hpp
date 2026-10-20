@@ -153,6 +153,10 @@ int keyFromName(const std::string& name);
 } // namespace ui
 
 // Inspector (inspector.cpp): start() tracks entities from then on; draw() on the render thread.
+namespace crash {
+void install(); // logs the first few faults (address, registers, stack code addresses)
+}
+
 namespace inspector {
 void start();
 void draw(bool* open);

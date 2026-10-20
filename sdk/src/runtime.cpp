@@ -209,6 +209,7 @@ void run(HMODULE self) {
     const host::TickStatus ticks = host::installTicks();
     GN_LOG("ticks: server %s, client %s", ticks.server ? "hooked" : "UNAVAILABLE", ticks.client ? "hooked" : "UNAVAILABLE");
 
+    host::crash::install();
     host::worldStart();
     host::layouts::start(moduleDir(self));
     host::messageTypes(); // reads the message types' static instances once (logged)
