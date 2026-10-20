@@ -39,6 +39,8 @@ struct Edit {
     std::string kind;   // class name without Server / Client
     float at[3] = {};   // where the level creates it
     gn_transform to{};  // where it should be
+    gn_transform from{}; // the level's own placement (rotation included), for putting it back
+    bool haveFrom = false; // false for layout files written before `from` was saved
 };
 
 std::mutex g_m;
@@ -163,7 +165,7 @@ void moveBodies(uintptr_t entity, const reflect::Type* t, const gn_transform& be
         ++moved;
     });
     static std::atomic<int> said{0};
-    if (said.fetch_add(1) < 6)
+    if (moved != total || said.fetch_add(1) < 40)
         GN_LOG("layouts: %s %llx: moved %d of %d collision bodies", t->name.c_str(), static_cast<unsigned long long>(entity), moved, total);
 }
 
@@ -260,6 +262,11 @@ bool save() {
         o += "    up: " + fmtVec(ed.to.up) + "\n";
         o += "    forward: " + fmtVec(ed.to.forward) + "\n";
         o += "    position: " + fmtVec(ed.to.trans) + "\n";
+        if (ed.haveFrom) {
+            o += "    original_right: " + fmtVec(ed.from.right) + "\n";
+            o += "    original_up: " + fmtVec(ed.from.up) + "\n";
+            o += "    original_forward: " + fmtVec(ed.from.forward) + "\n";
+        }
     }
     const std::wstring file = fileFor(level);
     FILE* f = _wfopen(file.c_str(), L"wb");
@@ -288,12 +295,17 @@ std::vector<Edit> load(const std::string& level) {
     if (!f) return out;
     char line[512];
     Edit cur;
-    int fields = 0, lineNo = 0;
+    int fields = 0, origFields = 0, lineNo = 0;
     auto flush = [&] {
-        if (fields == 6) out.push_back(cur);
+        if (fields == 6) {
+            cur.haveFrom = origFields == 3;
+            memcpy(cur.from.trans, cur.at, sizeof(cur.at));
+            out.push_back(cur);
+        }
         else if (fields) GN_LOG("layouts: %s: an edit before line %d is incomplete; skipped", level.c_str(), lineNo);
         cur = Edit{};
         fields = 0;
+        origFields = 0;
     };
     while (fgets(line, sizeof(line), f)) {
         ++lineNo;
@@ -313,6 +325,12 @@ std::vector<Edit> load(const std::string& level) {
         else if (key == "up") ok = parseVec(val, cur.to.up);
         else if (key == "forward") ok = parseVec(val, cur.to.forward);
         else if (key == "position") ok = parseVec(val, cur.to.trans);
+        else if (key == "original_right" || key == "original_up" || key == "original_forward") {
+            float* row = key == "original_right" ? cur.from.right : key == "original_up" ? cur.from.up : cur.from.forward;
+            if (parseVec(val, row)) ++origFields;
+            else GN_LOG("layouts: %s line %d: cannot read %s", level.c_str(), lineNo, key.c_str());
+            continue;
+        }
         else continue; // level:, edits:
         if (!ok) GN_LOG("layouts: %s line %d: cannot read %s", level.c_str(), lineNo, key.c_str());
         else ++fields;
@@ -327,6 +345,7 @@ struct Selected {
     std::string kind;
     float at[3] = {};      // where the level created it (the edit's key)
     gn_transform now{};    // where it is
+    gn_transform orig{};   // where the level had it (rotation included)
     std::vector<std::pair<uintptr_t, const reflect::Type*>> entities; // its server and client entity
 };
 std::mutex g_selM;
@@ -431,10 +450,19 @@ void pick() {
         s.kind = kindOf(type->name);
         // The key is where the level put it: an existing edit's position if this one was moved.
         memcpy(s.at, s.now.trans, sizeof(s.at));
+        s.orig = s.now;
         {
             std::lock_guard<std::mutex> lock(g_m);
             for (const Edit& ed : g_edits)
-                if (ed.kind == s.kind && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) memcpy(s.at, ed.at, sizeof(s.at));
+                if (ed.kind == s.kind && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) {
+                    memcpy(s.at, ed.at, sizeof(s.at));
+                    if (ed.haveFrom) {
+                        s.orig = ed.from;
+                    } else { // older file: the level's position, the current rotation
+                        s.orig = s.now;
+                        memcpy(s.orig.trans, ed.at, sizeof(ed.at));
+                    }
+                }
         }
         collectPair(s, s.now.trans);
         char b[160];
@@ -469,6 +497,8 @@ void moveSelection(const gn_transform& to) {
     ed.kind = s.kind;
     memcpy(ed.at, s.at, sizeof(ed.at));
     ed.to = to;
+    ed.from = s.orig;
+    ed.haveFrom = true;
     g_edits.push_back(ed);
     g_dirty = true;
 }
@@ -480,10 +510,10 @@ void resetSelection() {
         if (!g_haveSel) return;
         s = g_sel;
     }
-    gn_transform back = s.now;
-    memcpy(back.trans, s.at, sizeof(s.at));
-    // The level's own rotation is not stored: only position edits can be fully undone here.
+    const gn_transform back = s.orig;
     for (const auto& [p, t] : s.entities) queueMove(p, t, back);
+    GN_LOG("layouts: %s put back at (%.2f, %.2f, %.2f) (%llu entities)", s.kind.c_str(), back.trans[0], back.trans[1], back.trans[2],
+           static_cast<unsigned long long>(s.entities.size()));
     {
         std::lock_guard<std::mutex> lock(g_selM);
         g_sel.now = back;

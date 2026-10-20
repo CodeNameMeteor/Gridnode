@@ -415,6 +415,9 @@ Findings while doing steps 2 and 5:
   +0x178, Havok's setBodyTransform), keeping its offset from the entity. Bodies are found from
   the component's body ids. Props merged into a level's `GroupRigidBody` cannot be moved one by one
   this way.
+- Confirmed in game 2026-10-20: a moved prop's collision follows (server 1 body, client 2), and
+  picking selects the exact prop hit. A ray into a group reports the instance in the hit's part
+  (shape key): different props in one group give different parts.
 - Most level props are copies inside StaticModelGroups, whose collision is one Havok
   `hknpStaticCompoundShape` (the `GroupRigidBody`), one instance per copy. Notes on that and other
   object facts from the Frosty–Unity Pipeline are in `docs/research/frosty-unity-pipeline.md`.
