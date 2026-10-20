@@ -1325,7 +1325,10 @@ uintptr_t firstViewManager() {
     return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
 }
 
+std::atomic<unsigned> g_camCalls{0}; // diagnostics: how often the game ran the camera's update
+
 void camFrameUpdate(void* self, void* info) {
+    g_camCalls.fetch_add(1, std::memory_order_relaxed);
     if (g_camOrigFrame) g_camOrigFrame(self, info);
     alignas(16) gn_transform t{};
     {
@@ -1481,7 +1484,21 @@ void freeCamFrame(bool menuOpen) {
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); }); // a level change or cutscene changes the active camera
+    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
+    if (ImGui::GetFrameCount() % 120 == 0) { // diagnostics while the free camera is being made to work
+        namespace m = e::st::ClientCameraViewManager::off;
+        const uintptr_t mgr = firstViewManager();
+        const uintptr_t cam = mgr ? mem::readOr<uintptr_t>(mgr + m::activeCamera) : 0;
+        float a[3] = {}, b[3] = {}, c3[3] = {};
+        if (mgr) mem::read(mgr + m::transform + 0x30, a, sizeof(a)), mem::read(mgr + 0x120 + 0x30, b, sizeof(b));
+        if (cam) mem::read(cam + e::st::CameraObject::off::transform + 0x30, c3, sizeof(c3));
+        GN_LOG("layouts: free camera check: updates %u, camera %llx (ours %llx, vtable %s), flag %u; want (%.1f %.1f %.1f) "
+               "camera (%.1f %.1f %.1f) view (%.1f %.1f %.1f) view2 (%.1f %.1f %.1f)",
+               g_camCalls.exchange(0), static_cast<unsigned long long>(cam), static_cast<unsigned long long>(g_camObject),
+               cam && mem::readOr<uintptr_t>(cam) == reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]) ? "copy" : "original",
+               mgr ? mem::readOr<uint8_t>(mgr + m::updating) : 0u, g_cam.pos[0], g_cam.pos[1], g_cam.pos[2], c3[0], c3[1], c3[2],
+               a[0], a[1], a[2], b[0], b[1], b[2]);
+    } // a level change or cutscene changes the active camera
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
