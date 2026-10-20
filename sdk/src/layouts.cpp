@@ -2894,22 +2894,77 @@ void localFromWorld(const gn_transform& t, const float* wmn, const float* wmx, f
 // static model with that data) uses its prop's box. Render thread.
 std::unordered_map<uintptr_t, std::array<float, 6>> g_dataBox;
 
+// A mesh's local box, as the renderer culls with it: a RigidMeshEntity (render object) keeps its
+// transform at +0x10, its world bounding sphere at +0x50 and its mesh's local box at
+// *(**(object + 0x60) + 0x20) (min xyz_, max xyz_), as its set-transform (0x14376c060) reads it.
+bool meshBox(uintptr_t ro, float* mn, float* mx) {
+    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
+    const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
+    const uintptr_t p = x ? mem::readOr<uintptr_t>(x + 0x20) : 0;
+    float b[8];
+    if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
+    for (int k = 0; k < 3; ++k)
+        if (b[4 + k] < b[k] || b[4 + k] - b[k] > 5000.f) return false;
+    memcpy(mn, b, sizeof(float) * 3);
+    memcpy(mx, b + 4, sizeof(float) * 3);
+    return true;
+}
+
+bool isMeshEntity(uintptr_t p) {
+    if (p < 0x10000 || (p & 7)) return false;
+    const uintptr_t vt = mem::readOr<uintptr_t>(p);
+    if (vt == mem::rva(0x141bf72c8)) return true; // RigidMeshEntity
+    const reflect::Type* t = mem::inImage(vt) ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
+    return t && t->name.size() > 10 && t->name.compare(t->name.size() - 10, 10, "MeshEntity") == 0;
+}
+
+// A mesh entity reachable from [base, base + size): directly, or up to `depth` pointers down
+// (arrays of render objects included: their entries are pointers too).
+uintptr_t findMesh(uintptr_t base, uint32_t size, int depth) {
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (isMeshEntity(p)) return p;
+    }
+    if (depth <= 0) return 0;
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (p < 0x10000 || (p & 7) || mem::inImage(p)) continue;
+        if (const uintptr_t q = findMesh(p, 0x180, depth - 1)) return q;
+    }
+    return 0;
+}
+
+// The render object of a standalone model's client entity.
+uintptr_t meshEntityOf(uintptr_t ent) { return ent ? findMesh(ent + 0x18, 0x2e8, 1) : 0; }
+
 bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
-    if (s.group) {
-        int index = -1;
-        float wmn[3], wmx[3];
-        const uintptr_t inst = groupInstance(s.gp.serverBody, s.gp.part, &index);
-        if (inst && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
-            localFromWorld(s.orig, wmn, wmx, mn, mx);
+    // The visible mesh's box first: a group member's mesh entity (from its render block; every copy
+    // shares the mesh), or a standalone model's.
+    if (s.group && s.gp.block && meshBox(findMesh(s.gp.block, 0x130, 2), mn, mx)) {
+        if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
+        return *from = "the mesh", true;
+    }
+    for (const auto& [ent, ty] : s.entities) {
+        if (isServerClass(ty->name)) continue;
+        if (meshBox(meshEntityOf(ent), mn, mx)) {
             if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
-            return *from = "the group's collision tree", true;
+            return *from = "the mesh", true;
         }
     }
     const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
     if (it != g_dataBox.end()) {
         memcpy(mn, it->second.data(), sizeof(float) * 3);
         memcpy(mx, it->second.data() + 3, sizeof(float) * 3);
-        return *from = "its group prop's box", true;
+        return *from = "its source's mesh", true;
+    }
+    // Last: the collision box (the group's tree), which can differ from what is drawn.
+    if (s.group) {
+        int index = -1;
+        float wmn[3], wmx[3];
+        if (groupInstance(s.gp.serverBody, s.gp.part, &index) && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
+            localFromWorld(s.orig, wmn, wmx, mn, mx);
+            return *from = "the collision (the mesh's box was not found)", true;
+        }
     }
     return false;
 }
@@ -2998,6 +3053,13 @@ void drawOutline() {
     line3d(dl, v, o, a, IM_COL32(80, 220, 80, 230), 2.f);
     world(0, 0, len, a);
     line3d(dl, v, o, a, IM_COL32(80, 140, 255, 230), 2.f);
+    // Letters at the tips, so a direction can be named: X right (red), Y up (green), Z forward (blue).
+    static const char* names[3] = {"X", "Y", "Z"};
+    static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
+    for (int k = 0; k < 3; ++k) {
+        world(k == 0 ? len * 1.1f : 0, k == 1 ? len * 1.1f : 0, k == 2 ? len * 1.1f : 0, a);
+        if (depthOf(v, a) > kNear) dl->AddText(project(v, a), cols[k], names[k]);
+    }
 }
 
 void frame(bool menuOpen) {
