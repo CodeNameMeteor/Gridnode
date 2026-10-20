@@ -91,6 +91,7 @@ void onLevel(const std::string& level); // GridNode's thread, when a level start
 void serverTick();
 void clientTick();
 void draw(bool* open); // render thread
+void frame(bool menuOpen); // render thread, every frame: the free camera
 } // namespace layouts
 
 // Settings and console (settings.cpp).
@@ -148,6 +149,8 @@ void allocators(void** alloc, void** free, void** user);
 int check(const char* mod, const char* version, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx);
 bool menuOpen();
 void toggleMenu();
+void setLookCapture(bool on);            // raw mouse movement goes to takeLook, not the cursor
+void takeLook(float& dx, float& dy);     // movement since the last call (raw counts)
 std::string keyName(int vk);
 int keyFromName(const std::string& name);
 } // namespace ui

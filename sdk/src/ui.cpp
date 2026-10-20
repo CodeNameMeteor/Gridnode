@@ -105,6 +105,9 @@ std::atomic<bool> g_rawMouse{false};
 std::atomic<float> g_mouseScale{1.f}; // Windows' pointer speed factor (raw input does not include it)
 std::atomic<uint32_t> g_btnDown{0}, g_btnUp{0};
 std::atomic<int> g_wheel{0};
+// Free-camera look (layouts): while on, raw mouse movement turns the camera, not the cursor.
+std::atomic<bool> g_lookCapture{false};
+std::atomic<float> g_lookX{0}, g_lookY{0};
 
 void refreshMouseScale() {
     int speed = 10;
@@ -148,7 +151,10 @@ void handleRawMouse(LPARAM l) {
     if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) return;
     if (ri.header.dwType != RIM_TYPEMOUSE) return;
     const RAWMOUSE& m = ri.data.mouse;
-    if (!(m.usFlags & MOUSE_MOVE_ABSOLUTE) && (m.lLastX || m.lLastY)) {
+    if (!(m.usFlags & MOUSE_MOVE_ABSOLUTE) && (m.lLastX || m.lLastY) && g_lookCapture.load()) {
+        g_lookX = g_lookX + static_cast<float>(m.lLastX);
+        g_lookY = g_lookY + static_cast<float>(m.lLastY);
+    } else if (!(m.usFlags & MOUSE_MOVE_ABSOLUTE) && (m.lLastX || m.lLastY)) {
         g_cursorX = g_cursorX + static_cast<float>(m.lLastX) * g_mouseScale.load();
         g_cursorY = g_cursorY + static_cast<float>(m.lLastY) * g_mouseScale.load();
         clampCursor();
@@ -430,6 +436,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         if (g_open && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
         const bool open = g_open.load();
+        layouts::frame(open); // the free camera
         ImGui::GetIO().MouseDrawCursor = open;
         {
             static DWORD scaleAt = 0;
@@ -514,6 +521,13 @@ void toggleMenu() {
 }
 
 bool menuOpen() { return g_open.load(); }
+void setLookCapture(bool on) {
+    if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;
+}
+void takeLook(float& dx, float& dy) {
+    dx = g_lookX.exchange(0.f);
+    dy = g_lookY.exchange(0.f);
+}
 void* context() { return g_imgui.load(); }
 
 void allocators(void** alloc, void** free, void** user) {

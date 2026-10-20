@@ -9,22 +9,26 @@ globals:
 
 structs:
   - name: ClientCameraViewManagers
-    size: 0x18
+    size: 0x58
     opaque: true
     members:
+      - { offset: 0x20, name: aspect, type: f32, note: "Width / height of the view (1.778 at 16:9).", sources: [mecmp] }
       - { offset: 0x08, name: managersBegin, type: "ClientCameraViewManager**", note: "vector, one per local player." }
       - { offset: 0x10, name: managersEnd, type: "ClientCameraViewManager**" }
   - name: ClientCameraViewManager
-    size: 0x210
+    size: 0x1ba0
     opaque: true
     members:
       - { offset: 0x80, name: fovYDegrees, type: f32, note: "Final vertical FOV, including the player's FOV setting." }
-      - { offset: 0x90, name: transform, type: LinearTransform, note: "right, up, forward, position." }
+      - { offset: 0x90, name: transform, type: LinearTransform, note: "right, up, forward, position. Looks along MINUS forward (MECMP). Copies at +0xd0, +0x120, +0x160, +0x1140." }
       - { offset: 0x208, name: activeCamera, type: "CameraObject*" }
+      - { offset: 0x1b8e, name: updating, type: u8, note: "postSimUpdate does nothing while 0.", confidence: inferred, sources: [research] }
+      - { offset: 0x1b90, name: postUpdateListeners, type: "void*", note: "Singly linked list of {vtable, next}; after the active camera's update (vtable +0x60) each node's vtable[0](node, updateInfo) is called (ClientCameraViewManager_postSimUpdate).", confidence: inferred, sources: [research] }
   - name: CameraObject
     size: 0xb0
     opaque: true
     members:
+      - { offset: 0x10, name: transform, type: LinearTransform, sources: [mecmp] }
       - { offset: 0xac, name: baseFovYDegrees, type: f32, note: "The camera's own vertical FOV before the player's setting (55)." }
 
 code:

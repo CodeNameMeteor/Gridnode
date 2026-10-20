@@ -408,7 +408,13 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).
 7. **Editing on the go** (asked for 2026-10-20): a free camera (detached from Faith, WASD + mouse,
    Faith frozen in place) and mouse selection (a ray from the cursor through the view, outlined
-   selection), with a move / rotate gizmo (ImGuizmo) instead of number fields.
+   selection), with a move / rotate gizmo (ImGuizmo) instead of number fields. First version
+   2026-10-20: the free camera works while the menu is open (the game gets no input then): right
+   mouse to look (raw mouse diverted from the overlay cursor), WASD/QE; it is applied by a node
+   GridNode links into the view manager's post-update listener list (+0x1b90), writing the view
+   transform (+0x90) and the active camera's (+0x10). Left click on the world picks along the
+   cursor ray (FOV +0x80, aspect from the display). The engine's own FreeCamera (GameView +0xc8,
+   activated through a camera context) is an alternative not used.
 
 Findings while doing steps 2 and 5:
 

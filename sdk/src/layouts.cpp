@@ -13,6 +13,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -1013,7 +1014,11 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
 }
 
 // Server thread: a ray from the camera along its view; the object whose collision it hits.
-void pick() {
+// `ray` (from, direction; 6 floats) or, if null, the camera's view.
+void pick(const float* ray = nullptr) {
+    std::array<float, 6> given{};
+    const bool haveRay = ray != nullptr;
+    if (ray) memcpy(given.data(), ray, sizeof(float) * 6);
     {
         // A new pick replaces the selection, even when it finds nothing to select: otherwise the
         // editor keeps showing (and moving) the previous object under a "not supported" message.
@@ -1021,12 +1026,15 @@ void pick() {
         g_haveSel = false;
         g_status = "Picking...";
     }
-    server().post([] {
+    server().post([haveRay, given] {
         gn_transform cam{};
         gn_movement mv{};
         const bool haveMove = movementGet(&mv) == GN_OK;
         float from[3], dir[3];
-        if (cameraTransform(cam)) {
+        if (haveRay) {
+            memcpy(from, given.data(), sizeof(from));
+            memcpy(dir, given.data() + 3, sizeof(dir));
+        } else if (cameraTransform(cam)) {
             memcpy(from, cam.trans, sizeof(from));
             memcpy(dir, cam.forward, sizeof(dir));
             // Use the character camera's sense of "forward" if the view's row points the other way.
@@ -1277,6 +1285,247 @@ void clientTick() {
     }
 }
 
+// ---- free camera (render thread drives it; a camera post-update listener applies it) ---------------
+// While the menu is open the game gets no input, so Faith stands still. The free camera writes its
+// transform into the view after the game's camera update each frame: GridNode links a node into
+// the view manager's post-update listener list (a {vtable, next} list the game walks), no code is
+// patched. Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
+struct CamNode {
+    void* const* vtbl;
+    CamNode* next;
+};
+void onCameraUpdated(CamNode* node, void* info);
+void camNoop(CamNode*, void*, void*) {} // other slots, should the game call one (e.g. a destructor)
+void* const g_camVtbl[8] = {reinterpret_cast<void*>(&onCameraUpdated), reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
+                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
+                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop)};
+CamNode g_camNode{g_camVtbl, nullptr};
+uintptr_t g_camLinkedTo = 0;         // the view manager the node is in (client thread)
+
+std::mutex g_camM;
+bool g_camApply = false;             // (g_camM)
+gn_transform g_camT{};               // (g_camM) what the listener writes
+
+struct FreeCam {
+    bool enabled = false;
+    bool active = false;
+    float pos[3] = {};
+    float yaw = 0.f, pitch = 0.f;
+    float speed = 8.f;               // metres per second
+    float fwdSign = -1.f;            // the view's forward row is fwdSign * look direction
+    float handed = 1.f;              // right = handed * normalize(cross(Y, look))
+    bool looking = false;
+};
+FreeCam g_cam;                       // render thread
+int g_editorFrame = -10;             // last frame the Layout editor was drawn (render thread)
+
+uintptr_t firstViewManager() {
+    namespace cv = e::st::ClientCameraViewManagers::off;
+    const uintptr_t managers = mem::readOr<uintptr_t>(mem::rva(e::global::ClientCameraViewManagers));
+    const uintptr_t begin = managers ? mem::readOr<uintptr_t>(managers + cv::managersBegin) : 0;
+    const uintptr_t end = managers ? mem::readOr<uintptr_t>(managers + cv::managersEnd) : 0;
+    return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
+}
+
+void onCameraUpdated(CamNode*, void*) {
+    alignas(16) gn_transform t{};
+    {
+        std::lock_guard<std::mutex> lock(g_camM);
+        if (!g_camApply) return;
+        t = g_camT;
+    }
+    namespace m = e::st::ClientCameraViewManager::off;
+    const uintptr_t mgr = firstViewManager();
+    if (!mgr) return;
+    mem::write(mgr + m::transform, &t, sizeof(t));
+    const uintptr_t camera = mem::readOr<uintptr_t>(mgr + m::activeCamera);
+    if (camera) mem::write(camera + e::st::CameraObject::off::transform, &t, sizeof(t));
+}
+
+// Client thread: link / unlink the node at the end of the listener list.
+void linkCameraNode() {
+    namespace m = e::st::ClientCameraViewManager::off;
+    const uintptr_t mgr = firstViewManager();
+    if (!mgr) return;
+    const uintptr_t headAt = mgr + m::postUpdateListeners;
+    for (uintptr_t q = mem::readOr<uintptr_t>(headAt), guard = 0; q && guard < 1000; q = mem::readOr<uintptr_t>(q + 8), ++guard)
+        if (q == reinterpret_cast<uintptr_t>(&g_camNode)) return; // already in this manager's list
+    g_camNode.next = nullptr;
+    uintptr_t p = mem::readOr<uintptr_t>(headAt);
+    if (!p) {
+        mem::write<uintptr_t>(headAt, reinterpret_cast<uintptr_t>(&g_camNode));
+    } else {
+        for (int guard = 0; guard < 1000; ++guard) {
+            const uintptr_t next = mem::readOr<uintptr_t>(p + 8);
+            if (!next) break;
+            p = next;
+        }
+        mem::write<uintptr_t>(p + 8, reinterpret_cast<uintptr_t>(&g_camNode));
+    }
+    g_camLinkedTo = mgr;
+}
+
+void unlinkCameraNode() {
+    namespace m = e::st::ClientCameraViewManager::off;
+    const uintptr_t mgr = g_camLinkedTo;
+    g_camLinkedTo = 0;
+    if (!mgr || mgr != firstViewManager()) return; // that manager is gone with its list
+    const uintptr_t self = reinterpret_cast<uintptr_t>(&g_camNode);
+    uintptr_t at = mgr + m::postUpdateListeners; // the address holding the pointer to the current node
+    for (int guard = 0; guard < 1000; ++guard) {
+        const uintptr_t p = mem::readOr<uintptr_t>(at);
+        if (!p) return;
+        if (p == self) {
+            mem::write<uintptr_t>(at, reinterpret_cast<uintptr_t>(g_camNode.next));
+            return;
+        }
+        at = p + 8;
+    }
+}
+
+void lookDir(float yaw, float pitch, float* d) {
+    d[0] = std::cos(pitch) * std::sin(yaw);
+    d[1] = std::sin(pitch);
+    d[2] = std::cos(pitch) * std::cos(yaw);
+}
+
+void cross(const float* a, const float* b, float* o) {
+    o[0] = a[1] * b[2] - a[2] * b[1];
+    o[1] = a[2] * b[0] - a[0] * b[2];
+    o[2] = a[0] * b[1] - a[1] * b[0];
+}
+
+float dot3(const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+
+// The free camera's basis: look direction, screen right and screen up.
+void camBasis(const FreeCam& c, float* d, float* r, float* u) {
+    lookDir(c.yaw, c.pitch, d);
+    const float Y[3] = {0.f, 1.f, 0.f};
+    cross(Y, d, r);
+    normalize(r);
+    for (int k = 0; k < 3; ++k) r[k] *= c.handed;
+    cross(d, r, u);
+    normalize(u);
+    if (u[1] < 0.f)
+        for (int k = 0; k < 3; ++k) u[k] = -u[k];
+}
+
+// Starts from the game's current view.
+bool startFreeCam() {
+    gn_transform v{};
+    if (!cameraTransform(v)) return false;
+    // MECMP: the view looks along minus forward; check against the character camera when it is there.
+    float d[3] = {-v.forward[0], -v.forward[1], -v.forward[2]};
+    g_cam.fwdSign = -1.f;
+    gn_movement mv{};
+    if (movementGet(&mv) == GN_OK && dot3(d, mv.camera_forward) < 0.f) {
+        for (float& x : d) x = -x;
+        g_cam.fwdSign = 1.f;
+    }
+    normalize(d);
+    g_cam.yaw = std::atan2(d[0], d[2]);
+    g_cam.pitch = std::asin(std::clamp(d[1], -1.f, 1.f));
+    memcpy(g_cam.pos, v.trans, sizeof(g_cam.pos));
+    const float Y[3] = {0.f, 1.f, 0.f};
+    float r[3];
+    cross(Y, d, r);
+    g_cam.handed = dot3(r, v.right) >= 0.f ? 1.f : -1.f;
+    return true;
+}
+
+// Render thread, every frame.
+void freeCamFrame(bool menuOpen) {
+    const bool want = g_cam.enabled && menuOpen && localClientCharacter() != nullptr;
+    if (want && !g_cam.active) {
+        if (!startFreeCam()) return;
+        g_cam.active = true;
+        client().post([] { linkCameraNode(); });
+        GN_LOG("layouts: free camera on at (%.1f, %.1f, %.1f)", g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]);
+    } else if (!want && g_cam.active) {
+        g_cam.active = false;
+        g_cam.looking = false;
+        ui::setLookCapture(false);
+        {
+            std::lock_guard<std::mutex> lock(g_camM);
+            g_camApply = false;
+        }
+        client().post([] { unlinkCameraNode(); });
+        GN_LOG("layouts: free camera off");
+    }
+    if (!g_cam.active) return;
+    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { linkCameraNode(); }); // a level change makes a new view manager
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    ui::setLookCapture(g_cam.looking);
+    float dx = 0.f, dy = 0.f;
+    ui::takeLook(dx, dy);
+    float d[3], r[3], u[3];
+    camBasis(g_cam, d, r, u);
+    // Turning toward screen right: the sign that makes d(look)/d(yaw) point along `right`.
+    const float dYaw[3] = {std::cos(g_cam.pitch) * std::cos(g_cam.yaw), 0.f, -std::cos(g_cam.pitch) * std::sin(g_cam.yaw)};
+    const float yawSign = dot3(dYaw, r) >= 0.f ? 1.f : -1.f;
+    constexpr float kSens = 0.0025f, kPitchMax = 1.5f;
+    g_cam.yaw += yawSign * dx * kSens;
+    g_cam.pitch = std::clamp(g_cam.pitch - dy * kSens, -kPitchMax, kPitchMax);
+    camBasis(g_cam, d, r, u);
+    if (!io.WantTextInput) {
+        float v[3] = {};
+        auto add = [&](const float* a, float s) {
+            for (int k = 0; k < 3; ++k) v[k] += a[k] * s;
+        };
+        const float Y[3] = {0.f, 1.f, 0.f};
+        if (ImGui::IsKeyDown(ImGuiKey_W)) add(d, 1.f);
+        if (ImGui::IsKeyDown(ImGuiKey_S)) add(d, -1.f);
+        if (ImGui::IsKeyDown(ImGuiKey_D)) add(r, 1.f);
+        if (ImGui::IsKeyDown(ImGuiKey_A)) add(r, -1.f);
+        if (ImGui::IsKeyDown(ImGuiKey_E)) add(Y, 1.f);
+        if (ImGui::IsKeyDown(ImGuiKey_Q)) add(Y, -1.f);
+        float s = g_cam.speed * std::min(io.DeltaTime, 0.1f);
+        if (io.KeyShift) s *= 4.f;
+        if (io.KeyCtrl) s *= 0.25f;
+        for (int k = 0; k < 3; ++k) g_cam.pos[k] += v[k] * s;
+        if (io.MouseWheel != 0.f && g_cam.looking) g_cam.speed = std::clamp(g_cam.speed * (io.MouseWheel > 0 ? 1.25f : 0.8f), 0.5f, 200.f);
+    }
+    alignas(16) gn_transform t{};
+    for (int k = 0; k < 3; ++k) {
+        t.right[k] = r[k];
+        t.up[k] = u[k];
+        t.forward[k] = g_cam.fwdSign * d[k];
+        t.trans[k] = g_cam.pos[k];
+    }
+    t.trans[3] = 1.f;
+    std::lock_guard<std::mutex> lock(g_camM);
+    g_camT = t;
+    g_camApply = true;
+}
+
+// The ray through the cursor, from the current view (free camera or the game's).
+bool cursorRay(float* ray) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
+    float from[3], d[3], r[3], u[3];
+    if (g_cam.active) {
+        camBasis(g_cam, d, r, u);
+        memcpy(from, g_cam.pos, sizeof(from));
+    } else {
+        gn_transform v{};
+        if (!cameraTransform(v)) return false;
+        for (int k = 0; k < 3; ++k) d[k] = -v.forward[k], r[k] = v.right[k], u[k] = v.up[k], from[k] = v.trans[k];
+        normalize(d), normalize(r), normalize(u);
+    }
+    const uintptr_t mgr = firstViewManager();
+    const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
+    const float fov = (fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f) * 3.14159265f / 180.f;
+    const float aspect = io.DisplaySize.x / io.DisplaySize.y;
+    const float nx = 2.f * io.MousePos.x / io.DisplaySize.x - 1.f, ny = 1.f - 2.f * io.MousePos.y / io.DisplaySize.y;
+    const float th = std::tan(fov * 0.5f);
+    for (int k = 0; k < 3; ++k) ray[3 + k] = d[k] + r[k] * nx * th * aspect + u[k] * ny * th;
+    normalize(ray + 3);
+    memcpy(ray, from, sizeof(from));
+    return true;
+}
+
 void draw(bool* open) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 26, 0), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Layout editor", open)) {
@@ -1294,6 +1543,16 @@ void draw(bool* open) {
         loaded = g_name;
     }
     ImGui::TextDisabled("%s", level.empty() ? "no level" : level.c_str());
+    g_editorFrame = ImGui::GetFrameCount();
+    ImGui::SeparatorText("Camera");
+    ImGui::Checkbox("Free camera", &g_cam.enabled);
+    if (g_cam.enabled) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        ImGui::SliderFloat("speed", &g_cam.speed, 0.5f, 200.f, "%.1f m/s", ImGuiSliderFlags_Logarithmic);
+        ImGui::TextDisabled("Hold right mouse to look; WASD move, Q/E down/up, Shift faster, Ctrl slower; wheel while looking: speed.");
+    }
+    ImGui::TextDisabled("Left-click an object in the world to pick it.");
     ImGui::SeparatorText("Layouts");
     if (loaded.empty()) ImGui::Text("%s", count ? "Unsaved edits" : "The level as the game has it");
     else ImGui::Text("Layout \"%s\"", loaded.c_str());
@@ -1392,6 +1651,16 @@ void draw(bool* open) {
         ImGui::TextDisabled("Point the camera at an object and press Pick.");
     }
     ImGui::End();
+}
+
+void frame(bool menuOpen) {
+    freeCamFrame(menuOpen);
+    // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+        float ray[6];
+        if (cursorRay(ray)) pick(ray);
+    }
 }
 
 } // namespace gn::host::layouts
