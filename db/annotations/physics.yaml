@@ -58,6 +58,16 @@ structs:
       - { offset: 0x40, name: valid, type: u8 }
 
 functions:
+  # From MECMP's player collision (docs/PLAYER_OPTIONS.md, 2026-10-16); not checked here yet.
+  - { name: PhysicsEntityFactory_create, va: 0x1435169e0, note: "Body factory; MECMP makes native Havok boxes (shape type 1, half-extents at +0x20, body kind 2 at +0x14) through it.", confidence: hypothesis, sources: [mecmp] }
+  - { name: PhysicsCreationInfo_ctor, va: 0x142d4d1a0, note: "Owner entity bus at +0x28.", confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_setTransformNative, va: 0x1434f8930, note: "Body transform (MECMP).", confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_transformSource, va: 0x1434f6d90, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_disable, va: 0x1434f65f0, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_destroyDeferred, va: 0x1434f5550, confidence: hypothesis, sources: [mecmp] }
   - name: RaycastQuery_execute
     va: 0x143a24890
     signature: "void(const RaycastQuery* query, void* world, void* physics, RaycastResult* result)"

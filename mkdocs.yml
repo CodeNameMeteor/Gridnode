@@ -50,4 +50,5 @@ nav:
   - Plans:
       - assets-assessment.md
       - research/frosty-unity-pipeline.md
+      - research/mecmp-camera-and-collision.md
   # @generated-nav

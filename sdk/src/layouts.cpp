@@ -1369,6 +1369,48 @@ void hookCamera() {
     g_camObject = cam;
 }
 
+
+// While the free camera is on, Faith shows the third-person body (with her head) instead of the
+// first-person one: the same per-object vtable copy, on the character's view-mode interface, whose
+// getViewMode answers 1 (MECMP found the slot and the meaning). Its other entries are the originals.
+constexpr size_t kBodySlots = 96;
+uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
+uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
+
+int bodyViewMode(void*) { return 1; }
+
+void unhookBody() {
+    if (g_bodyIface && mem::readOr<uintptr_t>(g_bodyIface) == reinterpret_cast<uintptr_t>(&g_bodyFakeVtbl[1]))
+        mem::write<uintptr_t>(g_bodyIface, g_bodyOrigVtbl);
+    g_bodyIface = 0;
+}
+
+void hookBody() {
+    namespace c = e::constant;
+    const auto character = reinterpret_cast<uintptr_t>(localClientCharacter());
+    const uintptr_t iface = character ? character + c::ClientCharacter_ViewModeInterface : 0;
+    const uintptr_t fake = reinterpret_cast<uintptr_t>(&g_bodyFakeVtbl[1]);
+    if (!iface) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(iface);
+    if (vt == fake) return;
+    if (iface != g_bodyIface) unhookBody();
+    const uintptr_t slotAt = mem::rva(c::ViewModeSlot);
+    if (!mem::inImage(vt) || slotAt < vt || slotAt >= vt + 8 * kBodySlots) { // not the interface we know
+        static bool said = false;
+        if (!said) GN_LOG("layouts: free camera: Faith's view-mode interface has vtable %llx, not the known one; keeping her first-person body",
+                          static_cast<unsigned long long>(vt));
+        said = true;
+        return;
+    }
+    const size_t slot = (slotAt - vt) / 8;
+    for (size_t k = 0; k <= kBodySlots; ++k) g_bodyFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
+    g_bodyFakeVtbl[1 + slot] = reinterpret_cast<uintptr_t>(&bodyViewMode);
+    g_bodyOrigVtbl = vt;
+    mem::write<uintptr_t>(iface, fake);
+    g_bodyIface = iface;
+    GN_LOG("layouts: free camera: Faith shows her third-person body (view-mode slot %u)", static_cast<unsigned>(slot));
+}
+
 void lookDir(float yaw, float pitch, float* d) {
     d[0] = std::cos(pitch) * std::sin(yaw);
     d[1] = std::sin(pitch);
@@ -1425,7 +1467,7 @@ void freeCamFrame(bool menuOpen) {
     if (want && !g_cam.active) {
         if (!startFreeCam()) return;
         g_cam.active = true;
-        client().post([] { hookCamera(); });
+        client().post([] { hookCamera(); hookBody(); });
         GN_LOG("layouts: free camera on at (%.1f, %.1f, %.1f)", g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]);
     } else if (!want && g_cam.active) {
         g_cam.active = false;
@@ -1435,11 +1477,11 @@ void freeCamFrame(bool menuOpen) {
             std::lock_guard<std::mutex> lock(g_camM);
             g_camApply = false;
         }
-        client().post([] { unhookCamera(); });
+        client().post([] { unhookCamera(); unhookBody(); });
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); }); // a level change or cutscene changes the active camera
+    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); }); // a level change or cutscene changes the active camera
     ImGuiIO& io = ImGui::GetIO();
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;

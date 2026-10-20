@@ -114,5 +114,8 @@ functions:
     sources: [ghidra]
 
 constants:
+  - { name: ClientCharacter_ViewModeInterface, value: 0x1d8, note: "Embedded interface whose getViewMode (slot 0x141c3cc68 -> 0x14390ed90, int(iface)) picks the body mesh: 1 = third-person body with head (MECMP)." }
+  - { name: ViewModeSlot, value: 0x141c3cc68 }
+  - { name: ClientCharacter_GetViewMode, value: 0x14390ed90 }
   - { name: PlayerBlueprint, value: "Characters/FaithCharacter" }
   - { name: GhostBlueprint, value: "Characters/Projection/ProjectionCharacter" }

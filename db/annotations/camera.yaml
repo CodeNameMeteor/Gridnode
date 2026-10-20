@@ -38,6 +38,7 @@ code:
     note: "mov rcx,[ClientCameraViewManagers] in clientWorldFrameTick."
 
 functions:
+  - { name: FPSCamera_computeTransforms, va: 0x14327fb80, signature: "void(void* camera, void* info, LinearTransform* out)", note: "FPSCamera vtable +0x70 (slot 0x141b18ec8). Writes two transforms (camera, camera mesh) that FPSCamera's update (+0x68) stores at camera +0x10/+0x50. MECMP's third person moves both.", confidence: inferred, sources: [mecmp, ghidra] }
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: CameraSettingsBlend_setTarget
     va: 0x1431f5b80
