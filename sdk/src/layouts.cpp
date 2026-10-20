@@ -307,7 +307,7 @@ void moveBodies(uintptr_t entity, const reflect::Type* t, const gn_transform& be
         ++moved;
     });
     static std::atomic<int> said{0};
-    if (moved != total || said.fetch_add(1) < 40)
+    if (moved != total || said.fetch_add(1) < 2)
         GN_LOG("layouts: %s %llx: moved %d of %d collision bodies", t->name.c_str(), static_cast<unsigned long long>(entity), moved, total);
 }
 
@@ -2935,7 +2935,48 @@ uintptr_t findMesh(uintptr_t base, uint32_t size, int depth) {
 }
 
 // The render object of a standalone model's client entity.
-uintptr_t meshEntityOf(uintptr_t ent) { return ent ? findMesh(ent + 0x18, 0x2e8, 1) : 0; }
+uintptr_t meshEntityOf(uintptr_t ent) {
+    if (!ent) return 0;
+    if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1)) return m;
+    return findMesh(ent + 0x18, 0x2e8, 2);
+}
+
+// A render object's world transform (+0x10: right, up, forward, translation rows).
+bool meshTransform(uintptr_t ro, gn_transform& t) {
+    float m[16];
+    if (!ro || !mem::read(ro + 0x10, m, sizeof(m)) || !finite(m, 16)) return false;
+    for (int k = 0; k < 3; ++k) t.right[k] = m[k], t.up[k] = m[4 + k], t.forward[k] = m[8 + k], t.trans[k] = m[12 + k];
+    return true;
+}
+
+// The render object that draws this selection: for a group prop, the one of its member's render
+// objects (the block's +0xc8 list, one per copy) nearest to where the prop is; for a standalone
+// model, its client entity's.
+uintptr_t drawnObjectOf(const Selected& s) {
+    uintptr_t best = 0;
+    float bestD = 4.f; // within 2 m
+    auto consider = [&](uintptr_t ro) {
+        gn_transform t{};
+        if (!isMeshEntity(ro) || !meshTransform(ro, t)) return;
+        const float d = dist2(t.trans, s.now.trans);
+        if (d < bestD) bestD = d, best = ro;
+    };
+    if (s.group && s.gp.block) {
+        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
+        if (isMeshEntity(list)) consider(list);
+        else if (list > 0x10000 && !(list & 7))
+            for (uint32_t k = 0; k < 512; ++k) {
+                const uintptr_t ro = mem::readOr<uintptr_t>(list + k * 8);
+                if (!ro) break;
+                consider(ro);
+            }
+        if (!best) consider(findMesh(s.gp.block, 0x130, 2));
+        return best;
+    }
+    for (const auto& [ent, ty] : s.entities)
+        if (!isServerClass(ty->name)) consider(meshEntityOf(ent));
+    return best;
+}
 
 bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
     // The visible mesh's box first: a group member's mesh entity (from its render block; every copy
@@ -3030,7 +3071,33 @@ void drawOutline() {
             GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, box ? mn[0] : 0.f, box ? mn[1] : 0.f,
                    box ? mn[2] : 0.f, box ? mx[0] : 0.f, box ? mx[1] : 0.f, box ? mx[2] : 0.f);
     }
-    const gn_transform& t = s.now;
+    // Drawn in the render object's own transform when it is found (what is on screen), else in the
+    // selection's (the physics transform).
+    static uintptr_t ro = 0;
+    static uintptr_t roKey = 0;
+    static double roAt = -10.0;
+    if (key != roKey || (!ro && ImGui::GetTime() - roAt > 2.0)) {
+        const bool changed = key != roKey;
+        roKey = key, roAt = ImGui::GetTime();
+        ro = drawnObjectOf(s);
+        float rmn[3], rmx[3];
+        if (ro && meshBox(ro, rmn, rmx)) {
+            memcpy(mn, rmn, sizeof(rmn)), memcpy(mx, rmx, sizeof(rmx)), box = true;
+        }
+        if (changed) {
+            gn_transform r{};
+            if (ro && meshTransform(ro, r))
+                GN_LOG("layouts: outline: render object %llx at (%.2f %.2f %.2f) right (%.2f %.2f %.2f) up (%.2f %.2f %.2f) fwd (%.2f %.2f %.2f); "
+                       "physics right (%.2f %.2f %.2f) up (%.2f %.2f %.2f) fwd (%.2f %.2f %.2f)",
+                       (unsigned long long)ro, r.trans[0], r.trans[1], r.trans[2], r.right[0], r.right[1], r.right[2], r.up[0], r.up[1], r.up[2],
+                       r.forward[0], r.forward[1], r.forward[2], s.now.right[0], s.now.right[1], s.now.right[2], s.now.up[0], s.now.up[1],
+                       s.now.up[2], s.now.forward[0], s.now.forward[1], s.now.forward[2]);
+            else
+                GN_LOG("layouts: outline: no render object found; drawn with the physics transform");
+        }
+    }
+    gn_transform rt{};
+    const gn_transform& t = ro && meshTransform(ro, rt) ? rt : s.now;
     auto world = [&](float x, float y, float z, float* o) {
         for (int k = 0; k < 3; ++k) o[k] = t.trans[k] + x * t.right[k] + y * t.up[k] + z * t.forward[k];
     };
@@ -3042,22 +3109,31 @@ void drawOutline() {
         static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
         for (const auto& e : edges) line3d(dl, v, c[e[0]], c[e[1]], col, 2.f);
     }
-    // Its own axes at its position: right red, up green, forward blue (1 m, or the box's size).
-    float len = 1.f;
-    if (box) len = std::max(0.5f, 0.35f * std::max({mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]}));
-    float o[3], a[3];
-    world(0, 0, 0, o);
-    world(len, 0, 0, a);
+    // Its own axes from the middle of its box (its pivot, often a corner, is the small dot): right red,
+    // up green, forward blue.
+    float len = 1.f, c0[3] = {0, 0, 0};
+    if (box) {
+        len = std::max(0.5f, 0.35f * std::max({mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]}));
+        for (int k = 0; k < 3; ++k) c0[k] = 0.5f * (mn[k] + mx[k]);
+    }
+    float o[3], a[3], pv[3];
+    world(0, 0, 0, pv);
+    if (depthOf(v, pv) > kNear) dl->AddCircleFilled(project(v, pv), 3.5f, col);
+    auto axisEnd = [&](int k, float f, float* out) {
+        world(c0[0] + (k == 0 ? len * f : 0), c0[1] + (k == 1 ? len * f : 0), c0[2] + (k == 2 ? len * f : 0), out);
+    };
+    world(c0[0], c0[1], c0[2], o);
+    axisEnd(0, 1.f, a);
     line3d(dl, v, o, a, IM_COL32(240, 70, 70, 230), 2.f);
-    world(0, len, 0, a);
+    axisEnd(1, 1.f, a);
     line3d(dl, v, o, a, IM_COL32(80, 220, 80, 230), 2.f);
-    world(0, 0, len, a);
+    axisEnd(2, 1.f, a);
     line3d(dl, v, o, a, IM_COL32(80, 140, 255, 230), 2.f);
     // Letters at the tips, so a direction can be named: X right (red), Y up (green), Z forward (blue).
     static const char* names[3] = {"X", "Y", "Z"};
     static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
     for (int k = 0; k < 3; ++k) {
-        world(k == 0 ? len * 1.1f : 0, k == 1 ? len * 1.1f : 0, k == 2 ? len * 1.1f : 0, a);
+        axisEnd(k, 1.1f, a);
         if (depthOf(v, a) > kNear) dl->AddText(project(v, a), cols[k], names[k]);
     }
 }
