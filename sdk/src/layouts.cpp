@@ -89,6 +89,30 @@ void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& 
     (isServerClass(type->name) ? g_serverQ : g_clientQ).push_back({entity, type, to});
 }
 
+// Static models only move their collision with them when their data says so
+// (StaticModelEntityData.TeleportPhysicsOnTransformChanges). The data is shared by every object made
+// from the same asset, but the flag only matters when a transform changes, which only edits do.
+void letPhysicsFollow(uintptr_t entity) {
+    static const reflect::Type* dataType = registry().find("StaticModelEntityData");
+    if (!dataType) return;
+    for (uint32_t off = 0x18; off <= 0x40; off += 8) { // the entity's data pointer (+0x30 seen on components)
+        const uintptr_t d = mem::readOr<uintptr_t>(entity + off);
+        const reflect::Type* t = d ? registry().typeOf(mem::ProcessMemory(), d) : nullptr;
+        if (!t || !registry().isKindOf(t, dataType)) continue;
+        reflect::FieldInfo fi;
+        if (!registry().findField(t, "TeleportPhysicsOnTransformChanges", fi) || fi.size != 1) return;
+        const uintptr_t flag = d + fi.field->offset;
+        if (mem::readOr<uint8_t>(flag) == 0) {
+            mem::write<uint8_t>(flag, 1);
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 3)
+                GN_LOG("layouts: %s data %llx: TeleportPhysicsOnTransformChanges set, so its collision moves too", t->name.c_str(),
+                       static_cast<unsigned long long>(d));
+        }
+        return;
+    }
+}
+
 void runQueue(std::deque<Move>& q) {
     std::deque<Move> work;
     {
@@ -98,6 +122,7 @@ void runQueue(std::deque<Move>& q) {
     for (const Move& m : work) {
         // Still the same object (not destroyed and reused since)?
         if (registry().typeOf(mem::ProcessMemory(), m.entity) != m.type) continue;
+        letPhysicsFollow(m.entity);
         entitySetTransform(reinterpret_cast<void*>(m.entity), &m.to);
     }
 }
