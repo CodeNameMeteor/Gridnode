@@ -403,6 +403,19 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
    list of loaded blueprints, delete, undo, save.
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).
+7. **Editing on the go** (asked for 2026-10-20): a free camera (detached from Faith, WASD + mouse,
+   Faith frozen in place) and mouse selection (a ray from the cursor through the view, outlined
+   selection), with a move / rotate gizmo (ImGuizmo) instead of number fields.
+
+Findings while doing steps 2 and 5:
+
+- A static model's collision follows `SpatialEntity_setTransform` only when the entity's flags
+  have TeleportPhysics (`0x8000000`, from the data's `TeleportPhysicsOnTransformChanges` at
+  creation, off for level props) and NotifyTransform (`0x8`). Setting the data field later does
+  nothing; GridNode sets the entity flags on the objects it moves.
+- Picking uses `Physics_castRay` from the view camera, which reports the body hit; the body leads
+  to the physics object and its entity (`PhysicsEntity_Physics`). The first version picked the
+  nearest entity origin to the hit, which chose objects behind walls.
 
 ### M6 notes
 

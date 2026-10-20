@@ -1,4 +1,4 @@
-# Physics: ray casts.
+# Physics: ray casts, and how a physics entity's collision follows its transform.
 defaults: { confidence: confirmed, sources: [mecmp] }
 
 structs:
@@ -23,6 +23,39 @@ structs:
       - { offset: 0x28, name: distance, type: f32 }
       - { offset: 0x2c, name: hit, type: u8 }
       - { offset: 0x30, name: tail, type: u16, note: "Always 0x0101." }
+  - name: PhysicsRayInput
+    size: 0xd0
+    align: 16
+    confidence: inferred
+    sources: [research]
+    note: >-
+      What Physics_castRay reads, as RaycastQuery_execute builds it on its stack. The ignore list is an
+      inline vector of body ids (begin = end = inline, capacity end = from).
+    members:
+      - { offset: 0x00, name: wants, type: u32, note: "Bits: 1 material, 2 part, 4 bone. The body id is filled in always." }
+      - { offset: 0x08, name: filter, type: u32, note: "Collision filter; 9 for a plain ray." }
+      - { offset: 0x10, name: ignoreBegin, type: "u32*" }
+      - { offset: 0x18, name: ignoreEnd, type: "u32*" }
+      - { offset: 0x20, name: ignoreCapacityEnd, type: "u32*" }
+      - { offset: 0x30, name: ignoreInline, type: "u32[12]" }
+      - { offset: 0x60, name: from, type: "f32[4]" }
+      - { offset: 0x70, name: to, type: "f32[4]" }
+      - { offset: 0x80, name: sweep, type: u8, note: "0 for a ray." }
+  - name: PhysicsRayHit
+    size: 0x50
+    align: 16
+    confidence: inferred
+    sources: [research]
+    note: "Initialised by the caller to body -1, material -1, part -1 (RaycastQuery_execute)."
+    members:
+      - { offset: 0x00, name: body, type: u32, note: "Packed from the Havok body's user data; the low 16 bits index the physics owner's object table (Physics_Owner, PhysicsOwner_Objects)." }
+      - { offset: 0x08, name: material, type: u32 }
+      - { offset: 0x0c, name: part, type: u32 }
+      - { offset: 0x10, name: bone, type: u32 }
+      - { offset: 0x18, name: fraction, type: f32 }
+      - { offset: 0x20, name: normal, type: "f32[4]" }
+      - { offset: 0x30, name: position, type: "f32[4]" }
+      - { offset: 0x40, name: valid, type: u8 }
 
 functions:
   - name: RaycastQuery_execute
@@ -45,9 +78,13 @@ functions:
     sources: [ghidra]
   - name: Physics_castRay
     va: 0x1434e27f0
-    note: "Named in Ghidra as Physics_castRay. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
+    signature: "bool(void* physics, const PhysicsRayInput* input, PhysicsRayHit* hit)"
+    note: >-
+      The closest hit of a ray, with the body it hit (RaycastQuery_execute drops the body). Hits are
+      collected by 0x14351a1a0 through a collector whose add (0x143512f10) resolves each hit with
+      0x1435177b0 and skips bodies on the ignore list.
+    confidence: inferred
+    sources: [ghidra, research]
   - name: PhysicsHolder_getPhysics
     va: 0x1434ee940
     note: "Named in Ghidra as PhysicsHolder_getPhysics. Signature not known yet."
@@ -76,3 +113,9 @@ constants:
   - { name: Physics_HavokWorld, value: 0x10 }
   - { name: HavokWorld_FilterOwner, value: 0x150 }
   - { name: FilterOwner_Filter, value: 0x4d0 }
+  - { name: Physics_Owner, value: 0x8, confidence: inferred, sources: [research], note: "The object Physics_castRay's hits are resolved against." }
+  - { name: PhysicsOwner_Objects, value: 0x130, confidence: inferred, sources: [research], note: "Table of physics objects, indexed by the low 16 bits of a hit's body (0x1434ee750)." }
+  - { name: Entity_Flags, value: 0x18, confidence: inferred, sources: [research], note: "u32 flags of an entity." }
+  - { name: EntityFlag_NotifyTransform, value: 0x8, confidence: inferred, sources: [research], note: "SpatialEntity_setTransform calls vtable +0xe0 (transform changed) when set." }
+  - { name: EntityFlag_TeleportPhysics, value: 0x8000000, confidence: inferred, sources: [research], note: "A physics entity's transform-changed (0x1431cbcd0) moves its physics object (vtable +0xf0) only when set: the runtime form of TeleportPhysicsOnTransformChanges." }
+  - { name: PhysicsEntity_Physics, value: 0x60, confidence: inferred, sources: [research], note: "ServerPhysicsEntity / ClientPhysicsEntity: the physics object (collision)." }

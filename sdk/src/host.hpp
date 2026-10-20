@@ -56,6 +56,9 @@ int teleport(void* serverCharacter, const gn_transform* to);
 void* getComponent(void* character, const gn_type* type);
 std::string levelName();
 int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out); // server thread
+// Server thread: a ray's closest hit and the physics object it hit (0 when unknown).
+int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body);
+bool cameraTransform(gn_transform& out); // the local player's camera
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s
 

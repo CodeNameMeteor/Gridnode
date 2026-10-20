@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -368,6 +369,103 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
         out->fraction = r.fraction;
     }
     return GN_OK;
+}
+
+// ---- ray casts that say what they hit (picking) ------------------------------------------------------
+namespace {
+struct alignas(16) PhysRayInput {
+    uint32_t wants = 0;    // no material / part / bone lookups; the body is always filled in
+    uint32_t pad0 = 0;
+    uint32_t filter = 9;   // a plain ray, as RaycastQuery_execute casts it
+    uint32_t pad1 = 0;
+    uint32_t* ignoreBegin = nullptr;
+    uint32_t* ignoreEnd = nullptr;
+    uint32_t* ignoreCapacityEnd = nullptr;
+    uint64_t pad2 = 0;
+    uint32_t ignoreInline[12] = {};
+    float from[4] = {0, 0, 0, 0};
+    float to[4] = {0, 0, 0, 0};
+    uint8_t sweep = 0;
+    uint8_t pad3[0x4f] = {};
+};
+static_assert(sizeof(PhysRayInput) == e::st::PhysicsRayInput::size, "PhysicsRayInput layout");
+static_assert(offsetof(PhysRayInput, ignoreInline) == e::st::PhysicsRayInput::off::ignoreInline, "PhysicsRayInput layout");
+static_assert(offsetof(PhysRayInput, from) == e::st::PhysicsRayInput::off::from, "PhysicsRayInput layout");
+static_assert(offsetof(PhysRayInput, sweep) == e::st::PhysicsRayInput::off::sweep, "PhysicsRayInput layout");
+struct alignas(16) PhysRayHit {
+    uint32_t body = 0xffffffffu;
+    uint32_t pad0 = 0;
+    uint32_t material = 0xffffffffu;
+    uint32_t part = 0xffffffffu;
+    uint32_t bone = 0xffffffffu;
+    uint32_t pad1 = 0;
+    float fraction = 1.f;
+    uint32_t pad2 = 0;
+    float normal[4] = {0, 0, 0, 0};
+    float position[4] = {0, 0, 0, 0};
+    uint8_t valid = 0;
+    uint8_t pad3[0xf] = {};
+};
+static_assert(sizeof(PhysRayHit) == e::st::PhysicsRayHit::size, "PhysicsRayHit layout");
+static_assert(offsetof(PhysRayHit, position) == e::st::PhysicsRayHit::off::position, "PhysicsRayHit layout");
+static_assert(offsetof(PhysRayHit, fraction) == e::st::PhysicsRayHit::off::fraction, "PhysicsRayHit layout");
+} // namespace
+
+int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body) {
+    if (!from || !to || !finite(from, 3) || !finite(to, 3)) return GN_ERR_ARGUMENT;
+    if (!isServerThread()) return GN_ERR_THREAD;
+    static const bool ok = [] {
+        const bool b = build::codeMatches("Physics_castRay");
+        if (!b) GN_LOG("world: Physics_castRay does not look as expected; picking objects by ray is off");
+        return b;
+    }();
+    if (!ok) return GN_ERR_UNAVAILABLE;
+    const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
+    const uintptr_t phys = world ? serverPhysics(world) : 0;
+    if (!phys) return GN_ERR_UNAVAILABLE;
+    PhysRayInput in;
+    in.ignoreBegin = in.ignoreEnd = in.ignoreInline;
+    in.ignoreCapacityEnd = in.ignoreInline + 12;
+    memcpy(in.from, from, 12);
+    memcpy(in.to, to, 12);
+    PhysRayHit h;
+    using Fn = bool (*)(void*, const PhysRayInput*, PhysRayHit*);
+    if (!reinterpret_cast<Fn>(mem::rva(e::function::Physics_castRay))(reinterpret_cast<void*>(phys), &in, &h) || !finite(h.position, 3))
+        return GN_ERR_NOT_FOUND;
+    if (out) {
+        memcpy(out->position, h.position, 12);
+        memcpy(out->normal, h.normal, 12);
+        out->fraction = h.fraction;
+        const float d[3] = {h.position[0] - from[0], h.position[1] - from[1], h.position[2] - from[2]};
+        out->distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    }
+    if (body) *body = h.body;
+    if (object) {
+        *object = 0;
+        namespace c = e::constant;
+        const uintptr_t owner = mem::readOr<uintptr_t>(phys + c::Physics_Owner);
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects) : 0;
+        if (table && h.body != 0xffffffffu) *object = mem::readOr<uintptr_t>(table + (h.body & 0xffffu) * 8);
+    }
+    return GN_OK;
+}
+
+// The local player's camera (the view the game renders), or false before there is one.
+bool cameraTransform(gn_transform& out) {
+    namespace cv = e::st::ClientCameraViewManagers::off;
+    const uintptr_t managers = mem::readOr<uintptr_t>(mem::rva(e::global::ClientCameraViewManagers));
+    const uintptr_t begin = managers ? mem::readOr<uintptr_t>(managers + cv::managersBegin) : 0;
+    const uintptr_t end = managers ? mem::readOr<uintptr_t>(managers + cv::managersEnd) : 0;
+    const uintptr_t first = begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
+    float m[16];
+    if (!first || !mem::read(first + e::st::ClientCameraViewManager::off::transform, m, sizeof(m)) || !finite(m, 3) || !finite(m + 4, 3) ||
+        !finite(m + 8, 3) || !finite(m + 12, 3))
+        return false;
+    memcpy(out.right, m, 16);
+    memcpy(out.up, m + 4, 16);
+    memcpy(out.forward, m + 8, 16);
+    memcpy(out.trans, m + 12, 16);
+    return true;
 }
 
 std::string levelName() {

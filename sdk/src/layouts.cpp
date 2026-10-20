@@ -89,28 +89,24 @@ void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& 
     (isServerClass(type->name) ? g_serverQ : g_clientQ).push_back({entity, type, to});
 }
 
-// Static models only move their collision with them when their data says so
-// (StaticModelEntityData.TeleportPhysicsOnTransformChanges). The data is shared by every object made
-// from the same asset, but the flag only matters when a transform changes, which only edits do.
-void letPhysicsFollow(uintptr_t entity) {
-    static const reflect::Type* dataType = registry().find("StaticModelEntityData");
-    if (!dataType) return;
-    for (uint32_t off = 0x18; off <= 0x40; off += 8) { // the entity's data pointer (+0x30 seen on components)
-        const uintptr_t d = mem::readOr<uintptr_t>(entity + off);
-        const reflect::Type* t = d ? registry().typeOf(mem::ProcessMemory(), d) : nullptr;
-        if (!t || !registry().isKindOf(t, dataType)) continue;
-        reflect::FieldInfo fi;
-        if (!registry().findField(t, "TeleportPhysicsOnTransformChanges", fi) || fi.size != 1) return;
-        const uintptr_t flag = d + fi.field->offset;
-        if (mem::readOr<uint8_t>(flag) == 0) {
-            mem::write<uint8_t>(flag, 1);
-            static std::atomic<int> said{0};
-            if (said.fetch_add(1) < 3)
-                GN_LOG("layouts: %s data %llx: TeleportPhysicsOnTransformChanges set, so its collision moves too", t->name.c_str(),
-                       static_cast<unsigned long long>(d));
-        }
-        return;
-    }
+// A physics entity's collision follows its transform only when the entity's flags say so: the
+// transform-changed notification (flag NotifyTransform) reaches the physics entity, which moves its
+// physics object only with flag TeleportPhysics (set at creation from the data's
+// TeleportPhysicsOnTransformChanges, which is off for level props). Both are set on the objects
+// edits move, and only on those.
+void letPhysicsFollow(uintptr_t entity, const reflect::Type* t) {
+    namespace c = e::constant;
+    static const reflect::Type* server = registry().find("ServerPhysicsEntity");
+    static const reflect::Type* client = registry().find("ClientPhysicsEntity");
+    if (!t || !((server && registry().isKindOf(t, server)) || (client && registry().isKindOf(t, client)))) return;
+    uint32_t flags = 0;
+    if (!mem::read(entity + c::Entity_Flags, flags)) return;
+    const uint32_t want = flags | c::EntityFlag_NotifyTransform | c::EntityFlag_TeleportPhysics;
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 6)
+        GN_LOG("layouts: %s %llx: flags %08x -> %08x, physics object %llx", t->name.c_str(), static_cast<unsigned long long>(entity), flags,
+               want, static_cast<unsigned long long>(mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics)));
+    if (want != flags) mem::write<uint32_t>(entity + c::Entity_Flags, want);
 }
 
 void runQueue(std::deque<Move>& q) {
@@ -122,7 +118,7 @@ void runQueue(std::deque<Move>& q) {
     for (const Move& m : work) {
         // Still the same object (not destroyed and reused since)?
         if (registry().typeOf(mem::ProcessMemory(), m.entity) != m.type) continue;
-        letPhysicsFollow(m.entity);
+        letPhysicsFollow(m.entity, m.type);
         entitySetTransform(reinterpret_cast<void*>(m.entity), &m.to);
     }
 }
@@ -293,33 +289,81 @@ void collectPair(Selected& s, const float* pos) {
     }
 }
 
-// Server thread: a ray from Faith's eyes along the camera; the nearest spatial object to the hit.
+// The entity whose collision a ray hit: a physics entity holds its physics object at
+// PhysicsEntity_Physics; failing that, an entity the object points back to.
+std::pair<uintptr_t, const reflect::Type*> entityOfPhysics(uintptr_t object) {
+    if (!object) return {0, nullptr};
+    static const reflect::Type* physicsEntity = registry().find("ServerPhysicsEntity");
+    const auto tracked = inspector::tracked();
+    for (const auto& [p, t] : tracked)
+        if (t && physicsEntity && registry().isKindOf(t, physicsEntity) && mem::readOr<uintptr_t>(p + e::constant::PhysicsEntity_Physics) == object)
+            return {p, t};
+    for (uint32_t off = 0; off < 0x100; off += 8) {
+        const uintptr_t q = mem::readOr<uintptr_t>(object + off);
+        if (!q) continue;
+        for (const auto& [p, t] : tracked)
+            if (p == q && t && isServerClass(t->name) && t->name.find("Character") == std::string::npos) return {p, t};
+    }
+    return {0, nullptr};
+}
+
+// Server thread: a ray from the camera along its view; the object whose collision it hits.
 void pick() {
     server().post([] {
-        void* faith = localServerCharacter();
-        gn_transform ft{};
+        gn_transform cam{};
         gn_movement mv{};
-        if (!faith || !entityTransform(faith, ft) || movementGet(&mv) != GN_OK) return setStatus("Pick: no Faith");
-        const float from[3] = {ft.trans[0], ft.trans[1] + 1.6f, ft.trans[2]};
-        const float to[3] = {from[0] + mv.camera_forward[0] * 60.f, from[1] + mv.camera_forward[1] * 60.f, from[2] + mv.camera_forward[2] * 60.f};
+        const bool haveMove = movementGet(&mv) == GN_OK;
+        float from[3], dir[3];
+        if (cameraTransform(cam)) {
+            memcpy(from, cam.trans, sizeof(from));
+            memcpy(dir, cam.forward, sizeof(dir));
+            // Use the character camera's sense of "forward" if the view's row points the other way.
+            if (haveMove && dir[0] * mv.camera_forward[0] + dir[1] * mv.camera_forward[1] + dir[2] * mv.camera_forward[2] < 0.f)
+                for (float& v : dir) v = -v;
+        } else {
+            void* faith = localServerCharacter();
+            gn_transform ft{};
+            if (!faith || !entityTransform(faith, ft) || !haveMove) return setStatus("Pick: no camera");
+            from[0] = ft.trans[0], from[1] = ft.trans[1] + 1.6f, from[2] = ft.trans[2];
+            memcpy(dir, mv.camera_forward, sizeof(dir));
+        }
+        const float to[3] = {from[0] + dir[0] * 200.f, from[1] + dir[1] * 200.f, from[2] + dir[2] * 200.f};
         gn_ray_hit hit{};
-        if (raycast(from, to, 0.f, &hit) != GN_OK) return setStatus("Pick: nothing in front of the camera (60 m)");
-        const reflect::Type* spatial = registry().find("SpatialEntity");
-        float best = 1e9f;
-        Selected s;
-        for (const auto& [p, t] : inspector::tracked()) {
-            if (!t || !spatial || !registry().isKindOf(t, spatial)) continue;
-            if (t->name.find("Character") != std::string::npos || t->name.find("VisualEnvironment") != std::string::npos) continue;
-            gn_transform at{};
-            if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
-            const float d = dist2(at.trans, hit.position);
-            if (d < best && d < 8.f * 8.f) {
-                best = d;
-                s.kind = kindOf(t->name);
-                s.now = at;
+        uintptr_t object = 0;
+        uint32_t body = 0;
+        const int r = raycastObject(from, to, &hit, &object, &body);
+        if (r == GN_ERR_NOT_FOUND) return setStatus("Pick: nothing in front of the camera (200 m)");
+        if (r != GN_OK) return setStatus("Pick: ray casts are unavailable");
+        auto [entity, type] = entityOfPhysics(object);
+        static std::atomic<int> diag{0};
+        if (diag.fetch_add(1) < 6) {
+            const reflect::Type* ot = object ? registry().typeOf(mem::ProcessMemory(), object) : nullptr;
+            GN_LOG("layouts: pick hit body %08x at %.1f m: physics object %llx (vtable %llx, %s) -> %s %llx", body, hit.distance,
+                   static_cast<unsigned long long>(object), static_cast<unsigned long long>(object ? mem::readOr<uintptr_t>(object) : 0),
+                   ot ? ot->name.c_str() : "no reflected type", type ? type->name.c_str() : "no entity",
+                   static_cast<unsigned long long>(entity));
+        }
+        bool guessed = false;
+        if (!type) { // no physics entity owns what was hit: the nearest object to the hit, said so
+            static const reflect::Type* spatial = registry().find("SpatialEntity");
+            float best = 3.f * 3.f;
+            for (const auto& [p, t] : inspector::tracked()) {
+                if (!t || !spatial || !registry().isKindOf(t, spatial) || !isServerClass(t->name)) continue;
+                if (t->name.find("Character") != std::string::npos || t->name.find("VisualEnvironment") != std::string::npos) continue;
+                gn_transform at{};
+                if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
+                const float d = dist2(at.trans, hit.position);
+                if (d < best) best = d, entity = p, type = t, guessed = true;
             }
         }
-        if (s.kind.empty()) return setStatus("Pick: no object near where the camera points");
+        Selected s;
+        if (!type || !entityTransform(reinterpret_cast<void*>(entity), s.now)) {
+            char b[160];
+            snprintf(b, sizeof(b), "Pick: hit something %.1f m away that is not a movable object (part of the level's static geometry?)",
+                     hit.distance);
+            return setStatus(b);
+        }
+        s.kind = kindOf(type->name);
         // The key is where the level put it: an existing edit's position if this one was moved.
         memcpy(s.at, s.now.trans, sizeof(s.at));
         {
@@ -329,8 +373,9 @@ void pick() {
         }
         collectPair(s, s.now.trans);
         char b[160];
-        snprintf(b, sizeof(b), "Picked %s (%llu entities), %.1f m from the hit", s.kind.c_str(),
-                 static_cast<unsigned long long>(s.entities.size()), std::sqrt(best));
+        snprintf(b, sizeof(b), "Picked %s (%llu entities), hit %.1f m away%s", s.kind.c_str(),
+                 static_cast<unsigned long long>(s.entities.size()), hit.distance,
+                 guessed ? " (a guess: the nearest object to the hit)" : "");
         std::lock_guard<std::mutex> lock(g_selM);
         g_sel = s;
         g_haveSel = true;
