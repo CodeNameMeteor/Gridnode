@@ -2748,7 +2748,129 @@ void keysFrame(bool menuOpen) {
     }
 }
 
+// ---- selection outline ------------------------------------------------------------------------------
+// The selected object's box: the union of its physics parts' boxes from its StaticModelEntityData
+// (PhysicsPartInfos: PartInfoData {Aabb, Translation}), in the object's own frame, turned and placed
+// with it and drawn through the current view.
+uintptr_t selectionData(const Selected& s) {
+    if (s.group) return memberType(s.gp.member);
+    if (s.copyId >= 0 || s.spawned) {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (const Spawned& sp : g_spawned)
+            if (s.copyId >= 0 ? sp.copyId == s.copyId : (!s.entities.empty() && (sp.server == s.entities[0].first || sp.client == s.entities[0].first)))
+                return sp.data;
+    }
+    for (const auto& [p, t] : s.entities)
+        if (const uintptr_t d = dataOf(p, "StaticModelEntityData")) return d;
+    return 0;
+}
+
+// The local box of a StaticModelEntityData (false when it has no physics parts).
+bool localBox(uintptr_t data, float* mn, float* mx) {
+    static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    static uint32_t partsOff = 0xffffffffu;
+    if (partsOff == 0xffffffffu && smd) {
+        reflect::FieldInfo fi;
+        partsOff = registry().findField(smd, "PhysicsPartInfos", fi) ? fi.field->offset : 0xfffffffeu;
+    }
+    if (!data || partsOff >= 0xfffffffeu) return false;
+    const uintptr_t arr = mem::readOr<uintptr_t>(data + partsOff);
+    const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0; // Frostbite arrays: the count before the elements
+    bool any = false;
+    for (uint32_t i = 0; i < n && i < 256; ++i) {
+        float b[12]; // Aabb min (4), max (4), Translation (4)
+        if (!mem::read(arr + i * 48u, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) continue;
+        if (b[4] < b[0] || b[5] < b[1] || b[6] < b[2]) continue;
+        for (int k = 0; k < 3; ++k) {
+            mn[k] = any ? std::min(mn[k], b[k]) : b[k];
+            mx[k] = any ? std::max(mx[k], b[4 + k]) : b[4 + k];
+        }
+        any = true;
+    }
+    return any;
+}
+
+// World point -> screen; false behind the camera.
+struct View {
+    float from[3], d[3], r[3], u[3];
+    float th = 1.f, aspect = 1.f, w = 1.f, h = 1.f;
+};
+bool currentView(View& v) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || !viewBasis(v.from, v.d, v.r, v.u)) return false;
+    const uintptr_t mgr = firstViewManager();
+    const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
+    v.th = std::tan((fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f) * 3.14159265f / 360.f);
+    v.aspect = io.DisplaySize.x / io.DisplaySize.y;
+    v.w = io.DisplaySize.x, v.h = io.DisplaySize.y;
+    return true;
+}
+constexpr float kNear = 0.05f;
+float depthOf(const View& v, const float* p) {
+    const float q[3] = {p[0] - v.from[0], p[1] - v.from[1], p[2] - v.from[2]};
+    return dot3(q, v.d);
+}
+ImVec2 project(const View& v, const float* p) {
+    const float q[3] = {p[0] - v.from[0], p[1] - v.from[1], p[2] - v.from[2]};
+    const float z = std::max(dot3(q, v.d), kNear);
+    const float x = dot3(q, v.r) / (z * v.th * v.aspect), y = dot3(q, v.u) / (z * v.th);
+    return ImVec2((x + 1.f) * 0.5f * v.w, (1.f - y) * 0.5f * v.h);
+}
+// A 3D line, cut at the near plane.
+void line3d(ImDrawList* dl, const View& v, const float* a, const float* b, ImU32 col, float thick) {
+    float p[3] = {a[0], a[1], a[2]}, q[3] = {b[0], b[1], b[2]};
+    const float za = depthOf(v, p), zb = depthOf(v, q);
+    if (za < kNear && zb < kNear) return;
+    if (za < kNear || zb < kNear) {
+        const float t = (kNear - za) / (zb - za);
+        float* cut = za < kNear ? p : q;
+        for (int k = 0; k < 3; ++k) cut[k] = a[k] + (b[k] - a[k]) * t;
+    }
+    dl->AddLine(project(v, p), project(v, q), col, thick);
+}
+
+void drawOutline() {
+    Selected s;
+    if (!selection(s)) return;
+    View v;
+    if (!currentView(v)) return;
+    const uintptr_t data = selectionData(s);
+    float mn[3], mx[3];
+    const bool box = localBox(data, mn, mx);
+    static uintptr_t said = 0;
+    if (data != said) { // once per object type: what the box came from
+        said = data;
+        GN_LOG("layouts: outline: data %llx, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", static_cast<unsigned long long>(data),
+               box ? "physics parts box" : "no physics parts", box ? mn[0] : 0.f, box ? mn[1] : 0.f, box ? mn[2] : 0.f, box ? mx[0] : 0.f,
+               box ? mx[1] : 0.f, box ? mx[2] : 0.f);
+    }
+    const gn_transform& t = s.now;
+    auto world = [&](float x, float y, float z, float* o) {
+        for (int k = 0; k < 3; ++k) o[k] = t.trans[k] + x * t.right[k] + y * t.up[k] + z * t.forward[k];
+    };
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const ImU32 col = IM_COL32(255, 200, 60, 230);
+    if (box) {
+        float c[8][3];
+        for (int i = 0; i < 8; ++i) world(i & 1 ? mx[0] : mn[0], i & 2 ? mx[1] : mn[1], i & 4 ? mx[2] : mn[2], c[i]);
+        static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto& e : edges) line3d(dl, v, c[e[0]], c[e[1]], col, 2.f);
+    }
+    // Its own axes at its position: right red, up green, forward blue (1 m, or the box's size).
+    float len = 1.f;
+    if (box) len = std::max(0.5f, 0.35f * std::max({mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]}));
+    float o[3], a[3];
+    world(0, 0, 0, o);
+    world(len, 0, 0, a);
+    line3d(dl, v, o, a, IM_COL32(240, 70, 70, 230), 2.f);
+    world(0, len, 0, a);
+    line3d(dl, v, o, a, IM_COL32(80, 220, 80, 230), 2.f);
+    world(0, 0, len, a);
+    line3d(dl, v, o, a, IM_COL32(80, 140, 255, 230), 2.f);
+}
+
 void frame(bool menuOpen) {
+    drawOutline();
     keysFrame(menuOpen);
     freeCamFrame(menuOpen);
     // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
