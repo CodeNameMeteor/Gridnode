@@ -531,6 +531,20 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     alignas(16) gn_transform t = world;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
+    static std::atomic<int> back{0};
+    if (back.fetch_add(1) < 12) {
+        float now[16] = {};
+        mem::read(obj + 0x10, now, sizeof(now));
+        GN_LOG("layouts: group part %u: render object now at (%.2f, %.2f, %.2f) right (%.2f, %.2f, %.2f) (asked (%.2f, %.2f, %.2f)); render path %llx",
+               g.part, now[12], now[13], now[14], now[0], now[1], now[2], t.trans[0], t.trans[1], t.trans[2],
+               static_cast<unsigned long long>(mem::readOr<uintptr_t>(mem::rva(0x142568ce8))));
+        client().post([obj, part = g.part] { // and a frame later: kept, or reset by something?
+            float later[16] = {};
+            mem::read(obj + 0x10, later, sizeof(later));
+            GN_LOG("layouts: group part %u: a frame later at (%.2f, %.2f, %.2f) right (%.2f, %.2f, %.2f)", part, later[12], later[13], later[14], later[0],
+                   later[1], later[2]);
+        });
+    }
     alignas(16) uint8_t update[0x100] = {};
     // Set before building, as 0x14318fbc0 does (offsets from its local at rsp-0x148).
     const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(0x141a4e8dc));
@@ -544,6 +558,20 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     const uint32_t tag = mem::readOr<uint32_t>(obj + 0x8c);
     memcpy(update + 0x90, &tag, 4);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
+}
+
+// Client thread: the game's own placement of every copy of the member (what the group's
+// transform-changed does per member), from the physics instances or InstanceTransforms.
+void replaceMemberByGame(const GroupProp& g) {
+    static const uint32_t partRange = memberField("PhysicsPartRange");
+    if (!g.block || !g.member || !g.clientGroup) return;
+    const uintptr_t space = mem::readOr<uintptr_t>(g.clientGroup + e::cls::ComponentEntity::off::transformSpace);
+    uint8_t sel[2] = {};
+    if (!space || !mem::read(space + 9, sel, 2)) return;
+    const uintptr_t groupTransform = space + 0x10 + (sel[0] + 2u * sel[1]) * 0x20;
+    const uint32_t first = mem::readOr<uint32_t>(g.member + partRange);
+    GN_LOG("layouts: group part %u: the game's placement for its member (block %llx, first part %u)", g.part, static_cast<unsigned long long>(g.block), first);
+    reinterpret_cast<void (*)(uintptr_t, uintptr_t, uint32_t)>(mem::rva(e::function::ClientStaticModelGroup_placeMember))(g.block, groupTransform, first);
 }
 
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
@@ -950,6 +978,13 @@ void draw(bool* open) {
         if (ImGui::Button("Turn right")) yaw(t, -step), changed = true;
         if (changed) moveSelection(t);
         if (ImGui::Button("Put back where the level had it")) resetSelection();
+        if (s.group) {
+            ImGui::SameLine();
+            if (ImGui::Button("Re-place member (game code)")) {
+                const GroupProp gp = s.gp;
+                client().post([gp] { replaceMemberByGame(gp); });
+            }
+        }
         ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
     } else {
         ImGui::TextDisabled("Point the camera at an object and press Pick.");
