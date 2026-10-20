@@ -385,15 +385,15 @@ void pick() {
         const float to[3] = {from[0] + dir[0] * 200.f, from[1] + dir[1] * 200.f, from[2] + dir[2] * 200.f};
         gn_ray_hit hit{};
         uintptr_t object = 0;
-        uint32_t body = 0;
-        const int r = raycastObject(from, to, &hit, &object, &body);
+        uint32_t body = 0, part = 0xffffffffu;
+        const int r = raycastObject(from, to, &hit, &object, &body, &part);
         if (r == GN_ERR_NOT_FOUND) return setStatus("Pick: nothing in front of the camera (200 m)");
         if (r != GN_OK) return setStatus("Pick: ray casts are unavailable");
         auto [entity, type] = entityOfBody(body);
         static std::atomic<int> diag{0};
-        if (diag.fetch_add(1) < 6) {
+        if (diag.fetch_add(1) < 20) {
             const reflect::Type* ot = object ? registry().typeOf(mem::ProcessMemory(), object) : nullptr;
-            GN_LOG("layouts: pick hit body %08x at %.1f m: physics object %llx (vtable %llx, %s) -> %s %llx", body, hit.distance,
+            GN_LOG("layouts: pick hit body %08x part %08x at %.1f m: physics object %llx (vtable %llx, %s) -> %s %llx", body, part, hit.distance,
                    static_cast<unsigned long long>(object), static_cast<unsigned long long>(object ? mem::readOr<uintptr_t>(object) : 0),
                    ot ? ot->name.c_str() : "no reflected type", type ? type->name.c_str() : "no entity",
                    static_cast<unsigned long long>(entity));
@@ -404,12 +404,22 @@ void pick() {
             float best = 3.f * 3.f;
             for (const auto& [p, t] : inspector::tracked()) {
                 if (!t || !spatial || !registry().isKindOf(t, spatial) || !isServerClass(t->name)) continue;
-                if (t->name.find("Character") != std::string::npos || t->name.find("VisualEnvironment") != std::string::npos) continue;
+                if (t->name.find("Character") != std::string::npos || t->name.find("VisualEnvironment") != std::string::npos ||
+                    t->name.find("StaticModelGroup") != std::string::npos)
+                    continue;
                 gn_transform at{};
                 if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
                 const float d = dist2(at.trans, hit.position);
                 if (d < best) best = d, entity = p, type = t, guessed = true;
             }
+        }
+        // A static model group is many props sharing one entity (placed at the world origin) and one
+        // collision body; moving it moves all of them. Props inside a group are not editable yet.
+        if (type && type->name.find("StaticModelGroup") != std::string::npos) {
+            char b[200];
+            snprintf(b, sizeof(b), "Pick: that prop is part of a static model group (instance %u); moving props inside groups is not supported yet",
+                     part & 0xffffu);
+            return setStatus(b);
         }
         Selected s;
         if (!type || !entityTransform(reinterpret_cast<void*>(entity), s.now)) {

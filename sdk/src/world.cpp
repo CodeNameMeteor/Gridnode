@@ -374,7 +374,7 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
 // ---- ray casts that say what they hit (picking) ------------------------------------------------------
 namespace {
 struct alignas(16) PhysRayInput {
-    uint32_t wants = 0;    // no material / part / bone lookups; the body is always filled in
+    uint32_t wants = 2;    // the part (shape key: which instance of a compound); the body is always filled in
     uint32_t pad0 = 0;
     uint32_t filter = 9;   // a plain ray, as RaycastQuery_execute casts it
     uint32_t pad1 = 0;
@@ -411,7 +411,7 @@ static_assert(offsetof(PhysRayHit, position) == e::st::PhysicsRayHit::off::posit
 static_assert(offsetof(PhysRayHit, fraction) == e::st::PhysicsRayHit::off::fraction, "PhysicsRayHit layout");
 } // namespace
 
-int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body) {
+int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part) {
     if (!from || !to || !finite(from, 3) || !finite(to, 3)) return GN_ERR_ARGUMENT;
     if (!isServerThread()) return GN_ERR_THREAD;
     static const bool ok = [] {
@@ -440,6 +440,7 @@ int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintp
         out->distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     }
     if (body) *body = h.body;
+    if (part) *part = h.part;
     if (object) {
         *object = 0;
         namespace c = e::constant;
