@@ -148,6 +148,7 @@ void* context();
 void allocators(void** alloc, void** free, void** user);
 int check(const char* mod, const char* version, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx);
 bool menuOpen();
+bool gameFocused(); // the game's window is the foreground window (for keys read with GetAsyncKeyState)
 void toggleMenu();
 void setLookCapture(bool on);            // raw mouse movement goes to takeLook, not the cursor
 void setInputCapture(bool on);           // free camera with the menu closed: the game gets no input

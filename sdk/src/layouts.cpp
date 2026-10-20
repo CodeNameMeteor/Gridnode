@@ -45,6 +45,10 @@ struct Edit {
     gn_transform to{};  // where it should be
     gn_transform from{}; // the level's own placement (rotation included), for putting it back
     bool haveFrom = false; // false for layout files written before `from` was saved
+    // kind "Copy": a new object made from another one. `source` is that object's kind ("GroupProp" for
+    // a prop in a static model group) and `at` its level position; copyId tells copies apart (not saved).
+    std::string source;
+    int copyId = -1;
 };
 
 std::mutex g_m;
@@ -54,6 +58,7 @@ bool g_dirty = false;           // unsaved changes (g_m)
 std::wstring g_dir;             // layouts folder
 std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
 std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
+int g_nextCopyId = 0;           // (g_m)
 
 std::atomic<bool> g_sweptThisLevel{false}; // existing objects matched since the level started
 constexpr float kMatch = 0.05f; // metres: how close a created object must be to an edit's position
@@ -129,14 +134,6 @@ std::vector<std::string> listLayouts(const std::string& level) {
 }
 
 // Small settings: auto-load (layouts\settings.txt) and each level's last used layout (last.txt).
-bool readFlag(const std::wstring& file) {
-    FILE* f = _wfopen(file.c_str(), L"rb");
-    if (!f) return false;
-    char b[64] = {};
-    fgets(b, sizeof(b), f);
-    fclose(f);
-    return strstr(b, "autoload=1") != nullptr;
-}
 std::string readLine(const std::wstring& file) {
     FILE* f = _wfopen(file.c_str(), L"rb");
     if (!f) return {};
@@ -154,6 +151,64 @@ void writeLine(const std::wstring& file, const std::string& line) {
     fclose(f);
 }
 std::atomic<bool> g_autoload{false};
+
+// Key binds (layouts\settings.txt, "key_<id>=<name>"). Free-camera binds work only while it flies.
+struct Bind {
+    const char* id;
+    const char* label;
+    int def;
+    bool freeCamOnly;
+    bool repeat; // repeats while held
+    int vk;
+};
+Bind g_binds[] = {
+    {"freecam", "Free camera on / off", VK_F7, false, false, VK_F7},
+    {"pick", "Pick what the crosshair points at", 'R', true, false, 'R'},
+    {"copy", "Copy the selected object", 'C', true, false, 'C'},
+    {"paste", "Paste a copy at the crosshair", 'V', true, false, 'V'},
+    {"forward", "Move away from the camera", VK_UP, true, true, VK_UP},
+    {"back", "Move toward the camera", VK_DOWN, true, true, VK_DOWN},
+    {"left", "Move left", VK_LEFT, true, true, VK_LEFT},
+    {"right", "Move right", VK_RIGHT, true, true, VK_RIGHT},
+    {"up", "Move up", VK_PRIOR, true, true, VK_PRIOR},
+    {"down", "Move down", VK_NEXT, true, true, VK_NEXT},
+    {"turnleft", "Turn left", 'Z', true, true, 'Z'},
+    {"turnright", "Turn right", 'X', true, true, 'X'},
+};
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kBindCount };
+static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
+float g_nudge = 0.5f;     // metres per move step
+float g_turnStep = 15.f;  // degrees per turn step
+
+void saveSettings() {
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    std::string o = g_autoload.load() ? "autoload=1\n" : "autoload=0\n";
+    char b[64];
+    snprintf(b, sizeof(b), "nudge=%.3f\nturn=%.1f\n", g_nudge, g_turnStep);
+    o += b;
+    for (const Bind& k : g_binds) o += std::string("key_") + k.id + "=" + (k.vk ? ui::keyName(k.vk) : "NONE") + "\n";
+    writeLine(g_dir + L"settings.txt", o);
+}
+
+void loadSettings() {
+    FILE* f = _wfopen((g_dir + L"settings.txt").c_str(), L"rb");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        const size_t eq = l.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+        if (k == "autoload") g_autoload = v == "1";
+        else if (k == "nudge") g_nudge = std::clamp(static_cast<float>(atof(v.c_str())), 0.01f, 100.f);
+        else if (k == "turn") g_turnStep = std::clamp(static_cast<float>(atof(v.c_str())), 0.1f, 180.f);
+        else if (k.rfind("key_", 0) == 0)
+            for (Bind& b : g_binds)
+                if (k.substr(4) == b.id) b.vk = v == "NONE" ? 0 : (ui::keyFromName(v) ? ui::keyFromName(v) : b.vk);
+    }
+    fclose(f);
+}
 
 // ---- moves, done on the right thread ----------------------------------------------------------------
 struct Move {
@@ -271,9 +326,12 @@ const Edit* editFor(const std::string& cls, const float* at) {
     return nullptr;
 }
 
+void recordBus(uintptr_t entity, uintptr_t bus);
+
 // Creation of a static model (any realm): match against the layout by its creation transform.
 void onCreatedModel(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
+    recordBus(reinterpret_cast<uintptr_t>(entity), mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10)); // for copies
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
     if (!t) return;
     float at[3];
@@ -337,6 +395,7 @@ bool save(const std::string& name) {
     o += "level: " + level + "\nedits:\n";
     for (const Edit& ed : edits) {
         o += "  - kind: " + ed.kind + "\n";
+        if (!ed.source.empty()) o += "    source: " + ed.source + "\n";
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -402,6 +461,10 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         while (!val.empty() && val[0] == ' ') val.erase(0, 1);
         if (item) flush();
         bool ok = true;
+        if (key == "source") {
+            cur.source = val;
+            continue;
+        }
         if (key == "kind") cur.kind = val, ok = !val.empty();
         else if (key == "at") ok = parseVec(val, cur.at);
         else if (key == "right") ok = parseVec(val, cur.to.right);
@@ -420,11 +483,19 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     }
     flush();
     fclose(f);
-    for (Edit& ed : out)
-        if (!ed.haveFrom) { // older files: the level position with the edit's rotation
+    for (Edit& ed : out) {
+        if (ed.kind == "Copy") { // a copy has no level placement: putting it back removes it
+            ed.from = ed.to;
+            ed.haveFrom = true;
+            std::lock_guard<std::mutex> lock(g_m);
+            ed.copyId = g_nextCopyId++;
+        } else if (!ed.haveFrom) { // older files: the level position with the edit's rotation
             ed.from = ed.to;
             memcpy(ed.from.trans, ed.at, sizeof(ed.at));
         }
+        if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
+    }
+    out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
     return out;
 }
 
@@ -680,12 +751,24 @@ struct Spawned {
     uintptr_t server = 0, client = 0;
     const reflect::Type* serverType = nullptr;
     const reflect::Type* clientType = nullptr;
+    // What it was made from (for copying it again).
+    uintptr_t data = 0, serverBus = 0, clientBus = 0;
+    int copyId = -1;              // >= 0: a copy (Edit kind "Copy"); -1: stands in for a group prop
+    bool hidden = false;          // a removed copy, parked below the level for reuse
+    std::string source;           // a copy's source kind and level position
+    float sourceAt[3] = {};
 };
 std::mutex g_spawnM;
 std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
 
 std::mutex g_busM;
 std::unordered_map<uintptr_t, uintptr_t> g_groupBus; // group entity -> its bus (g_busM)
+
+void recordBus(uintptr_t entity, uintptr_t bus) {
+    if (!entity || !bus) return;
+    std::lock_guard<std::mutex> lock(g_busM);
+    g_groupBus[entity] = bus;
+}
 
 void onCreatedGroup(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
@@ -775,6 +858,9 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
             sp.client = ce;
             sp.serverType = registry().typeOf(mem::ProcessMemory(), se);
             sp.clientType = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+            sp.data = data;
+            sp.serverBus = busOf(g.serverGroup);
+            sp.clientBus = cbus;
             g_spawned.push_back(sp);
         }
         if (select) selectSpawned(se, ce, o, w);
@@ -837,9 +923,141 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
     return false;
 }
 
-// Server thread: the level's saved standalone copies of group props.
+// ---- copies: new objects made from an existing one --------------------------------------------------
+// A template is what a new copy is made from: the object's data (its StaticModelEntityData) and the
+// entity buses of its server and client halves, plus where it came from, which is how a layout file
+// names it (the source's kind and level position).
+struct Template {
+    uintptr_t data = 0, serverBus = 0, clientBus = 0;
+    std::string source;   // "GroupProp" or the object's kind
+    float at[3] = {};     // the source's level position
+    gn_transform place{}; // the source's placement when copied (rotation for pasting)
+    std::string label;
+};
+
+void selectCopy(const Spawned& sp, const gn_transform& now);
+void hideCopy(int copyId);
+
+// The template for a source named in a layout file (server thread).
+bool resolveSource(const std::string& source, const float* at, Template& t) {
+    t = Template{};
+    t.source = source;
+    memcpy(t.at, at, sizeof(t.at));
+    if (source == "GroupProp") {
+        {   // made standalone already: its group copy is hidden, the standalone copy knows the data
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId < 0 && dist2(sp.orig.trans, at) <= kMatch * kMatch && sp.data) {
+                    t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus, t.place = sp.orig;
+                    return true;
+                }
+        }
+        GroupProp g;
+        gn_transform orig{};
+        if (!findGroupProp(at, g, orig)) return false;
+        t.data = memberType(g.member);
+        t.serverBus = busOf(g.serverGroup);
+        t.clientBus = busOf(g.clientGroup);
+        t.place = orig;
+        return t.data && t.serverBus && t.clientBus;
+    }
+    // A standalone object of the level: where it is now (moved by an edit, or where the level put it).
+    float now[3] = {at[0], at[1], at[2]};
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == source && dist2(ed.at, at) <= kMatch * kMatch) memcpy(now, ed.to.trans, sizeof(now));
+    }
+    uintptr_t server = 0, client = 0;
+    for (const auto& [p, ty] : inspector::tracked()) {
+        if (!ty || kindOf(ty->name) != source) continue;
+        gn_transform tr{};
+        if (!entityTransform(reinterpret_cast<void*>(p), tr) || dist2(tr.trans, now) > kMatch * kMatch) continue;
+        (isServerClass(ty->name) ? server : client) = p;
+        if (isServerClass(ty->name)) t.place = tr;
+    }
+    t.data = server ? dataOf(server, "StaticModelEntityData") : 0;
+    t.serverBus = server ? busOf(server) : 0;
+    t.clientBus = client ? busOf(client) : 0;
+    return t.data && t.serverBus && t.clientBus;
+}
+
+// Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
+void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select) {
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (Spawned& sp : g_spawned)
+            if (sp.hidden && sp.data == t.data) {
+                sp.hidden = false;
+                sp.copyId = copyId;
+                sp.source = t.source;
+                memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
+                if (sp.serverType) queueMove(sp.server, sp.serverType, to);
+                if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, to);
+                if (select) {
+                    const Spawned copy = sp;
+                    client().post([copy, to] { selectCopy(copy, to); });
+                }
+                return;
+            }
+    }
+    const uintptr_t se = spawnServer(t.data, t.serverBus, to);
+    GN_LOG("layouts: copy %d of %s at (%.2f, %.2f, %.2f): server entity %llx", copyId, t.source.c_str(), to.trans[0], to.trans[1], to.trans[2],
+           static_cast<unsigned long long>(se));
+    if (!se) {
+        if (select) setStatus("Paste: the server did not create the entity");
+        return;
+    }
+    Spawned sp;
+    sp.server = se;
+    sp.serverType = registry().typeOf(mem::ProcessMemory(), se);
+    sp.orig = to;
+    sp.data = t.data, sp.serverBus = t.serverBus, sp.clientBus = t.clientBus;
+    sp.copyId = copyId;
+    sp.source = t.source;
+    memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
+    alignas(16) gn_transform w = to;
+    client().post([sp, w, select]() mutable {
+        sp.client = spawnClient(sp.data, sp.clientBus, w);
+        sp.clientType = sp.client ? registry().typeOf(mem::ProcessMemory(), sp.client) : nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            g_spawned.push_back(sp);
+        }
+        if (select) selectCopy(sp, w);
+    });
+}
+
+// Server thread: the level's saved copies and standalone copies of group props.
 void applyGroupEdits(const std::vector<Edit>& edits) {
-    int made = 0, missing = 0;
+    int made = 0, missing = 0, copies = 0, lost = 0;
+    // Copies first: a copy of a group prop finds its source in the group before that prop is made standalone.
+    for (const Edit& ed : edits) {
+        if (ed.kind != "Copy") continue;
+        bool moved = false;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId == ed.copyId && !sp.hidden) {
+                    if (sp.serverType) queueMove(sp.server, sp.serverType, ed.to);
+                    if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, ed.to);
+                    moved = true;
+                }
+        }
+        if (moved) {
+            ++copies;
+            continue;
+        }
+        Template t;
+        if (!resolveSource(ed.source, ed.at, t)) {
+            GN_LOG("layouts: copy of %s at (%.2f, %.2f, %.2f): the source was not found", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
+            ++lost;
+            continue;
+        }
+        spawnCopy(t, ed.to, ed.copyId, false);
+        ++copies;
+    }
+    if (copies || lost) GN_LOG("layouts: %d copies placed from the layout, %d sources not found", copies, lost);
     for (const Edit& ed : edits) {
         if (ed.kind != "GroupProp") continue;
         Spawned existing{};
@@ -847,7 +1065,7 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (const Spawned& sp : g_spawned)
-                if (dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
+                if (sp.copyId < 0 && !sp.hidden && dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
         }
         if (have) { // made standalone earlier this level: move that copy
             if (existing.serverType) queueMove(existing.server, existing.serverType, ed.to);
@@ -876,6 +1094,7 @@ struct Selected {
     std::vector<std::pair<uintptr_t, const reflect::Type*>> entities; // its server and client entity
     bool group = false;    // a prop inside a static model group (experimental; not saved)
     bool spawned = false;  // a standalone copy GridNode made (not saved yet)
+    int copyId = -1;       // >= 0: a copy (Edit kind "Copy")
     GroupProp gp;
 };
 std::mutex g_selM;
@@ -949,8 +1168,11 @@ void unloadLayout() {
                 break;
             }
     }
-    // A standalone copy stands in for its group prop: back to the prop's own placement.
+    // Copies go away; a standalone copy stands in for its group prop: back to the prop's own placement.
+    for (const Spawned& sp : spawned)
+        if (sp.copyId >= 0) hideCopy(sp.copyId);
     for (const Spawned& sp : spawned) {
+        if (sp.copyId >= 0 || sp.hidden) continue;
         if (sp.serverType) queueMove(sp.server, sp.serverType, sp.orig);
         if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, sp.orig);
     }
@@ -1007,6 +1229,25 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
     char b[200];
     snprintf(b, sizeof(b), "Made a standalone %s (%llu entities) in place of the group prop. Move it as usual.",
              s.kind.c_str(), static_cast<unsigned long long>(s.entities.size()));
+    std::lock_guard<std::mutex> lock(g_selM);
+    g_sel = s;
+    g_haveSel = !s.entities.empty();
+    g_status = b;
+}
+
+// Client thread, after a copy was placed: select it for editing.
+void selectCopy(const Spawned& sp, const gn_transform& now) {
+    Selected s;
+    s.copyId = sp.copyId;
+    for (uintptr_t e : {sp.server, sp.client}) {
+        const reflect::Type* t = e ? registry().typeOf(mem::ProcessMemory(), e) : nullptr;
+        if (t) s.entities.push_back({e, t});
+        if (t && s.kind.empty()) s.kind = kindOf(t->name);
+    }
+    s.orig = s.now = now;
+    memcpy(s.at, sp.sourceAt, sizeof(s.at));
+    char b[160];
+    snprintf(b, sizeof(b), "Placed a copy (%s). Move it as usual; \"Remove this copy\" takes it away.", s.kind.c_str());
     std::lock_guard<std::mutex> lock(g_selM);
     g_sel = s;
     g_haveSel = !s.entities.empty();
@@ -1129,13 +1370,28 @@ void pick(const float* ray = nullptr) {
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (const Spawned& sp : g_spawned)
-                if (sp.server == entity) {
+                if (sp.server == entity && sp.copyId >= 0) { // a copy: its edit is found by its id
+                    s.spawned = false;
+                    s.copyId = sp.copyId;
+                    s.orig = s.now;
+                    memcpy(s.at, sp.sourceAt, sizeof(s.at));
+                } else if (sp.server == entity) {
                     s.spawned = true;
                     s.orig = sp.orig;
                     memcpy(s.at, sp.orig.trans, sizeof(s.at));
                 }
         }
-        collectPair(s, s.now.trans);
+        if (s.copyId >= 0) { // both halves of the copy, not whatever else is at the same place
+            s.entities.clear();
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId == s.copyId) {
+                    if (sp.serverType) s.entities.push_back({sp.server, sp.serverType});
+                    if (sp.client && sp.clientType) s.entities.push_back({sp.client, sp.clientType});
+                }
+        } else {
+            collectPair(s, s.now.trans);
+        }
         char b[160];
         snprintf(b, sizeof(b), "Picked %s (%llu entities), hit %.1f m away%s", s.kind.c_str(),
                  static_cast<unsigned long long>(s.entities.size()), hit.distance,
@@ -1166,6 +1422,12 @@ void moveSelection(const gn_transform& to) {
         return;
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, to);
+    if (s.copyId >= 0) {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Edit& ed : g_edits)
+            if (ed.kind == "Copy" && ed.copyId == s.copyId) ed.to = ed.from = to, g_dirty = true;
+        return;
+    }
     const std::string key = editKind(s);
     std::lock_guard<std::mutex> lock(g_m);
     for (Edit& ed : g_edits)
@@ -1184,12 +1446,40 @@ void moveSelection(const gn_transform& to) {
     g_dirty = true;
 }
 
+// A copy is taken away: parked below the level (entities cannot be destroyed yet) for reuse.
+void hideCopy(int copyId) {
+    std::lock_guard<std::mutex> lock(g_spawnM);
+    for (Spawned& sp : g_spawned)
+        if (sp.copyId == copyId && !sp.hidden) {
+            gn_transform away{};
+            if (!entityTransform(reinterpret_cast<void*>(sp.server), away)) away = sp.orig;
+            away.trans[1] -= 15000.f;
+            if (sp.serverType) queueMove(sp.server, sp.serverType, away);
+            if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
+            sp.hidden = true;
+            sp.copyId = -1;
+        }
+}
+
 void resetSelection() {
     Selected s;
     {
         std::lock_guard<std::mutex> lock(g_selM);
         if (!g_haveSel) return;
         s = g_sel;
+    }
+    if (s.copyId >= 0) {
+        hideCopy(s.copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& ed) { return ed.kind == "Copy" && ed.copyId == s.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+        }
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_haveSel = false;
+        g_status = "Removed the copy.";
+        return;
     }
     const gn_transform back = s.orig;
     if (s.group) {
@@ -1213,6 +1503,117 @@ void resetSelection() {
         }
 }
 
+// ---- copy and paste ----------------------------------------------------------------------------------
+Template g_clip;          // (g_selM)
+bool g_haveClip = false;  // (g_selM)
+
+// The template for the selection (server thread).
+bool templateOf(const Selected& s, Template& t) {
+    t = Template{};
+    if (s.copyId >= 0 || s.spawned) {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (const Spawned& sp : g_spawned) {
+            const bool match = s.copyId >= 0 ? sp.copyId == s.copyId
+                                             : (sp.copyId < 0 && !s.entities.empty() && (sp.server == s.entities[0].first || sp.client == s.entities[0].first));
+            if (!match || !sp.data) continue;
+            t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus;
+            if (sp.copyId >= 0) t.source = sp.source, memcpy(t.at, sp.sourceAt, sizeof(t.at));
+            else t.source = "GroupProp", memcpy(t.at, sp.orig.trans, sizeof(t.at));
+            t.place = s.now;
+            return true;
+        }
+        return false;
+    }
+    if (s.group) {
+        t.data = memberType(s.gp.member);
+        t.serverBus = busOf(s.gp.serverGroup);
+        t.clientBus = busOf(s.gp.clientGroup);
+        t.source = "GroupProp";
+        memcpy(t.at, s.at, sizeof(t.at));
+        t.place = s.now;
+        return t.data && t.serverBus && t.clientBus;
+    }
+    return resolveSource(s.kind, s.at, t);
+}
+
+std::string describe(const Template& t, const Selected& s) {
+    const reflect::Type* dt = t.data ? registry().typeOf(mem::ProcessMemory(), t.data) : nullptr;
+    char b[160];
+    snprintf(b, sizeof(b), "%s (%s) from (%.1f, %.1f, %.1f)", s.group || s.spawned ? "group prop" : s.kind.c_str(), dt ? dt->name.c_str() : "?",
+             t.at[0], t.at[1], t.at[2]);
+    return b;
+}
+
+// Records a new copy in the layout (its id).
+int addCopyEdit(const Template& t, const gn_transform& to) {
+    std::lock_guard<std::mutex> lock(g_m);
+    Edit ed;
+    ed.kind = "Copy";
+    ed.source = t.source;
+    memcpy(ed.at, t.at, sizeof(ed.at));
+    ed.to = ed.from = to;
+    ed.haveFrom = true;
+    ed.copyId = g_nextCopyId++;
+    g_edits.push_back(ed);
+    g_dirty = true;
+    return ed.copyId;
+}
+
+bool selection(Selected& s) {
+    std::lock_guard<std::mutex> lock(g_selM);
+    s = g_sel;
+    return g_haveSel;
+}
+
+// Copy: the selection becomes the template that Paste places.
+void copySelection() {
+    Selected s;
+    if (!selection(s)) return setStatus("Copy: pick an object first");
+    server().post([s] {
+        Template t;
+        if (!templateOf(s, t)) return setStatus("Copy: GridNode cannot make copies of this object (only static models and group props)");
+        t.label = describe(t, s);
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_clip = t;
+        g_haveClip = true;
+        g_status = "Copied " + t.label + ". Paste places a new one where the crosshair points.";
+    });
+}
+
+// Paste: a new copy of the template where the ray (from, direction) hits, or 10 m along it.
+void pasteAt(const float* ray) {
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(float) * 6);
+    server().post([r] {
+        Template t;
+        {
+            std::lock_guard<std::mutex> lock(g_selM);
+            if (!g_haveClip) return void(g_status = "Paste: copy an object first");
+            t = g_clip;
+        }
+        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+        gn_ray_hit hit{};
+        alignas(16) gn_transform place = t.place;
+        if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK)
+            memcpy(place.trans, hit.position, sizeof(float) * 3);
+        else
+            for (int k = 0; k < 3; ++k) place.trans[k] = r[k] + r[3 + k] * 10.f;
+        place.trans[3] = 1.f;
+        spawnCopy(t, place, addCopyEdit(t, place), true);
+    });
+}
+
+// Duplicate: a new copy of the selection in the same place (selected, ready to move).
+void duplicateSelection() {
+    Selected s;
+    if (!selection(s)) return setStatus("Duplicate: pick an object first");
+    server().post([s] {
+        Template t;
+        if (!templateOf(s, t)) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
+        spawnCopy(t, s.now, addCopyEdit(t, s.now), true);
+    });
+}
+
 void yaw(gn_transform& t, float degrees) {
     const float a = degrees * 3.14159265f / 180.f, c = std::cos(a), s = std::sin(a);
     auto rot = [&](float* v) {
@@ -1232,7 +1633,7 @@ void start(const std::wstring& dir) {
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
         onCreated("gridnode", cls, &onCreatedGroup, nullptr);
-    g_autoload = readFlag(g_dir + L"settings.txt");
+    loadSettings();
 }
 
 // GridNode's thread, when a level starts: with auto-load on, the layout last used for it.
@@ -1520,24 +1921,16 @@ void freeCamFrame(bool menuOpen) {
         ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
         ImGui::TextUnformatted("Free camera: mouse looks, WASD moves, Q/E down/up, Shift faster, Ctrl slower, wheel changes speed.");
-        ImGui::TextUnformatted("Open the menu and untick Free camera (Layout editor) to go back to Faith.");
+        ImGui::Text("Click or %s: pick. Arrows, %s/%s: move it; %s/%s: turn. %s: copy, %s: paste. %s: back to Faith.",
+                    ui::keyName(g_binds[kPick].vk).c_str(), ui::keyName(g_binds[kUp].vk).c_str(), ui::keyName(g_binds[kDown].vk).c_str(),
+                    ui::keyName(g_binds[kTurnL].vk).c_str(), ui::keyName(g_binds[kTurnR].vk).c_str(), ui::keyName(g_binds[kCopy].vk).c_str(),
+                    ui::keyName(g_binds[kPaste].vk).c_str(), ui::keyName(g_binds[kFreeCam].vk).c_str());
+        Selected cur;
+        if (selection(cur)) ImGui::Text("Selected: %s", cur.group ? "a prop in a static model group (make it standalone in the menu to move it)" : cur.kind.c_str());
         ImGui::End();
     }
     if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
-    if (ImGui::GetFrameCount() % 120 == 0) { // diagnostics while the free camera is being made to work
-        namespace m = e::st::ClientCameraViewManager::off;
-        const uintptr_t mgr = firstViewManager();
-        const uintptr_t cam = mgr ? mem::readOr<uintptr_t>(mgr + m::activeCamera) : 0;
-        float a[3] = {}, b[3] = {}, c3[3] = {};
-        if (mgr) mem::read(mgr + m::transform + 0x30, a, sizeof(a)), mem::read(mgr + 0x120 + 0x30, b, sizeof(b));
-        if (cam) mem::read(cam + e::st::CameraObject::off::transform + 0x30, c3, sizeof(c3));
-        GN_LOG("layouts: free camera check: updates %u, outputs %u, camera %llx (ours %llx, vtable %s), flag %u; want (%.1f %.1f %.1f) "
-               "camera (%.1f %.1f %.1f) view (%.1f %.1f %.1f) view2 (%.1f %.1f %.1f)",
-               g_camCalls.exchange(0), g_camOutputs.exchange(0), static_cast<unsigned long long>(cam), static_cast<unsigned long long>(g_camObject),
-               cam && mem::readOr<uintptr_t>(cam) == reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]) ? "copy" : "original",
-               mgr ? mem::readOr<uint8_t>(mgr + m::updating) : 0u, g_cam.pos[0], g_cam.pos[1], g_cam.pos[2], c3[0], c3[1], c3[2],
-               a[0], a[1], a[2], b[0], b[1], b[2]);
-    } // a level change or cutscene changes the active camera
+
     ImGuiIO& io = ImGui::GetIO();
     ui::setInputCapture(!menuOpen);
     if (!menuOpen) {
@@ -1589,31 +1982,78 @@ void freeCamFrame(bool menuOpen) {
     g_camApply = true;
 }
 
-// The ray through the cursor, from the current view (free camera or the game's).
-bool cursorRay(float* ray) {
-    const ImGuiIO& io = ImGui::GetIO();
-    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
-    float from[3], d[3], r[3], u[3];
+// The current view's look direction, screen right and up, and position (free camera or the game's).
+bool viewBasis(float* from, float* d, float* r, float* u) {
     if (g_cam.active) {
         camBasis(g_cam, d, r, u);
-        memcpy(from, g_cam.pos, sizeof(from));
+        memcpy(from, g_cam.pos, sizeof(float) * 3);
     } else {
         gn_transform v{};
         if (!cameraTransform(v)) return false;
         for (int k = 0; k < 3; ++k) d[k] = -v.forward[k], r[k] = v.right[k], u[k] = v.up[k], from[k] = v.trans[k];
         normalize(d), normalize(r), normalize(u);
     }
+    return true;
+}
+
+// The ray through a screen point (nx, ny in -1..1, y up), from the current view.
+bool viewRay(float nx, float ny, float* ray) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return false;
     const uintptr_t mgr = firstViewManager();
     const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
     const float fov = (fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f) * 3.14159265f / 180.f;
     const float aspect = io.DisplaySize.x / io.DisplaySize.y;
-    const float nx = 2.f * io.MousePos.x / io.DisplaySize.x - 1.f, ny = 1.f - 2.f * io.MousePos.y / io.DisplaySize.y;
     const float th = std::tan(fov * 0.5f);
     for (int k = 0; k < 3; ++k) ray[3 + k] = d[k] + r[k] * nx * th * aspect + u[k] * ny * th;
     normalize(ray + 3);
     memcpy(ray, from, sizeof(from));
     return true;
 }
+
+bool cursorRay(float* ray) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
+    return viewRay(2.f * io.MousePos.x / io.DisplaySize.x - 1.f, 1.f - 2.f * io.MousePos.y / io.DisplaySize.y, ray);
+}
+bool centreRay(float* ray) { return viewRay(0.f, 0.f, ray); }
+
+void pickCentre() {
+    float ray[6];
+    if (centreRay(ray)) pick(ray);
+    else pick();
+}
+void pasteCentre() {
+    float ray[6];
+    if (centreRay(ray)) pasteAt(ray);
+    else setStatus("Paste: no camera");
+}
+
+// Moves the selection one step relative to the view: dir 0 away, 1 toward, 2 left, 3 right, 4 up, 5 down;
+// 6 / 7 turn left / right. Shift: 4 steps, Ctrl: a quarter.
+void nudge(int dir, float scale) {
+    Selected s;
+    if (!selection(s) || s.group) return;
+    float from[3], d[3], r[3], u[3];
+    if (dir < 4 && !viewBasis(from, d, r, u)) return;
+    gn_transform t = s.now;
+    if (dir >= 6) {
+        yaw(t, (dir == 6 ? 1.f : -1.f) * g_turnStep * scale);
+    } else if (dir >= 4) {
+        t.trans[1] += (dir == 4 ? 1.f : -1.f) * g_nudge * scale;
+    } else { // along the ground: the view's directions without their vertical part
+        float f[3] = {d[0], 0.f, d[2]}, side[3] = {r[0], 0.f, r[2]};
+        normalize(f), normalize(side);
+        const float* axis = dir < 2 ? f : side;
+        const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
+        for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
+    }
+    moveSelection(t);
+}
+
+void drawKeys();
 
 void draw(bool* open) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 26, 0), ImGuiCond_FirstUseEver);
@@ -1666,8 +2106,7 @@ void draw(bool* open) {
     bool autoload = g_autoload.load();
     if (ImGui::Checkbox("Load the last used layout when a level starts", &autoload)) {
         g_autoload = autoload;
-        CreateDirectoryW(g_dir.c_str(), nullptr);
-        writeLine(g_dir + L"settings.txt", autoload ? "autoload=1\n" : "autoload=0\n");
+        saveSettings();
     }
     // The level's saved layouts (listed again at most once a second).
     static std::vector<std::string> saved;
@@ -1703,20 +2142,26 @@ void draw(bool* open) {
     if (ImGui::Button("Unload (put the level back)")) unloadLayout();
     ImGui::EndDisabled();
     ImGui::SeparatorText("Object");
-    if (ImGui::Button("Pick what the camera points at")) pick();
+    if (ImGui::Button("Pick what the camera points at")) pickCentre();
     Selected s;
-    bool have;
-    std::string status;
+    bool have, haveClip;
+    std::string status, clip;
     {
         std::lock_guard<std::mutex> lock(g_selM);
         s = g_sel;
         have = g_haveSel;
         status = g_status;
+        haveClip = g_haveClip;
+        clip = g_clip.label;
     }
-    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+    if (!status.empty()) {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("%s", status.c_str());
+        ImGui::PopTextWrapPos();
+    }
     if (have && s.group) {
         ImGui::TextWrapped("This prop is part of a static model group, which the game draws as one batch. Make it standalone to move it: "
-                           "the group's copy is hidden and a standalone copy takes its place.");
+                           "the group's copy is hidden and a standalone copy takes its place. Copy and Duplicate work on it as it is.");
         if (ImGui::Button("Make standalone")) {
             const GroupProp gp = s.gp;
             const gn_transform at = s.orig;
@@ -1724,27 +2169,149 @@ void draw(bool* open) {
             server().post([gp, at] { makeStandalone(gp, at, at, true); });
         }
     } else if (have) {
-        ImGui::Text("%s%s  (%llu entities)", s.kind.c_str(), s.spawned ? " (standalone copy of a group prop)" : "",
+        ImGui::Text("%s%s  (%llu entities)", s.kind.c_str(),
+                    s.copyId >= 0 ? " (a copy)" : s.spawned ? " (standalone copy of a group prop)" : "",
                     static_cast<unsigned long long>(s.entities.size()));
         gn_transform t = s.now;
         bool changed = ImGui::DragFloat3("Position", t.trans, 0.05f, 0.f, 0.f, "%.2f");
-        static float step = 15.f;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-        ImGui::InputFloat("##step", &step, 0.f, 0.f, "%.0f deg");
-        ImGui::SameLine();
-        if (ImGui::Button("Turn left")) yaw(t, step), changed = true;
-        ImGui::SameLine();
-        if (ImGui::Button("Turn right")) yaw(t, -step), changed = true;
         if (changed) moveSelection(t);
-        if (ImGui::Button("Put back where the level had it")) resetSelection();
-        ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
+        // Steps relative to the view.
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        if (ImGui::InputFloat("##nudge", &g_nudge, 0.f, 0.f, "%.2f m")) g_nudge = std::clamp(g_nudge, 0.01f, 100.f), saveSettings();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        if (ImGui::InputFloat("##turn", &g_turnStep, 0.f, 0.f, "%.0f deg")) g_turnStep = std::clamp(g_turnStep, 0.1f, 180.f), saveSettings();
+        const float scale = ImGui::GetIO().KeyShift ? 4.f : ImGui::GetIO().KeyCtrl ? 0.25f : 1.f;
+        if (ImGui::Button("Away")) nudge(0, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Closer")) nudge(1, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Left")) nudge(2, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Right")) nudge(3, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Up")) nudge(4, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Down")) nudge(5, scale);
+        if (ImGui::Button("Turn left")) nudge(6, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Turn right")) nudge(7, scale);
+        ImGui::TextDisabled("Directions follow the camera. Shift: 4 steps, Ctrl: a quarter.");
+        if (ImGui::Button(s.copyId >= 0 ? "Remove this copy" : "Put back where the level had it")) resetSelection();
+        if (s.copyId < 0) ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
     } else {
         ImGui::TextDisabled("Point the camera at an object and press Pick.");
     }
+    // Copies.
+    ImGui::BeginDisabled(!have);
+    if (ImGui::Button("Copy")) copySelection();
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate in place")) duplicateSelection();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!haveClip);
+    if (ImGui::Button("Paste at the crosshair")) pasteCentre();
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.f);
+    if (haveClip) ImGui::TextDisabled("Copied: %s", clip.c_str());
+    else ImGui::TextDisabled("Copy an object (a building, a prop) to paste new ones of it anywhere in this level. Copies are saved with the layout.");
+    ImGui::PopTextWrapPos();
+    drawKeys();
     ImGui::End();
 }
 
+// ---- key binds (read with GetAsyncKeyState so they work with the menu closed) ----------------------------
+int g_rebinding = -1;            // the bind waiting for a key (render thread)
+bool g_keyWas[kBindCount] = {};
+double g_keyNext[kBindCount] = {};
+
+bool keyHeld(int vk) { return vk && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+// A press of bind `i` this frame (with repeats while held, for binds that repeat).
+bool bindPressed(int i) {
+    const bool down = keyHeld(g_binds[i].vk);
+    const bool was = g_keyWas[i];
+    g_keyWas[i] = down;
+    if (!down) return false;
+    const double now = ImGui::GetTime();
+    if (!was) {
+        g_keyNext[i] = now + 0.35;
+        return true;
+    }
+    if (g_binds[i].repeat && now >= g_keyNext[i]) {
+        g_keyNext[i] = now + 0.06;
+        return true;
+    }
+    return false;
+}
+
+void drawKeys() {
+    if (!ImGui::CollapsingHeader("Keys")) return;
+    ImGui::TextDisabled("Free-camera keys work only while the free camera is on.");
+    for (int i = 0; i < kBindCount; ++i) {
+        ImGui::PushID(i);
+        const std::string name = g_rebinding == i ? std::string("press a key...") : g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("none");
+        if (ImGui::Button(name.c_str(), ImVec2(ImGui::GetFontSize() * 7, 0))) {
+            g_rebinding = i;
+            for (int vk = 0x04; vk <= 0xFE; ++vk) GetAsyncKeyState(vk); // forget presses from before
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s%s", g_binds[i].label, g_binds[i].freeCamOnly ? "" : "  (always)");
+        ImGui::PopID();
+    }
+    if (g_rebinding >= 0) ImGui::TextDisabled("Escape: no key. Backspace: the default.");
+    if (ImGui::SmallButton("All keys back to the defaults")) {
+        for (Bind& b : g_binds) b.vk = b.def;
+        saveSettings();
+    }
+}
+
+// While rebinding: the first key pressed (mouse buttons other than the side ones are left alone).
+void rebindFrame() {
+    if (g_rebinding < 0) return;
+    for (int vk = 0x04; vk <= 0xFE; ++vk) {
+        if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= 0xA0 && vk <= 0xA5)) continue;
+        if (!(GetAsyncKeyState(vk) & 1)) continue; // pressed since the last call
+        Bind& b = g_binds[g_rebinding];
+        b.vk = vk == VK_ESCAPE ? 0 : vk == VK_BACK ? b.def : vk;
+        g_rebinding = -1;
+        for (int i = 0; i < kBindCount; ++i) g_keyWas[i] = true; // no action for the key just pressed
+        saveSettings();
+        return;
+    }
+}
+
+void keysFrame(bool menuOpen) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (g_rebinding >= 0) return rebindFrame();
+    if (!ui::gameFocused() || io.WantTextInput) {
+        for (bool& w : g_keyWas) w = true; // nothing fires when focus comes back with a key held
+        return;
+    }
+    if (bindPressed(kFreeCam) && localClientCharacter()) g_cam.enabled = !g_cam.enabled;
+    const bool flying = g_cam.active;
+    bool fire[kBindCount] = {};
+    for (int i = kPick; i < kBindCount; ++i) fire[i] = bindPressed(i) && flying;
+    if (!flying) return;
+    if (fire[kPick]) pickCentre();
+    if (fire[kCopy]) copySelection();
+    if (fire[kPaste]) pasteCentre();
+    const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
+    for (int i = kFwd; i <= kTurnR; ++i)
+        if (fire[i]) nudge(i - kFwd, scale);
+    // With the menu closed: a left click picks what the crosshair points at, and the crosshair shows.
+    if (!menuOpen) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) pickCentre();
+        const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const float k = ImGui::GetFontSize() * 0.5f;
+        dl->AddLine(ImVec2(c.x - k, c.y), ImVec2(c.x + k, c.y), IM_COL32(255, 255, 255, 200), 1.5f);
+        dl->AddLine(ImVec2(c.x, c.y - k), ImVec2(c.x, c.y + k), IM_COL32(255, 255, 255, 200), 1.5f);
+    }
+}
+
 void frame(bool menuOpen) {
+    keysFrame(menuOpen);
     freeCamFrame(menuOpen);
     // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
     const ImGuiIO& io = ImGui::GetIO();

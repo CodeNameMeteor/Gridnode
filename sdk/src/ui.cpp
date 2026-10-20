@@ -78,7 +78,11 @@ const KeyName kKeyNames[] = {
     {"F8", VK_F8}, {"F9", VK_F9}, {"F10", VK_F10}, {"F11", VK_F11}, {"F12", VK_F12},
     {"NUM0", VK_NUMPAD0}, {"NUM1", VK_NUMPAD1}, {"NUM2", VK_NUMPAD2}, {"NUM3", VK_NUMPAD3}, {"NUM4", VK_NUMPAD4},
     {"NUM5", VK_NUMPAD5}, {"NUM6", VK_NUMPAD6}, {"NUM7", VK_NUMPAD7}, {"NUM8", VK_NUMPAD8}, {"NUM9", VK_NUMPAD9},
-    {"BACKTICK", VK_OEM_3},
+    {"BACKTICK", VK_OEM_3}, {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT}, {"UP", VK_UP}, {"DOWN", VK_DOWN},
+    {"BACKSPACE", VK_BACK}, {"TAB", VK_TAB}, {"ENTER", VK_RETURN}, {"SPACE", VK_SPACE},
+    {"LBRACKET", VK_OEM_4}, {"RBRACKET", VK_OEM_6}, {"COMMA", VK_OEM_COMMA}, {"PERIOD", VK_OEM_PERIOD},
+    {"SLASH", VK_OEM_2}, {"SEMICOLON", VK_OEM_1}, {"QUOTE", VK_OEM_7}, {"MINUS", VK_OEM_MINUS}, {"EQUALS", VK_OEM_PLUS},
+    {"MOUSE3", VK_MBUTTON}, {"MOUSE4", VK_XBUTTON1}, {"MOUSE5", VK_XBUTTON2},
 };
 
 bool typesCharacter(int vk) { return MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_CHAR) != 0; }
@@ -524,6 +528,7 @@ void toggleMenu() {
 }
 
 bool menuOpen() { return g_open.load(); }
+bool gameFocused() { return g_window && GetForegroundWindow() == g_window; }
 void setLookCapture(bool on) {
     if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;
 }
