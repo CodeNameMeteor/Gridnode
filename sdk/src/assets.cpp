@@ -22,25 +22,28 @@ namespace k = gn::engine::constant;
 
 bool available() {
     static const bool ok = [] {
-        // The table and the functions are read as Ghidra shows them; the walk below only reads.
-        const bool fine = mem::inImage(mem::rva(e::function::Partition_findByName)) && mem::inImage(mem::rva(e::global::ResourceGroups));
-        if (!fine) GN_LOG("assets: lookup not available");
+        const bool fine = build::codeMatches("getCompartment") && build::codeMatches("Partition_findByName");
+        if (!fine) GN_LOG("assets: the lookup functions are not as expected; assets are off");
         return fine;
     }();
     return ok;
 }
 
-using FindFn = void* (*)(void* group, const char* path);
+using CompartmentFn = void* (*)(uint16_t id);
+using FindFn = void* (*)(void* compartment, const char* path);
 } // namespace
 
 void* assetFind(const char* path, uint32_t* groupOut) {
     if (!path || !*path || !available()) return nullptr;
+    const auto compartment = reinterpret_cast<CompartmentFn>(mem::rva(e::function::getCompartment));
     const auto find = reinterpret_cast<FindFn>(mem::rva(e::function::Partition_findByName));
     const uintptr_t table = mem::rva(e::global::ResourceGroups);
     for (uint32_t id = 0; id < k::ResourceGroup_Count; ++id) {
-        const uintptr_t group = mem::readOr<uintptr_t>(table + id * 8ull);
-        if (!group) continue;
-        void* partition = find(reinterpret_cast<void*>(group), path);
+        // Only groups that exist; the game's own getter gives the group's compartment (its +0x68).
+        if (!mem::readOr<uintptr_t>(table + id * 8ull)) continue;
+        void* comp = compartment(static_cast<uint16_t>(id));
+        if (!comp) continue;
+        void* partition = find(comp, path);
         if (!partition) continue;
         // Partition_primaryInstance: **(partition + 0x20).
         const uintptr_t list = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(partition) + 0x20);
