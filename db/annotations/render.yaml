@@ -10,6 +10,12 @@ globals:
     confidence: inferred
     sources: [research]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: RigidMeshEntity_vtable
+    va: 0x141bf72c8
+    type: "void*"
+    note: "A static model's render object (transform +0x10, bounding sphere +0x50, mesh box via +0x60)."
+    confidence: inferred
+    sources: [ghidra, research]
   - name: g_renderDevice
     va: 0x142563300
     type: "u64"
@@ -63,6 +69,16 @@ functions:
     signature: "void(void* renderWorld, u8* update)"
     confidence: inferred
     sources: [research]
+  - name: RigidMeshEntity_setTransform
+    va: 0x14376c060
+    signature: "void(void* object, const LinearTransform* world)"
+    note: >-
+      Vtable +0x10 of RigidMeshEntity (vtable 0x141bf72c8), a static model's render object. Stores
+      the transform at +0x10 (four float4 rows) and the world bounding sphere at +0x50, from the
+      mesh's local box at *(**(object + 0x60) + 0x20) (min xyz, pad, max xyz). The layout editor's
+      outline reads both (docs/research/render-objects.md; fit confirmed in game 2026-10-21).
+    confidence: inferred
+    sources: [ghidra, research]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: DebugRenderShader_initParamIds
     va: 0x142988e40

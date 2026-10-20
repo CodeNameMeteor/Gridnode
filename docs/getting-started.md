@@ -55,6 +55,8 @@ inspector=1
 
 ## Next
 
-[Writing a mod](modding.md) covers the API; [Shipping a mod](shipping.md) covers what players need. `examples/` has complete mods: `hello` (reflection,
+[Writing a mod](modding.md) covers the API; [Shipping a mod](shipping.md) covers what players need.
+The developer tools have their own pages: the [Layout editor](layout-editor.md) and the
+[Recorder](recording.md). `examples/` has complete mods: `hello` (reflection,
 ticks, creation, messages), `trainer` (save / load position, a window), `mec-trainer` (Faith's
 movement, tuning, noclip, god mode), `hello-rust`.

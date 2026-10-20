@@ -267,7 +267,9 @@ uint32_t djb2(const std::string& s) {
 }
 
 // Event names from their hashes: every reflected type, field and enum value name, common event
-// words, and recordings\event-names.txt (one name per line) if present.
+// words, and recordings\event-names.txt (one name per line, "#" comments, anything after a tab
+// ignored) if present: tools/events/build_names.py makes one from an EBX dump, the game's strings
+// and earlier recordings.
 const std::unordered_map<uint32_t, std::string>& eventNames() {
     static const std::unordered_map<uint32_t, std::string> names = [] {
         std::unordered_map<uint32_t, std::string> m;
@@ -294,8 +296,12 @@ const std::unordered_map<uint32_t, std::string>& eventNames() {
             char line[256];
             while (fgets(line, sizeof(line), f)) {
                 std::string n = line;
+                if (n.empty() || n[0] == '#') continue;              // a comment
+                if (const size_t tab = n.find('\t'); tab != std::string::npos) n.resize(tab); // "name<TAB># note"
                 while (!n.empty() && (n.back() == '\n' || n.back() == '\r' || n.back() == ' ')) n.pop_back();
-                add(n);
+                // Generated names are checked against their hashes; a name the file gives is taken
+                // over any built-in one with the same hash.
+                if (!n.empty()) m[djb2(n)] = n;
             }
             fclose(f);
         }

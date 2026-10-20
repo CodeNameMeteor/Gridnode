@@ -414,7 +414,7 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    third person uses) and +0x68 (its update) return the free camera, and Faith's view-mode
    interface (+0x1d8) answers 1, so her third-person body shows. Writing the view manager's
    copies from the post-update listeners did nothing: the renderer asks the camera itself.
-   Still to do: a move / rotate gizmo (ImGuizmo) and a selection outline.
+   Still to do: a move / rotate gizmo (ImGuizmo). The selection outline is done (step 9).
 8. **Keys, copies and steps** (asked for 2026-10-20, first version done): rebindable keys
    (`layouts/settings.txt`): F7 free camera; while it flies R or a click picks at the crosshair, C
    copies, V pastes at the crosshair, arrows / PageUp / PageDown move the selection relative to
@@ -425,6 +425,38 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    `GroupProp`) and `at` (its level position); copies are placed before group props are made
    standalone so their sources are still found. Removing a copy parks it 15 km below for reuse
    (entities cannot be destroyed yet). Next: a library of copied objects that lasts across levels.
+   Also done 2026-10-20: tilt / tip / flip upside down / stand upright (N M K L H U), undo (Ctrl+Z;
+   a held key is one step), teleport Faith to the crosshair (T; the game's own
+   ServerCharacterEntity_teleport) and named teleport points per level
+   (`layouts/<level>/teleports.txt`). Copies made in a part of the level that streams out are
+   destroyed with it; GridNode places them again when that part loads (confirmed in game). It
+   looks for their sources only when a model or group has been created since the last look, and
+   never more often than 25 times what the last look took (the first version searched every 2 s
+   while a source was away, which dropped the game to 2 fps).
+9. **Selection outline** (asked for 2026-10-20, done; fit **confirmed in game** 2026-10-21): a box
+   around the selection with its axes (X red, Y green, Z blue, from the box's middle; a dot marks
+   the pivot), shown while the free camera is on. The box is the mesh's own local box, read from
+   the render object that draws the selection (`RigidMeshEntity`, see
+   `docs/research/render-objects.md`), in that object's transform. A group prop's render object
+   is its member block's list entry for the copy (block +0xc8), or asked of the game on the client
+   thread (the physics component's vtable +0x210); a standalone model's is found from its client
+   entity. Only a render object drawn where the selection is counts (within 0.75 m). Until it is
+   found the box is the group's collision (the compound shape's instance tree), which can be
+   larger than the mesh.
+10. **Multiple selection** (asked for 2026-10-21, built, not yet tested in game): Shift + click
+   (or Shift + R) adds an object to the selection or takes it out. The first picked leads (yellow
+   outline, axes); the rest (light blue) move and turn with it about its pivot. Copy takes them
+   all (Paste places the lead at the crosshair and the rest where they were from it), Duplicate,
+   Put back and Undo work on all of them, as one undo step. Group props can be in the selection
+   and copied, but move only once made standalone.
+11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
+   hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
+   dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
+   suffixes, two common words joined); it writes `recordings/event-names.txt`, which the Recorder
+   and `summarize.py` read. A first run on part of the dump (102 files) and two recordings named
+   302 of 807 hashes seen (55 of them guesses), among them `StreamIn` / `StreamOut` on
+   `ServerBlueprintEntity` and `ServerSubLevelEntity` (parts of the level loading). See
+   `docs/recording.md`.
 
 ### M8 plan (recordings for research), asked for 2026-10-20
 
@@ -434,8 +466,9 @@ Home drops a marker (with Faith's position), Export writes `recordings/<time>-<n
 whatever their other slots point to, and the raw bytes; entity creations carry the class, data
 type, the bus's blueprint name and position; every event has the game's call stack as image
 VAs. `tools/recording/summarize.py` lists what is unusual around each marker and its stacks.
-Not yet: entity destruction, events between entities (the event-fire function, once found in
-Ghidra), and naming stack frames by their containing function.
+Events between entities were added the same day (onEvent wrapped per entity vtable); their names
+come from `recordings/event-names.txt` (M7 step 11). Not yet: entity destruction and naming stack
+frames by their containing function.
 
 Record what the game does around an event (a KSEC, a door, a checkpoint) instead of guessing:
 start recording, play, pause, export, and comb the export with Ghidra.

@@ -7,7 +7,9 @@
 Prints what was recorded, then for each marker what happened around it: the message types and
 entity creations that are unusual there (seen near the marker but rare elsewhere), and the game
 call stacks behind them as image VAs (0x14...), ready to open in Ghidra. Stack frames that match
-an annotated function's start are named from db/annotations.
+an annotated function's start are named from db/annotations. Events recorded without a name are
+named from event-names.txt (next to the recording, or --names; tools/events/build_names.py makes
+it).
 """
 
 import argparse
@@ -35,6 +37,36 @@ def load_annotation_names():
     return names
 
 
+def djb2(s):
+    h = 5381
+    for c in s.encode("utf-8"):
+        h = ((h * 33) ^ c) & 0xFFFFFFFF
+    return h
+
+
+EVENT_NAMES = {}
+
+
+def load_event_names(path):
+    """hash -> name from an event-names.txt (lines: name, optionally a tab and a note; # comments)."""
+    if not path or not path.exists():
+        return 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name = line.split("\t", 1)[0].rstrip()
+        if name:
+            EVENT_NAMES[djb2(name)] = name
+    return len(EVENT_NAMES)
+
+
+def event_label(ev):
+    name, eid = ev.get("event", "?"), ev.get("event_id")
+    if eid and name == eid:
+        name = EVENT_NAMES.get(int(eid, 16), name)
+    return name
+
+
 def label(ev):
     k = ev.get("kind")
     if k == "message":
@@ -43,7 +75,7 @@ def label(ev):
         bp = ev.get("blueprint")
         return "new " + ev.get("type", "?") + (f" [{bp}]" if bp else "")
     if k == "event":
-        return f"event {ev.get('event', '?')} -> {ev.get('target', '?')}"
+        return f"event {event_label(ev)} -> {ev.get('target', '?')}"
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":
@@ -63,7 +95,9 @@ def main():
     ap.add_argument("--marker", help="only this marker (by name)")
     ap.add_argument("--top", type=int, default=25, help="lines per list (default 25)")
     ap.add_argument("--all", action="store_true", help="list every event near the marker, not only the unusual ones")
+    ap.add_argument("--names", type=pathlib.Path, help="event-names.txt (default: the one next to the recording)")
     args = ap.parse_args()
+    load_event_names(args.names or pathlib.Path(args.file).with_name("event-names.txt"))
 
     header, events = None, []
     with open(args.file, encoding="utf-8") as f:
