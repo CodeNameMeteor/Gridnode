@@ -175,8 +175,14 @@ Bind g_binds[] = {
     {"down", "Move down", VK_NEXT, true, true, VK_NEXT},
     {"turnleft", "Turn left", 'Z', true, true, 'Z'},
     {"turnright", "Turn right", 'X', true, true, 'X'},
+    {"tiltleft", "Tilt left", 'N', true, true, 'N'},
+    {"tiltright", "Tilt right", 'M', true, true, 'M'},
+    {"tipaway", "Tip away", 'K', true, true, 'K'},
+    {"tiptoward", "Tip toward", 'L', true, true, 'L'},
+    {"flip", "Flip upside down", 'H', true, false, 'H'},
+    {"upright", "Stand upright again", 'U', true, false, 'U'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -1617,14 +1623,43 @@ void duplicateSelection() {
     });
 }
 
-void yaw(gn_transform& t, float degrees) {
+// Turns the object about a world axis through its position (its rows keep their lengths, so scale stays).
+void rotateAbout(gn_transform& t, const float* axisIn, float degrees) {
+    float k[3] = {axisIn[0], axisIn[1], axisIn[2]};
+    const float n = std::sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2]);
+    if (n < 1e-6f) return;
+    for (float& x : k) x /= n;
     const float a = degrees * 3.14159265f / 180.f, c = std::cos(a), s = std::sin(a);
-    auto rot = [&](float* v) {
-        const float x = v[0] * c + v[2] * s, z = -v[0] * s + v[2] * c;
-        v[0] = x, v[2] = z;
+    auto rot = [&](float* v) { // Rodrigues
+        const float kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+        const float cx = k[1] * v[2] - k[2] * v[1], cy = k[2] * v[0] - k[0] * v[2], cz = k[0] * v[1] - k[1] * v[0];
+        const float o[3] = {v[0] * c + cx * s + k[0] * kv * (1.f - c), v[1] * c + cy * s + k[1] * kv * (1.f - c),
+                            v[2] * c + cz * s + k[2] * kv * (1.f - c)};
+        v[0] = o[0], v[1] = o[1], v[2] = o[2];
     };
     rot(t.right);
+    rot(t.up);
     rot(t.forward);
+}
+
+void yaw(gn_transform& t, float degrees) {
+    const float Y[3] = {0.f, 1.f, 0.f};
+    rotateAbout(t, Y, degrees);
+}
+
+// Stands the object upright again (its up row along world up), keeping the way it faces.
+void upright(gn_transform& t) {
+    auto len = [](const float* v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+    const float lr = len(t.right), lu = len(t.up), lf = len(t.forward);
+    float f[3] = {t.forward[0], 0.f, t.forward[2]};
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[0] = -t.up[0], f[2] = -t.up[2]; // was facing straight up or down
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[2] = 1.f;
+    const float n = std::sqrt(f[0] * f[0] + f[2] * f[2]);
+    f[0] /= n, f[2] /= n;
+    // right = up x forward with up = Y: (f.z, 0, -f.x)
+    t.right[0] = f[2] * lr, t.right[1] = 0.f, t.right[2] = -f[0] * lr;
+    t.up[0] = 0.f, t.up[1] = lu, t.up[2] = 0.f;
+    t.forward[0] = f[0] * lf, t.forward[1] = 0.f, t.forward[2] = f[2] * lf;
 }
 
 } // namespace
@@ -1942,6 +1977,10 @@ void freeCamFrame(bool menuOpen) {
         row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
         row(k(kUp) + " / " + k(kDown), "move it up / down");
         row(k(kTurnL) + " / " + k(kTurnR), "turn it");
+        row(k(kTiltL) + " / " + k(kTiltR), "tilt it left / right");
+        row(k(kTipAway) + " / " + k(kTipToward), "tip it away / toward");
+        row(k(kFlip), "flip it upside down");
+        row(k(kUpright), "stand it upright");
         row(k(kCopy), "copy");
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
@@ -2062,16 +2101,21 @@ void pasteCentre() {
 void nudge(int dir, float scale) {
     Selected s;
     if (!selection(s) || s.group) return;
-    float from[3], d[3], r[3], u[3];
-    if (dir < 4 && !viewBasis(from, d, r, u)) return;
+    float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
+    if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return;
     gn_transform t = s.now;
-    if (dir >= 6) {
+    float f[3] = {d[0], 0.f, d[2]}, side[3] = {r[0], 0.f, r[2]}; // the view's directions along the ground
+    if (dir < 4 || (dir >= 8 && dir <= 12)) normalize(f), normalize(side);
+    if (dir >= 8) { // 8 / 9 tilt left / right, 10 / 11 tip away / toward, 12 upside down, 13 upright
+        if (dir == 8 || dir == 9) rotateAbout(t, f, (dir == 8 ? -1.f : 1.f) * g_turnStep * scale);
+        else if (dir == 10 || dir == 11) rotateAbout(t, side, (dir == 10 ? 1.f : -1.f) * g_turnStep * scale);
+        else if (dir == 12) rotateAbout(t, f, 180.f);
+        else upright(t);
+    } else if (dir >= 6) {
         yaw(t, (dir == 6 ? 1.f : -1.f) * g_turnStep * scale);
     } else if (dir >= 4) {
         t.trans[1] += (dir == 4 ? 1.f : -1.f) * g_nudge * scale;
-    } else { // along the ground: the view's directions without their vertical part
-        float f[3] = {d[0], 0.f, d[2]}, side[3] = {r[0], 0.f, r[2]};
-        normalize(f), normalize(side);
+    } else { // along the ground
         const float* axis = dir < 2 ? f : side;
         const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
         for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
@@ -2222,6 +2266,16 @@ void draw(bool* open) {
         if (ImGui::Button("Turn left")) nudge(6, scale);
         ImGui::SameLine();
         if (ImGui::Button("Turn right")) nudge(7, scale);
+        if (ImGui::Button("Tilt left")) nudge(8, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tilt right")) nudge(9, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip away")) nudge(10, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip toward")) nudge(11, scale);
+        if (ImGui::Button("Flip upside down")) nudge(12, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Stand upright")) nudge(13, 1.f);
         ImGui::TextDisabled("Directions follow the camera. Shift: 4 steps, Ctrl: a quarter.");
         if (ImGui::Button(s.copyId >= 0 ? "Remove this copy" : "Put back where the level had it")) resetSelection();
         if (s.copyId < 0) ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
@@ -2324,7 +2378,7 @@ void keysFrame(bool menuOpen) {
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
-    for (int i = kFwd; i <= kTurnR; ++i)
+    for (int i = kFwd; i <= kUpright; ++i)
         if (fire[i]) nudge(i - kFwd, scale);
     // With the menu closed: a left click picks what the crosshair points at, and the crosshair shows.
     if (!menuOpen) {
