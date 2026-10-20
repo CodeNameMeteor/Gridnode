@@ -43,8 +43,30 @@ already resolve some (e.g. "Out").
 - `ServerControllableSpawnDoneMessage`: +0x30 the character entity.
 - `ClientSpawnSpawnedOrUnSpawnedMessage`: +0x30 the ClientCharacterSpawnEntity, +0x38 1 = spawned.
 
-## What the Recorder should add next
+## The event chain (second recording, with entity events)
 
-Events between entities: recording each delivery (target type, event id and its name, source) would
-show the whole graph from "Out" to the spawn. That needs a hook on entity onEvent (vtable +0x20, a
-pointer swap per entity class) or on the bus functions above.
+`recordings/20261020-201905-safehousetp.jsonl`: 43,455 events, 14,570 of them events between
+entities (onEvent wrapped in 1,354 entity vtables). On the server thread, after the map closes:
+
+| t (s) | Event → receiver | |
+|---|---|---|
+| 0.448 | `EventSyncReachedClientMessage` | the client confirmed fast travel |
+| 0.448 | **Teleport** → FullEntityBusBridge (a blueprint's interface) | |
+| 0.448 | b728297b → ServerCharacterProxyEntity, PamServerHumanHealthComponent, PamServerCharacterEntity | Faith prepared (name unknown) |
+| 0.448 | **Activate** → ServerInputRestrictionEntity | input locked (`ServerInputDeactivateInputRestrictionMessage`) |
+| 0.448 | 74f05cea → PamServerStartPointEntity | the destination's start point |
+| 0.479 | Deactivate / Activate → PamUIInputControlEntity, **Unpause** → ZoneStreamerControlEntity ×3 | streaming resumes |
+| 0.982 | `EventSyncReachedClientMessage` (the next sync point) | |
+| 0.982 | **Teleport** → **PamServerTeleportEntity** | the move itself |
+| 0.989 | `PamTelemetryTeleportMessage` | from / to |
+| 0.982 | d27bc17e → ServerBlueprintEntity, Impulse → EventSplitterEntity, Reset → PamServerFlowEntity | the rest of the graph |
+
+`PamServerTeleportEntity_onEvent` (0x1433845f0) handles "Teleport" (0x94ba5a24): it teleports the
+player (`ServerTeleportEntity_teleportPlayer`) to its `TeleportEntityData.NewPositionTransform`
+(+0x20; `CheckBelowGround` +0x18). So the game teleports with an entity that holds the
+destination, triggered by an event; GridNode could do the same by sending "Teleport" to such an
+entity, or by spawning one with its own transform.
+
+Unnamed event ids (b728297b, 74f05cea, 27d4023a, d27bc17e, ...) are names not in the reflection
+data; a list of event names from the game's data (Frosty) would name them
+(`recordings/event-names.txt` is read by the Recorder).

@@ -63,6 +63,16 @@ hooks:
     signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
 
 functions:
+  - name: PamServerTeleportEntity_onEvent
+    va: 0x1433845f0
+    signature: "void(void* entity, const EntityEvent* event)"
+    note: >-
+      PamServerTeleportEntity vtable +0x20. On "Teleport" (event id 0x94ba5a24) teleports the player
+      (ServerTeleportEntity_teleportPlayer) or, without one, the character linked to it
+      (ServerTeleportEntity_teleportCharacter), to TeleportEntityData.NewPositionTransform (+0x20).
+      Fast travel reaches it from ServerEventSync_onReachedClient (seen in a recording, 2026-10-20).
+    confidence: inferred
+    sources: [ghidra, recording]
   - name: LocalClientCharacter
     va: 0x1439655f0
     signature: "PamClientCharacterEntity*()"
