@@ -415,6 +415,9 @@ Findings while doing steps 2 and 5:
   +0x178, Havok's setBodyTransform), keeping its offset from the entity. Bodies are found from
   the component's body ids. Props merged into a level's `GroupRigidBody` cannot be moved one by one
   this way.
+- Most level props are copies inside StaticModelGroups, whose collision is one Havok
+  `hknpStaticCompoundShape` (the `GroupRigidBody`), one instance per copy. Notes on that and other
+  object facts from the Frosty–Unity Pipeline are in `docs/research/frosty-unity-pipeline.md`.
 - Picking uses `Physics_castRay` from the view camera, which reports the body hit; the body id
   is matched against each physics entity's component body ids. The first version picked the
   nearest entity origin to the hit, which chose objects behind walls.
