@@ -94,6 +94,23 @@ void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& 
 // physics object only with flag TeleportPhysics (set at creation from the data's
 // TeleportPhysicsOnTransformChanges, which is off for level props). Both are set on the objects
 // edits move, and only on those.
+// Research: what an object is and what it points to (types of its first qwords), for the log.
+void describe(const char* tag, uintptr_t obj) {
+    if (!obj) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(obj);
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
+    GN_LOG("layouts: %s %llx: %s, vtable %llx, vf+0xf0 %llx", tag, static_cast<unsigned long long>(obj), t ? t->name.c_str() : "no reflected type",
+           static_cast<unsigned long long>(vt), static_cast<unsigned long long>(vt ? mem::readOr<uintptr_t>(vt + 0xf0) : 0));
+    for (uint32_t off = 8; off < 0xa0; off += 8) {
+        const uintptr_t q = mem::readOr<uintptr_t>(obj + off);
+        if (q < 0x10000) continue;
+        const reflect::Type* qt = registry().typeOf(mem::ProcessMemory(), q);
+        const uintptr_t qvt = mem::readOr<uintptr_t>(q);
+        GN_LOG("layouts:   +%02x %llx %s (vtable %llx)", off, static_cast<unsigned long long>(q), qt ? qt->name.c_str() : "-",
+               static_cast<unsigned long long>(mem::inImage(qvt) ? qvt : 0));
+    }
+}
+
 void letPhysicsFollow(uintptr_t entity, const reflect::Type* t) {
     namespace c = e::constant;
     static const reflect::Type* server = registry().find("ServerPhysicsEntity");
@@ -107,6 +124,8 @@ void letPhysicsFollow(uintptr_t entity, const reflect::Type* t) {
         GN_LOG("layouts: %s %llx: flags %08x -> %08x, physics object %llx", t->name.c_str(), static_cast<unsigned long long>(entity), flags,
                want, static_cast<unsigned long long>(mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics)));
     if (want != flags) mem::write<uint32_t>(entity + c::Entity_Flags, want);
+    static std::atomic<int> described{0};
+    if (described.fetch_add(1) < 2) describe(t->name.c_str(), mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics));
 }
 
 void runQueue(std::deque<Move>& q) {
@@ -342,6 +361,7 @@ void pick() {
                    static_cast<unsigned long long>(object), static_cast<unsigned long long>(object ? mem::readOr<uintptr_t>(object) : 0),
                    ot ? ot->name.c_str() : "no reflected type", type ? type->name.c_str() : "no entity",
                    static_cast<unsigned long long>(entity));
+            if (diag.load() <= 2) describe("hit object", object);
         }
         bool guessed = false;
         if (!type) { // no physics entity owns what was hit: the nearest object to the hit, said so
