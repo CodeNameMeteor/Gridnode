@@ -2816,32 +2816,61 @@ uintptr_t selectionData(const Selected& s) {
     return 0;
 }
 
-// A group prop's box, from the group's collision: the compound shape keeps a bounding volume tree
-// of its instances (hknpStaticCompoundShape's box update, 0x143ea8e00), whose leaves hold each
-// instance's box in the compound's space (the world: groups sit at the origin).
+// A group prop's box, from the group's collision: the compound shape's instance tree (+0xc0) is a
+// Havok static tree with 6-byte compressed nodes (hknpStaticCompoundShape's box update, 0x143e99090):
+// node array at tree +0x10 (count +0x18), the root's box at +0x20 (min) / +0x30 (max). A node's
+// bytes 0..2 give its box inside its parent's, per axis: min = parent min + (byte >> 4)^2 * step,
+// max = parent max - (byte & 15)^2 * step, step = parent size * a constant (0x1425a8e10). Byte 3
+// bit 7 marks an inner node: its left child is the next node, its right child (byte 3 & 0x7f) << 16 |
+// u16 at +4, times two, nodes on; a leaf's u16 at +4 is its instance. Boxes are in the compound's
+// space (the world: groups sit at the origin).
 bool instanceWorldBox(uintptr_t body, int instance, float* mn, float* mx) {
     namespace c = e::constant;
     const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
     const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
     const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
-    if (!nodes || instance < 0) return false;
-    uint16_t stack[128];
+    const int32_t count = tree ? mem::readOr<int32_t>(tree + c::CompoundTree_NodeCount) : 0;
+    if (!nodes || count <= 0 || count > 4000000 || instance < 0) return false;
+    float k = mem::readOr<float>(mem::rva(e::global::HavokAabb6Step), 0.f);
+    if (!(k > 0.f && k < 0.05f)) k = 1.f / 226.f;
+    struct Item {
+        int32_t index;
+        float mn[3], mx[3];
+    };
+    Item stack[96];
     int n = 0;
-    stack[n++] = mem::readOr<uint16_t>(tree + c::CompoundTree_Root);
-    for (int guard = 0; n > 0 && guard < 200000; ++guard) {
-        const uintptr_t node = nodes + stack[--n] * 0x20u;
-        float b[8];
-        if (!mem::read(node, b, sizeof(b))) return false;
-        const uint16_t left = mem::readOr<uint16_t>(node + 0x1c), right = mem::readOr<uint16_t>(node + 0x1e);
-        if (left == 0) {
-            if (right != instance) continue;
-            memcpy(mn, b, sizeof(float) * 3);
-            memcpy(mx, b + 4, sizeof(float) * 3);
-            return finite(mn, 3) && finite(mx, 3) && mx[0] >= mn[0] && mx[1] >= mn[1] && mx[2] >= mn[2];
+    stack[n].index = 0;
+    if (!mem::read(tree + c::CompoundTree_Min, stack[n].mn, sizeof(float) * 3) || !mem::read(tree + c::CompoundTree_Max, stack[n].mx, sizeof(float) * 3))
+        return false;
+    ++n;
+    auto child = [&](const Item& parent, int32_t index, Item& out) {
+        uint8_t b[3];
+        if (index < 0 || index >= count || !mem::read(nodes + static_cast<uintptr_t>(index) * 6, b, sizeof(b))) return false;
+        out.index = index;
+        for (int a = 0; a < 3; ++a) {
+            const float step = (parent.mx[a] - parent.mn[a]) * k;
+            const float hi = static_cast<float>(b[a] >> 4), lo = static_cast<float>(b[a] & 15);
+            out.mn[a] = parent.mn[a] + hi * hi * step;
+            out.mx[a] = parent.mx[a] - lo * lo * step;
         }
-        if (n + 2 > 128) return false;
-        stack[n++] = left;
-        stack[n++] = right;
+        return true;
+    };
+    for (int guard = 0; n > 0 && guard < 4000000; ++guard) {
+        const Item it = stack[--n];
+        const uintptr_t node = nodes + static_cast<uintptr_t>(it.index) * 6;
+        const uint8_t flags = mem::readOr<uint8_t>(node + 3);
+        const uint16_t data = mem::readOr<uint16_t>(node + 4);
+        if (!(flags & 0x80)) { // a leaf
+            if (data != instance) continue;
+            memcpy(mn, it.mn, sizeof(it.mn));
+            memcpy(mx, it.mx, sizeof(it.mx));
+            return finite(mn, 3) && finite(mx, 3);
+        }
+        if (n + 2 > 96) return false;
+        const int32_t right = it.index + static_cast<int32_t>((static_cast<uint32_t>(flags & 0x7f) << 16 | data) * 2);
+        Item l, r;
+        if (child(it, right, r)) stack[n++] = r;
+        if (child(it, it.index + 1, l)) stack[n++] = l;
     }
     return false;
 }
@@ -2870,30 +2899,6 @@ bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const cha
         int index = -1;
         float wmn[3], wmx[3];
         const uintptr_t inst = groupInstance(s.gp.serverBody, s.gp.part, &index);
-        static int diag = 0;
-        if (diag++ < 6) { // diagnostics: the compound shape's tree as it is in memory
-            namespace c = e::constant;
-            const uintptr_t shape = mem::readOr<uintptr_t>(s.gp.serverBody + c::GroupRigidBody_Shape);
-            const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
-            uint64_t th[8] = {};
-            if (tree) mem::read(tree, th, sizeof(th));
-            float sb[8] = {};
-            if (shape) mem::read(shape + 0x80, sb, sizeof(sb));
-            GN_LOG("layouts: outline diag: body %llx shape %llx instance %d (%llx) tree %llx: %llx %llx %llx %llx %llx %llx %llx %llx; shape box (%.1f %.1f %.1f)..(%.1f %.1f %.1f)",
-                   static_cast<unsigned long long>(s.gp.serverBody), static_cast<unsigned long long>(shape), index, static_cast<unsigned long long>(inst),
-                   static_cast<unsigned long long>(tree), (unsigned long long)th[0], (unsigned long long)th[1], (unsigned long long)th[2],
-                   (unsigned long long)th[3], (unsigned long long)th[4], (unsigned long long)th[5], (unsigned long long)th[6], (unsigned long long)th[7],
-                   sb[0], sb[1], sb[2], sb[4], sb[5], sb[6]);
-            const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
-            const uint16_t root = tree ? mem::readOr<uint16_t>(tree + c::CompoundTree_Root) : 0;
-            for (int i = 0; nodes && i < 3; ++i) {
-                const uintptr_t nd = nodes + (i == 0 ? root : i) * 0x20u;
-                float f[8] = {};
-                mem::read(nd, f, sizeof(f));
-                GN_LOG("layouts: outline diag: node %u: (%.2f %.2f %.2f) .. (%.2f %.2f %.2f) children %u %u", i == 0 ? root : i, f[0], f[1], f[2], f[4],
-                       f[5], f[6], mem::readOr<uint16_t>(nd + 0x1c), mem::readOr<uint16_t>(nd + 0x1e));
-            }
-        }
         if (inst && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
             localFromWorld(s.orig, wmn, wmx, mn, mx);
             if (data) g_dataBox[data] = {mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]};
