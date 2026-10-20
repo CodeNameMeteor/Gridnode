@@ -166,6 +166,7 @@ Bind g_binds[] = {
     {"pick", "Pick what the crosshair points at", 'R', true, false, 'R'},
     {"copy", "Copy the selected object", 'C', true, false, 'C'},
     {"paste", "Paste a copy at the crosshair", 'V', true, false, 'V'},
+    {"duplicate", "Duplicate the selected object in place", 'G', true, false, 'G'},
     {"forward", "Move away from the camera", VK_UP, true, true, VK_UP},
     {"back", "Move toward the camera", VK_DOWN, true, true, VK_DOWN},
     {"left", "Move left", VK_LEFT, true, true, VK_LEFT},
@@ -175,7 +176,7 @@ Bind g_binds[] = {
     {"turnleft", "Turn left", 'Z', true, true, 'Z'},
     {"turnright", "Turn right", 'X', true, true, 'X'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -1176,8 +1177,10 @@ void unloadLayout() {
         if (sp.serverType) queueMove(sp.server, sp.serverType, sp.orig);
         if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, sp.orig);
     }
-    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies back in their group prop's place)", n,
-           static_cast<unsigned long long>(spawned.size()));
+    size_t standIns = 0, copies = 0;
+    for (const Spawned& sp : spawned) (sp.copyId >= 0 ? copies : standIns) += sp.hidden ? 0 : 1;
+    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies back in their group prop's place, %llu copies removed)", n,
+           static_cast<unsigned long long>(standIns), static_cast<unsigned long long>(copies));
 }
 
 // Loads a saved layout of the current level and applies it (unloading what is applied first).
@@ -1914,19 +1917,42 @@ void freeCamFrame(bool menuOpen) {
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (!menuOpen) { // a reminder of how to get back, while flying with the menu closed
+    if (!menuOpen) { // the keys, top left, while flying with the menu closed
         const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ImGui::GetFontSize()), ImGuiCond_Always, ImVec2(0.5f, 0.f));
-        ImGui::SetNextWindowBgAlpha(0.5f);
+        const float pad = ImGui::GetFontSize();
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + pad, vp->Pos.y + pad), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.55f);
         ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
-        ImGui::TextUnformatted("Free camera: mouse looks, WASD moves, Q/E down/up, Shift faster, Ctrl slower, wheel changes speed.");
-        ImGui::Text("Click or %s: pick. Arrows, %s/%s: move it; %s/%s: turn. %s: copy, %s: paste. %s: back to Faith.",
-                    ui::keyName(g_binds[kPick].vk).c_str(), ui::keyName(g_binds[kUp].vk).c_str(), ui::keyName(g_binds[kDown].vk).c_str(),
-                    ui::keyName(g_binds[kTurnL].vk).c_str(), ui::keyName(g_binds[kTurnR].vk).c_str(), ui::keyName(g_binds[kCopy].vk).c_str(),
-                    ui::keyName(g_binds[kPaste].vk).c_str(), ui::keyName(g_binds[kFreeCam].vk).c_str());
+        ImGui::TextUnformatted("Free camera");
+        ImGui::Separator();
+        auto row = [](const std::string& key, const char* what) {
+            ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "%s", key.c_str());
+            ImGui::SameLine(ImGui::GetFontSize() * 7.5f);
+            ImGui::TextUnformatted(what);
+        };
+        auto k = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
+        row("Mouse", "look");
+        row("W A S D", "fly");
+        row("Q / E", "down / up");
+        row("Shift / Ctrl", "faster / slower");
+        row("Wheel", "flying speed");
+        ImGui::Separator();
+        row("Click / " + k(kPick), "pick at the crosshair");
+        row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
+        row(k(kUp) + " / " + k(kDown), "move it up / down");
+        row(k(kTurnL) + " / " + k(kTurnR), "turn it");
+        row(k(kCopy), "copy");
+        row(k(kPaste), "paste at the crosshair");
+        row(k(kDuplicate), "duplicate in place");
+        ImGui::Separator();
+        row(k(kFreeCam), "back to Faith");
         Selected cur;
-        if (selection(cur)) ImGui::Text("Selected: %s", cur.group ? "a prop in a static model group (make it standalone in the menu to move it)" : cur.kind.c_str());
+        if (selection(cur)) {
+            ImGui::Separator();
+            ImGui::Text("Selected: %s", cur.group ? "a group prop (Make standalone in the menu to move it)"
+                                       : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
+        }
         ImGui::End();
     }
     if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
@@ -2296,6 +2322,7 @@ void keysFrame(bool menuOpen) {
     if (fire[kPick]) pickCentre();
     if (fire[kCopy]) copySelection();
     if (fire[kPaste]) pasteCentre();
+    if (fire[kDuplicate]) duplicateSelection();
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
     for (int i = kFwd; i <= kTurnR; ++i)
         if (fire[i]) nudge(i - kFwd, scale);

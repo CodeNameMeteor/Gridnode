@@ -184,6 +184,27 @@ void handleRawMouse(LPARAM l) {
     g_rawMouse = true;
 }
 
+// While the free camera flies, or the menu is open with raw mouse input (which moves GridNode's own
+// cursor), the hidden system cursor stays in the middle of the game's window, so a click cannot
+// land on another window.
+void holdCursor(bool hold) {
+    static bool held = false;
+    if (hold && g_window && GetForegroundWindow() == g_window) {
+        RECT rc{};
+        GetClientRect(g_window, &rc);
+        POINT tl{rc.left, rc.top}, br{rc.right, rc.bottom};
+        ClientToScreen(g_window, &tl);
+        ClientToScreen(g_window, &br);
+        const RECT clip{tl.x, tl.y, br.x, br.y};
+        ClipCursor(&clip);
+        SetCursorPos((tl.x + br.x) / 2, (tl.y + br.y) / 2);
+        held = true;
+    } else if (held) {
+        ClipCursor(nullptr);
+        held = false;
+    }
+}
+
 void applyRawMouse() {
     ImGuiIO& io = ImGui::GetIO();
     io.AddMousePosEvent(g_cursorX, g_cursorY);
@@ -444,6 +465,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui::NewFrame();
         const bool open = g_open.load();
         layouts::frame(open); // the free camera
+        holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
         ImGui::GetIO().MouseDrawCursor = open;
         {
             static DWORD scaleAt = 0;
