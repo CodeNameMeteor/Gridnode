@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 6;
+pub const GN_API_VERSION: u32 = 7;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -194,6 +194,8 @@ pub struct gn_api {
     pub position_set: Option<unsafe extern "C" fn(pos: *const f32) -> c_int>,
     pub god_mode: Option<unsafe extern "C" fn(on: c_int) -> c_int>,
     pub action_press: Option<unsafe extern "C" fn(action_hash: u32, ticks: u32) -> c_int>,
+    pub asset_find: Option<unsafe extern "C" fn(path: *const c_char, group: *mut u32) -> *mut c_void>,
+    pub asset_release: Option<unsafe extern "C" fn(asset: *mut c_void)>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -208,4 +210,4 @@ const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 480);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 496);

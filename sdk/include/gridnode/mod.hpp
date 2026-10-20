@@ -292,6 +292,30 @@ inline bool setPosition(const Vec3& p) {
     return api().position_set(a) == GN_OK;
 }
 
+// ---- assets ----------------------------------------------------------------------------------------
+// A loaded asset by path, holding a reference until it goes out of scope. Client or server thread.
+class Asset {
+public:
+    Asset() = default;
+    explicit Asset(const char* path) { p_ = api().asset_find(path, &group_); }
+    ~Asset() { reset(); }
+    Asset(const Asset&) = delete;
+    Asset& operator=(const Asset&) = delete;
+    Asset(Asset&& o) noexcept : p_(o.p_), group_(o.group_) { o.p_ = nullptr; }
+    Asset& operator=(Asset&& o) noexcept {
+        if (this != &o) { reset(); p_ = o.p_; group_ = o.group_; o.p_ = nullptr; }
+        return *this;
+    }
+    explicit operator bool() const { return p_ != nullptr; }
+    void* get() const { return p_; }
+    uint32_t group() const { return group_; }
+    Type type() const { return Type::of(p_); }
+    void reset() { if (p_) api().asset_release(p_); p_ = nullptr; }
+private:
+    void* p_ = nullptr;
+    uint32_t group_ = 0;
+};
+
 } // namespace gn
 
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.

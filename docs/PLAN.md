@@ -354,7 +354,7 @@ Each milestone ends with something testable in game.
 | **M5** ✅ | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision (deferred, then skipped) | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
 | **M5.5** | MEC_Trainer port (follow-up: `jump()` from the player's own jump binding instead of Space): keys and `jump()`, Faith's movement, movement tuning by name, game state (API 6); `examples/probe` research mod; `examples/mec-trainer` | The trainer's features work through GridNode with no raw pointer chains in the mod |
 | **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
-| **M7** | Assets: EBX round trip + glTF mesh export/import + Blender add-on (scope set by M6) | A mesh exported, edited in Blender and re-imported shows in game |
+| **M7** | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
 
 ---
@@ -385,6 +385,24 @@ Findings (Ghidra):
   is the `MessageManager` global (+0x10 listener registry). Plan: register a GridNode listener
   object through the engine's own registration (no hook), filtered by category; mods receive the
   message with its fields readable by name.
+
+### M7 plan (custom maps at runtime)
+
+Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not repacked game data.
+
+1. **Assets by name** (API 7, done first): `gn::Asset("Path/To/Blueprint")`, as the engine finds a
+   partition in a resource group (`Partition_findByName`) and takes its primary instance.
+2. **Entities in place**: track spatial entities with their transforms; pick one (ray cast from the
+   camera, nearest entity to the hit); move it on both realms (`SpatialEntity_setTransform`) and
+   check render and collision follow.
+3. **Spawn and remove**: instantiate a blueprint at a transform on the server and client
+   (`Blueprint_instantiate`, creation info, entity bus), and remove what was spawned.
+4. **Layout files**: YAML next to the mod (`layouts/<level>.yaml`): entries of blueprint path,
+   transform and overrides; applied when the level has loaded; changes to the level's own entities
+   by a stable id.
+5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
+   list of loaded blueprints, delete, undo, save.
+6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).
 
 ### M6 notes
 

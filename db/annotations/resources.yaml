@@ -3,6 +3,12 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 globals:
+  - name: ResourceGroups
+    va: 0x14237deb8
+    type: "void*[0xbbd]"
+    confidence: inferred
+    sources: [ghidra, gridnode]
+    note: "Resource groups (compartments) by id; 0xbbd means none. Group +0x62: the parent id (lookups fall back to it, 0x142abb350); +0x68: its database domain; +0x158: partitions by name."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: g_platformInfo
     va: 0x142564920
@@ -12,6 +18,33 @@ globals:
     sources: [ghidra]
 
 functions:
+  # Finding a loaded asset by name (M7; checked in Ghidra 2026-10-20). As the sound system does
+  # for SoundSettings' asset (0x1432bd0e0): partition = Partition_findByName(getCompartment(0), path);
+  # asset = Partition_primaryInstance(partition); addRef (+8, u16); ... DataContainer_release(asset).
+  - name: getCompartment
+    va: 0x142abad00
+    signature: "void*(u16 id)"
+    confidence: inferred
+    sources: [ghidra, gridnode]
+    note: "Compartments by id (table 0x14237deb8); 0 is the static compartment (always loaded). Named getStaticCompartment in the user's Ghidra."
+  - name: Partition_findByName
+    va: 0x142aeb310
+    signature: "void*(void* compartment, const char* path)"
+    confidence: inferred
+    sources: [ghidra, gridnode]
+    note: "Case-insensitive (djb2-xor of the lower-cased path; map at compartment +0x158, locked by +0xc0). Null if the partition is not loaded. Callers: initScriptsAndSystemSettings (settings partition), 0x1432bd0e0 (sound)."
+  - name: Partition_primaryInstance
+    va: 0x142aec640
+    signature: "void*(void* partition)"
+    confidence: inferred
+    sources: [ghidra, gridnode]
+    note: "**(partition + 0x20): the partition's first (primary) instance, e.g. the Blueprint of a blueprint asset. Named resourceGroup_entryObject in the user's Ghidra."
+  - name: DataContainer_release
+    va: 0x142a91cd0
+    signature: "u32(void* container)"
+    confidence: inferred
+    sources: [ghidra, gridnode]
+    note: "Drops a reference (u16 at +8, atomic); destroys the container at zero. The matching add is a locked increment of +8."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: sha1Init
     va: 0x14292a000
@@ -498,11 +531,6 @@ functions:
     note: "Named in Ghidra as Res_applyPointerRelocations. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
-  - name: resourceGroup_entryObject
-    va: 0x142aec640
-    note: "Named in Ghidra as resourceGroup_entryObject. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
   - name: EbxReader_finalizeInstances
     va: 0x142aec880
     note: "Named in Ghidra as EbxReader_finalizeInstances. Signature not known yet."
@@ -533,3 +561,6 @@ functions:
     note: "Named in Ghidra as zlib_inflate. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+
+constants:
+  - { name: ResourceGroup_Count, value: 0xbbd, note: "Also the 'none' id." }

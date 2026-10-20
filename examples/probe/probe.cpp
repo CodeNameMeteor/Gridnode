@@ -408,6 +408,20 @@ void jumpTick() {
     }
 }
 
+// ---- assets by name (M7): which paths resolve, in which resource group, to what type --------------
+void assetTest() {
+    const std::string level = gn::levelName();
+    const std::string paths[] = {"Characters/FaithCharacter", "Characters/Projection/ProjectionCharacter", level,
+                                 "Objects/Props/SharedTexture/Generic/Default_Prop_Metal_D", "Scripts/Game/Startup",
+                                 "does/not/exist"};
+    for (const std::string& p : paths) {
+        gn::Asset a(p.c_str());
+        gn::Type t = a.type();
+        gn::log("asset %s: %s%s%s (group %u, %p)", p.c_str(), a ? "found" : "not found", a && t ? ", " : "",
+                a && t ? t.name() : "", a.group(), a.get());
+    }
+}
+
 // ---- F12: the EntryInputState (input actions by hash) -----------------------------------------------
 // Registry (0x1424aa1a0): hash map at +0x10 (buckets) / +0x18 (bucket count), nodes {u32 hash,
 // u32 index, next at +8}; +0x94 analog count, +0x98 first digital index, +0xa4 end. A state is
@@ -499,11 +513,7 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        if (before < 5.f && t >= 5.f && g_watch <= 0) { // the input watch starts by itself (F-keys may not reach the game)
-            dumpRegistry();
-            g_watch = 30 * 12;
-            gn::log("input watch (12 s): press Space a few times, then Shift, Ctrl and E, a second apart");
-        }
+        if (before < 5.f && t >= 5.f) assetTest(); // M7: assets by name
         static bool was12 = false;
         const bool down12 = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
         if (down12 && !was12 && g_watch <= 0) {

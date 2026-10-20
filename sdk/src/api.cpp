@@ -285,6 +285,8 @@ const gn_api* api() {
         a.position_set = positionSet;
         a.god_mode = godModeSet;
         a.action_press = actionPress;
+        a.asset_find = assetFind;
+        a.asset_release = assetRelease;
         return a;
     }();
     return &table;

@@ -287,6 +287,25 @@ pub fn god_mode(on: bool) -> bool { unsafe { (api().god_mode.unwrap())(on as c_i
 /// Moves Faith without a teleport (the camera stays free): noclip-style movement every tick.
 pub fn set_position(p: [f32; 3]) -> bool { unsafe { (api().position_set.unwrap())(p.as_ptr()) == 0 } }
 
+// ---- assets --------------------------------------------------------------------------------------
+/// A loaded asset by path ("Characters/FaithCharacter"), with a reference held until dropped.
+pub struct Asset {
+    ptr: *mut c_void,
+    pub group: u32,
+}
+impl Asset {
+    pub fn find(path: &str) -> Option<Asset> {
+        let c = cstr(path);
+        let mut group = 0u32;
+        let p = unsafe { (api().asset_find.unwrap())(c.as_ptr(), &mut group) };
+        (!p.is_null()).then_some(Asset { ptr: p, group })
+    }
+    pub fn as_ptr(&self) -> *mut c_void { self.ptr }
+}
+impl Drop for Asset {
+    fn drop(&mut self) { unsafe { (api().asset_release.unwrap())(self.ptr) } }
+}
+
 // ---- settings, console, messages ------------------------------------------------------------------
 /// A settings object by class name (`"GameTimeSettings"`); look it up each time.
 pub fn settings(class: &str) -> *mut c_void {

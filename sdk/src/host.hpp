@@ -75,6 +75,10 @@ int timeOfDaySet(float seconds);
 int positionSet(const float pos[3]);
 int godModeSet(int on); // server thread
 
+// Assets (assets.cpp).
+void* assetFind(const char* path, uint32_t* group);
+void assetRelease(void* asset);
+
 // Settings and console (settings.cpp).
 struct SettingsEntry {
     const reflect::Type* type = nullptr;

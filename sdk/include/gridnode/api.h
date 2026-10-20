@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 6 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state */
+#define GN_API_VERSION 7 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -338,6 +338,17 @@ typedef struct gn_api {
      * key were down, whatever the binding. Digital actions only. GN_ERR_NOT_FOUND: no such action,
      * GN_ERR_UNAVAILABLE: no Faith yet. Any thread. */
     int (*action_press)(uint32_t action_hash, uint32_t ticks);
+
+    /* ==== GN_API_VERSION 7 ==================================================================== */
+
+    /* ---- assets ----------------------------------------------------------------------------------
+     * A loaded asset by its path ("Characters/FaithCharacter"): the primary instance of that
+     * partition (a blueprint, a data container...), with a reference held for the caller; give it
+     * back with asset_release. Null when no loaded resource group has it (assets are not loaded on
+     * demand). group (may be null) receives the resource group it was found in. Client or server
+     * thread. Use type_of to see what it is. */
+    void* (*asset_find)(const char* path, uint32_t* group);
+    void (*asset_release)(void* asset);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

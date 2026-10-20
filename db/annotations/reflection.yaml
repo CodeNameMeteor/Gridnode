@@ -180,16 +180,6 @@ functions:
     note: "Named in Ghidra as ClassInfo_valueToString. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
-  - name: getStaticCompartment
-    va: 0x142abad00
-    note: "Named in Ghidra as getStaticCompartment. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: Partition_findByNameInStaticCompartment
-    va: 0x142aeb310
-    note: "Named in Ghidra as Partition_findByNameInStaticCompartment. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
   - name: getObjectFieldAt8
     va: 0x142ba2340
     note: "Named in Ghidra as getObjectFieldAt8. Signature not known yet."
