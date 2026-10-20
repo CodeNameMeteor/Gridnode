@@ -82,6 +82,7 @@ typedef struct gn_message_info {
  * only valid during the call. */
 typedef void (*gn_message_fn)(const void* message, const gn_message_info* info, void* user);
 
+
 /* The nearest thing a ray cast hit. */
 typedef struct gn_ray_hit {
     float position[3];
@@ -104,6 +105,9 @@ typedef struct gn_transform {
     float forward[4];
     float trans[4];
 } gn_transform;
+
+/* An entity found by entities_near: its type, its world transform, its distance. */
+typedef void (*gn_entity_fn)(void* entity, const gn_type* type, const gn_transform* at, float distance, void* user);
 
 enum gn_category {
     GN_CATEGORY_UNKNOWN = 0,
@@ -349,6 +353,14 @@ typedef struct gn_api {
      * thread. Use type_of to see what it is. */
     void* (*asset_find)(const char* path, uint32_t* group);
     void (*asset_release)(void* asset);
+
+    /* ---- entities in place -----------------------------------------------------------------------
+     * entities_near calls fn for every live entity (seen created since GridNode started) whose
+     * transform can be read and is within radius of pos; returns how many. Any thread (it reads).
+     * entity_set_transform moves a spatial entity as the game does (SpatialEntity_setTransform);
+     * on its realm's thread (server entities: server thread; client: client thread). */
+    int (*entities_near)(const float pos[3], float radius, gn_entity_fn fn, void* user);
+    int (*entity_set_transform)(void* entity, const gn_transform* to);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

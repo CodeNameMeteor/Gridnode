@@ -77,6 +77,8 @@ int godModeSet(int on); // server thread
 
 // Assets (assets.cpp).
 void* assetFind(const char* path, uint32_t* group);
+int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user); // world.cpp
+int entitySetTransform(void* entity, const gn_transform* to);
 void assetRelease(void* asset);
 
 // Settings and console (settings.cpp).
@@ -143,6 +145,7 @@ namespace inspector {
 void start();
 void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
+std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // every live entity GridNode saw created
 } // namespace inspector
 
 } // namespace gn::host

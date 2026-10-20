@@ -1083,6 +1083,14 @@ void drawConsole(bool* open) {
     ImGui::End();
 }
 
+std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() {
+    std::lock_guard<std::mutex> lock(g_m);
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
+    out.reserve(g_entities.size());
+    for (const Tracked& t : g_entities) out.push_back({t.ptr, t.type});
+    return out;
+}
+
 void start() {
     if (g_started) return;
     g_started = true;

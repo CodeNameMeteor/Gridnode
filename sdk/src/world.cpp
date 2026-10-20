@@ -417,3 +417,44 @@ void pollLevel() {
 }
 
 } // namespace gn::host
+
+// ---- entities in place (M7) ------------------------------------------------------------------------
+namespace gn::host {
+
+int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) {
+    if (!pos || !fn || !(radius > 0.f)) return 0;
+    int n = 0;
+    const float r2 = radius * radius;
+    for (const auto& [p, t] : inspector::tracked()) {
+        gn_transform at{};
+        if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
+        const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > r2) continue;
+        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        ++n;
+    }
+    return n;
+}
+
+int entitySetTransform(void* entity, const gn_transform* to) {
+    if (!entity || !to || !finite(to->right, 3) || !finite(to->up, 3) || !finite(to->forward, 3) || !finite(to->trans, 3))
+        return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
+    const reflect::Type* spatial = registry().find("SpatialEntity");
+    if (!t || !spatial || !registry().isKindOf(t, spatial)) return GN_ERR_ARGUMENT;
+    // The realm from the class name (Client... / Server... / Pam{Client,Server}...).
+    const std::string& n = t->name;
+    const bool client = n.rfind("Client", 0) == 0 || n.rfind("PamClient", 0) == 0;
+    const bool server = n.rfind("Server", 0) == 0 || n.rfind("PamServer", 0) == 0;
+    if ((client && !isClientThread()) || (server && !isServerThread()) || (!client && !server && !isClientThread() && !isServerThread()))
+        return GN_ERR_THREAD;
+    alignas(16) gn_transform m = *to;
+    m.right[3] = m.up[3] = m.forward[3] = 0.f;
+    m.trans[3] = 1.f;
+    using Fn = void (*)(void*, const void*, uint8_t);
+    reinterpret_cast<Fn>(mem::rva(e::function::SpatialEntity_setTransform))(entity, &m, 1);
+    return GN_OK;
+}
+
+} // namespace gn::host

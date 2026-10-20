@@ -44,6 +44,7 @@ pub type gn_level_fn = Option<unsafe extern "C" fn(level: *const c_char, loaded:
 pub type gn_ui_fn = Option<unsafe extern "C" fn(menu_open: c_int, user: *mut c_void)>;
 pub type gn_console_fn = Option<unsafe extern "C" fn(output: *const c_char, user: *mut c_void)>;
 pub type gn_message_fn = Option<unsafe extern "C" fn(message: *const c_void, info: *const gn_message_info, user: *mut c_void)>;
+pub type gn_entity_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, at: *const gn_transform, distance: f32, user: *mut c_void)>;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -196,6 +197,8 @@ pub struct gn_api {
     pub action_press: Option<unsafe extern "C" fn(action_hash: u32, ticks: u32) -> c_int>,
     pub asset_find: Option<unsafe extern "C" fn(path: *const c_char, group: *mut u32) -> *mut c_void>,
     pub asset_release: Option<unsafe extern "C" fn(asset: *mut c_void)>,
+    pub entities_near: Option<unsafe extern "C" fn(pos: *const f32, radius: f32, fn_: gn_entity_fn, user: *mut c_void) -> c_int>,
+    pub entity_set_transform: Option<unsafe extern "C" fn(entity: *mut c_void, to: *const gn_transform) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -210,4 +213,4 @@ const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 496);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 512);

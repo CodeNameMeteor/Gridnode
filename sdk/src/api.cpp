@@ -287,6 +287,8 @@ const gn_api* api() {
         a.action_press = actionPress;
         a.asset_find = assetFind;
         a.asset_release = assetRelease;
+        a.entities_near = entitiesNear;
+        a.entity_set_transform = entitySetTransform;
         return a;
     }();
     return &table;

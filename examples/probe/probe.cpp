@@ -5,6 +5,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -409,7 +411,7 @@ void jumpTick() {
 }
 
 // ---- assets by name (M7): which paths resolve, in which resource group, to what type --------------
-void assetTest() {
+[[maybe_unused]] void assetTest() {
     const std::string level = gn::levelName();
     const std::string paths[] = {"Characters/FaithCharacter", "Characters/Projection/ProjectionCharacter", level,
                                  "Objects/Props/SharedTexture/Generic/Default_Prop_Metal_D", "Scripts/Game/Startup",
@@ -419,6 +421,84 @@ void assetTest() {
         gn::Type t = a.type();
         gn::log("asset %s: %s%s%s (group %u, %p)", p.c_str(), a ? "found" : "not found", a && t ? ", " : "",
                 a && t ? t.name() : "", a.group(), a.get());
+    }
+}
+
+// ---- M7 step 2: what is near Faith, and does moving it show? -----------------------------------------
+struct Near {
+    void* e;
+    std::string type;
+    gn::Transform at;
+    float d;
+};
+std::vector<Near> g_near;
+struct Moved {
+    void* e;
+    gn::Transform from;
+    bool server;
+};
+std::mutex g_movedM;
+std::vector<Moved> g_moved;
+
+void nearTest() {
+    void* cf = gn::localClientCharacter();
+    gn::Vec3 p;
+    if (!cf || !gn::positionOf(cf, p)) return;
+    g_near.clear();
+    const int n = gn::entitiesNear(p, 25.f, [&](void* e, gn::Type t, const gn::Transform& at, float d) {
+        g_near.push_back({e, t ? t.name() : "?", at, d});
+    });
+    std::map<std::string, int> byType;
+    for (auto& x : g_near) byType[x.type]++;
+    gn::log("near: %d entities with a transform within 25 m of Faith, %llu types", n, (unsigned long long)byType.size());
+    std::string line;
+    for (auto& [t, c] : byType) {
+        line += " " + t + "x" + std::to_string(c);
+        if (line.size() > 700) gn::log("near types:%s", line.c_str()), line.clear();
+    }
+    if (!line.empty()) gn::log("near types:%s", line.c_str());
+    std::sort(g_near.begin(), g_near.end(), [](const Near& a, const Near& b) { return a.d < b.d; });
+    int shown = 0;
+    for (auto& x : g_near) {
+        if (shown++ >= 40) break;
+        gn::log("near %5.1f m  %-40s %p  at (%.1f, %.1f, %.1f)", x.d, x.type.c_str(), x.e, x.at.trans[0], x.at.trans[1], x.at.trans[2]);
+    }
+}
+
+// Raise the nearest server and client entity that is not a character by 3 m for 10 s.
+void moveTest(bool up) {
+    if (up) {
+        for (int realm = 0; realm < 2; ++realm) {
+            const char* want = realm ? "Client" : "Server";
+            for (auto& x : g_near) {
+                if (x.d < 3.f || x.type.find("Character") != std::string::npos || x.type.find(want) == std::string::npos) continue;
+                gn::Transform t = x.at;
+                t.trans[1] += 3.f;
+                void* e = x.e;
+                std::string type = x.type;
+                gn::Transform from = x.at;
+                auto go = [e, t, type, from, realm] {
+                    const int r = gn::setTransform(e, t);
+                    gn::log("move: %s %p up 3 m (%.1f m away): %s", type.c_str(), e, 0.f, r == GN_OK ? "done" : "refused");
+                    if (r == GN_OK) {
+                        std::lock_guard<std::mutex> lock(g_movedM);
+                        g_moved.push_back({e, from, realm == 0});
+                    }
+                };
+                if (realm) gn::runOnClient(go); else gn::runOnServer(go);
+                gn::log("move: chose %s %p, %.1f m from Faith; look for it 3 m higher for 10 s", type.c_str(), e, x.d);
+                break;
+            }
+        }
+    } else {
+        std::lock_guard<std::mutex> lock(g_movedM);
+        for (const Moved& m : g_moved) {
+            void* e = m.e;
+            gn::Transform t = m.from;
+            auto back = [e, t] { gn::log("move: %p put back: %s", e, gn::setTransform(e, t) == GN_OK ? "done" : "refused"); };
+            if (m.server) gn::runOnServer(back); else gn::runOnClient(back);
+        }
+        g_moved.clear();
     }
 }
 
@@ -513,7 +593,9 @@ GN_MOD("probe") {
         if (t < 0.f) t = 0.f;
         const float before = t;
         t += dt;
-        if (before < 5.f && t >= 5.f) assetTest(); // M7: assets by name
+        if (before < 5.f && t >= 5.f) nearTest(); // M7 step 2
+        if (before < 8.f && t >= 8.f) moveTest(true);
+        if (before < 18.f && t >= 18.f) moveTest(false);
         static bool was12 = false;
         const bool down12 = (GetAsyncKeyState(VK_F12) & 0x8000) != 0;
         if (down12 && !was12 && g_watch <= 0) {

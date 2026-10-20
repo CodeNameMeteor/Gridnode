@@ -292,6 +292,19 @@ inline bool setPosition(const Vec3& p) {
     return api().position_set(a) == GN_OK;
 }
 
+// ---- entities in place -------------------------------------------------------------------------------
+// fn(void* entity, Type type, const Transform& at, float distance) for live entities near pos.
+template <class F> int entitiesNear(const Vec3& pos, float radius, F fn) {
+    const float p[3] = {pos.x, pos.y, pos.z};
+    return api().entities_near(p, radius,
+                               [](void* e, const gn_type* t, const gn_transform* at, float d, void* u) {
+                                   (*static_cast<F*>(u))(e, Type(t), *at, d);
+                               },
+                               &fn);
+}
+// Moves a spatial entity as the game does. On its realm's thread.
+inline int setTransform(void* entity, const Transform& to) { return api().entity_set_transform(entity, &to); }
+
 // ---- assets ----------------------------------------------------------------------------------------
 // A loaded asset by path, holding a reference until it goes out of scope. Client or server thread.
 class Asset {
