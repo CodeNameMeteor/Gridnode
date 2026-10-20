@@ -151,6 +151,11 @@ struct Settings {
     int menuKey = 0x2D; // VK_INSERT
     float scale = 1.f;
     bool inspector = true;
+    // Developer tools ([tools] in gridnode.ini; all off, and not built, in a player build).
+    bool editor = true;   // the Layout editor, free camera and their keys (layouts still load)
+    bool recorder = true; // the Recorder
+    bool console = true;  // the console window
+    bool devInfo = true;  // the World / Hooks sections and Dear ImGui metrics
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);

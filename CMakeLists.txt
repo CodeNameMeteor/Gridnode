@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(GRIDNODE_BUILD_TESTS "Build the host-side tests" ON)
+# A player build: gridnode.dll as a mod loader only (the API, mods and their windows, saved layouts),
+# without the inspector, console, Layout editor, free camera, Recorder or the type dump.
+option(GRIDNODE_PLAYER_BUILD "Build gridnode.dll without the developer tools" OFF)
 
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # no VC++ redistributable needed
@@ -152,7 +155,7 @@ add_library(gridnode SHARED
   sdk/src/faith.cpp
   sdk/src/assets.cpp
   sdk/src/layouts.cpp
-  sdk/src/recorder.cpp
+  $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>
     sdk/src/crash.cpp
   third_party/imgui/backends/imgui_impl_dx11.cpp
   third_party/imgui/backends/imgui_impl_win32.cpp
@@ -162,6 +165,7 @@ set_source_files_properties(third_party/imgui/backends/imgui_impl_dx11.cpp third
 target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src third_party/imgui)
 target_link_libraries(gridnode PRIVATE gn_reflect gn_engine gn_imgui d3d11 dxgi d3dcompiler gdi32 dwmapi)
 set_target_properties(gridnode PROPERTIES OUTPUT_NAME "gridnode" PREFIX "")
+target_compile_definitions(gridnode PRIVATE GRIDNODE_PLAYER_BUILD=$<BOOL:${GRIDNODE_PLAYER_BUILD}>)
 
 # --- gridnode_inject.exe: loads gridnode.dll into the running game (development) -------------------
 add_executable(gridnode_inject sdk/loader/inject.cpp)

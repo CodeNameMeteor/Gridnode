@@ -75,6 +75,22 @@ jobs:
             build/version.dll
             build/gridnode_inject.exe
             build/mods/*.dll
+      - name: Player build (mod loader without the developer tools)
+        run: |
+          cmake -S . -B build-player -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix \
+            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGRIDNODE_BUILD_TESTS=OFF -DGRIDNODE_BUILD_EXAMPLES=OFF -DGRIDNODE_PLAYER_BUILD=ON
+          cmake --build build-player --target gridnode version_proxy
+      - name: Upload the player build
+        uses: actions/upload-artifact@v4
+        with:
+          name: gridnode-player-x64-mingw
+          path: |
+            build-player/gridnode.dll
+            build-player/version.dll
 
   windows-msvc:
     runs-on: windows-2022

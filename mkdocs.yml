@@ -38,6 +38,7 @@ nav:
   - Guides:
       - getting-started.md
       - modding.md
+      - shipping.md
       - building.md
       - contributing.md
   - Engine notes:

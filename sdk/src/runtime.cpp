@@ -48,7 +48,12 @@ std::string narrow(const std::wstring& w) {
 //   enabled=1     ; the Dear ImGui overlay (mods' windows need it)
 //   menu_key=INSERT
 //   scale=1.0
-//   inspector=1   ; the inspector (tracks every entity the game creates)
+//   inspector=1   ; the inspector window
+//   [tools]       ; developer tools (a player build has none of them)
+//   editor=1      ; Layout editor, free camera and their keys (saved layouts load either way)
+//   recorder=1
+//   console=1
+//   dev_info=1    ; the menu's World and Hooks sections, Dear ImGui metrics
 struct Settings {
     std::wstring dumpMode = L"auto";
     std::wstring dumpFile;
@@ -61,7 +66,11 @@ Settings readSettings(const std::wstring& dir) {
     Settings s;
     const std::wstring ini = dir + L"gridnode.ini";
     wchar_t buf[MAX_PATH];
+#if GRIDNODE_PLAYER_BUILD
+    GetPrivateProfileStringW(L"dump", L"mode", L"never", buf, MAX_PATH, ini.c_str()); // players do not need the 4 MB type dump
+#else
     GetPrivateProfileStringW(L"dump", L"mode", L"auto", buf, MAX_PATH, ini.c_str());
+#endif
     s.dumpMode = buf;
     GetPrivateProfileStringW(L"dump", L"file", L"gridnode-reflected.json", buf, MAX_PATH, ini.c_str());
     const std::wstring file = buf;
@@ -75,7 +84,17 @@ Settings readSettings(const std::wstring& dir) {
     if (!mods.empty() && mods.back() != L'\\' && mods.back() != L'/') mods += L'\\';
     s.modsFolder = mods;
     s.ui.enabled = GetPrivateProfileIntW(L"ui", L"enabled", 1, ini.c_str()) != 0;
-    s.ui.inspector = GetPrivateProfileIntW(L"ui", L"inspector", 1, ini.c_str()) != 0;
+#if GRIDNODE_PLAYER_BUILD
+    constexpr int kTools = 0; // a player build: the loader, the API and mods' windows only
+#else
+    constexpr int kTools = 1;
+#endif
+    auto tool = [&](const wchar_t* section, const wchar_t* key) { return kTools && GetPrivateProfileIntW(section, key, 1, ini.c_str()) != 0; };
+    s.ui.inspector = tool(L"ui", L"inspector");
+    s.ui.editor = tool(L"tools", L"editor");
+    s.ui.recorder = tool(L"tools", L"recorder");
+    s.ui.console = tool(L"tools", L"console");
+    s.ui.devInfo = tool(L"tools", L"dev_info");
     GetPrivateProfileStringW(L"ui", L"menu_key", L"INSERT", buf, MAX_PATH, ini.c_str());
     const int key = host::ui::keyFromName(narrow(buf));
     if (!key) GN_LOG("gridnode.ini: menu_key '%s' is not a key; INSERT opens the menu", narrow(buf).c_str());
@@ -212,9 +231,11 @@ void run(HMODULE self) {
     host::crash::install();
     host::worldStart();
     host::layouts::start(moduleDir(self));
-    host::recorder::start(moduleDir(self));
+    if (s.ui.recorder) host::recorder::start(moduleDir(self));
     host::messageTypes(); // reads the message types' static instances once (logged)
-    if (s.ui.enabled && s.ui.inspector) host::inspector::start();
+    host::inspector::start(); // entity tracking: the inspector shows it, layouts apply edits with it
+    GN_LOG("startup: %s build; tools: inspector %d, editor %d, recorder %d, console %d",
+           GRIDNODE_PLAYER_BUILD ? "player" : "developer", s.ui.inspector, s.ui.editor, s.ui.recorder, s.ui.console);
     host::ui::install(s.ui);
 
     if (s.modsEnabled) host::loadMods(s.modsFolder);

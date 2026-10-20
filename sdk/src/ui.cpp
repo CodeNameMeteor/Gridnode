@@ -401,10 +401,11 @@ void drawMain() {
         ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
         ImGui::Separator();
         if (g_settings.inspector) ImGui::Checkbox("Inspector", &g_showInspector);
-        ImGui::Checkbox("Console", &g_showConsole);
-        ImGui::Checkbox("Layout editor", &g_showLayouts);
-        ImGui::Checkbox("Recorder", &g_showRecorder);
-        ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
+        if (g_settings.console) ImGui::Checkbox("Console", &g_showConsole);
+        if (g_settings.editor) ImGui::Checkbox("Layout editor", &g_showLayouts);
+        if (g_settings.recorder) ImGui::Checkbox("Recorder", &g_showRecorder);
+        if (g_settings.devInfo) ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
+        if (g_settings.inspector || g_settings.console || g_settings.editor || g_settings.recorder || g_settings.devInfo) ImGui::Separator();
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
             if (mods.empty()) ImGui::TextDisabled("No mods loaded.");
@@ -415,7 +416,7 @@ void drawMain() {
                 else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "failed (%d)", m.result);
             }
         }
-        if (ImGui::CollapsingHeader("World")) {
+        if (g_settings.devInfo && ImGui::CollapsingHeader("World")) {
             void* cc = localClientCharacter();
             void* sc = localServerCharacter();
             gn_transform t{};
@@ -426,7 +427,7 @@ void drawMain() {
             if (sc && entityTransform(sc, t)) ImGui::Text("  at %.2f, %.2f, %.2f", t.trans[0], t.trans[1], t.trans[2]);
             else if (sc) ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "  position unreadable");
         }
-        if (ImGui::CollapsingHeader("Hooks")) {
+        if (g_settings.devInfo && ImGui::CollapsingHeader("Hooks")) {
             ImGui::Text("%llu pointer hooks installed", static_cast<unsigned long long>(hooks().count()));
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));
             ImGui::Text("Client ticks: %llu", static_cast<unsigned long long>(client().ticks()));
@@ -434,10 +435,10 @@ void drawMain() {
     }
     ImGui::End();
     if (g_showInspector && g_settings.inspector) inspector::draw(&g_showInspector);
-    if (g_showConsole) inspector::drawConsole(&g_showConsole);
-    if (g_showMetrics) ImGui::ShowMetricsWindow(&g_showMetrics);
-    if (g_showLayouts) layouts::draw(&g_showLayouts);
-    if (g_showRecorder) recorder::draw(&g_showRecorder);
+    if (g_showConsole && g_settings.console) inspector::drawConsole(&g_showConsole);
+    if (g_showMetrics && g_settings.devInfo) ImGui::ShowMetricsWindow(&g_showMetrics);
+    if (g_showLayouts && g_settings.editor) layouts::draw(&g_showLayouts);
+    if (g_showRecorder && g_settings.recorder) recorder::draw(&g_showRecorder);
 }
 
 void callMods(bool open) {
@@ -467,8 +468,8 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
         const bool open = g_open.load();
-        layouts::frame(open); // the free camera
-        recorder::frame();
+        if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
+        if (g_settings.recorder) recorder::frame();
         holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
         ImGui::GetIO().MouseDrawCursor = open;
         {
