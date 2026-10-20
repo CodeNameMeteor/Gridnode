@@ -428,6 +428,15 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 
 ### M8 plan (recordings for research), asked for 2026-10-20
 
+First version done 2026-10-20 (`sdk/src/recorder.cpp`, menu → Recorder): F8 records / pauses,
+Home drops a marker (with Faith's position), Export writes `recordings/<time>-<name>.jsonl`
+(a header line, then one event per line). Messages carry their reflected fields, the type of
+whatever their other slots point to, and the raw bytes; entity creations carry the class, data
+type, the bus's blueprint name and position; every event has the game's call stack as image
+VAs. `tools/recording/summarize.py` lists what is unusual around each marker and its stacks.
+Not yet: entity destruction, events between entities (the event-fire function, once found in
+Ghidra), and naming stack frames by their containing function.
+
 Record what the game does around an event (a KSEC, a door, a checkpoint) instead of guessing:
 start recording, play, pause, export, and comb the export with Ghidra.
 

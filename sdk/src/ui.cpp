@@ -388,6 +388,7 @@ bool g_showInspector = false;
 bool g_showConsole = false;
 bool g_showMetrics = false;
 bool g_showLayouts = false;
+bool g_showRecorder = false;
 
 void drawMain() {
     ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
@@ -402,6 +403,7 @@ void drawMain() {
         if (g_settings.inspector) ImGui::Checkbox("Inspector", &g_showInspector);
         ImGui::Checkbox("Console", &g_showConsole);
         ImGui::Checkbox("Layout editor", &g_showLayouts);
+        ImGui::Checkbox("Recorder", &g_showRecorder);
         ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
@@ -435,6 +437,7 @@ void drawMain() {
     if (g_showConsole) inspector::drawConsole(&g_showConsole);
     if (g_showMetrics) ImGui::ShowMetricsWindow(&g_showMetrics);
     if (g_showLayouts) layouts::draw(&g_showLayouts);
+    if (g_showRecorder) recorder::draw(&g_showRecorder);
 }
 
 void callMods(bool open) {
@@ -465,6 +468,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui::NewFrame();
         const bool open = g_open.load();
         layouts::frame(open); // the free camera
+        recorder::frame();
         holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
         ImGui::GetIO().MouseDrawCursor = open;
         {

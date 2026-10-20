@@ -92,6 +92,7 @@ std::unordered_map<uint32_t, std::vector<Sub>> g_subs; // category -> subscriber
 std::set<uint32_t> g_wanted;                            // categories to listen to (g_subM)
 std::atomic<bool> g_monitor{false};
 std::atomic<MessageRecorder> g_recorder{nullptr};
+std::atomic<MessageRecorder> g_tap{nullptr}; // the recorder (recorder.cpp), independent of the inspector's
 
 // ---- the listener objects ------------------------------------------------------------------------
 // One per manager. The engine calls vtable[0](this, message) and vtable[1](this) for the order.
@@ -112,6 +113,7 @@ void dispatch(int manager, const uint8_t* msg) {
     memcpy(head, msg + e::st::Message::off::category, sizeof(head));
     if (MessageRecorder rec = g_recorder.load(std::memory_order_relaxed); rec && g_monitor.load(std::memory_order_relaxed))
         rec(manager, msg, head[0], head[1], head[2]);
+    if (MessageRecorder tap = g_tap.load(std::memory_order_relaxed)) tap(manager, msg, head[0], head[1], head[2]);
     std::vector<Sub> subs;
     {
         std::shared_lock<std::shared_mutex> lock(g_subM);
@@ -253,6 +255,12 @@ void messageMonitor(bool on, MessageRecorder rec) {
     if (on && available())
         for (const auto& kv : catalogue().categoryName) want(kv.first); // every category, from the next tick
     g_monitor = on;
+}
+
+void messageTap(MessageRecorder rec) {
+    if (rec && available())
+        for (const auto& kv : catalogue().categoryName) want(kv.first); // every category, from the next tick
+    g_tap = rec;
 }
 
 bool messagesAvailable() { return available(); }

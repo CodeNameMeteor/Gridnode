@@ -94,6 +94,15 @@ void draw(bool* open); // render thread
 void frame(bool menuOpen); // render thread, every frame: the free camera
 } // namespace layouts
 
+// Recorder (recorder.cpp): messages, entity creations and markers with call stacks, exported as
+// JSON lines for research (M8).
+namespace recorder {
+void start(const std::wstring& gridnodeDir);
+void onLevel(const std::string& level);
+void draw(bool* open);    // render thread
+void frame();             // render thread, every frame: its keys
+} // namespace recorder
+
 // Settings and console (settings.cpp).
 struct SettingsEntry {
     const reflect::Type* type = nullptr;
@@ -130,6 +139,7 @@ std::string messageCategoryName(uint32_t category);
 const reflect::Type* messageTypeById(uint32_t typeId);
 int onMessage(const std::string& mod, const std::string& typeOrCategory, gn_message_fn fn, void* user);
 void messageMonitor(bool on, MessageRecorder rec); // every category to rec (the inspector)
+void messageTap(MessageRecorder rec);               // every category to rec, null to stop (the recorder)
 bool messagesAvailable();
 void messagesClientTick(); // client thread: registrations with the core and client managers
 void messagesServerTick(); // server thread: registrations with the server manager

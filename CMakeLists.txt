@@ -152,6 +152,7 @@ add_library(gridnode SHARED
   sdk/src/faith.cpp
   sdk/src/assets.cpp
   sdk/src/layouts.cpp
+  sdk/src/recorder.cpp
     sdk/src/crash.cpp
   third_party/imgui/backends/imgui_impl_dx11.cpp
   third_party/imgui/backends/imgui_impl_win32.cpp

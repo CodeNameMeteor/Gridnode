@@ -212,6 +212,7 @@ void run(HMODULE self) {
     host::crash::install();
     host::worldStart();
     host::layouts::start(moduleDir(self));
+    host::recorder::start(moduleDir(self));
     host::messageTypes(); // reads the message types' static instances once (logged)
     if (s.ui.enabled && s.ui.inspector) host::inspector::start();
     host::ui::install(s.ui);
