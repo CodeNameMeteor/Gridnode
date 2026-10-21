@@ -722,7 +722,7 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     const uintptr_t obj = renderObjectOf(g);
     const uintptr_t vt = obj ? mem::readOr<uintptr_t>(obj) : 0;
     const uintptr_t setT = vt ? mem::readOr<uintptr_t>(vt + 0x10) : 0;
-    const uintptr_t renderRoot = mem::readOr<uintptr_t>(mem::rva(e::global::RenderRoot));
+    const uintptr_t renderRoot = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds)); // the client world
     const uintptr_t renderWorld = renderRoot ? mem::readOr<uintptr_t>(renderRoot + 0x48) : 0;
     if (!mem::inImage(setT) || !renderWorld) return;
     alignas(16) gn_transform t = world;
@@ -1472,21 +1472,32 @@ void zoneFocusRequest(const float* at, int seconds) {
     g_focusTemp.push_back(w);
 }
 
-// The live zone streamers (looked for at most every 5 s: the tracked list is long).
+// The live zone streamers. They are not made through a creator GridNode hooks, so they are found
+// as the game's own focus entities find them (0x143c7d800): each game world (client, server) keeps
+// a list per class, its first node at ClassInfo + (world's list index (+0x28) + 6) * 0x10; a
+// ZoneStreamerEntity's node is at +0x268, and a node's first field is the next node.
 std::vector<std::pair<uintptr_t, const reflect::Type*>> zoneStreamers() {
+    namespace c = e::constant;
     static const reflect::Type* zs = registry().find("ZoneStreamerEntity");
-    static std::vector<std::pair<uintptr_t, const reflect::Type*>> cache;
-    static ULONGLONG at = 0;
-    if (GetTickCount64() - at >= 5000) {
-        cache.clear();
-        for (const auto& [p, ty] : inspector::tracked())
-            if (ty && zs && registry().isKindOf(ty, zs)) cache.push_back({p, ty});
-        at = GetTickCount64();
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
+    if (!zs) return out;
+    const uintptr_t ti = mem::rva(e::global::ZoneStreamerEntity_TypeInfo);
+    for (int realm = 0; realm < 2; ++realm) {
+        const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds) + static_cast<uintptr_t>(realm) * 8);
+        if (!world) continue;
+        const int32_t index = mem::readOr<int32_t>(world + c::GameWorld_ClassListIndex);
+        if (index < 0 || index > 64) continue;
+        uintptr_t node = mem::readOr<uintptr_t>(ti + (static_cast<uintptr_t>(index) + 6) * 0x10);
+        for (int n = 0; node && n < 64; ++n) {
+            const uintptr_t ent = node - c::ZoneStreamerEntity_ClassLink;
+            const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+            if (ty && registry().isKindOf(ty, zs) &&
+                std::find_if(out.begin(), out.end(), [&](const auto& s) { return s.first == ent; }) == out.end())
+                out.push_back({ent, ty});
+            node = mem::readOr<uintptr_t>(node);
+        }
     }
-    std::vector<std::pair<uintptr_t, const reflect::Type*>> live;
-    for (const auto& s : cache)
-        if (inspector::alive(s.first, s.second)) live.push_back(s);
-    return live;
+    return out;
 }
 
 // Server thread, every 2 s: the focus points wanted now (library placements first, then the

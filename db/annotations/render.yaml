@@ -3,12 +3,18 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 globals:
-  - name: RenderRoot
+  - name: GameWorlds
     va: 0x1424a9b98
     type: "void*"
-    note: "+0x48 is the render world that static model groups hand render-object updates to (0x14318fbc0)."
+    note: "The game worlds by realm: [0] client, [1] server (0x1432e1210 indexes it by an entity's flags & 1). +0x48 of the client one is the render world that static model groups hand render-object updates to (0x14318fbc0); +0x28 is the index of its per-class entity lists in each ClassInfo (0x143164d50). Was named RenderRoot."
     confidence: inferred
-    sources: [research]
+    sources: [research, ghidra]
+  - name: ZoneStreamerEntity_TypeInfo
+    va: 0x14289ec20
+    type: "void*"
+    note: "Its per-world entity lists: first node at + (world list index + 6) * 0x10."
+    confidence: confirmed
+    sources: [reflected, ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: RigidMeshEntity_vtable
     va: 0x141bf72c8

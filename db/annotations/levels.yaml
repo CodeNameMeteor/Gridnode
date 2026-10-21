@@ -289,6 +289,8 @@ functions:
     sources: [ghidra]
 
 constants:
+  - { name: GameWorld_ClassListIndex, value: 0x28, confidence: inferred, sources: [ghidra], note: "A game world's index into every ClassInfo's per-world entity lists (0x143164d50: first node at ClassInfo + (index + 6) * 0x10; next subclass 0x143164f80)." }
+  - { name: ZoneStreamerEntity_ClassLink, value: 0x268, confidence: inferred, sources: [ghidra], note: "A ZoneStreamerEntity's node in its class list (node - 0x268 = the entity; *node = the next node; 0x143c7d800)." }
   - { name: ZoneStreamer_FocusManager, value: 0x280, confidence: inferred, sources: [ghidra], note: "Focus manager inside a ZoneStreamerEntity (a focus entity keeps streamer + 0x280)." }
   - { name: FocusManager_Records, value: 0x8, confidence: inferred, sources: [ghidra], note: "Records of 0x18 bytes {u64, focus, -1 (u32), flags (u32, bit 0: removed)}; end at +0x10." }
   - { name: FocusManager_Count, value: 0x48, confidence: inferred, sources: [ghidra] }
