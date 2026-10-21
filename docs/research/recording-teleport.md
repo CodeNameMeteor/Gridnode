@@ -70,3 +70,13 @@ entity, or by spawning one with its own transform.
 Unnamed event ids (b728297b, 74f05cea, 27d4023a, d27bc17e, ...) are names not in the reflection
 data; a list of event names from the game's data (Frosty) would name them
 (`recordings/event-names.txt` is read by the Recorder).
+
+## Teleporting without the reload (2026-10-21)
+
+Teleporting Faith while switching the view back to her (the layout editor's first teleport turned
+the free camera off, then teleported) reloaded the area around her: copies placed with the editor
+were destroyed with it and placed again later. Teleporting her while the free camera stays on, and
+turning it off afterwards, did not (confirmed in game: a copy placed before a ~340 m teleport was
+still there after the free camera was turned off). So the reload comes from the view and the
+teleport changing together, not from Faith moving. Still to check: a copy far from where she
+lands. The editor's T now teleports with the camera kept; Shift + T is the old way.

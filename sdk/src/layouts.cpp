@@ -182,7 +182,7 @@ Bind g_binds[] = {
     {"flip", "Flip upside down", 'H', true, false, 'H'},
     {"upright", "Stand upright again", 'U', true, false, 'U'},
     {"undo", "Undo (with Ctrl; also with the menu open)", 'Z', true, false, 'Z'},
-    {"teleport", "Teleport Faith to the crosshair (and back to her)", 'T', true, false, 'T'},
+    {"teleport", "Teleport Faith to the crosshair (Shift: and go back to her)", 'T', true, false, 'T'},
     {"pointer", "Mouse: look / pointer (to drag the handles)", VK_TAB, true, false, VK_TAB},
     {"handles", "Handles: move / rotate", 'Y', true, false, 'Y'},
 };
@@ -2485,8 +2485,8 @@ void freeCamFrame(bool menuOpen) {
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
         ImGui::Separator();
-        row(k(kTeleport), "teleport Faith here (and back to her)");
-        row("Shift+" + k(kTeleport), "teleport Faith here, keep flying");
+        row(k(kTeleport), "teleport Faith here (keep flying)");
+        row("Shift+" + k(kTeleport), "teleport Faith here and go back to her");
         row(k(kFreeCam), "back to Faith");
         Selected cur;
         if (selection(cur)) {
@@ -2772,9 +2772,9 @@ void draw(bool* open) {
         static std::string pointsFor;
         if (pointsFor != level) points = level.empty() ? std::vector<TeleportPoint>{} : loadTeleports(level), pointsFor = level;
         ImGui::BeginDisabled(!g_cam.active);
-        if (ImGui::Button("Teleport Faith to the crosshair")) teleportCrosshair();
+        if (ImGui::Button("Teleport Faith to the crosshair")) teleportCrosshair(true);
         ImGui::SameLine();
-        if (ImGui::Button("... and keep flying")) teleportCrosshair(true);
+        if (ImGui::Button("... and go back to her")) teleportCrosshair(false);
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::TextDisabled(g_cam.active ? "(%s while flying)" : "(fly the free camera to use it; %s)", ui::keyName(g_binds[kTeleport].vk).c_str());
@@ -3075,7 +3075,9 @@ void keysFrame(bool menuOpen) {
     if (fire[kCopy]) copySelection();
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
-    if (fire[kTeleport]) teleportCrosshair(io.KeyShift || keyHeld(VK_SHIFT)); // Shift: the camera stays
+    // The camera stays (switching back to Faith's view as she teleports makes the level reload around
+    // her, which takes copies with it); Shift: back to her view, as before.
+    if (fire[kTeleport]) teleportCrosshair(!(io.KeyShift || keyHeld(VK_SHIFT)));
     if (fire[kPointer]) g_pointer = !g_pointer;
     if (fire[kHandles]) g_gizmoMode ^= 1;
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;

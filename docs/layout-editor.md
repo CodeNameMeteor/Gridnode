@@ -93,9 +93,11 @@ loads. A library of objects you can place anywhere is planned.
 
 ## Teleport
 
-**T** teleports Faith to where the crosshair points, facing the way the camera looks, and goes
-back to her view. **Shift + T** teleports her the same way but leaves the free camera where it
-is, so you keep flying. The editor also saves named teleport points per level
+**T** teleports Faith to where the crosshair points, facing the way the camera looks, and leaves
+the free camera where it is: you keep flying, and F7 goes back to her when you want.
+**Shift + T** teleports her and goes straight back to her view. Going back to her view as she
+teleports makes the game reload the area around her, which takes copies placed there with it, so
+T is the safe one. The editor also saves named teleport points per level
 (`layouts/<level>/teleports.txt`).
 
 ## Layouts
