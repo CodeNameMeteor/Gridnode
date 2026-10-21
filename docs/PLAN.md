@@ -449,15 +449,15 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    all (Paste places the lead at the crosshair and the rest where they were from it), Duplicate,
    Put back and Undo work on all of them, as one undo step. Group props can be in the selection
    and copied, but move only once made standalone.
-13. **Teleport without the reload** (2026-10-21, user's idea, confirmed in game): T teleports Faith
-   and keeps the free camera, which keeps copies alive; Shift + T goes back to her view as well
-   (the old way, which reloads the area). See `docs/research/recording-teleport.md`.
 12. **Move / rotate handles** (2026-10-21, built, not yet tested in game): arrows and rings on the
    leading selection, from its box's middle, along its own or the world's axes; dragged with the
    cursor (menu open, or pointer mode with the menu closed: Tab), Ctrl snaps, one undo step per
    drag, the rest of the selection follows. Drawn and hit-tested by GridNode (no ImGuizmo): a move
    follows the closest point of the cursor ray on the axis, a turn the cursor's angle about the
    handles' centre on screen (its direction found by turning a point a little and projecting it).
+13. **Teleport without the reload** (2026-10-21, user's idea, confirmed in game): T teleports Faith
+   and keeps the free camera, which keeps copies alive; Shift + T goes back to her view as well
+   (the old way, which reloads the area). See `docs/research/recording-teleport.md`.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
    hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
    dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
