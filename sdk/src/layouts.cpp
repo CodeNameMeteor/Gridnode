@@ -1073,6 +1073,7 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
 bool resolveByMesh(const std::string& mesh, Template& t) {
     namespace c = e::constant;
     if (mesh.empty()) return false;
+
     static const reflect::Type* sg = registry().find("ServerStaticModelGroupEntity");
     static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
     const auto tracked = inspector::tracked();
@@ -1104,30 +1105,44 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
         return true;
     }
     // Then group members (the copies' placement is not needed: a library object is placed upright).
+    int groups = 0, paired = 0, matched = 0, noBus = 0, dead = 0;
     for (const auto& [server, ty] : tracked) {
         if (!ty || !sg || !registry().isKindOf(ty, sg)) continue;
+        ++groups;
         const uintptr_t gd = dataOf(server, "StaticModelGroupEntityData");
         const auto cgi = gd ? clientGroupByData.find(gd) : clientGroupByData.end();
         if (cgi == clientGroupByData.end()) continue;
+        ++paired;
         const uintptr_t client = cgi->second;
         const uintptr_t blocks = mem::readOr<uintptr_t>(client + c::ClientStaticModelGroup_Members);
         const int32_t count = mem::readOr<int32_t>(client + c::ClientStaticModelGroup_MemberCount);
         for (int32_t b = 0; blocks && b < count && b < 4096; ++b) {
             const uintptr_t m = mem::readOr<uintptr_t>(blocks + static_cast<uintptr_t>(b) * c::GroupMemberBlock_Size + c::GroupMemberBlock_Member);
             if (!m || meshOfMember(m) != mesh) continue;
+            ++matched;
             Template x;
             x.data = memberType(m), x.serverBus = busOf(server), x.clientBus = busOf(client);
-            if (!x.data || !x.serverBus || !x.clientBus) continue;
+            if (!x.data || !x.serverBus || !x.clientBus) {
+                ++noBus;
+                continue;
+            }
             x.source = "GroupProp", x.mesh = mesh;
             x.place = gn_transform{};
             x.place.right[0] = x.place.up[1] = x.place.forward[2] = 1.f;
             x.place.trans[3] = 1.f;
             setOwners(x, server, client);
-            if (!templateAlive(x)) continue;
+            if (!templateAlive(x)) {
+                ++dead;
+                continue;
+            }
             t = x;
             return true;
         }
     }
+    GN_LOG("layouts: no loaded object with mesh %s (%llu entities tracked, %llu client models, %d groups, %d paired, %d members with it, %d "
+           "without buses, %d not usable)",
+           mesh.c_str(), static_cast<unsigned long long>(tracked.size()), static_cast<unsigned long long>(clientByData.size()), groups, paired,
+           matched, noBus, dead);
     return false;
 }
 
@@ -2310,7 +2325,12 @@ void placeLibrary(const LibEntry& e, const float* ray) {
             auto it = found.find(p.mesh);
             if (it == found.end()) {
                 Template t;
-                const bool ok = resolveByMesh(p.mesh, t);
+                bool ok = false;
+                for (const Selected& sel : selectionAll()) { // the selection first: cheap, and certainly loaded
+                    Template x;
+                    if (!ok && templateOf(sel, x) && x.mesh == p.mesh && templateAlive(x)) t = x, ok = true;
+                }
+                if (!ok) ok = resolveByMesh(p.mesh, t);
                 it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
             }
             if (!it->second.first) {
