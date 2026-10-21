@@ -101,9 +101,10 @@ like any copy).
 
 An entry remembers each object's *mesh*, not the object itself, so it can be placed anywhere in a
 level where that mesh is loaded: GridNode copies any loaded object drawn with it. Meshes belong to
-parts of a level, so an entry from far away (or from another level) can only be placed once its
-part is loaded; the editor says so when it is not. Keeping those parts loaded on demand is the
-next step.
+parts of a level (sublevels): an entry also remembers which one, and placing it from far away
+streams that part in first (the status line says so; it can take a few seconds). The parts that
+hold the sources of your copies are kept loaded, so copies no longer disappear when Faith moves
+away. Entries from another level cannot be placed yet.
 
 ## Teleport
 

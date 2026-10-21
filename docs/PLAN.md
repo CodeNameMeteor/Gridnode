@@ -464,10 +464,14 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    (`resolveByMesh`: standalone models by their StaticModelEntityData's Mesh, group members by
    their MeshAsset); saved copies now carry `mesh:` so they are found by it when their own source
    is gone. Next steps:
-   1. **Loaded on demand.** A mesh is only there while the part of the level (sublevel bundle) it
-      belongs to is loaded. Find the `ServerSubLevelEntity` behind a source's bus and keep it
-      streamed in while copies of it exist (its `StreamIn` / `StreamOut` events, M8 recordings),
-      and stream it in to place an entry from far away.
+   1. **Loaded on demand** (built 2026-10-21, not yet tested in game). A mesh is only there while
+      the part of the level (sublevel) it belongs to is loaded. `ServerSubLevelEntity`'s onEvent
+      (vtable +0x20, 0x14335efb0) handles StreamIn (0xd27bc17e: load) and StreamOut (0x21f3f677:
+      unload); its content's bus is +0x88, its data a SubWorldReferenceObjectData (BundleName +0x90).
+      GridNode wraps that onEvent and drops StreamOut for pinned sublevels (those whose bus holds a
+      copy's source), and streams one in to place a library part from far away (a StreamIn event
+      made with the vtable of one the game sent). Library parts now save their bundle. Assumed, to
+      be checked: a group's bus is its sublevel's own bus (+0x88), not a child bus.
    2. **Other levels.** Load a bundle that is not part of the current level (ResourceManager /
       bundle loading, `docs/research`), so entries from any level can be placed.
    3. **Custom meshes.** Two routes: (a) meshes made with Frosty (FBX import into a MeshSet, in a

@@ -1146,6 +1146,143 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
     return false;
 }
 
+
+// ---- keeping parts of the level loaded -----------------------------------------------------------
+// A level is split into sublevels (ServerSubLevelEntity, data SubWorldReferenceObjectData with the
+// sublevel's BundleName) that logic streams in and out as Faith moves, by sending the entity the
+// events StreamIn (0xd27bc17e) and StreamOut (0x21f3f677); its onEvent (vtable +0x20, 0x14335efb0)
+// loads or unloads the bundle. Entities made on a sublevel's bus (+0x88 of the sublevel entity) go
+// with it, copies included. GridNode wraps that onEvent (a pointer swap, once) and drops StreamOut
+// for the sublevels it has pinned: those holding the source of a copy or a library placement. It
+// can also stream one in by sending it StreamIn, using an event object of the game's own kind
+// (its vtable, seen on a real stream event).
+constexpr uint32_t kStreamIn = 0xd27bc17eu, kStreamOut = 0x21f3f677u;
+using SubEventFn = void (*)(void* entity, void* event);
+uint64_t g_subOrig = 0;
+std::atomic<uintptr_t> g_streamEventVtbl{0}; // a stream event's vtable, as the game makes them
+std::mutex g_pinM;
+std::unordered_map<uintptr_t, std::string> g_pinned; // (g_pinM) sublevel entity -> its bundle
+std::atomic<bool> g_subHooked{false};
+
+void subLevelEventDetour(void* entity, void* event) {
+    const uint32_t id = event ? mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(event) + 8) : 0;
+    if (id == kStreamIn || id == kStreamOut) g_streamEventVtbl = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(event));
+    if (id == kStreamOut) {
+        std::string bundle;
+        bool pinned;
+        {
+            std::lock_guard<std::mutex> lock(g_pinM);
+            const auto it = g_pinned.find(reinterpret_cast<uintptr_t>(entity));
+            pinned = it != g_pinned.end();
+            if (pinned) bundle = it->second;
+        }
+        if (pinned) {
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 50) GN_LOG("layouts: kept %s loaded (it holds copies' sources)", bundle.c_str());
+            return;
+        }
+    }
+    reinterpret_cast<SubEventFn>(g_subOrig)(entity, event);
+}
+
+void hookSubLevels() {
+    if (g_subHooked.exchange(true)) return;
+    const reflect::Type* t = registry().find("ServerSubLevelEntity");
+    if (!t || t->vtables.empty()) return GN_LOG("layouts: no ServerSubLevelEntity vtable; parts of the level cannot be kept loaded");
+    const uintptr_t vt = static_cast<uintptr_t>(t->vtables[0] - 0x140000000ull) + mem::moduleBase();
+    std::string why;
+    const auto r = hooks().install("layouts", vt + 0x20, 0, reinterpret_cast<uint64_t>(&subLevelEventDetour), &g_subOrig, &why);
+    GN_LOG("layouts: sublevel stream events %s%s", r == hook::Result::Ok ? "watched" : "not watched: ", r == hook::Result::Ok ? "" : why.c_str());
+}
+
+std::string bundleOf(uintptr_t subLevel) {
+    const uintptr_t d = dataOf(subLevel, "SubWorldReferenceObjectData");
+    const uintptr_t p = d ? mem::readOr<uintptr_t>(d + 0x90) : 0; // BundleName
+    char b[256] = {};
+    if (!p || !mem::read(p, b, sizeof(b) - 1)) return {};
+    std::string n = b;
+    for (char c : n)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) return {};
+    return n;
+}
+
+// The live server sublevel entities.
+std::vector<uintptr_t> subLevels() {
+    static const reflect::Type* st = registry().find("ServerSubLevelEntity");
+    static std::vector<uintptr_t> cache;
+    static ULONGLONG at = 0;
+    if (GetTickCount64() - at < 1000) { // the tracked list is long: looked through at most once a second
+        std::vector<uintptr_t> live;
+        for (uintptr_t p : cache)
+            if (registry().typeOf(mem::ProcessMemory(), p) && registry().isKindOf(registry().typeOf(mem::ProcessMemory(), p), st)) live.push_back(p);
+        return live;
+    }
+    std::vector<uintptr_t> out;
+    for (const auto& [p, ty] : inspector::tracked())
+        if (ty && st && registry().isKindOf(ty, st) && registry().typeOf(mem::ProcessMemory(), p) == ty) out.push_back(p);
+    cache = out;
+    at = GetTickCount64();
+    return out;
+}
+
+// The sublevel whose bus `bus` is (0 if none is).
+uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr) {
+    for (uintptr_t sl : subLevels())
+        if (mem::readOr<uintptr_t>(sl + 0x88) == bus) {
+            if (bundle) *bundle = bundleOf(sl);
+            return sl;
+        }
+    return 0;
+}
+
+// Server thread: keeps the sublevel holding `bus` loaded; its bundle name ("" if none was found).
+std::string pinBus(uintptr_t bus) {
+    hookSubLevels();
+    std::string bundle;
+    const uintptr_t sl = bus ? subLevelOfBus(bus, &bundle) : 0;
+    if (!sl) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 10) GN_LOG("layouts: bus %llx is not a sublevel's own bus; its part of the level cannot be kept loaded yet", static_cast<unsigned long long>(bus));
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(g_pinM);
+    if (g_pinned.emplace(sl, bundle).second) GN_LOG("layouts: keeping %s loaded (sublevel %llx)", bundle.c_str(), static_cast<unsigned long long>(sl));
+    return bundle;
+}
+
+// Server thread: asks the sublevel with `bundle` to stream in (and keeps it). False if there is no
+// such sublevel, or no stream event has been seen yet to copy.
+bool streamIn(const std::string& bundle) {
+    hookSubLevels();
+    if (!g_subOrig) return false;
+    const uintptr_t vtbl = g_streamEventVtbl.load();
+    for (uintptr_t sl : subLevels()) {
+        if (bundleOf(sl) != bundle) continue;
+        {
+            std::lock_guard<std::mutex> lock(g_pinM);
+            g_pinned.emplace(sl, bundle);
+        }
+        if (!vtbl) {
+            GN_LOG("layouts: cannot stream %s in yet: no stream event seen to copy (move around a little first)", bundle.c_str());
+            return false;
+        }
+        alignas(16) uint8_t ev[0x40] = {};
+        memcpy(ev, &vtbl, 8);
+        const uint32_t id = kStreamIn;
+        memcpy(ev + 8, &id, 4);
+        GN_LOG("layouts: streaming in %s (sublevel %llx)", bundle.c_str(), static_cast<unsigned long long>(sl));
+        reinterpret_cast<SubEventFn>(g_subOrig)(reinterpret_cast<void*>(sl), ev);
+        return true;
+    }
+    GN_LOG("layouts: no sublevel with bundle %s in this level", bundle.c_str());
+    return false;
+}
+
+void clearPins() {
+    std::lock_guard<std::mutex> lock(g_pinM);
+    g_pinned.clear();
+}
+
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
 void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select, bool addSel = false) {
     if (!templateAlive(t)) {
@@ -1171,6 +1308,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
                 return;
             }
     }
+    pinBus(t.serverBus); // its source's part of the level stays loaded, so the copy does too
     const uintptr_t se = spawnServer(t.data, t.serverBus, to);
     GN_LOG("layouts: copy %d of %s at (%.2f, %.2f, %.2f): server entity %llx", copyId, t.source.c_str(), to.trans[0], to.trans[1], to.trans[2],
            static_cast<unsigned long long>(se));
@@ -2198,6 +2336,7 @@ namespace {
 // the layout as usual, with the mesh, so they are found again the same way.
 struct LibPart {
     std::string mesh;
+    std::string bundle;            // the sublevel it came from (streamed in to place it from far away)
     float offset[3] = {};          // from the first part, in the world
     float rows[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; // its rotation (and scale)
 };
@@ -2222,9 +2361,9 @@ void saveLibrary() {
         o += "entry: " + e.name + "\nlevel: " + e.level + "\n";
         for (const LibPart& p : e.parts) {
             char b[512];
-            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f\n", p.mesh.c_str(), p.offset[0],
+            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s\n", p.mesh.c_str(), p.offset[0],
                      p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2], p.rows[2][0],
-                     p.rows[2][1], p.rows[2][2]);
+                     p.rows[2][1], p.rows[2][2], p.bundle.c_str());
             o += b;
         }
     }
@@ -2251,8 +2390,12 @@ void loadLibrary() {
             p.mesh = l.substr(6, bar - 6);
             float* r = &p.rows[0][0];
             if (sscanf(l.c_str() + bar, " | %f %f %f | %f %f %f | %f %f %f | %f %f %f", &p.offset[0], &p.offset[1], &p.offset[2], &r[0], &r[1], &r[2],
-                       &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 12)
+                       &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 12) {
+                size_t pos = bar;
+                for (int k = 0; k < 4 && pos != std::string::npos; ++k) pos = l.find(" | ", pos + 3);
+                if (pos != std::string::npos) p.bundle = l.substr(pos + 3);
                 g_lib.back().parts.push_back(p);
+            }
         }
     }
     fclose(f);
@@ -2286,6 +2429,7 @@ void addSelectionToLibrary(const std::string& wanted) {
             }
             LibPart p;
             p.mesh = t.mesh;
+            subLevelOfBus(t.serverBus, &p.bundle);
             for (int k = 0; k < 3; ++k) {
                 p.offset[k] = s.now.trans[k] - all[0].now.trans[k];
                 p.rows[0][k] = s.now.right[k], p.rows[1][k] = s.now.up[k], p.rows[2][k] = s.now.forward[k];
@@ -2306,55 +2450,85 @@ void addSelectionToLibrary(const std::string& wanted) {
     });
 }
 
-// Places a library entry where the ray (from, direction) hits, or 10 m along it.
+// Places a library entry where the ray (from, direction) hits, or 10 m along it. Parts whose mesh is
+// not loaded have their sublevel streamed in first; placing waits for them (up to 30 s).
+void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt);
+
 void placeLibrary(const LibEntry& e, const float* ray) {
     std::array<float, 6> r{};
     memcpy(r.data(), ray, sizeof(float) * 6);
-    server().post([e, r] {
-        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
-        gn_ray_hit hit{};
-        float lead[3];
-        if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(lead, hit.position, sizeof(lead));
-        else
-            for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
-        std::vector<Template> ts;
-        std::vector<gn_transform> places;
-        std::unordered_map<std::string, std::pair<bool, Template>> found;
-        int missing = 0;
-        for (const LibPart& p : e.parts) {
-            auto it = found.find(p.mesh);
-            if (it == found.end()) {
-                Template t;
-                bool ok = false;
-                for (const Selected& sel : selectionAll()) { // the selection first: cheap, and certainly loaded
-                    Template x;
-                    if (!ok && templateOf(sel, x) && x.mesh == p.mesh && templateAlive(x)) t = x, ok = true;
-                }
-                if (!ok) ok = resolveByMesh(p.mesh, t);
-                it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
+    server().post([e, r] { placeLibraryTry(e, r, 0); });
+}
+
+void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
+    std::vector<Template> ts;
+    std::vector<const LibPart*> parts;
+    std::unordered_map<std::string, std::pair<bool, Template>> found;
+    std::vector<std::string> wantBundles;
+    for (const LibPart& p : e.parts) {
+        auto it = found.find(p.mesh);
+        if (it == found.end()) {
+            Template t;
+            bool ok = false;
+            for (const Selected& sel : selectionAll()) { // the selection first: cheap, and certainly loaded
+                Template x;
+                if (!ok && templateOf(sel, x) && x.mesh == p.mesh && templateAlive(x)) t = x, ok = true;
             }
-            if (!it->second.first) {
-                ++missing;
-                continue;
-            }
-            alignas(16) gn_transform place{};
-            for (int k = 0; k < 3; ++k) {
-                place.right[k] = p.rows[0][k], place.up[k] = p.rows[1][k], place.forward[k] = p.rows[2][k];
-                place.trans[k] = lead[k] + p.offset[k];
-            }
-            place.trans[3] = 1.f;
+            if (!ok) ok = resolveByMesh(p.mesh, t);
+            it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
+        }
+        if (it->second.first) {
             ts.push_back(it->second.second);
-            places.push_back(place);
+            parts.push_back(&p);
+        } else if (!p.bundle.empty() && std::find(wantBundles.begin(), wantBundles.end(), p.bundle) == wantBundles.end()) {
+            wantBundles.push_back(p.bundle);
         }
-        if (ts.empty()) {
-            GN_LOG("layouts: library: \"%s\": none of its meshes is loaded here", e.name.c_str());
-            return setStatus("\"" + e.name + "\" is not loaded here: its objects come from " + (e.level.empty() ? "another place" : e.level) +
-                             ". Fly near where it came from (or load that level) and place it again.");
+    }
+    const size_t missing = e.parts.size() - ts.size();
+    if (missing && !wantBundles.empty() && attempt < 60) { // stream their parts of the level in, and try again shortly
+        if (attempt == 0) {
+            int asked = 0;
+            for (const std::string& b : wantBundles) asked += streamIn(b) ? 1 : 0;
+            if (!asked) {
+                GN_LOG("layouts: library: \"%s\": none of its parts of the level could be streamed in", e.name.c_str());
+                attempt = 60; // fall through: place what there is
+            } else {
+                setStatus("Loading the part of the level \"" + e.name + "\" comes from...");
+            }
         }
-        placeCopies(ts, places);
-        GN_LOG("layouts: library: placed \"%s\" (%llu parts, %d not loaded here)", e.name.c_str(), static_cast<unsigned long long>(ts.size()), missing);
-        if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
-    });
+        if (attempt < 60) {
+            std::thread([e, r, attempt] {
+                Sleep(500);
+                server().post([e, r, attempt] { placeLibraryTry(e, r, attempt + 1); });
+            }).detach();
+            return;
+        }
+    }
+    if (ts.empty()) {
+        GN_LOG("layouts: library: \"%s\": none of its meshes is loaded here", e.name.c_str());
+        return setStatus("\"" + e.name + "\" is not loaded here: its objects come from " + (e.level.empty() ? "another place" : e.level) +
+                         (wantBundles.empty() ? ". Fly near where it came from and place it again." : ", and its part of the level did not load."));
+    }
+    const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+    gn_ray_hit hit{};
+    float lead[3];
+    if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(lead, hit.position, sizeof(lead));
+    else
+        for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
+    std::vector<gn_transform> places;
+    for (const LibPart* p : parts) {
+        alignas(16) gn_transform place{};
+        for (int k = 0; k < 3; ++k) {
+            place.right[k] = p->rows[0][k], place.up[k] = p->rows[1][k], place.forward[k] = p->rows[2][k];
+            place.trans[k] = lead[k] + p->offset[k];
+        }
+        place.trans[3] = 1.f;
+        places.push_back(place);
+    }
+    placeCopies(ts, places);
+    GN_LOG("layouts: library: placed \"%s\" (%llu parts, %llu not loaded here%s)", e.name.c_str(), static_cast<unsigned long long>(ts.size()),
+           static_cast<unsigned long long>(missing), attempt ? ", after streaming its part of the level in" : "");
+    if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
 }
 
 void drawLibrary() {
@@ -2518,6 +2692,9 @@ void onLevel(const std::string& level) {
     {
         std::lock_guard<std::mutex> lock(g_busM);
         g_groupBus.clear();
+    }
+    {
+        clearPins(); // a new level: new sublevel entities
     }
     if (!name.empty()) GN_LOG("layouts: auto-loading \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
 }
