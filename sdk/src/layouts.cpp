@@ -1293,13 +1293,19 @@ std::vector<uintptr_t> subLevels() {
     return out;
 }
 
-// The sublevel whose bus `bus` is (0 if none is).
+// The sublevel `bus` belongs to: the nearest bus up its parent chain (an object is usually on a
+// blueprint's or layer's bus inside the sublevel's own) that is a sublevel's bus. 0 if none is.
 uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr) {
+    std::unordered_map<uintptr_t, uintptr_t> byBus; // sublevel bus -> sublevel
     for (uintptr_t sl : subLevels())
-        if (mem::readOr<uintptr_t>(sl + e::constant::ServerSubLevelEntity_Bus) == bus) {
-            if (bundle) *bundle = bundleOf(sl);
-            return sl;
+        if (const uintptr_t b = mem::readOr<uintptr_t>(sl + e::constant::ServerSubLevelEntity_Bus)) byBus.emplace(b, sl);
+    for (int depth = 0; bus && depth < 32; ++depth) {
+        if (const auto it = byBus.find(bus); it != byBus.end()) {
+            if (bundle) *bundle = bundleOf(it->second);
+            return it->second;
         }
+        bus = mem::readOr<uintptr_t>(bus + e::constant::EntityBus_Parent);
+    }
     return 0;
 }
 
@@ -1310,7 +1316,18 @@ std::string pinBus(uintptr_t bus) {
     const uintptr_t sl = bus ? subLevelOfBus(bus, &bundle) : 0;
     if (!sl) {
         static std::atomic<int> said{0};
-        if (said.fetch_add(1) < 10) GN_LOG("layouts: bus %llx is not a sublevel's own bus; its part of the level cannot be kept loaded yet", static_cast<unsigned long long>(bus));
+        if (said.fetch_add(1) < 10) {
+            std::string chain;
+            uintptr_t b = bus;
+            for (int d = 0; b && d < 12; ++d) {
+                char x[24];
+                snprintf(x, sizeof(x), "%s%llx", d ? " > " : "", static_cast<unsigned long long>(b));
+                chain += x;
+                b = mem::readOr<uintptr_t>(b + e::constant::EntityBus_Parent);
+            }
+            GN_LOG("layouts: bus %llx is in no sublevel this found (%llu sublevels; bus chain %s); its part of the level cannot be kept loaded",
+                   static_cast<unsigned long long>(bus), static_cast<unsigned long long>(subLevels().size()), chain.c_str());
+        }
         return {};
     }
     std::lock_guard<std::mutex> lock(g_pinM);
@@ -2672,8 +2689,8 @@ void addSelectionToLibrary(const std::string& wanted) {
             g_lib.push_back(e);
         }
         saveLibrary();
-        GN_LOG("layouts: library: added \"%s\" (%llu parts, first %s)", e.name.c_str(), static_cast<unsigned long long>(e.parts.size()),
-               e.parts[0].mesh.c_str());
+        GN_LOG("layouts: library: added \"%s\" (%llu parts, first %s, from sublevel %s)", e.name.c_str(), static_cast<unsigned long long>(e.parts.size()),
+               e.parts[0].mesh.c_str(), e.parts[0].bundle.empty() ? "(not found)" : e.parts[0].bundle.c_str());
         setStatus("Added \"" + e.name + "\" to the library" + (skipped ? " (" + std::to_string(skipped) + " objects without a mesh left out)." : "."));
     });
 }
