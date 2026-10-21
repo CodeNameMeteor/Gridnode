@@ -42,7 +42,7 @@ constexpr uint64_t kImageBase = 0x140000000ull;
 constexpr size_t kMaxEvents = 250000;
 constexpr int kStackFrames = 16;
 
-enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent };
+enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent, kAnim };
 
 struct Ref {           // a pointer found in a message, with what it pointed to then
     uint16_t off;
@@ -70,6 +70,15 @@ struct Event {
     bool havePos = false;
     // event (ptr / type: the entity it was delivered to)
     uint32_t eventId = 0;
+    // anim: a write to an animation (ANT) game state; ptr / type / pos: the animated entity, when known
+    uint8_t valueKind = 0;         // AntValue
+    float value[16] = {};          // bool / int (as numbers) / float / vector / transform
+    uint32_t propHash = 0;         // the writing entity's property for it (data writes)
+    uint8_t guid[16] = {};         // the game state's ANT asset (data writes)
+    bool haveGuid = false;
+    uintptr_t antWriter = 0, antState = 0, writerEnt = 0;
+    const Type* writerType = nullptr; // the WriteAntGameState entity, or none: written by game code
+    const Type* dataClass = nullptr;  // Write*GameState
     // marker / level
     std::string text;
     std::vector<uint64_t> stack;   // image VAs of game frames, innermost first
@@ -81,6 +90,7 @@ uint64_t g_seq = 0;                // (g_m)
 uint64_t g_dropped = 0;            // (g_m) the oldest, beyond kMaxEvents
 std::atomic<bool> g_recording{false};
 std::atomic<bool> g_wantMessages{true}, g_wantCreated{true}, g_wantStacks{true}, g_wantEvents{true};
+std::atomic<bool> g_wantAnim{true}, g_wantAnimFloats{false};
 LARGE_INTEGER g_freq{}, g_t0{};
 std::wstring g_dir;
 std::string g_lastExport;          // render thread
@@ -337,6 +347,292 @@ void onEvent(void* peer, void* event) {
     push(std::move(ev));
 }
 
+// ---- animation (ANT) game state writes ------------------------------------------------------------
+// Doors, props and characters are animated by ANT, which reads per-object "game state" values
+// (bools, ints, enums, floats, vectors). Logic writes them through a WriteAntGameStateEntity: its
+// data lists Write<Type>GameState objects (WriteBoolGameState, ...), each naming an ANT asset by
+// AntRef (+0x18) and a property of the entity (PropertyHash, +0x10). Every frame it writes, the
+// entity's updater (0x1433b09e0) calls 0x1431f7d10, which calls each data object's vtable +0x18
+//   (data, props = entity + 0x30, &writerIndex, &valueIndex, state)
+// which reads the value from the entity's typed property slots (props[6] + valueIndex * 0x10,
+// TypedValue_getValuePtr) and hands it to the ANT asset's game-state interface (writer =
+// props[0][writerIndex], vtable +8: (writer, state, value); bool / int as integers, float in a
+// float register, vectors and quaternions by pointer). state is the animated object's game state:
+// *(*(animatable + 0x158) + 0x10) + 0x40.
+//
+// GridNode wraps +0x18 of each Write<Type>GameState vtable (what was written, by which entity, for
+// which property), and +8 of each ANT writer interface it meets (writes made by game code rather
+// than logic, which have no entity). Only changes are recorded: a value written again unchanged
+// (most are written every frame) is not.
+// The data classes' kinds; a write records bool / int / enum / float, vec3 / quat (4 floats) or
+// matrix (the LinearTransform a quaternion or vector-and-quaternion write is made from).
+enum AntValue : uint8_t { kAntBool, kAntInt, kAntEnum, kAntFloat, kAntVec3, kAntQuat, kAntTransform, kAntVec3Quat, kAntMatrix };
+const char* antValueName(uint8_t k) {
+    static const char* n[] = {"bool", "int", "enum", "float", "vec3", "quat", "vec3", "matrix", "matrix"};
+    return k < 9 ? n[k] : "?";
+}
+
+struct AntCtx {           // set by the data wrapper around the write it makes
+    bool active = false;
+};
+thread_local AntCtx t_antCtx;
+
+std::mutex g_antM;
+struct AntLast {
+    float v[16];
+    double t;
+};
+std::unordered_map<uint64_t, AntLast> g_antLast;                // (g_antM) (state ^ writer) -> last value
+std::unordered_map<uintptr_t, std::pair<uintptr_t, const Type*>> g_antOwner; // (g_antM) state -> animated entity
+double g_antOwnersAt = -10.0;                                   // (g_antM)
+
+uintptr_t antStateOf(uintptr_t animatable) {
+    const uintptr_t holder = mem::readOr<uintptr_t>(animatable + 0x158);
+    const uintptr_t inner = holder ? mem::readOr<uintptr_t>(holder + 0x10) : 0;
+    return inner ? inner + 0x40 : 0;
+}
+
+// The entity a game state belongs to: known ones first, else every tracked entity is checked
+// (at most once a second).
+std::pair<uintptr_t, const Type*> antOwner(uintptr_t state) {
+    {
+        std::lock_guard<std::mutex> lock(g_antM);
+        const auto it = g_antOwner.find(state);
+        if (it != g_antOwner.end()) return it->second;
+        const double t = now();
+        if (t - g_antOwnersAt < 1.0) return {0, nullptr};
+        g_antOwnersAt = t;
+    }
+    std::unordered_map<uintptr_t, std::pair<uintptr_t, const Type*>> found;
+    for (const auto& [p, ty] : inspector::tracked())
+        if (const uintptr_t st = antStateOf(p)) found.emplace(st, std::make_pair(p, ty));
+    std::lock_guard<std::mutex> lock(g_antM);
+    for (const auto& kv : found) g_antOwner[kv.first] = kv.second;
+    const auto it = g_antOwner.find(state);
+    return it != g_antOwner.end() ? it->second : std::make_pair(uintptr_t{0}, static_cast<const Type*>(nullptr));
+}
+
+// Whether this write changes the value (and is worth recording); remembers it.
+bool antChanged(uintptr_t state, uintptr_t writer, uint8_t kind, const float* v, int n) {
+    const bool scalarish = kind == kAntBool || kind == kAntInt || kind == kAntEnum;
+    if (!scalarish && !g_wantAnimFloats.load(std::memory_order_relaxed)) return false;
+    const uint64_t key = static_cast<uint64_t>(state) * 1000003ull ^ static_cast<uint64_t>(writer);
+    const double t = now();
+    std::lock_guard<std::mutex> lock(g_antM);
+    auto it = g_antLast.find(key);
+    if (it == g_antLast.end()) {
+        AntLast l{};
+        memcpy(l.v, v, sizeof(float) * n);
+        l.t = t;
+        g_antLast.emplace(key, l);
+        return true;
+    }
+    bool diff = false;
+    for (int i = 0; i < n; ++i) diff = diff || (scalarish ? it->second.v[i] != v[i] : std::fabs(it->second.v[i] - v[i]) > 1e-3f);
+    if (!diff) return false;
+    if (!scalarish && t - it->second.t < 0.1) return false; // a moving value: at most 10 a second
+    memcpy(it->second.v, v, sizeof(float) * n);
+    it->second.t = t;
+    return true;
+}
+
+void recordAnim(Event&& ev, int n) {
+    if (!antChanged(ev.antState, ev.antWriter, ev.valueKind, ev.value, n)) return;
+    ev.t = now();
+    ev.kind = kAnim;
+    ev.thread = GetCurrentThreadId();
+    const auto [owner, ownerType] = antOwner(ev.antState);
+    ev.ptr = owner, ev.type = ownerType;
+    if (owner) {
+        gn_transform tr{};
+        if (entityTransform(reinterpret_cast<void*>(owner), tr)) memcpy(ev.pos, tr.trans, sizeof(ev.pos)), ev.havePos = true;
+    }
+    captureStack(ev.stack);
+    push(std::move(ev));
+}
+
+int antCount(uint8_t kind) { return kind <= kAntFloat ? 1 : kind == kAntVec3Quat || kind == kAntMatrix ? 16 : 4; }
+
+// ANT writer interfaces (vtable +8), wrapped once each, by the kind of value they take.
+constexpr size_t kAntPool = 16;
+constexpr uint64_t kAntWriteSlot = 0x8;
+std::array<uint64_t, kAntPool> g_antIntOrig{}, g_antFloatOrig{}, g_antPtrOrig{};
+std::array<uint8_t, kAntPool> g_antIntKind{}, g_antPtrKind{};
+
+void antCodeWrite(uintptr_t writer, uintptr_t state, uint8_t kind, const float* v) {
+    Event ev;
+    ev.valueKind = kind;
+    ev.antWriter = writer, ev.antState = state;
+    memcpy(ev.value, v, sizeof(float) * antCount(kind));
+    recordAnim(std::move(ev), antCount(kind));
+}
+bool antRecording() { return g_recording.load(std::memory_order_relaxed) && g_wantAnim.load(std::memory_order_relaxed); }
+
+template <size_t I> void antIntDetour(void* w, void* state, uint64_t v) {
+    if (antRecording() && !t_antCtx.active) {
+        const float f[1] = {static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v))};
+        antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I], f);
+    }
+    reinterpret_cast<void (*)(void*, void*, uint64_t)>(g_antIntOrig[I])(w, state, v);
+}
+template <size_t I> void antFloatDetour(void* w, void* state, float v) {
+    if (antRecording() && !t_antCtx.active) antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, &v);
+    reinterpret_cast<void (*)(void*, void*, float)>(g_antFloatOrig[I])(w, state, v);
+}
+template <size_t I> void antPtrDetour(void* w, void* state, const float* v) {
+    if (antRecording() && !t_antCtx.active && v) {
+        float f[4] = {};
+        mem::read(reinterpret_cast<uintptr_t>(v), f, sizeof(f));
+        antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antPtrKind[I], f);
+    }
+    reinterpret_cast<void (*)(void*, void*, const float*)>(g_antPtrOrig[I])(w, state, v);
+}
+template <size_t... I> constexpr auto makeAntInt(std::index_sequence<I...>) { return std::array<void (*)(void*, void*, uint64_t), sizeof...(I)>{&antIntDetour<I>...}; }
+template <size_t... I> constexpr auto makeAntFloat(std::index_sequence<I...>) { return std::array<void (*)(void*, void*, float), sizeof...(I)>{&antFloatDetour<I>...}; }
+template <size_t... I> constexpr auto makeAntPtr(std::index_sequence<I...>) { return std::array<void (*)(void*, void*, const float*), sizeof...(I)>{&antPtrDetour<I>...}; }
+const auto g_antIntDetours = makeAntInt(std::make_index_sequence<kAntPool>{});
+const auto g_antFloatDetours = makeAntFloat(std::make_index_sequence<kAntPool>{});
+const auto g_antPtrDetours = makeAntPtr(std::make_index_sequence<kAntPool>{});
+std::mutex g_antHookM;
+std::unordered_map<uintptr_t, bool> g_antWriterHooked; // (g_antHookM) writer vtables
+size_t g_antIntUsed = 0, g_antFloatUsed = 0, g_antPtrUsed = 0; // (g_antHookM)
+
+// Wraps the writer's interface (+8) the first time its vtable is met.
+void hookAntWriter(uintptr_t writer, uint8_t kind) {
+    const uintptr_t vt = writer ? mem::readOr<uintptr_t>(writer) : 0;
+    if (!mem::inImage(vt) || !mem::inImage(mem::readOr<uintptr_t>(vt + kAntWriteSlot))) return;
+    std::lock_guard<std::mutex> lock(g_antHookM);
+    if (g_antWriterHooked.count(vt)) return;
+    g_antWriterHooked[vt] = true;
+    std::string why;
+    hook::Result r = hook::Result::Argument;
+    if (kind == kAntFloat) {
+        if (g_antFloatUsed == kAntPool) return;
+        r = hooks().install("recorder", vt + kAntWriteSlot, 0, reinterpret_cast<uint64_t>(g_antFloatDetours[g_antFloatUsed]),
+                            &g_antFloatOrig[g_antFloatUsed], &why);
+        if (r == hook::Result::Ok) ++g_antFloatUsed;
+    } else if (kind <= kAntEnum) {
+        if (g_antIntUsed == kAntPool) return;
+        g_antIntKind[g_antIntUsed] = kind;
+        r = hooks().install("recorder", vt + kAntWriteSlot, 0, reinterpret_cast<uint64_t>(g_antIntDetours[g_antIntUsed]),
+                            &g_antIntOrig[g_antIntUsed], &why);
+        if (r == hook::Result::Ok) ++g_antIntUsed;
+    } else {
+        if (g_antPtrUsed == kAntPool) return;
+        g_antPtrKind[g_antPtrUsed] = static_cast<uint8_t>(kind == kAntVec3Quat || kind == kAntTransform ? static_cast<uint8_t>(kAntVec3) : kind);
+        r = hooks().install("recorder", vt + kAntWriteSlot, 0, reinterpret_cast<uint64_t>(g_antPtrDetours[g_antPtrUsed]),
+                            &g_antPtrOrig[g_antPtrUsed], &why);
+        if (r == hook::Result::Ok) ++g_antPtrUsed;
+    }
+    GN_LOG("recorder: ANT writer vtable 0x%llx (%s values) %s%s", static_cast<unsigned long long>(mem::va(vt)), antValueName(kind),
+           r == hook::Result::Ok ? "wrapped" : "not wrapped: ", r == hook::Result::Ok ? "" : why.c_str());
+}
+
+// The data objects' write (+0x18), one wrapper per Write<Type>GameState class.
+constexpr uint64_t kAntDataSlot = 0x18;
+using AntDataFn = void (*)(void* data, void* props, uint32_t* wIdx, uint32_t* vIdx, void* state);
+struct AntDataClass {
+    const char* name;
+    uint8_t kind;
+    const Type* type = nullptr;
+    uint64_t orig = 0;
+};
+AntDataClass g_antData[] = {
+    {"WriteBoolGameState", kAntBool},           {"WriteIntGameState", kAntInt},
+    {"WriteEnumerationGameState", kAntEnum},    {"WriteFloatGameState", kAntFloat},
+    {"WriteVector3GameState", kAntVec3},        {"WriteQuaternionGameState", kAntQuat},
+    {"WriteVector3TransformGameState", kAntTransform}, {"WriteVector3AndQuaternionGameState", kAntVec3Quat},
+};
+constexpr size_t kAntDataCount = sizeof(g_antData) / sizeof(g_antData[0]);
+
+// The typed property slot's value (TypedValue_getValuePtr, 0x142a424b0).
+uintptr_t typedValuePtr(uintptr_t slot) {
+    const uintptr_t first = mem::readOr<uintptr_t>(slot);
+    if (first && (mem::readOr<uint8_t>(first + 0x1c) & 0x40)) return mem::readOr<uintptr_t>(first);
+    return mem::readOr<uintptr_t>(slot + 8);
+}
+
+void antDataWrite(size_t I, void* data, void* propsP, uint32_t* wIdx, uint32_t* vIdx, void* state) {
+    const AntDataClass& dc = g_antData[I];
+    const uintptr_t props = reinterpret_cast<uintptr_t>(propsP);
+    const uint32_t wi = wIdx ? *wIdx : 0, vi = vIdx ? *vIdx : 0;
+    const uintptr_t writers = mem::readOr<uintptr_t>(props);
+    const uintptr_t writer = writers ? mem::readOr<uintptr_t>(writers + wi * 8ull) : 0;
+    hookAntWriter(writer, dc.kind);
+    if (dc.kind == kAntVec3Quat && writers) hookAntWriter(mem::readOr<uintptr_t>(writers + (wi + 1) * 8ull), kAntQuat);
+    const uintptr_t slots = mem::readOr<uintptr_t>(props + 0x30);
+    const uintptr_t vp = slots ? typedValuePtr(slots + vi * 0x10ull) : 0;
+    Event ev;
+    ev.valueKind = dc.kind;
+    if (vp) {
+        switch (dc.kind) {
+        case kAntBool: ev.value[0] = mem::readOr<uint8_t>(vp) ? 1.f : 0.f; break;
+        case kAntInt:
+        case kAntEnum: ev.value[0] = static_cast<float>(mem::readOr<int32_t>(vp)); break;
+        case kAntFloat: ev.value[0] = mem::readOr<float>(vp); break;
+        case kAntVec3: mem::read(vp, ev.value, sizeof(float) * 4); break;
+        default: mem::read(vp, ev.value, sizeof(float) * 16); break; // a LinearTransform
+        }
+    }
+    if (dc.kind == kAntTransform) memmove(ev.value, ev.value + 12, sizeof(float) * 4), ev.valueKind = kAntVec3; // it writes the translation
+    if (dc.kind == kAntQuat || dc.kind == kAntVec3Quat) ev.valueKind = kAntMatrix;
+    ev.antWriter = writer, ev.antState = reinterpret_cast<uintptr_t>(state);
+    ev.propHash = mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(data) + 0x10);
+    ev.haveGuid = mem::read(reinterpret_cast<uintptr_t>(data) + 0x18, ev.guid, sizeof(ev.guid));
+    ev.dataClass = dc.type;
+    ev.writerEnt = props - 0x30;
+    ev.writerType = registry().typeOf(mem::ProcessMemory(), ev.writerEnt);
+    // Its targets (entity + 0x88..0x90: the animated entities, through their +8 base) name the state's owner.
+    const uintptr_t b = mem::readOr<uintptr_t>(ev.writerEnt + 0x88), en = mem::readOr<uintptr_t>(ev.writerEnt + 0x90);
+    for (uintptr_t q = b; q && q < en && q < b + 64 * 8; q += 8) {
+        const uintptr_t ref = mem::readOr<uintptr_t>(q);
+        const uintptr_t base = ref ? mem::readOr<uintptr_t>(ref) : 0;
+        if (!base) continue;
+        const uintptr_t anim = base - 8;
+        if (antStateOf(anim) == ev.antState) {
+            std::lock_guard<std::mutex> lock(g_antM);
+            g_antOwner[ev.antState] = {anim, registry().typeOf(mem::ProcessMemory(), anim)};
+        }
+    }
+    const int n = antCount(ev.valueKind);
+    recordAnim(std::move(ev), n);
+}
+
+template <size_t I> void antDataDetour(void* data, void* props, uint32_t* wIdx, uint32_t* vIdx, void* state) {
+    if (antRecording()) {
+        antDataWrite(I, data, props, wIdx, vIdx, state);
+        t_antCtx.active = true; // the writer interface it calls is not recorded a second time
+        reinterpret_cast<AntDataFn>(g_antData[I].orig)(data, props, wIdx, vIdx, state);
+        t_antCtx.active = false;
+        return;
+    }
+    reinterpret_cast<AntDataFn>(g_antData[I].orig)(data, props, wIdx, vIdx, state);
+}
+template <size_t... I> constexpr auto makeAntData(std::index_sequence<I...>) { return std::array<AntDataFn, sizeof...(I)>{&antDataDetour<I>...}; }
+const auto g_antDataDetours = makeAntData(std::make_index_sequence<kAntDataCount>{});
+std::atomic<bool> g_antHooked{false};
+
+void hookAnim() {
+    if (g_antHooked.exchange(true)) return;
+    size_t done = 0;
+    for (size_t i = 0; i < kAntDataCount; ++i) {
+        AntDataClass& dc = g_antData[i];
+        dc.type = registry().find(dc.name);
+        if (!dc.type || dc.type->vtables.empty()) {
+            GN_LOG("recorder: no %s type or vtable; its writes are not recorded", dc.name);
+            continue;
+        }
+        const uintptr_t vt = static_cast<uintptr_t>(dc.type->vtables[0] - kImageBase) + mem::moduleBase();
+        std::string why;
+        if (hooks().install("recorder", vt + kAntDataSlot, 0, reinterpret_cast<uint64_t>(g_antDataDetours[i]), &dc.orig, &why) == hook::Result::Ok)
+            ++done;
+        else
+            GN_LOG("recorder: %s write: %s", dc.name, why.c_str());
+    }
+    GN_LOG("recorder: animation game state writes: %llu of %llu writer classes wrapped", static_cast<unsigned long long>(done),
+           static_cast<unsigned long long>(kAntDataCount));
+}
+
 void marker(const std::string& name) {
     Event ev;
     ev.t = now();
@@ -358,6 +654,11 @@ void setRecording(bool on) {
         if (g_events.empty()) QueryPerformanceCounter(&g_t0); // time 0 is the start of a new recording
     }
     if (on && g_wantEvents.load()) hookEvents();
+    if (on && g_wantAnim.load()) hookAnim();
+    if (on) {
+        std::lock_guard<std::mutex> lock(g_antM);
+        g_antLast.clear(); // each recording starts with the values as they are
+    }
     g_recording = on;
     if (on) messageTap(&onMessage);
     GN_LOG("recorder: %s", on ? "recording" : "paused");
@@ -482,6 +783,37 @@ std::string toJson(const Event& ev) {
         break;
     case kMarker: o += ",\"kind\":\"marker\",\"name\":" + jsonStr(ev.text); break;
     case kLevel: o += ",\"kind\":\"level\",\"level\":" + jsonStr(ev.text); break;
+    case kAnim: {
+        o += ",\"kind\":\"anim\",\"value_type\":\"" + std::string(antValueName(ev.valueKind)) + "\",\"value\":";
+        const int n = antCount(ev.valueKind);
+        if (ev.valueKind == kAntBool) o += ev.value[0] != 0.f ? "true" : "false";
+        else if (n == 1) o += num(ev.value[0]);
+        else {
+            o += "[";
+            for (int i = 0; i < n; ++i) o += (i ? "," : "") + num(ev.value[i]);
+            o += "]";
+        }
+        if (ev.writerType) {
+            char id[16];
+            snprintf(id, sizeof(id), "%08x", ev.propHash);
+            o += ",\"property\":" + jsonStr(eventName(ev.propHash)) + ",\"property_id\":\"" + id + "\"";
+            o += ",\"by\":" + jsonStr(ev.writerType->name) + ",\"by_ptr\":" + hexAddr(ev.writerEnt);
+            if (ev.dataClass) o += ",\"writer_class\":" + jsonStr(ev.dataClass->name);
+        } else {
+            o += ",\"by\":\"game code\"";
+        }
+        if (ev.haveGuid) {
+            char g[40];
+            snprintf(g, sizeof(g), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", ev.guid[3], ev.guid[2], ev.guid[1], ev.guid[0],
+                     ev.guid[5], ev.guid[4], ev.guid[7], ev.guid[6], ev.guid[8], ev.guid[9], ev.guid[10], ev.guid[11], ev.guid[12], ev.guid[13],
+                     ev.guid[14], ev.guid[15]);
+            o += ",\"game_state\":\"" + std::string(g) + "\"";
+        }
+        o += ",\"ant_writer\":" + hexAddr(ev.antWriter) + ",\"ant_writer_vtable\":" +
+             hexAddr(ev.antWriter ? mem::va(mem::readOr<uintptr_t>(ev.antWriter)) : 0) + ",\"state\":" + hexAddr(ev.antState);
+        o += ",\"target\":" + jsonStr(ev.type ? ev.type->name : "?") + ",\"ptr\":" + hexAddr(ev.ptr);
+        break;
+    }
     case kEvent: {
         char id[16];
         snprintf(id, sizeof(id), "%08x", ev.eventId);
@@ -637,6 +969,21 @@ void draw(bool* open) {
     }
     ImGui::SameLine();
     if (ImGui::Checkbox("Call stacks", &s)) g_wantStacks = s;
+    bool an = g_wantAnim.load(), af = g_wantAnimFloats.load();
+    if (ImGui::Checkbox("Animation flags", &an)) {
+        g_wantAnim = an;
+        if (an && rec) hookAnim();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!an);
+    if (ImGui::Checkbox("with floats and vectors", &af)) g_wantAnimFloats = af;
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Changes to animation (ANT) game state values: the flags that drive doors and other animated objects.\n"
+                          "Bools, ints and enums are recorded when they change; floats and vectors (which change all the time) only with\n"
+                          "the second box, at most 10 a second each.");
 
     ImGui::SeparatorText("Markers");
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
@@ -704,6 +1051,8 @@ void draw(bool* open) {
                 Event lite; // without the bytes and the stack
                 lite.seq = src.seq, lite.t = src.t, lite.kind = src.kind, lite.manager = src.manager, lite.typeId = src.typeId;
                 lite.type = src.type, lite.blueprint = src.blueprint, lite.text = src.text, lite.eventId = src.eventId;
+                lite.valueKind = src.valueKind, lite.propHash = src.propHash, lite.writerType = src.writerType;
+                memcpy(lite.value, src.value, sizeof(lite.value));
                 tail.push_back(std::move(lite));
             }
         }
@@ -742,6 +1091,16 @@ void draw(bool* open) {
                     }
                     ImGui::EndPopup();
                 }
+                break;
+            }
+            case kAnim: {
+                char val[64];
+                if (ev.valueKind == kAntBool) snprintf(val, sizeof(val), "%s", ev.value[0] != 0.f ? "true" : "false");
+                else if (antCount(ev.valueKind) == 1) snprintf(val, sizeof(val), "%g", ev.value[0]);
+                else snprintf(val, sizeof(val), "(%.2f %.2f %.2f)", ev.value[0], ev.value[1], ev.value[2]);
+                snprintf(line, sizeof(line), "%9.3f  anim   %s = %s  -> %s", ev.t, ev.writerType ? eventName(ev.propHash).c_str() : "(game code)", val,
+                         ev.type ? ev.type->name.c_str() : "?");
+                ImGui::TextColored(ImVec4(1.f, 0.6f, 1.f, 1.f), "%s", line);
                 break;
             }
             case kLevel:

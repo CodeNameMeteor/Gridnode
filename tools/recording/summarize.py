@@ -76,6 +76,15 @@ def label(ev):
         return "new " + ev.get("type", "?") + (f" [{bp}]" if bp else "")
     if k == "event":
         return f"event {event_label(ev)} -> {ev.get('target', '?')}"
+    if k == "anim":
+        prop = ev.get("property")
+        pid = ev.get("property_id")
+        if pid and prop == pid:
+            prop = EVENT_NAMES.get(int(pid, 16), prop)
+        val = ev.get("value")
+        if isinstance(val, list):
+            val = "(" + " ".join(f"{v:.2f}" for v in val[:3]) + (" ..." if len(val) > 3 else "") + ")"
+        return f"anim {prop or '(game code)'} = {val} -> {ev.get('target', '?')}"
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":

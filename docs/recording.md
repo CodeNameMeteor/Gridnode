@@ -21,6 +21,25 @@ Home the moment the thing you are looking for happens. **Export** writes
 The **Ignore** lists leave out message types and event targets that are too frequent to be
 useful.
 
+### Animation flags
+
+With **Animation flags** on, the recording also has every change to an animated object's ANT
+*game state*: the bools, ints and enums (and, with *with floats and vectors*, the floats and
+vectors) that ANT reads to drive doors, props and characters. Each `anim` line has the value, the
+time, the object it belongs to (class, position), and who wrote it:
+
+- a **WriteAntGameState entity** (logic in a prefab): its class, the property it was written
+  from (`property`, named like events) and the game state's ANT asset (`game_state`, a GUID);
+- **game code**: no entity; the call stack shows where from.
+
+Only changes are recorded: most values are written every frame, unchanged. Floats and vectors are
+recorded at most 10 times a second each. For a door, record, open it, drop a marker, and look for
+the `anim` lines on the door around the marker: they show which flag it set and when.
+
+Writes by game code are seen once the game state interface they go through has been met through a
+logic write first (GridNode wraps each interface the first time it sees it); if a door is driven
+only by code, its first writes in a session can be missed.
+
 ## Reading it
 
 ```

@@ -466,6 +466,10 @@ Home drops a marker (with Faith's position), Export writes `recordings/<time>-<n
 whatever their other slots point to, and the raw bytes; entity creations carry the class, data
 type, the bus's blueprint name and position; every event has the game's call stack as image
 VAs. `tools/recording/summarize.py` lists what is unusual around each marker and its stacks.
+Animation flags (asked for 2026-10-21, built, not yet tested in game): changes to ANT game state
+values, written by WriteAntGameState entities (the Write<Type>GameState data objects' vtable
++0x18, wrapped per class) or by game code (the ANT writer interface's +8, wrapped when first met),
+with the value, the property, the animated object and its position; only changes are recorded.
 Events between entities were added the same day (onEvent wrapped per entity vtable); their names
 come from `recordings/event-names.txt` (M7 step 11). Not yet: entity destruction and naming stack
 frames by their containing function.
