@@ -29,6 +29,8 @@ class PeImage:
             name = d[h:h + 8].rstrip(b"\0").decode("latin-1")
             vsize, rva, raw_size, raw_ptr = struct.unpack_from("<IIII", d, h + 8)
             ch = struct.unpack_from("<I", d, h + 36)[0]
+            if raw_size and raw_ptr + raw_size > len(d):  # zeros past the raw data are real (vsize > raw size); a short file is not
+                raise ValueError(f"{path}: truncated: section {name} needs bytes up to {raw_ptr + raw_size:#x}, the file has {len(d):#x}")
             self.sections.append((self.base + rva, max(vsize, raw_size), raw_ptr, raw_size, bool(ch & 0x20000000), name))
 
     def read(self, va: int, n: int) -> bytes | None:

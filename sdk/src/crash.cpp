@@ -47,12 +47,12 @@ LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
     char where[160];
     describe(static_cast<uintptr_t>(c->Rip), where, sizeof(where));
     const ULONG_PTR* info = ep->ExceptionRecord->ExceptionInformation;
-    GN_LOG("crash: exception %08lx at %s%s%llx (thread %lu)", code, where,
+    ::gn::log::writeTry("crash: exception %08lx at %s%s%llx (thread %lu)", code, where,
            code == EXCEPTION_ACCESS_VIOLATION ? (info[0] == 1 ? ", writing " : info[0] == 8 ? ", executing " : ", reading ") : ", ",
            static_cast<unsigned long long>(code == EXCEPTION_ACCESS_VIOLATION ? info[1] : 0), GetCurrentThreadId());
-    GN_LOG("crash:   rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx", c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->R8,
+    ::gn::log::writeTry("crash:   rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx", c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->R8,
            c->R9);
-    GN_LOG("crash:   r10 %llx r11 %llx r12 %llx r13 %llx r14 %llx r15 %llx rbp %llx rsp %llx", c->R10, c->R11, c->R12, c->R13, c->R14, c->R15, c->Rbp,
+    ::gn::log::writeTry("crash:   r10 %llx r11 %llx r12 %llx r13 %llx r14 %llx r15 %llx rbp %llx rsp %llx", c->R10, c->R11, c->R12, c->R13, c->R14, c->R15, c->Rbp,
            c->Rsp);
     const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(c->Rsp);
     int shown = 0;
@@ -62,7 +62,7 @@ LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
         if (!isCode(v)) continue;
         char d[160];
         describe(v, d, sizeof(d));
-        GN_LOG("crash:   stack +%03x %s", i * 8, d);
+        ::gn::log::writeTry("crash:   stack +%03x %s", i * 8, d);
         ++shown;
     }
     return EXCEPTION_CONTINUE_SEARCH;

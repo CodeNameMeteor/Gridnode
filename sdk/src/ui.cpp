@@ -451,7 +451,12 @@ void callMods(bool open) {
     for (const UiListener& l : ls) {
         ImGuiErrorRecoveryState state;
         ImGui::ErrorRecoveryStoreState(&state);
-        l.fn(open ? 1 : 0, l.user);
+        try {
+            l.fn(open ? 1 : 0, l.user);
+        } catch (...) {
+            static int said = 0;
+            if (said++ < 10) GN_LOG("ui: a mod's UI callback threw; ignored");
+        }
         ImGui::ErrorRecoveryTryToRecoverState(&state); // closes what the mod left open
         ImGui::SetCurrentContext(g_imgui.load());     // in case the mod switched it
     }
@@ -469,8 +474,18 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
         const bool open = g_open.load();
-        if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
-        if (g_settings.recorder) recorder::frame();
+        {
+            ImGuiErrorRecoveryState state;
+            ImGui::ErrorRecoveryStoreState(&state);
+            try {
+                if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
+                if (g_settings.recorder) recorder::frame();
+            } catch (...) { // never into the game's Present
+                ImGui::ErrorRecoveryTryToRecoverState(&state);
+                static int said = 0;
+                if (said++ < 10) GN_LOG("ui: an editor or recorder frame threw; ignored");
+            }
+        }
         holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
         ImGui::GetIO().MouseDrawCursor = open || (g_capture.load() && g_pointer.load());
         {
@@ -480,7 +495,17 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
                 refreshMouseScale();
             }
         }
-        if (open) drawMain();
+        if (open) {
+            ImGuiErrorRecoveryState state;
+            ImGui::ErrorRecoveryStoreState(&state);
+            try {
+                drawMain();
+            } catch (...) {
+                ImGui::ErrorRecoveryTryToRecoverState(&state);
+                static int said = 0;
+                if (said++ < 10) GN_LOG("ui: the menu threw while drawing; ignored");
+            }
+        }
         callMods(open);
         g_typing = ImGui::GetIO().WantTextInput;
         ImGui::Render();

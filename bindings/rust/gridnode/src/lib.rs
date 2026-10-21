@@ -40,7 +40,7 @@ pub unsafe fn __load(api: *const sys::gn_api, name: &str, main: fn() -> bool) ->
     }
     let _ = API.set(Api(a));
     let _ = NAME.set(CString::new(name).unwrap_or_default());
-    if main() { 0 } else { 1 }
+    if guard("the mod's main", false, main) { 0 } else { 1 }
 }
 
 /// Defines the mod's entry point. The closure runs once, on GridNode's thread, and returns
@@ -70,6 +70,19 @@ unsafe fn string(p: *const c_char) -> String {
 }
 
 // ---- callbacks: boxed closures kept for the life of the process (GridNode never drops them) ----
+/// Runs a mod's closure called from GridNode; a panic is logged and stops there, because unwinding
+/// out of an `extern "C"` function would abort the game.
+fn guard<R>(what: &str, fallback: R, f: impl FnOnce() -> R) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => {
+            if API.get().is_some() {
+                log(&format!("{} panicked; GridNode carries on", what));
+            }
+            fallback
+        }
+    }
+}
 fn keep<T>(v: T) -> *mut c_void {
     Box::into_raw(Box::new(v)) as *mut c_void
 }
@@ -93,7 +106,7 @@ pub fn rva(va: u64) -> u64 {
 
 // ---- threads --------------------------------------------------------------------------------
 unsafe extern "C" fn tick_tramp<F: FnMut(f32)>(dt: f32, user: *mut c_void) {
-    (*(user as *mut F))(dt)
+    guard("a tick callback", (), || (*(user as *mut F))(dt))
 }
 /// `f(dt)` every server tick, on the server game thread.
 pub fn on_server_tick<F: FnMut(f32) + Send + 'static>(f: F) -> bool {
@@ -105,7 +118,7 @@ pub fn on_client_tick<F: FnMut(f32) + Send + 'static>(f: F) -> bool {
 }
 unsafe extern "C" fn task_tramp<F: FnOnce()>(user: *mut c_void) {
     let f = Box::from_raw(user as *mut F);
-    f()
+    guard("a posted task", (), move || f())
 }
 /// `f()` once, at the next server tick (on the server thread).
 pub fn run_on_server<F: FnOnce() + Send + 'static>(f: F) {
@@ -183,7 +196,7 @@ pub fn get<T: Copy>(object: *const c_void, ty: Type, field: &str) -> Option<T> {
 
 // ---- entities -----------------------------------------------------------------------------------
 unsafe extern "C" fn created_tramp<F: FnMut(*mut c_void)>(e: *mut c_void, _ci: *mut c_void, user: *mut c_void) {
-    (*(user as *mut F))(e)
+    guard("an on_created callback", (), || (*(user as *mut F))(e))
 }
 /// `f(entity)` for every entity of `class` (or a subclass) the game creates from now on, on the
 /// thread that created it.
@@ -231,7 +244,7 @@ pub fn level_name() -> String {
     }
 }
 unsafe extern "C" fn level_tramp<F: FnMut(&str, bool)>(level: *const c_char, loaded: c_int, user: *mut c_void) {
-    (*(user as *mut F))(&string(level), loaded != 0)
+    guard("a level callback", (), || (*(user as *mut F))(&string(level), loaded != 0))
 }
 /// `f(level, loaded)` when a level starts or ends (GridNode's thread).
 pub fn on_level<F: FnMut(&str, bool) + Send + 'static>(f: F) -> bool {
@@ -314,7 +327,7 @@ pub fn settings(class: &str) -> *mut c_void {
 }
 unsafe extern "C" fn console_tramp<F: FnOnce(&str)>(out: *const c_char, user: *mut c_void) {
     let f = Box::from_raw(user as *mut F);
-    f(&string(out))
+    guard("a console callback", (), move || f(&string(out)))
 }
 /// Runs a console line (client thread); `f(output)` there.
 pub fn console<F: FnOnce(&str) + Send + 'static>(line: &str, f: F) -> bool {
@@ -340,7 +353,7 @@ unsafe extern "C" fn message_tramp<F: FnMut(*const c_void, &MessageInfo)>(m: *co
         category_id: i.category_id,
         manager: i.manager,
     };
-    (*(user as *mut F))(m, &info)
+    guard("a message callback", (), || (*(user as *mut F))(m, &info))
 }
 /// `f(message, info)` for a message type (`"ClientPlayerLocalSetMessage"`) or a category
 /// (`"ServerPlayer"`), on the thread that sent it. The message only lives during the call.

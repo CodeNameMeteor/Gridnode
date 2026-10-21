@@ -391,6 +391,8 @@ int movementGet(gn_movement* out) {
 
 int movementSet(const gn_movement* in, uint32_t fields) {
     if (!in) return GN_ERR_ARGUMENT;
+    if (((fields & GN_MOVE_SPEED) && !std::isfinite(in->speed)) || ((fields & GN_MOVE_LAST_GROUND_Y) && !std::isfinite(in->last_ground_y)))
+        return GN_ERR_ARGUMENT; // never nan / inf into the game
     const MovementPtrs p = movementPtrs();
     if (!p.state || !p.ground) return GN_ERR_UNAVAILABLE;
     if (fields & GN_MOVE_STATE) mem::write(p.state + k::State_Movement, in->state);
@@ -406,7 +408,7 @@ int movementSet(const gn_movement* in, uint32_t fields) {
 // -> +0x128 (an Animatable, checked) -> +0x30 -> +0x50 (Vec3). Writing it moves Faith on the client
 // without a teleport, so the camera stays free (noclip).
 int positionSet(const float pos[3]) {
-    if (!pos) return GN_ERR_ARGUMENT;
+    if (!pos || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2])) return GN_ERR_ARGUMENT;
     const uintptr_t c = reinterpret_cast<uintptr_t>(localClientCharacter());
     if (!c) return GN_ERR_UNAVAILABLE;
     const uintptr_t anim = ptr(ptr(c + k::Character_AnimatableOwner) + k::AnimatableOwner_Animatable);
@@ -484,6 +486,7 @@ int gameStateGet(gn_game_state* out) {
 }
 
 int timeOfDaySet(float seconds) {
+    if (!std::isfinite(seconds)) return GN_ERR_ARGUMENT;
     const uintptr_t clock = timeOfDayClock();
     if (!clock) return GN_ERR_UNAVAILABLE;
     return mem::write(clock + k::Clock_Time, seconds) ? GN_OK : GN_ERR_UNAVAILABLE;
@@ -506,6 +509,7 @@ int tuningAt(uint32_t i, gn_tuning* out) {
 }
 
 int tuningSet(const char* name, float value) {
+    if (!std::isfinite(value)) return GN_ERR_ARGUMENT;
     Tuning* t = name ? findTuning(name) : nullptr;
     if (!t) return GN_ERR_NOT_FOUND;
     const uintptr_t a = resolve(*t);

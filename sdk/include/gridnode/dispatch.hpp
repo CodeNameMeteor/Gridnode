@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -25,7 +26,7 @@ public:
 
     void setErrorSink(ErrorSink sink) { errors_ = std::move(sink); }
     size_t listenerCount() const;
-    uint64_t ticks() const { return ticks_; }
+    uint64_t ticks() const { return ticks_.load(std::memory_order_relaxed); }
 
 private:
     struct Listener {
@@ -38,7 +39,7 @@ private:
     std::vector<Listener> added_;
     std::vector<Task> tasks_;
     ErrorSink errors_;
-    uint64_t ticks_ = 0;
+    std::atomic<uint64_t> ticks_{0}; // written on the tick thread, read by the UI
 };
 
 } // namespace gn::thread

@@ -105,6 +105,11 @@ int apiIsClientThread() { return isClientThread() ? 1 : 0; }
 
 int apiHookSlot(const char* mod, uint64_t slotVa, uint64_t expectedVa, void* detour, void** original) {
     if (!detour || !original || !slotVa) return GN_ERR_ARGUMENT;
+    if (!mem::patchableSlot(mem::rva(slotVa))) {
+        GN_LOG("[%s] hook refused: 0x%llx is not a pointer slot in the game's data (aligned, in the image, outside code)", mod ? mod : "?",
+               static_cast<unsigned long long>(slotVa));
+        return GN_ERR_SLOT;
+    }
     std::string why;
     const auto r = hooks().install(mod ? mod : "?", mem::rva(slotVa), expectedVa ? mem::rva(expectedVa) : 0,
                                    reinterpret_cast<uint64_t>(detour), reinterpret_cast<uint64_t*>(original), &why);

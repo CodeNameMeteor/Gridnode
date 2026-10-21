@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
@@ -31,6 +32,17 @@ bool available() {
 
 using CompartmentFn = void* (*)(uint16_t id);
 using FindFn = void* (*)(void* compartment, const char* path);
+
+// Assets handed to mods and not yet released, with how many times (each find adds a reference):
+// assetRelease only releases what assetFind gave out.
+std::mutex g_heldM;
+std::unordered_map<uintptr_t, uint32_t> g_held; // (g_heldM)
+
+bool isDataContainer(uintptr_t p) {
+    static const reflect::Type* dc = registry().find("DataContainer");
+    const reflect::Type* t = p ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
+    return t && dc && registry().isKindOf(t, dc);
+}
 } // namespace
 
 void* assetFind(const char* path, uint32_t* groupOut) {
@@ -48,9 +60,13 @@ void* assetFind(const char* path, uint32_t* groupOut) {
         // Partition_primaryInstance: **(partition + 0x20).
         const uintptr_t list = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(partition) + 0x20);
         const uintptr_t asset = list ? mem::readOr<uintptr_t>(list) : 0;
-        if (!asset) continue;
+        if (!asset || !isDataContainer(asset)) continue; // a reflected data object, or nothing is touched
         // Keep it alive while the mod holds it (the engine's own addRef: a locked increment of +8).
         _InterlockedIncrement(reinterpret_cast<volatile long*>(asset + 8));
+        {
+            std::lock_guard<std::mutex> lock(g_heldM);
+            ++g_held[asset];
+        }
         if (groupOut) *groupOut = id;
         return reinterpret_cast<void*>(asset);
     }
@@ -59,6 +75,15 @@ void* assetFind(const char* path, uint32_t* groupOut) {
 
 void assetRelease(void* asset) {
     if (!asset) return;
+    {
+        std::lock_guard<std::mutex> lock(g_heldM);
+        const auto it = g_held.find(reinterpret_cast<uintptr_t>(asset));
+        if (it == g_held.end()) { // not from assetFind, or already released: refusing beats a double free
+            GN_LOG("assets: release of %p refused: not an asset GridNode handed out (or released already)", asset);
+            return;
+        }
+        if (--it->second == 0) g_held.erase(it);
+    }
     using ReleaseFn = uint32_t (*)(void*);
     reinterpret_cast<ReleaseFn>(mem::rva(e::function::DataContainer_release))(asset);
 }

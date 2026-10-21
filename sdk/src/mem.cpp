@@ -57,10 +57,25 @@ bool readCString(uintptr_t addr, std::string& out, size_t maxLen) {
     return !out.empty();
 }
 
+// Only pointer slots of the game's image, outside its code sections (vtables, creator tables, data):
+// a wrong address must not rewrite code or someone else's memory.
+bool patchableSlot(uintptr_t addr) {
+    if ((addr & 7) || !inImage(addr) || !inImage(addr + sizeof(uintptr_t) - 1)) return false;
+    for (const Section& sec : imageSections())
+        if (sec.region.code && addr >= sec.region.begin && addr < sec.region.end) return false;
+    return true;
+}
+
 bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old) {
-    if (addr & 7) return false; // must be an aligned slot for the store to be atomic
+    if (!patchableSlot(addr)) return false; // aligned (so the store is atomic), in the image's data
+    // Keep the page executable if it is: in this game every page of the image is, and code may share
+    // the page with the slot; taking execute away for the write would fault a thread running it.
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<void*>(addr), &mbi, sizeof(mbi))) return false;
+    const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    const DWORD want = (mbi.Protect & exec) ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
     DWORD prot = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(addr), sizeof(uintptr_t), PAGE_READWRITE, &prot)) return false;
+    if (!VirtualProtect(reinterpret_cast<void*>(addr), sizeof(uintptr_t), want, &prot)) return false;
     if (old) *old = *reinterpret_cast<volatile uintptr_t*>(addr);
     *reinterpret_cast<volatile uintptr_t*>(addr) = value;
     DWORD tmp;

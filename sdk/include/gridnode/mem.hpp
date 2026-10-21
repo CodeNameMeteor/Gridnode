@@ -102,6 +102,7 @@ bool readCString(uintptr_t addr, std::string& out, size_t maxLen = 256);
 // Swaps one pointer in read-only image data (a vtable or creator slot). The aligned 8-byte store
 // is atomic on x64, so a concurrent virtual call sees either the old or the new function.
 // This is the only kind of write GridNode makes to the game image: code bytes are never patched.
+bool patchableSlot(uintptr_t addr); // an aligned pointer slot in the image, outside its code sections
 bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
 
 // MemoryView over this process (for gn::reflect).

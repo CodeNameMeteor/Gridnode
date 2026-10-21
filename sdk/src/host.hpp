@@ -182,7 +182,8 @@ namespace inspector {
 void start();
 void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
-std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // every live entity GridNode saw created
+std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
+bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type
 } // namespace inspector
 
 } // namespace gn::host

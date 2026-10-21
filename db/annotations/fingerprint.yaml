@@ -40,3 +40,10 @@ fingerprint:
     - { at: ClientPlayer_overrideInputState, skip: 0x11, bytes: "48 83 B9 C0 14 00 00 00 75 31", required: false, note: "Optional: only actions (gn::jump) depend on it (cmp qword [rcx+14c0h],0; jnz)." }
     - { at: getCompartment, bytes: "0F B7 C1 48 8D 0D", required: false, note: "Optional: only assets depend on it (movzx eax,cx; lea rcx,[ResourceGroups])." }
     - { at: Partition_findByName, skip: 0x1e, bytes: "48 8D 99 C0 00 00 00", required: false, note: "lea rbx,[rcx+0c0h] (the partition map's lock)." }
+    - { at: RenderObject_buildUpdate, bytes: "0F 28 41 10 49 89 D0 0F 29 02 0F 28 49 20", required: false, note: "Optional: moving group props and the outline's render-object layout depend on it (movaps xmm0,[rcx+10h]; mov r8,rdx)." }
+    - { at: RenderWorld_submitUpdate, bytes: "57 48 83 EC 30 48 C7 44 24 20 FE FF FF FF", required: false }
+    - { at: RigidMeshEntity_setTransform, bytes: "48 89 E0 48 89 58 18 57 48 81 EC D0 00 00 00", required: false }
+    - { at: ServerSubLevelEntity_onEvent, bytes: "48 89 5C 24 18 48 89 74 24 20 57 48 83 EC 30 8B 42 08", required: false, note: "Optional: keeping parts of the level loaded depends on it." }
+    - { at: ServerWriteAntGameStateEntity_onEvent, bytes: "57 48 83 EC 50 48 C7 44 24 20 FE FF FF FF", required: false }
+    - { at: WriteBoolGameState_write, bytes: "48 89 5C 24 08 57 48 83 EC 20 41 8B 09 48 89 D7 4C 89 C3", required: false, note: "Optional: recording animation flags depends on it." }
+    - { at: TypedValue_getValuePtr, bytes: "48 8B 01 48 85 C0 74 0E F6 40 1C 40 74 08 48 8B 00 C3", required: false }

@@ -130,7 +130,10 @@ typedef struct gn_field {
     const gn_type* owner;     /* the class or value type that declares it (may be a base class) */
 } gn_field;
 
-/* Faith's movement (movement_get / movement_set). */
+/* Faith's movement (movement_get / movement_set).
+ * Threads: movement_set, position_set, time_of_day_set, tuning_set, key_press and action_press write
+ * at once, on the calling thread (the values are single words the game reads each tick). Values that
+ * are not finite are refused with GN_ERR_ARGUMENT. */
 typedef struct gn_movement {
     int32_t state;          /* the movement state (MEC_Trainer: 2 standing/running, 3-4 wall moves, 8 jumping...) */
     int32_t wall_count;     /* walls used since the ground */

@@ -29,24 +29,36 @@ bool selfDir(wchar_t* path) {
     return false;
 }
 
-HMODULE realVersion() {
-    if (!g_real) {
-        // Chaining: if another mod (e.g. a custom-server loader) also ships a version.dll,
-        // rename theirs to version_next.dll and we load it and forward to it instead of
-        // System32, so both mods run.
-        wchar_t next[MAX_PATH];
-        if (selfDir(next) && lstrlenW(next) + 17 < MAX_PATH) {
-            lstrcatW(next, L"version_next.dll");
-            if (GetFileAttributesW(next) != INVALID_FILE_ATTRIBUTES) g_real = LoadLibraryW(next);
-            if (g_real) return g_real;
-        }
-        wchar_t path[MAX_PATH];
-        UINT n = GetSystemDirectoryW(path, MAX_PATH);
-        if (n == 0 || n > MAX_PATH - 16) return nullptr;
-        lstrcatW(path, L"\\version.dll");
-        g_real = LoadLibraryW(path);
+HMODULE loadRealVersion() {
+    // Chaining: if another mod (e.g. a custom-server loader) also ships a version.dll,
+    // rename theirs to version_next.dll and we load it and forward to it instead of
+    // System32, so both mods run.
+    wchar_t next[MAX_PATH];
+    if (selfDir(next) && lstrlenW(next) + 17 < MAX_PATH) {
+        lstrcatW(next, L"version_next.dll");
+        if (GetFileAttributesW(next) != INVALID_FILE_ATTRIBUTES)
+            if (HMODULE m = LoadLibraryW(next)) return m;
     }
-    return g_real;
+    wchar_t path[MAX_PATH];
+    UINT n = GetSystemDirectoryW(path, MAX_PATH);
+    if (n == 0 || n > MAX_PATH - 16) return nullptr;
+    lstrcatW(path, L"\\version.dll");
+    return LoadLibraryW(path);
+}
+
+// Loaded once whichever thread asks first (the loader thread, or a forwarder): published with a
+// compare-exchange, so a thread that loses the race drops its extra reference.
+HMODULE realVersion() {
+    if (HMODULE m = static_cast<HMODULE>(InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&g_real), nullptr, nullptr)))
+        return m;
+    HMODULE mine = loadRealVersion();
+    if (!mine) return nullptr;
+    void* prev = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&g_real), mine, nullptr);
+    if (prev) {
+        FreeLibrary(mine); // the same module: LoadLibrary counted it twice
+        return static_cast<HMODULE>(prev);
+    }
+    return mine;
 }
 
 using Fn8 = uintptr_t (*)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);

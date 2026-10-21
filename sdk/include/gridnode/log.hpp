@@ -25,6 +25,7 @@ void write(const char* fmt, ...)
 #endif
     ;
 
+void writeTry(const char* fmt, ...); // as write, but skips the line rather than wait for the lock (crash handler)
 } // namespace gn::log
 
 #define GN_LOG(...) ::gn::log::write(__VA_ARGS__)

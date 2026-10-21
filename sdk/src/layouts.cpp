@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -51,6 +52,10 @@ struct Edit {
     std::string mesh;   // "Copy": the source's mesh (MeshAsset name): found by it when the source is not
     int copyId = -1;
 };
+
+// Where removed copies and hidden group copies go (entities cannot be destroyed yet): this far
+// below where they were, out of sight and out of reach (Frosty-Unity Pipeline uses the same).
+constexpr float kParkDepth = 15000.f;
 
 std::mutex g_m;
 std::string g_level;            // the level the edits are for (g_m)
@@ -232,7 +237,9 @@ struct Move {
 std::mutex g_qm;
 std::deque<Move> g_serverQ, g_clientQ; // (g_qm)
 
+bool usableTransform(const gn_transform& t);
 void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& to) {
+    if (!entity || !type || !usableTransform(to)) return;
     std::lock_guard<std::mutex> lock(g_qm);
     (isServerClass(type->name) ? g_serverQ : g_clientQ).push_back({entity, type, to});
 }
@@ -283,8 +290,21 @@ void reframe(const gn_transform& from, const gn_transform& to, const float* p, b
 
 void normalize(float* v) {
     const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (n > 1e-6f)
+    if (n > 1e-6f && std::isfinite(n))
         for (int k = 0; k < 3; ++k) v[k] /= n;
+}
+
+// A transform GridNode may hand to the game: every row finite, the rotation rows not degenerate.
+bool usableTransform(const gn_transform& t) {
+    const float* rows[4] = {t.right, t.up, t.forward, t.trans};
+    for (const float* r : rows)
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(r[k]) || std::fabs(r[k]) > 1e7f) return false;
+    for (int i = 0; i < 3; ++i) {
+        const float* r = rows[i];
+        if (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] < 1e-8f) return false;
+    }
+    return true;
 }
 
 // Moves the bodies of `entity` from `before` to `after`, each keeping its place relative to the
@@ -307,6 +327,7 @@ void moveBodies(uintptr_t entity, const reflect::Type* t, const gn_transform& be
         reframe(before, after, was.forward, false, now.forward);
         reframe(before, after, was.trans, true, now.trans);
         normalize(now.right), normalize(now.up), normalize(now.forward); // bodies carry no scale
+        if (!usableTransform(now)) return;
         reinterpret_cast<void (*)(uintptr_t, const gn_transform*, bool)>(set)(body, &now, true);
         ++moved;
     });
@@ -323,7 +344,7 @@ void runQueue(std::deque<Move>& q) {
     }
     for (const Move& m : work) {
         // Still the same object (not destroyed and reused since)?
-        if (registry().typeOf(mem::ProcessMemory(), m.entity) != m.type) continue;
+        if (!inspector::alive(m.entity, m.type)) continue;
         gn_transform before{};
         const bool had = entityTransform(reinterpret_cast<void*>(m.entity), before);
         entitySetTransform(reinterpret_cast<void*>(m.entity), &m.to);
@@ -516,6 +537,17 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
     }
     out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
+    // Values the game must never be given (nan / inf from a hand-edited file, a zero row).
+    const size_t before = out.size();
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [](const Edit& ed) {
+                                 return !usableTransform(ed.to) || !usableTransform(ed.from) || !std::isfinite(ed.at[0]) || !std::isfinite(ed.at[1]) ||
+                                        !std::isfinite(ed.at[2]);
+                             }),
+              out.end());
+    if (out.size() != before)
+        GN_LOG("layouts: %s: %llu edits with values that are not usable (nan, inf, a zero row) skipped", level.c_str(),
+               static_cast<unsigned long long>(before - out.size()));
     return out;
 }
 
@@ -608,7 +640,7 @@ bool readInstance(uintptr_t inst, gn_transform& out) {
 // Writes rotation (unit rows), scale and translation; the w lanes (other data) are kept.
 void writeInstance(uintptr_t inst, const gn_transform& t) {
     float m[20];
-    if (!inst || !mem::read(inst, m, sizeof(m))) return;
+    if (!inst || !usableTransform(t) || !mem::read(inst, m, sizeof(m))) return;
     const float* rows[3] = {t.right, t.up, t.forward};
     for (int r = 0; r < 3; ++r) {
         const float n = std::sqrt(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
@@ -647,30 +679,46 @@ bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t&
 
 // The member's own InstanceTransforms entry for the copy, if the member has them (0 if not).
 uintptr_t memberTransform(uintptr_t member, uint32_t copy) {
-    static const uint32_t off = memberField("InstanceTransforms");
+    static const uint32_t off = memberField("InstanceTransforms"), countOff = memberField("InstanceCount");
     const uintptr_t arr = member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
     const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
-    return copy < n ? arr + copy * 0x40u : 0;
+    const uint32_t copies = countOff != 0xffffffffu ? mem::readOr<uint32_t>(member + countOff) : 0;
+    // Both counts from the game: the array's own and the member's copies; the smaller bounds the index.
+    return copy < std::min(n, copies) && n <= 100000 ? arr + copy * 0x40u : 0;
 }
+
+} // namespace
+bool isMeshEntity(uintptr_t p); // (with the outline, outside the anonymous namespace)
+namespace {
 
 // The render object of the copy (client thread): the block's cached list, or the physics
 // component's object for the copy's first part (how 0x14318fbc0 gathers them).
 uintptr_t renderObjectOf(const GroupProp& g) {
-    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance");
+    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
+                          countOff = memberField("InstanceCount");
     if (!g.block || !g.member) return 0;
-    if (const uintptr_t list = mem::readOr<uintptr_t>(g.block + 0xc8)) return mem::readOr<uintptr_t>(list + g.copy * 8u);
-    const uintptr_t comp = mem::readOr<uintptr_t>(g.block + 0x20);
+    const uint32_t copies = countOff != 0xffffffffu ? mem::readOr<uint32_t>(g.member + countOff) : 0;
+    if (g.copy >= copies || copies > 100000) return 0; // the list has one entry per copy
+    if (const uintptr_t list = mem::readOr<uintptr_t>(g.block + e::constant::GroupMemberBlock_RenderObjects)) {
+        const uintptr_t ro = mem::readOr<uintptr_t>(list + g.copy * 8u);
+        return isMeshEntity(ro) ? ro : 0;
+    }
+    const uintptr_t comp = mem::readOr<uintptr_t>(g.block + e::constant::GroupMemberBlock_Physics);
     const uintptr_t vt = comp ? mem::readOr<uintptr_t>(comp) : 0;
-    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + 0x210) : 0;
+    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + e::constant::PhysicsComponent_vf_renderObjectOfPart) : 0;
     if (!mem::inImage(fn)) return 0;
     const uint32_t part = mem::readOr<uint32_t>(g.member + partRange) + mem::readOr<uint32_t>(g.member + perCopy) * g.copy;
-    return reinterpret_cast<uintptr_t (*)(uintptr_t, uint32_t)>(fn)(comp, part);
+    const uintptr_t ro = reinterpret_cast<uintptr_t (*)(uintptr_t, uint32_t)>(fn)(comp, part);
+    return isMeshEntity(ro) ? ro : 0;
 }
 
 // Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
 // transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
 // (0x1436d6ce0 with *(0x1424a9b98)+0x48).
 void placeCopy(const GroupProp& g, const gn_transform& world) {
+    // The render-object functions it calls must be the ones this was worked out on.
+    static const bool known = build::codeMatches("RenderObject_buildUpdate") && build::codeMatches("RenderWorld_submitUpdate");
+    if (!known) return;
     const uintptr_t obj = renderObjectOf(g);
     const uintptr_t vt = obj ? mem::readOr<uintptr_t>(obj) : 0;
     const uintptr_t setT = vt ? mem::readOr<uintptr_t>(vt + 0x10) : 0;
@@ -682,7 +730,7 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
     alignas(16) uint8_t update[0x100] = {};
     // Set before building, as 0x14318fbc0 does (offsets from its local at rsp-0x148).
-    const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(0x141a4e8dc));
+    const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(e::global::StaticModelGroup_LodScale));
     memcpy(update + 0x60, &lodScale, 4);
     update[0x88] = update[0x89] = 0;
     update[0x8d] = 2;
@@ -743,7 +791,7 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
     const uintptr_t data = dataOf(serverGroup, "StaticModelGroupEntityData");
     static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
     for (const auto& [p, t] : inspector::tracked())
-        if (t && cg && registry().isKindOf(t, cg) && data && dataOf(p, "StaticModelGroupEntityData") == data) {
+        if (t && cg && registry().isKindOf(t, cg) && data && inspector::alive(p, t) && dataOf(p, "StaticModelGroupEntityData") == data) {
             g.clientGroup = p;
             break;
         }
@@ -879,7 +927,10 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
 // Server thread: hide the group copy (whose own placement is `orig`) and put a standalone entity of
 // its member type at `to`; `select` makes it the editor's selection.
 void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_transform& to, bool select) {
-    const uintptr_t data = memberType(g.member);
+    static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    uintptr_t data = memberType(g.member);
+    const reflect::Type* checked = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    if (!checked || !smd || !registry().isKindOf(checked, smd)) data = 0; // only a static model's data is spawned from
     const uintptr_t sbus = busOf(g.serverGroup), cbus = busOf(g.clientGroup);
     const reflect::Type* dt = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
     GN_LOG("layouts: make standalone: part %u, data %llx (%s), server bus %llx, client bus %llx", g.part, static_cast<unsigned long long>(data),
@@ -897,7 +948,7 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
     }
     // Hide the group copy: its collision and render object far below the level.
     gn_transform away = orig;
-    away.trans[1] -= 15000.f;
+    away.trans[1] -= kParkDepth;
     moveGroupProp(g, away);
     alignas(16) gn_transform o = orig, w = to;
     client().post([g, data, cbus, o, w, se, select] {
@@ -932,16 +983,30 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
     static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
                           copies = memberField("InstanceCount");
     if (!sg || !cg || partRange == 0xffffffffu) return false;
-    const auto tracked = inspector::tracked();
-    // Client groups by their data, once (pairing each server group by scanning everything was slow).
+    // Client groups by their data, and the server groups: found from the tracked list at most once a
+    // second (applying a layout looks for many props in a row).
+    static std::mutex cacheM;
+    static std::unordered_map<uintptr_t, uintptr_t> clientByDataCache;
+    static std::vector<uintptr_t> serversCache;
+    static ULONGLONG cachedAt = 0;
     std::unordered_map<uintptr_t, uintptr_t> clientByData;
     std::vector<uintptr_t> servers;
-    for (const auto& [p, t] : tracked) {
-        if (!t) continue;
-        if (registry().isKindOf(t, cg)) {
-            if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByData.emplace(d, p);
-        } else if (registry().isKindOf(t, sg))
-            servers.push_back(p);
+    {
+        std::lock_guard<std::mutex> lock(cacheM);
+        if (GetTickCount64() - cachedAt > 1000) {
+            clientByDataCache.clear();
+            serversCache.clear();
+            for (const auto& [p, t] : inspector::tracked()) {
+                if (!t || !inspector::alive(p, t)) continue;
+                if (registry().isKindOf(t, cg)) {
+                    if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByDataCache.emplace(d, p);
+                } else if (registry().isKindOf(t, sg))
+                    serversCache.push_back(p);
+            }
+            cachedAt = GetTickCount64();
+        }
+        clientByData = clientByDataCache;
+        servers = serversCache;
     }
     for (const uintptr_t server : servers) {
         const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
@@ -1011,8 +1076,7 @@ void setOwners(Template& t, uintptr_t server, uintptr_t client) {
 bool templateAlive(const Template& t) {
     static const reflect::Type* smd = registry().find("StaticModelEntityData");
     if (!t.ownerServer || !t.ownerClient || !t.ownerServerType || !t.ownerClientType) return false;
-    if (registry().typeOf(mem::ProcessMemory(), t.ownerServer) != t.ownerServerType) return false;
-    if (registry().typeOf(mem::ProcessMemory(), t.ownerClient) != t.ownerClientType) return false;
+    if (!inspector::alive(t.ownerServer, t.ownerServerType) || !inspector::alive(t.ownerClient, t.ownerClientType)) return false;
     const reflect::Type* dt = t.data ? registry().typeOf(mem::ProcessMemory(), t.data) : nullptr;
     return dt && smd && registry().isKindOf(dt, smd);
 }
@@ -1080,7 +1144,7 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
     // Standalone models first: data, buses and owners of both halves.
     std::unordered_map<uintptr_t, uintptr_t> clientByData, clientGroupByData;
     for (const auto& [p, ty] : tracked) {
-        if (!ty || isServerClass(ty->name)) continue;
+        if (!ty || isServerClass(ty->name) || !inspector::alive(p, ty)) continue; // dead ones would hide live ones with the same data
         if (cg && registry().isKindOf(ty, cg)) {
             if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientGroupByData.emplace(d, p);
         } else if (ty->name.find("StaticModelEntity") != std::string::npos) {
@@ -1088,7 +1152,7 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
         }
     }
     for (const auto& [p, ty] : tracked) {
-        if (!ty || !isServerClass(ty->name) || ty->name.find("StaticModelEntity") == std::string::npos) continue;
+        if (!ty || !isServerClass(ty->name) || ty->name.find("StaticModelEntity") == std::string::npos || !inspector::alive(p, ty)) continue;
         const uintptr_t d = dataOf(p, "StaticModelEntityData");
         if (!d || meshOfData(d) != mesh) continue;
         const auto ci = clientByData.find(d);
@@ -1107,7 +1171,7 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
     // Then group members (the copies' placement is not needed: a library object is placed upright).
     int groups = 0, paired = 0, matched = 0, noBus = 0, dead = 0;
     for (const auto& [server, ty] : tracked) {
-        if (!ty || !sg || !registry().isKindOf(ty, sg)) continue;
+        if (!ty || !sg || !registry().isKindOf(ty, sg) || !inspector::alive(server, ty)) continue;
         ++groups;
         const uintptr_t gd = dataOf(server, "StaticModelGroupEntityData");
         const auto cgi = gd ? clientGroupByData.find(gd) : clientGroupByData.end();
@@ -1156,7 +1220,7 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
 // for the sublevels it has pinned: those holding the source of a copy or a library placement. It
 // can also stream one in by sending it StreamIn, using an event object of the game's own kind
 // (its vtable, seen on a real stream event).
-constexpr uint32_t kStreamIn = 0xd27bc17eu, kStreamOut = 0x21f3f677u;
+constexpr uint32_t kStreamIn = static_cast<uint32_t>(e::constant::Event_StreamIn), kStreamOut = static_cast<uint32_t>(e::constant::Event_StreamOut);
 using SubEventFn = void (*)(void* entity, void* event);
 uint64_t g_subOrig = 0;
 std::atomic<uintptr_t> g_streamEventVtbl{0}; // a stream event's vtable, as the game makes them
@@ -1169,12 +1233,13 @@ void subLevelEventDetour(void* entity, void* event) {
     if (id == kStreamIn || id == kStreamOut) g_streamEventVtbl = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(event));
     if (id == kStreamOut) {
         std::string bundle;
-        bool pinned;
-        {
+        bool pinned = false;
+        try {
             std::lock_guard<std::mutex> lock(g_pinM);
             const auto it = g_pinned.find(reinterpret_cast<uintptr_t>(entity));
             pinned = it != g_pinned.end();
             if (pinned) bundle = it->second;
+        } catch (...) { // not ours to break: the game's own handling goes on
         }
         if (pinned) {
             static std::atomic<int> said{0};
@@ -1187,11 +1252,14 @@ void subLevelEventDetour(void* entity, void* event) {
 
 void hookSubLevels() {
     if (g_subHooked.exchange(true)) return;
+    if (!build::codeMatches("ServerSubLevelEntity_onEvent"))
+        return GN_LOG("layouts: ServerSubLevelEntity's onEvent is not as expected; parts of the level are not kept loaded");
     const reflect::Type* t = registry().find("ServerSubLevelEntity");
     if (!t || t->vtables.empty()) return GN_LOG("layouts: no ServerSubLevelEntity vtable; parts of the level cannot be kept loaded");
     const uintptr_t vt = static_cast<uintptr_t>(t->vtables[0] - 0x140000000ull) + mem::moduleBase();
     std::string why;
-    const auto r = hooks().install("layouts", vt + 0x20, 0, reinterpret_cast<uint64_t>(&subLevelEventDetour), &g_subOrig, &why);
+    const auto r = hooks().install("layouts", vt + 0x20, mem::rva(e::function::ServerSubLevelEntity_onEvent), reinterpret_cast<uint64_t>(&subLevelEventDetour),
+                                   &g_subOrig, &why); // only if the slot holds the function this was worked out on
     GN_LOG("layouts: sublevel stream events %s%s", r == hook::Result::Ok ? "watched" : "not watched: ", r == hook::Result::Ok ? "" : why.c_str());
 }
 
@@ -1219,7 +1287,7 @@ std::vector<uintptr_t> subLevels() {
     }
     std::vector<uintptr_t> out;
     for (const auto& [p, ty] : inspector::tracked())
-        if (ty && st && registry().isKindOf(ty, st) && registry().typeOf(mem::ProcessMemory(), p) == ty) out.push_back(p);
+        if (ty && st && registry().isKindOf(ty, st) && inspector::alive(p, ty)) out.push_back(p);
     cache = out;
     at = GetTickCount64();
     return out;
@@ -1228,7 +1296,7 @@ std::vector<uintptr_t> subLevels() {
 // The sublevel whose bus `bus` is (0 if none is).
 uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr) {
     for (uintptr_t sl : subLevels())
-        if (mem::readOr<uintptr_t>(sl + 0x88) == bus) {
+        if (mem::readOr<uintptr_t>(sl + e::constant::ServerSubLevelEntity_Bus) == bus) {
             if (bundle) *bundle = bundleOf(sl);
             return sl;
         }
@@ -1294,7 +1362,7 @@ void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool selec
     {
         std::lock_guard<std::mutex> lock(g_spawnM);
         for (Spawned& sp : g_spawned)
-            if (sp.hidden && sp.data == t.data && sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType) {
+            if (sp.hidden && sp.data == t.data && sp.serverType && inspector::alive(sp.server, sp.serverType)) {
                 sp.hidden = false;
                 sp.copyId = copyId;
                 sp.source = t.source;
@@ -1603,7 +1671,7 @@ void loadLayout(const std::string& name) {
     }
     writeLine(levelDir(level) + L"last.txt", name);
     GN_LOG("layouts: loaded \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
-    std::thread([] { applyToExisting(); }).detach();
+    server().post([] { applyToExisting(); }); // on the server thread, not a thread of its own
 }
 
 void deleteLayout(const std::string& name) {
@@ -1774,8 +1842,10 @@ void pick(const float* ray = nullptr, bool add = false) {
         {
             std::lock_guard<std::mutex> lock(g_m);
             for (const Edit& ed : g_edits)
-                if ((ed.kind == s.kind || ed.kind == "GroupProp") && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) {
-                    s.spawned = ed.kind == "GroupProp";
+                // Its own kind only: a standalone copy of a group prop is recognised below, from the copies
+                // GridNode made, not from an edit that happens to be at the same place.
+                if (ed.kind == s.kind && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) {
+                    s.spawned = false;
                     memcpy(s.at, ed.at, sizeof(s.at));
                     if (ed.haveFrom) {
                         s.orig = ed.from;
@@ -1994,9 +2064,9 @@ void hideCopy(int copyId) {
     for (Spawned& sp : g_spawned)
         if (sp.copyId == copyId && !sp.hidden) {
             gn_transform away = sp.orig;
-            if (sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType)
+            if (sp.serverType && inspector::alive(sp.server, sp.serverType))
                 entityTransform(reinterpret_cast<void*>(sp.server), away);
-            away.trans[1] -= 15000.f;
+            away.trans[1] -= kParkDepth;
             if (sp.serverType) queueMove(sp.server, sp.serverType, away);
             if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
             sp.hidden = true;
@@ -2094,7 +2164,7 @@ void undoStep(const UndoStep& st, std::vector<Selected>& moved, bool& addSel) {
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (Spawned& sp : g_spawned)
-                if (sp.server == st.server && sp.hidden && sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType) {
+                if (sp.server == st.server && sp.hidden && sp.serverType && inspector::alive(sp.server, sp.serverType)) {
                     sp.hidden = false;
                     sp.copyId = st.copyId;
                     if (sp.serverType) queueMove(sp.server, sp.serverType, st.edit.to);
@@ -2696,6 +2766,11 @@ void onLevel(const std::string& level) {
     {
         clearPins(); // a new level: new sublevel entities
     }
+    {
+        std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
+        g_serverQ.clear();
+        g_clientQ.clear();
+    }
     if (!name.empty()) GN_LOG("layouts: auto-loading \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
 }
 
@@ -2709,7 +2784,7 @@ void maintainSpawned() {
     {
         std::lock_guard<std::mutex> lock(g_spawnM);
         const auto alive = [](const Spawned& sp) {
-            return sp.serverType && registry().typeOf(mem::ProcessMemory(), sp.server) == sp.serverType;
+            return sp.serverType && inspector::alive(sp.server, sp.serverType);
         };
         const size_t before = g_spawned.size();
         g_spawned.erase(std::remove_if(g_spawned.begin(), g_spawned.end(), [&](const Spawned& sp) { return !alive(sp); }), g_spawned.end());
@@ -2763,7 +2838,7 @@ void clientTick() {
             std::lock_guard<std::mutex> lock(g_m);
             any = !g_edits.empty();
         }
-        if (any) std::thread([] { applyToExisting(); }).detach();
+        if (any) server().post([] { applyToExisting(); });
     }
 }
 
@@ -2809,7 +2884,8 @@ int g_editorFrame = -10;             // last frame the Layout editor was drawn (
 
 uintptr_t firstViewManager() {
     namespace cv = e::st::ClientCameraViewManagers::off;
-    const uintptr_t managers = mem::readOr<uintptr_t>(mem::rva(e::global::ClientCameraViewManagers));
+    uintptr_t managers = 0; // an image global: read directly (no kernel call), as it is read every frame
+    mem::readFast(mem::rva(e::global::ClientCameraViewManagers), managers);
     const uintptr_t begin = managers ? mem::readOr<uintptr_t>(managers + cv::managersBegin) : 0;
     const uintptr_t end = managers ? mem::readOr<uintptr_t>(managers + cv::managersEnd) : 0;
     return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
@@ -3403,7 +3479,7 @@ void draw(bool* open) {
     static std::vector<std::string> saved;
     static double listedAt = -10.0;
     static std::string listedFor;
-    if (ImGui::GetTime() - listedAt > 1.0 || listedFor != level) {
+    if (ImGui::GetTime() - listedAt > 3.0 || listedFor != level) {
         saved = level.empty() ? std::vector<std::string>{} : listLayouts(level);
         listedAt = ImGui::GetTime();
         listedFor = level;
@@ -3413,7 +3489,7 @@ void draw(bool* open) {
         ImGui::PushID(n.c_str());
         ImGui::BulletText("%s%s", n.c_str(), n == loaded ? " (loaded)" : "");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Load")) loadLayout(n);
+        if (ImGui::SmallButton("Load")) server().post([n] { loadLayout(n); }); // its scan off the render thread
         ImGui::SameLine();
         if (confirmDelete == n) {
             if (ImGui::SmallButton("Really delete")) {
@@ -3430,7 +3506,7 @@ void draw(bool* open) {
     }
     if (saved.empty()) ImGui::TextDisabled("No saved layouts for this level.");
     ImGui::BeginDisabled(count == 0 && loaded.empty());
-    if (ImGui::Button("Unload (put the level back)")) unloadLayout();
+    if (ImGui::Button("Unload (put the level back)")) server().post([] { unloadLayout(); });
     ImGui::EndDisabled();
     ImGui::SeparatorText("Object");
     if (ImGui::Button("Pick what the camera points at")) pickCentre();
@@ -3755,9 +3831,11 @@ std::unordered_map<uintptr_t, std::array<float, 6>> g_dataBox;
 // transform at +0x10, its world bounding sphere at +0x50 and its mesh's local box at
 // *(**(object + 0x60) + 0x20) (min xyz_, max xyz_), as its set-transform (0x14376c060) reads it.
 bool meshBox(uintptr_t ro, float* mn, float* mx) {
-    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + 0x60) : 0;
+    static const bool known = build::codeMatches("RigidMeshEntity_setTransform") && build::codeMatches("RenderObject_buildUpdate");
+    if (!known) return false; // the layout below was read off these functions
+    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + e::constant::MeshEntity_Mesh) : 0;
     const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
-    const uintptr_t p = x ? mem::readOr<uintptr_t>(x + 0x20) : 0;
+    const uintptr_t p = x ? mem::readOr<uintptr_t>(x + e::constant::Mesh_Box) : 0;
     float b[8];
     if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
     for (int k = 0; k < 3; ++k)
@@ -3770,8 +3848,8 @@ bool meshBox(uintptr_t ro, float* mn, float* mx) {
 bool isMeshEntity(uintptr_t p) {
     if (p < 0x10000 || (p & 7)) return false;
     const uintptr_t vt = mem::readOr<uintptr_t>(p);
-    if (vt == mem::rva(0x141bf72c8)) return true; // RigidMeshEntity (group props, most models)
-    if (vt == mem::rva(0x141c012c0)) return true; // CompositeMeshEntity (some standalone models); same base and layout
+    if (vt == mem::rva(e::global::RigidMeshEntity_vtable)) return true;     // group props, most models
+    if (vt == mem::rva(e::global::CompositeMeshEntity_vtable)) return true; // some standalone models; same base and layout
     const reflect::Type* t = mem::inImage(vt) ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
     return t && t->name.size() > 10 && t->name.compare(t->name.size() - 10, 10, "MeshEntity") == 0;
 }
@@ -3779,7 +3857,7 @@ bool isMeshEntity(uintptr_t p) {
 // A render object's world transform (+0x10: right, up, forward, translation rows).
 bool meshTransform(uintptr_t ro, gn_transform& t) {
     float m[16];
-    if (!ro || !mem::read(ro + 0x10, m, sizeof(m)) || !finite(m, 16)) return false;
+    if (!ro || !mem::read(ro + e::constant::MeshEntity_Transform, m, sizeof(m)) || !finite(m, 16)) return false;
     for (int k = 0; k < 3; ++k) t.right[k] = m[k], t.up[k] = m[4 + k], t.forward[k] = m[8 + k], t.trans[k] = m[12 + k];
     return true;
 }

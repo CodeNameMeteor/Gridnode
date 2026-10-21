@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -226,7 +227,12 @@ std::array<uint64_t, kEventPool> g_eventOrig{};
 void onEvent(void* peer, void* event);
 
 template <size_t I> void eventDetour(void* peer, void* event, void* a3, void* a4) {
-    if (g_recording.load(std::memory_order_relaxed) && g_wantEvents.load(std::memory_order_relaxed)) onEvent(peer, event);
+    if (g_recording.load(std::memory_order_relaxed) && g_wantEvents.load(std::memory_order_relaxed)) {
+        try {
+            onEvent(peer, event);
+        } catch (...) { // recording never breaks the game's event
+        }
+    }
     reinterpret_cast<OnEventFn>(g_eventOrig[I])(peer, event, a3, a4);
 }
 template <size_t... I> constexpr std::array<OnEventFn, sizeof...(I)> makeEventDetours(std::index_sequence<I...>) {
@@ -459,12 +465,13 @@ constexpr uint64_t kAntWriteSlot = 0x8;
 std::array<uint64_t, kAntPool> g_antIntOrig{}, g_antFloatOrig{}, g_antPtrOrig{};
 std::array<uint8_t, kAntPool> g_antIntKind{}, g_antPtrKind{};
 
-void antCodeWrite(uintptr_t writer, uintptr_t state, uint8_t kind, const float* v) {
+void antCodeWrite(uintptr_t writer, uintptr_t state, uint8_t kind, const float* v) try {
     Event ev;
     ev.valueKind = kind;
     ev.antWriter = writer, ev.antState = state;
     memcpy(ev.value, v, sizeof(float) * antCount(kind));
     recordAnim(std::move(ev), antCount(kind));
+} catch (...) {
 }
 bool antRecording() { return g_recording.load(std::memory_order_relaxed) && g_wantAnim.load(std::memory_order_relaxed); }
 
@@ -600,7 +607,10 @@ void antDataWrite(size_t I, void* data, void* propsP, uint32_t* wIdx, uint32_t* 
 
 template <size_t I> void antDataDetour(void* data, void* props, uint32_t* wIdx, uint32_t* vIdx, void* state) {
     if (antRecording()) {
-        antDataWrite(I, data, props, wIdx, vIdx, state);
+        try {
+            antDataWrite(I, data, props, wIdx, vIdx, state);
+        } catch (...) {
+        }
         t_antCtx.active = true; // the writer interface it calls is not recorded a second time
         reinterpret_cast<AntDataFn>(g_antData[I].orig)(data, props, wIdx, vIdx, state);
         t_antCtx.active = false;
@@ -614,6 +624,10 @@ std::atomic<bool> g_antHooked{false};
 
 void hookAnim() {
     if (g_antHooked.exchange(true)) return;
+    if (!build::codeMatches("WriteBoolGameState_write") || !build::codeMatches("TypedValue_getValuePtr")) {
+        GN_LOG("recorder: the game state writers are not as expected; animation flags are not recorded");
+        return;
+    }
     size_t done = 0;
     for (size_t i = 0; i < kAntDataCount; ++i) {
         AntDataClass& dc = g_antData[i];

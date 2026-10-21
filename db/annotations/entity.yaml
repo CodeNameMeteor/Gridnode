@@ -50,7 +50,7 @@ functions:
     sources: [ghidra]
   - name: EntityBusPeer_sendEvent
     va: 0x143134460
-    signature: "void(int realm, void* peer, void* event)"
+    signature: "void(i32 realm, void* peer, void* event)"
     note: "Calls the peer's vtable +0x20 (its onEvent) on the right thread, or queues it for that realm (0x143127d20)."
     confidence: inferred
     sources: [ghidra]

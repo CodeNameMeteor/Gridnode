@@ -3,6 +3,16 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: ServerSubLevelEntity_onEvent
+    va: 0x14335efb0
+    signature: "void(void* subLevel, void* event)"
+    note: >-
+      ServerSubLevelEntity vtable +0x20. StreamIn (0xd27bc17e) and 0xce6d3f44 load the sublevel,
+      StreamOut (0x21f3f677) unloads it; other events go on to its bus (+0x88). The event's vtable
+      +0x10 is called on it (a copy for the pending queue). The layout editor wraps this slot to keep
+      sublevels holding copies' sources loaded (docs/research/render-objects.md, PLAN M7 14).
+    confidence: inferred
+    sources: [ghidra, research]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: resourceGroup_resolveIdsForLevel
     va: 0x142aba6e0
@@ -259,3 +269,8 @@ functions:
     note: "Named in Ghidra as LevelSetup_assign. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+
+constants:
+  - { name: ServerSubLevelEntity_Bus, value: 0x88, confidence: inferred, sources: [ghidra], note: "The sublevel's content bus (events other than streaming are passed to it)." }
+  - { name: Event_StreamIn, value: 0xd27bc17e, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamIn." }
+  - { name: Event_StreamOut, value: 0x21f3f677, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamOut." }

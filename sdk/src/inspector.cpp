@@ -2,9 +2,12 @@
 // decodes reflected fields (and GridNode's annotated members), follows pointers and edits values.
 //
 // Entities are tracked from the moment GridNode starts, through an on_created listener on Entity
-// (every class the engine has a creator for). There is no destroy hook, so an entry is shown only
-// while its vtable still says the class it was created as, and dead entries are pruned a few
-// thousand per frame. Everything is read fault tolerantly; edits are written on the client thread.
+// (every class the engine has a creator for). There is no destroy hook yet, so an entry counts as
+// live while its vtable still says the class it was created as. GridNode's own pruning thread goes
+// through the list all the time (whether or not any window is open), drops dead entries and
+// remembers their addresses as dead until a new entity is created there; alive() answers from that,
+// and every write through a tracked pointer asks it first. Everything is read fault tolerantly;
+// edits are written on the client thread.
 
 #include <windows.h>
 
@@ -17,6 +20,7 @@
 #include <mutex>
 #include <string>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -42,7 +46,9 @@ std::mutex g_m;
 std::vector<Tracked> g_entities; // guarded by g_m; appended by game threads, pruned by the render thread
 std::unordered_map<uintptr_t, size_t> g_index; // guarded by g_m: pointer -> its entry (memory is reused)
 constexpr size_t kMaxTracked = 400000;
-size_t g_pruneAt = 0;   // render thread
+size_t g_pruneAt = 0;   // pruning thread
+std::unordered_map<uintptr_t, uint8_t> g_dead; // guarded by g_m: addresses of entities found dead (until reused)
+constexpr size_t kMaxDead = 200000;
 bool g_started = false; // GridNode's thread, before the UI exists
 size_t g_dropped = 0;   // guarded by g_m
 
@@ -57,6 +63,7 @@ void onEntity(void* entity, void*, void*) {
         ++g_dropped;
         return;
     }
+    g_dead.erase(p); // a new entity at that address
     const auto it = g_index.find(p);
     if (it != g_index.end()) { // the address was reused by a new entity
         g_entities[it->second].type = t;
@@ -66,9 +73,10 @@ void onEntity(void* entity, void*, void*) {
     g_entities.push_back({p, t});
 }
 
-// A few thousand entries per frame: entries whose object no longer has its type are dropped.
+// A slice of the list: entries whose object no longer has its type are dropped, their addresses
+// remembered as dead.
 void prune() {
-    constexpr size_t kPerFrame = 3000;
+    constexpr size_t kPerFrame = 4000;
     std::vector<std::pair<size_t, Tracked>> slice;
     {
         std::lock_guard<std::mutex> lock(g_m);
@@ -89,6 +97,8 @@ void prune() {
         // Still the same entry (not re-created at the same address since we looked)?
         if (i >= g_entities.size() || g_entities[i].ptr != it->second.ptr || g_entities[i].type != it->second.type) continue;
         g_index.erase(g_entities[i].ptr);
+        if (g_dead.size() >= kMaxDead) g_dead.clear(); // bounded; the vtable test still applies
+        g_dead[g_entities[i].ptr] = 1;
         if (i + 1 != g_entities.size()) {
             g_entities[i] = g_entities.back();
             g_index[g_entities[i].ptr] = i;
@@ -146,8 +156,20 @@ void open(uintptr_t ptr, const Type* type, std::string label) {
 bool g_readOnly = false;
 std::set<const Type*> g_allowed; // online settings classes the user allowed changes to
 
+// The object an edit belongs to (the one on screen), checked again when the write happens.
+struct Owner {
+    uintptr_t ptr = 0;
+    const Type* type = nullptr;
+};
+Owner g_editOwner; // render thread: set while the object view is drawn
+
+bool ownerAlive(const Owner& o) { return !o.ptr || alive(o.ptr, o.type); }
+
 template <class T> void postWrite(uintptr_t at, T v) {
-    client().post([at, v] { mem::write(at, v); });
+    const Owner o = g_editOwner;
+    client().post([at, v, o] {
+        if (ownerAlive(o)) mem::write(at, v);
+    });
 }
 
 void pointerLink(uintptr_t p, const Type* declared, const char* id) {
@@ -190,14 +212,18 @@ void value(uintptr_t at, const Type* ft, const char* id, int depth) {
         } else if (n == "Int8" || n == "Int16" || n == "Int32" || n == "Int64" || n == "Uint8" || n == "Uint16" || n == "Uint32" ||
                    n == "Uint64") {
             const bool sign = n[0] == 'I';
-            const size_t size = ft->size ? ft->size : 4;
+            // The width from the type itself (Int8 .. Uint64), not the reflected size, which may be off.
+            const size_t size = n.find("64") != std::string::npos ? 8 : n.find("32") != std::string::npos ? 4 : n.find("16") != std::string::npos ? 2 : 1;
             int64_t v = 0;
             mem::read(at, &v, std::min<size_t>(size, 8));
             if (sign && size < 8) v = (v << (64 - size * 8)) >> (64 - size * 8);
             ImGuiDataType dt = sign ? ImGuiDataType_S64 : ImGuiDataType_U64;
             if (ImGui::InputScalar("##v", dt, &v, nullptr, nullptr, nullptr, ImGuiInputTextFlags_EnterReturnsTrue)) {
                 const int64_t w = v;
-                client().post([at, w, size] { mem::write(at, &w, size); });
+                const Owner o = g_editOwner;
+                client().post([at, w, size, o] {
+                    if (ownerAlive(o)) mem::write(at, &w, std::min<size_t>(size, sizeof(w)));
+                });
             }
         } else if (n == "CString") {
             std::string s;
@@ -433,6 +459,7 @@ void objectView() {
     }
     ImGui::Separator();
     if (ImGui::BeginChild("obj", ImVec2(0, 0))) {
+        g_editOwner = {own ? cur.ptr : 0, own}; // writes check it is still this object when they happen
         if (type) fieldsOf(cur.ptr, type, 0);
         if (ImGui::CollapsingHeader("Memory")) hexView(cur.ptr);
     }
@@ -1091,16 +1118,31 @@ std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() {
     return out;
 }
 
+bool alive(uintptr_t p, const reflect::Type* type) {
+    if (!p || !type) return false;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (g_dead.count(p)) return false;
+    }
+    return typeOf(p) == type;
+}
+
 void start() {
     if (g_started) return;
     g_started = true;
+    // Pruning, on GridNode's own thread (reads only), so dead entries go whether or not a window is open.
+    std::thread([] {
+        for (;;) {
+            Sleep(15);
+            prune();
+        }
+    }).detach();
     g_entities.reserve(65536);
     g_index.reserve(65536);
     onCreated("gridnode", "Entity", &onEntity, nullptr);
 }
 
 void draw(bool* open) {
-    prune();
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetFontSize() * 24, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 52, ImGui::GetFontSize() * 34), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Inspector###gridnode_inspector", open)) {

@@ -3,6 +3,18 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: ServerWriteAntGameStateEntity_onEvent
+    va: 0x1433acd90
+    signature: "void(void* entity, void* event)"
+    note: "Starts writing (0xc072adf0) or writes once (WriteOnce, 0xde2f4c9f) through the entity's updater (0x1433b09e0 -> 0x1431f7d10 -> each data object's vtable +0x18)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: WriteBoolGameState_write
+    va: 0x14342db30
+    signature: "void(void* data, void* props, u32* writerIndex, u32* valueIndex, void* state)"
+    note: "Vtable +0x18 of WriteBoolGameState (and its siblings): reads the value slot (TypedValue_getValuePtr) and calls the ANT writer's +8 (writer, state, value). The Recorder wraps the +0x18 slot of each Write*GameState class."
+    confidence: inferred
+    sources: [ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: ant_initPamplonaSubsystem
     va: 0x142f23700

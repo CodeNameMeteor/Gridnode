@@ -18,9 +18,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -62,9 +64,28 @@ template <size_t I> void* factoryDetour(void* creator, void* ci, void* a3, void*
     if (!entity) return entity;
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uint64_t>(entity));
     if (!t) return entity;
-    std::shared_lock<std::shared_mutex> lock(g_lock);
-    for (const Listener* l : s.listeners)
-        if (registry().isKindOf(t, l->type)) l->fn(entity, ci, l->user);
+    // The listeners to call, copied under the lock and called after it is released: a listener may
+    // register another (on_created takes the lock exclusively) or create an entity of a hooked class.
+    struct Call {
+        gn_created_fn fn;
+        void* user;
+        const Listener* l;
+    };
+    std::array<Call, 32> calls;
+    size_t n = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_lock);
+        for (const Listener* l : s.listeners)
+            if (n < calls.size() && registry().isKindOf(t, l->type)) calls[n++] = {l->fn, l->user, l};
+    }
+    for (size_t i = 0; i < n; ++i) {
+        try {
+            calls[i].fn(entity, ci, calls[i].user);
+        } catch (...) { // never into the engine's frames
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 10) GN_LOG("%s: on_created(%s) listener threw; ignored", calls[i].l->owner.c_str(), calls[i].l->className.c_str());
+        }
+    }
     return entity;
 }
 
@@ -79,16 +100,26 @@ const std::vector<reflect::Region>& regions() {
 }
 
 // The pool index for a slot, hooking it on first use. -1 on failure. Caller holds g_lock.
+std::unordered_map<uint64_t, std::string> g_failedSlots; // slots that could not be hooked, and why (caller holds g_lock)
+
 int slotIndex(uint64_t slot, std::string& why) {
     for (size_t i = 0; i < g_used; ++i)
         if (g_slots[i].slot == slot) return int(i);
+    if (const auto f = g_failedSlots.find(slot); f != g_failedSlots.end()) { // tried before: not again, and said once
+        why = f->second;
+        return -2;
+    }
     if (g_used == kPool) {
         why = "the creator hook pool is full";
+        g_failedSlots.emplace(slot, why);
         return -1;
     }
     SlotState& s = g_slots[g_used];
     const auto r = hooks().install("gridnode", slot, 0, reinterpret_cast<uint64_t>(g_detours[g_used]), &s.original, &why);
-    if (r != hook::Result::Ok) return -1;
+    if (r != hook::Result::Ok) {
+        g_failedSlots.emplace(slot, why);
+        return -1;
+    }
     s.slot = slot;
     return int(g_used++);
 }
@@ -113,8 +144,9 @@ size_t attach(Listener& l, const std::vector<uint64_t>& creators) {
         std::string why;
         const int i = slotIndex(vt + kCreatorFactorySlot, why);
         if (i < 0) {
-            GN_LOG("%s: on_created(%s): creator 0x%llx: %s", l.owner.c_str(), l.className.c_str(),
-                   static_cast<unsigned long long>(mem::va(creator)), why.c_str());
+            if (i == -1) // the first time only (-2: failed before)
+                GN_LOG("%s: on_created(%s): creator 0x%llx: %s", l.owner.c_str(), l.className.c_str(),
+                       static_cast<unsigned long long>(mem::va(creator)), why.c_str());
             continue;
         }
         if (std::find(l.slots.begin(), l.slots.end(), size_t(i)) != l.slots.end()) continue;

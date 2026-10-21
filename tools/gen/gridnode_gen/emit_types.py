@@ -288,6 +288,7 @@ class Generator:
         if e.vftable:
             w("    void* __vftable; // +0x0\n")
             cur = 8
+        emitted = set()  # members actually written (an overlapped or overlong one is only a comment)
         for s in e.slots:
             size = s.ctype.size
             a = self.slot_align(s)
@@ -306,6 +307,7 @@ class Generator:
                 text = f"uint8_t {{}}[{size:#x}]"  # misaligned for its C++ type: keep the bytes
                 s.comment = (s.comment + " " if s.comment else "") + f"(as bytes: {s.ctype.text.format('').strip()})"
             w(f"    {text.format(s.name)}; // +{s.offset:#x}{(' ' + s.comment) if s.comment else ''}\n")
+            emitted.add(s.name)
             cur = s.offset + size
         if e.size > cur:
             w(f"    uint8_t _pad{pad}[{e.size - cur:#x}];\n")
@@ -313,7 +315,7 @@ class Generator:
         if e.size:
             w(f"static_assert(sizeof({e.ident}) == {e.size:#x}, \"size of {e.ident}\");\n")
         for s in e.slots:
-            if s.annotated and s.offset >= (self.items[e.base].size if e.base else 0):
+            if s.annotated and s.name in emitted and s.offset >= (self.items[e.base].size if e.base else 0):
                 w(f"static_assert(offsetof({e.ident}, {s.name}) == {s.offset:#x}, \"{e.ident}::{s.name}\");\n")
         w("\n")
 

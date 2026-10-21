@@ -21,7 +21,7 @@ size_t Dispatcher::listenerCount() const {
 }
 
 void Dispatcher::dispatch(float dt) {
-    ++ticks_;
+    ticks_.fetch_add(1, std::memory_order_relaxed);
     std::vector<Task> tasks;
     {
         std::lock_guard<std::mutex> lock(m_);
@@ -52,9 +52,11 @@ void Dispatcher::dispatch(float dt) {
             if (errors_) errors_(l.owner + ": tick listener threw; it is removed");
         }
     }
-    if (removed)
+    if (removed) { // under the lock: listenerCount() reads the size from other threads
+        std::lock_guard<std::mutex> lock(m_);
         listeners_.erase(std::remove_if(listeners_.begin(), listeners_.end(), [](const Listener& l) { return l.dead; }),
                          listeners_.end());
+    }
 }
 
 } // namespace gn::thread

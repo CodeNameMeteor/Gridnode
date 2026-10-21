@@ -22,6 +22,12 @@ globals:
     note: "The other static model render object (ctor 0x14377f750); same base and set-transform as RigidMeshEntity."
     confidence: inferred
     sources: [ghidra]
+  - name: StaticModelGroup_LodScale
+    va: 0x141a4e8dc
+    type: u32
+    note: "Copied into a render-object update at +0x60 by ClientStaticModelGroup_placeMember (0x14318fbc0); the layout editor does the same."
+    confidence: inferred
+    sources: [research]
   - name: g_renderDevice
     va: 0x142563300
     type: "u64"
@@ -451,3 +457,11 @@ functions:
     note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+
+constants:
+  - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
+  - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
+  - { name: Mesh_Box, value: 0x20, confidence: inferred, sources: [ghidra] }
+  - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
+  - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
+  - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }

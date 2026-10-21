@@ -115,7 +115,13 @@ void* fromCreatedCharacters() {
 }
 
 void callLevel(const std::vector<LevelListener>& ls, const std::string& level, bool loaded) {
-    for (const LevelListener& l : ls) l.fn(level.c_str(), loaded ? 1 : 0, l.user);
+    for (const LevelListener& l : ls) {
+        try {
+            l.fn(level.c_str(), loaded ? 1 : 0, l.user);
+        } catch (...) {
+            GN_LOG("level: a mod's level listener threw; ignored");
+        }
+    }
 }
 
 } // namespace
@@ -526,9 +532,12 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
     if (!pos || !fn || !(radius > 0.f)) return 0;
     int n = 0;
     const float r2 = radius * radius;
+    static const reflect::Type* spatial = registry().find("SpatialEntity");
     for (const auto& [p, t] : inspector::tracked()) {
         gn_transform at{};
-        if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
+        // Only objects with a place (most entities are logic): their type first, then memory reads.
+        if (!t || !spatial || !registry().isKindOf(t, spatial)) continue;
+        if (!inspector::alive(p, t) || !entityTransform(reinterpret_cast<void*>(p), at)) continue;
         const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > r2) continue;
@@ -544,6 +553,7 @@ int entitySetTransform(void* entity, const gn_transform* to) {
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
     const reflect::Type* spatial = registry().find("SpatialEntity");
     if (!t || !spatial || !registry().isKindOf(t, spatial)) return GN_ERR_ARGUMENT;
+    if (!inspector::alive(reinterpret_cast<uintptr_t>(entity), t)) return GN_ERR_ARGUMENT; // found destroyed
     // The realm from the class name (Client... / Server... / Pam{Client,Server}...).
     const std::string& n = t->name;
     const bool client = n.rfind("Client", 0) == 0 || n.rfind("PamClient", 0) == 0;

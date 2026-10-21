@@ -154,17 +154,36 @@ int inject(DWORD pid, const wchar_t* dll) {
 
     const SIZE_T bytes = (wcslen(dll) + 1) * sizeof(wchar_t);
     void* remote = VirtualAllocEx(proc, nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remote) return fail(L"VirtualAllocEx");
-    if (!WriteProcessMemory(proc, remote, dll, bytes, nullptr)) return fail(L"WriteProcessMemory");
+    // Every early return below gives back what was taken from the game process.
+    auto giveBack = [&](bool freeRemote) {
+        if (freeRemote && remote) VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
+        CloseHandle(proc);
+    };
+    if (!remote) {
+        const int r = fail(L"VirtualAllocEx");
+        giveBack(false);
+        return r;
+    }
+    if (!WriteProcessMemory(proc, remote, dll, bytes, nullptr)) {
+        const int r = fail(L"WriteProcessMemory");
+        giveBack(true);
+        return r;
+    }
 
     // kernel32 is mapped at the same address in every process of a boot session.
     auto loadLib = reinterpret_cast<LPTHREAD_START_ROUTINE>(
         reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW")));
     HANDLE thread = CreateRemoteThread(proc, nullptr, 0, loadLib, remote, 0, nullptr);
-    if (!thread) return fail(L"CreateRemoteThread");
+    if (!thread) {
+        const int r = fail(L"CreateRemoteThread");
+        giveBack(true);
+        return r;
+    }
     wprintf(L"Loading gridnode.dll into the game...\n");
     if (WaitForSingleObject(thread, 30000) != WAIT_OBJECT_0) {
         wprintf(L"FAILED: LoadLibraryW did not return within 30 s.\n");
+        CloseHandle(thread);
+        giveBack(false); // the thread may still read the path: its memory stays
         return 1;
     }
     CloseHandle(thread);
@@ -195,7 +214,7 @@ int wmain(int argc, wchar_t** argv) {
         wchar_t* slash = wcsrchr(dll, L'\\');
         if (!slash) return finish(fail(L"bad path"));
         slash[1] = 0;
-        wcscat_s(dll, L"gridnode.dll");
+        if (wcscat_s(dll, L"gridnode.dll") != 0) return finish(fail(L"the path to gridnode.dll is too long")); // not "not found"
     }
     wprintf(L"GridNode injector\nDLL: %ls\n", dll);
     if (GetFileAttributesW(dll) == INVALID_FILE_ATTRIBUTES) {
