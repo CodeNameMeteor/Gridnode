@@ -9,6 +9,12 @@ globals:
     note: "The game worlds by realm: [0] client, [1] server (0x1432e1210 indexes it by an entity's flags & 1). +0x48 of the client one is the render world that static model groups hand render-object updates to (0x14318fbc0); +0x28 is the index of its per-class entity lists in each ClassInfo (0x143164d50). Was named RenderRoot."
     confidence: inferred
     sources: [research, ghidra]
+  - name: MeshStreamingManager
+    va: 0x142563410
+    type: "void*"
+    note: "Mesh streaming priorities: per instance {radius, mesh index u16, slot, ..., position xyz, scale} (+0x350070, 0x20 each); a group copy gets one when its render object is made (0x1431841f0, name \"rigidMeshEntity\"), its handle at the render object's +0x78."
+    confidence: inferred
+    sources: [ghidra]
   - name: ZoneStreamerEntity_TypeInfo
     va: 0x14289ec20
     type: "void*"
@@ -93,6 +99,18 @@ functions:
     signature: "void(void* renderWorld, u8* update)"
     confidence: inferred
     sources: [research]
+  - name: ClientStaticModelEntity_bounds
+    va: 0x1431833a0
+    signature: "void(void* entity, void* out)"
+    note: "Vtable +0xb8: out+0x00 its world transform (4 rows), out+0x40 / +0x50 its local box (min, max). Computes the box when bit 0 of +0x142 is set and caches it at +0x100 / +0x110 (clearing the bit). Client thread."
+    confidence: inferred
+    sources: [ghidra]
+  - name: MeshStreaming_setTransform
+    va: 0x143555450
+    signature: "void(void* manager, u32* handle, const LinearTransform* transform, f32 scale)"
+    note: "Sets a streaming instance's position (the mesh box's centre in the transform) and scale (0x1435556a0 with a count of 1)."
+    confidence: inferred
+    sources: [ghidra]
   - name: RigidMeshEntity_setTransform
     va: 0x14376c060
     signature: "void(void* object, const LinearTransform* world)"
@@ -480,6 +498,10 @@ functions:
 constants:
   - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
   - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
+  - { name: ClientStaticModel_vf_bounds, value: 0xb8, confidence: inferred, sources: [ghidra] }
+  - { name: ClientStaticModel_BoxMin, value: 0x100, confidence: inferred, sources: [ghidra], note: "Cached local box: min xyz (+pad), then max xyz at +0x110." }
+  - { name: ClientStaticModel_BoxFlags, value: 0x142, confidence: inferred, sources: [ghidra], note: "Bit 0: the box is not computed yet." }
+  - { name: RigidMeshEntity_StreamingHandle, value: 0x78, confidence: inferred, sources: [ghidra], note: "Its instance in MeshStreamingManager (0xffffffff: none)." }
   - { name: Mesh_Box, value: 0x20, confidence: inferred, sources: [ghidra] }
   - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
   - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }

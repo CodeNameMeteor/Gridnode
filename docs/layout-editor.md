@@ -74,6 +74,10 @@ key) GridNode makes it *standalone*: the group's copy is hidden and a standalone
 place, selected as before. A handle drag goes on once that is done; with a key, press again.
 **Make standalone** in the editor does the same without moving it.
 
+**Move group props in place (experimental)**, in the editor, moves a group prop itself instead: its
+collision, the object that culls it, and its mesh streaming position. It is a test of whether the
+game then draws it where it was moved; such moves are not saved in the layout yet.
+
 ## Copies
 
 | Key | Does |
@@ -102,8 +106,9 @@ like any copy).
 An entry remembers each object's *mesh*, not the object itself, and where its source is: GridNode
 copies any loaded object drawn with that mesh. The city loads in zones around Faith; placing an
 entry from far away asks the game to load the zone around its source first (the status line says
-so; it can take a few seconds). The zones holding the sources of your copies are kept loaded too
-(up to 8 places), so copies no longer disappear when Faith moves away. That costs some memory.
+so; it can take a few seconds). The zones holding the sources of your copies are kept loaded while
+the copies are within 400 m of Faith or the free camera (up to 8 places), so copies stay when Faith
+moves about near them, and their sources load again when she comes back to them.
 Entries added before 2026-10-21 evening have no source position: remove and add them again. Catalyst has one level (the city), so an entry can be placed anywhere in it.
 
 Your own meshes can be placed the same way once they are in the game: see

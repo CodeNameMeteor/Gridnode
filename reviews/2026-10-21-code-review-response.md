@@ -16,7 +16,9 @@ match; the findings still applied. Each was checked against the current code bef
   tracked pointer asks it at the time of the write: queued moves (`runQueue`),
   `entity_set_transform`, `entities_near`, the layout editor's copies, templates and group
   lookups, and the Inspector's edits (re-checked on the client thread before writing).
-- Still to do: a destroy hook on the engine's removal path, so death is known rather than inferred.
+- Since then (2026-10-21): every entity class's deleting destructor (vtable +0x38, 1,061 vtables) is
+  wrapped, and the entity is marked dead before it goes, so death is known rather than inferred.
+  Pruning stays as the backstop.
 
 ## Medium
 

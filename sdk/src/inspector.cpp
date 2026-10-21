@@ -1147,6 +1147,7 @@ void start() {
     g_entities.reserve(65536);
     g_index.reserve(65536);
     onCreated("gridnode", "Entity", &onEntity, nullptr);
+    hookDestructors(); // dead the moment they are destroyed (pruning stays as the backstop)
 }
 
 void draw(bool* open) {

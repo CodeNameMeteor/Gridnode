@@ -193,6 +193,62 @@ void refreshCreators() {
     }
 }
 
+// ---- destroyed entities ----------------------------------------------------------------------------
+// Every entity is deleted through its vtable's +0x38 (the deleting destructor: (entity, 1); the base
+// destructor, 0x143117610, runs at its end). GridNode wraps that slot of every entity class's vtable
+// (a pointer swap each, from a fixed pool like the creators') and marks the entity dead before the
+// original runs, so the inspector, the layout editor and mods know at once instead of finding out.
+namespace {
+using DtorFn = void* (*)(void* self, uint64_t a2, uint64_t a3, uint64_t a4);
+constexpr size_t kDtorPool = 2048; // 1,061 entity vtables in the EA app build
+struct DtorSlot {
+    uint64_t original = 0;
+};
+std::array<DtorSlot, kDtorPool> g_dtors;
+std::atomic<uint64_t> g_destroyedCount{0};
+
+template <size_t I> void* dtorDetour(void* self, uint64_t a2, uint64_t a3, uint64_t a4) {
+    inspector::markDead(reinterpret_cast<uintptr_t>(self)); // before the object goes
+    g_destroyedCount.fetch_add(1, std::memory_order_relaxed);
+    return reinterpret_cast<DtorFn>(g_dtors[I].original)(self, a2, a3, a4);
+}
+template <size_t... I> constexpr std::array<DtorFn, sizeof...(I)> makeDtorDetours(std::index_sequence<I...>) {
+    return {&dtorDetour<I>...};
+}
+const std::array<DtorFn, kDtorPool> g_dtorDetours = makeDtorDetours(std::make_index_sequence<kDtorPool>{});
+std::atomic<bool> g_dtorsHooked{false};
+} // namespace
+
+void hookDestructors() {
+    if (g_dtorsHooked.exchange(true)) return;
+    const reflect::Type* entity = registry().find("Entity");
+    if (!entity) return GN_LOG("destroyed: no Entity type; entities are found dead by looking instead");
+    std::vector<uint64_t> slots;
+    for (const reflect::Type& t : registry().data().types) {
+        if (t.category != reflect::Category::Class || !registry().isKindOf(&t, entity)) continue;
+        for (uint64_t v : t.vtables) {
+            const uint64_t vt = v - 0x140000000ull + mem::moduleBase();
+            const uint64_t slot = vt + 0x38;
+            uint64_t fn = 0;
+            if (!mem::inImage(vt) || !mem::read(slot, fn) || !mem::inImage(fn)) continue;
+            if (std::find(slots.begin(), slots.end(), slot) == slots.end()) slots.push_back(slot);
+        }
+    }
+    size_t used = 0, failed = 0;
+    std::string firstWhy;
+    for (uint64_t slot : slots) {
+        if (used == kDtorPool) break;
+        std::string why;
+        const auto r = hooks().install("gridnode", slot, 0, reinterpret_cast<uint64_t>(g_dtorDetours[used]), &g_dtors[used].original, &why);
+        if (r == hook::Result::Ok) ++used;
+        else if (failed++ == 0) firstWhy = why;
+    }
+    GN_LOG("destroyed: %llu entity destructors wrapped (%llu vtables%s%s)", static_cast<unsigned long long>(used),
+           static_cast<unsigned long long>(slots.size()), failed ? "; not hooked: " : "", failed ? (std::to_string(failed) + ", e.g. " + firstWhy).c_str() : "");
+}
+
+uint64_t destroyedCount() { return g_destroyedCount.load(std::memory_order_relaxed); }
+
 size_t boundCreatorCount() {
     size_t n = 0;
     mem::ProcessMemory m;

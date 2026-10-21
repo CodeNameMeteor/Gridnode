@@ -33,6 +33,10 @@ bool isClientThread();
 int onCreated(const std::string& owner, const std::string& className, gn_created_fn fn, void* user);
 void refreshCreators();
 size_t boundCreatorCount();
+// Wraps every entity class's deleting destructor (vtable +0x38) so a destroyed entity is marked
+// dead at once (inspector::alive is false from then on). Once, at startup.
+void hookDestructors();
+uint64_t destroyedCount(); // entities destroyed since then
 
 // The API table handed to mods (api.cpp).
 const gn_api* api();

@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "gridnode/build.hpp"
@@ -157,6 +158,9 @@ void writeLine(const std::wstring& file, const std::string& line) {
     fclose(f);
 }
 std::atomic<bool> g_autoload{false};
+// Experimental (2026-10-21): move group props where they are (collision instance, render object and
+// mesh streaming position) instead of making them standalone first. Not saved in layouts yet.
+std::atomic<bool> g_inPlaceGroups{false};
 
 // Key binds (layouts\settings.txt, "key_<id>=<name>"). Free-camera binds work only while it flies.
 struct Bind {
@@ -715,7 +719,7 @@ uintptr_t renderObjectOf(const GroupProp& g) {
 // Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
 // transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
 // (0x1436d6ce0 with *(0x1424a9b98)+0x48).
-void placeCopy(const GroupProp& g, const gn_transform& world) {
+void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = false) {
     // The render-object functions it calls must be the ones this was worked out on.
     static const bool known = build::codeMatches("RenderObject_buildUpdate") && build::codeMatches("RenderWorld_submitUpdate");
     if (!known) return;
@@ -741,10 +745,24 @@ void placeCopy(const GroupProp& g, const gn_transform& world) {
     const uint32_t tag = mem::readOr<uint32_t>(obj + 0x8c);
     memcpy(update + 0x90, &tag, 4);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
+    // The copy's entry in the mesh streaming manager (made with it, 0x1431841f0) has its position too.
+    static const bool streamingKnown = build::codeMatches("MeshStreaming_setTransform");
+    const uint32_t handle = mem::readOr<uint32_t>(obj + e::constant::RigidMeshEntity_StreamingHandle, 0xffffffffu);
+    const uintptr_t manager = mem::readOr<uintptr_t>(mem::rva(e::global::MeshStreamingManager));
+    if (streaming && streamingKnown && handle != 0xffffffffu && manager) {
+        uint32_t h = handle;
+        reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, float)>(mem::rva(e::function::MeshStreaming_setTransform))(manager, &h, &t, 1.f);
+    }
+    if (streaming) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 20)
+            GN_LOG("layouts: group prop moved in place: render object %llx, streaming handle %08x%s", static_cast<unsigned long long>(obj), handle,
+                   streamingKnown ? "" : " (streaming function not as expected: not updated)");
+    }
 }
 
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
-void moveGroupProp(const GroupProp& g, const gn_transform& world) {
+void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming = false) {
     gn_transform G{};
     if (!entityTransform(reinterpret_cast<void*>(g.serverGroup), G)) return;
     alignas(16) gn_transform local{};
@@ -765,7 +783,7 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     }
     const GroupProp gp = g;
     alignas(16) gn_transform w = world;
-    client().post([gp, w] { placeCopy(gp, w); });
+    client().post([gp, w, streaming] { placeCopy(gp, w, streaming); });
 }
 
 // Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
@@ -1423,6 +1441,12 @@ std::vector<FocusWant> g_focusTemp;                // (g_focusM) library placeme
 std::unordered_map<uintptr_t, uint32_t> g_focusReg; // (g_focusM) streamer -> slots GridNode registered
 int g_focusCount = 0;                              // (g_focusM) slots in use
 
+// Where the free camera is, for the server thread (render thread writes it each frame it is on).
+std::mutex g_viewM;
+float g_viewCam[3] = {};
+bool g_viewCamOn = false;
+constexpr float kFocusNear = 400.f; // a copy's source is kept loaded while the copy is this close to Faith or the camera
+
 bool focusKnown() {
     static const bool known = build::codeMatches("ZoneStreamerFocus_add");
     return known;
@@ -1521,10 +1545,25 @@ void zoneFocusSync() {
                           g_focusTemp.end());
         for (const FocusWant& w : g_focusTemp) addWant(w.at);
     }
+    // Where someone is looking from: Faith, and the free camera while it is on.
+    std::vector<std::array<float, 3>> viewers;
+    if (void* faith = localServerCharacter()) {
+        gn_transform ft{};
+        if (entityTransform(faith, ft)) viewers.push_back({ft.trans[0], ft.trans[1], ft.trans[2]});
+    }
     {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        if (g_viewCamOn) viewers.push_back({g_viewCam[0], g_viewCam[1], g_viewCam[2]});
+    }
+    const auto nearViewer = [&](const float* p) {
+        for (const auto& v : viewers)
+            if ((v[0] - p[0]) * (v[0] - p[0]) + (v[1] - p[1]) * (v[1] - p[1]) + (v[2] - p[2]) * (v[2] - p[2]) < kFocusNear * kFocusNear) return true;
+        return false;
+    };
+    {   // a copy's source, while the copy (not its source) is near: going to the copy loads its source
         std::lock_guard<std::mutex> lock(g_m);
         for (const Edit& ed : g_edits)
-            if (ed.kind == "Copy") addWant(ed.at);
+            if (ed.kind == "Copy" && nearViewer(ed.to.trans)) addWant(ed.at);
     }
     for (size_t i = 0; i < want.size(); ++i) {
         ZoneFocus& f = g_focus[i];
@@ -2193,7 +2232,8 @@ void moveObject(Selected s, const gn_transform& to) {
     s.now = to;
     if (s.group) {
         const GroupProp gp = s.gp;
-        server().post([gp, to] { moveGroupProp(gp, to); });
+        const bool inPlace = g_inPlaceGroups.load();
+        server().post([gp, to, inPlace] { moveGroupProp(gp, to, inPlace); });
         return;
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, to);
@@ -2259,11 +2299,11 @@ void moveSelection(const gn_transform& to, bool record = true) {
         g_sel.now = to;
         for (Selected& e : g_extra) {
             const gn_transform next = carry(from, to, e.now);
-            if (!e.group) moves.push_back({e, next});
+            if (!e.group || g_inPlaceGroups.load()) moves.push_back({e, next});
             e.now = next;
         }
     }
-    if (moves.size() > 1 && moves[0].first.group) moves.erase(moves.begin()); // the lead is a group prop: only the rest move
+    if (moves.size() > 1 && moves[0].first.group && !g_inPlaceGroups.load()) moves.erase(moves.begin()); // the lead is a group prop: only the rest move
     if (record) {
         std::vector<UndoStep> steps;
         for (const auto& [obj, where] : moves) steps.push_back(moveStep(obj));
@@ -2445,7 +2485,7 @@ bool resetObject(const Selected& s, UndoStep& st) {
     const gn_transform back = s.orig;
     if (s.group) {
         const GroupProp gp = s.gp;
-        server().post([gp, back] { moveGroupProp(gp, back); });
+        server().post([gp, back] { moveGroupProp(gp, back, true); });
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, back);
     GN_LOG("layouts: %s put back at (%.2f, %.2f, %.2f) (%llu entities)", s.kind.c_str(), back.trans[0], back.trans[1], back.trans[2],
@@ -2562,7 +2602,7 @@ void undoStep(const UndoStep& st, std::vector<Selected>& moved, bool& addSel) {
     if (s.group) {
         const GroupProp gp = s.gp;
         const gn_transform to = s.now;
-        server().post([gp, to] { moveGroupProp(gp, to); });
+        server().post([gp, to] { moveGroupProp(gp, to, true); });
     } else {
         for (const auto& [p, t] : s.entities) queueMove(p, t, s.now);
     }
@@ -3449,6 +3489,11 @@ bool startFreeCam() {
 
 // Render thread, every frame.
 void freeCamFrame(bool menuOpen) {
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        g_viewCamOn = g_cam.active;
+        memcpy(g_viewCam, g_cam.pos, sizeof(g_viewCam));
+    }
     // On whether or not the menu is open; with it closed the mouse always looks and the game gets no input.
     const bool want = g_cam.enabled && localClientCharacter() != nullptr;
     if (want && !g_cam.active) {
@@ -3732,7 +3777,7 @@ void pasteCentre() {
 void nudge(int dir, float scale) {
     Selected s;
     if (!selection(s)) return;
-    if (s.group) { // a group prop leads: it becomes standalone first (the next press moves it)
+    if (s.group && !g_inPlaceGroups.load()) { // a group prop leads: it becomes standalone first (the next press moves it)
         static double askedAt = -10.0;
         if (ImGui::GetTime() - askedAt > 1.0) askedAt = ImGui::GetTime(), standaloneGroupProps();
         return;
@@ -3914,6 +3959,13 @@ void draw(bool* open) {
         ImGui::TextDisabled("(copies parked where this build cannot destroy them)");
     }
     ImGui::SeparatorText("Object");
+    {
+        bool inPlace = g_inPlaceGroups.load();
+        if (ImGui::Checkbox("Move group props in place (experimental)", &inPlace)) g_inPlaceGroups = inPlace;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Moves a group prop itself instead of hiding it and placing a standalone copy.\n"
+                              "A test: such moves are not saved in the layout yet.");
+    }
     if (ImGui::Button("Pick what the camera points at")) pickCentre();
     ImGui::SameLine();
     const size_t steps = undoCount();
@@ -4308,9 +4360,9 @@ uintptr_t drawnObjectOf(const Selected& s) {
         if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1, at)) return m;
         if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 2, at)) return m;
     }
-    static uintptr_t deepFor = 0; // once per selection: three levels down (slower)
-    if (!s.entities.empty() && deepFor != s.entities[0].first) {
-        deepFor = s.entities[0].first;
+    static std::unordered_set<uintptr_t> deepDone; // once per entity: three levels down (slower)
+    if (!s.entities.empty() && deepDone.insert(s.entities[0].first).second) {
+        if (deepDone.size() > 4096) deepDone.clear();
         for (const auto& [ent, ty] : s.entities) {
             if (isServerClass(ty->name)) continue;
             if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 3, at)) return m;
@@ -4325,7 +4377,44 @@ uintptr_t drawnObjectOf(const Selected& s) {
 std::mutex g_outAskM;
 std::unordered_map<uintptr_t, uintptr_t> g_outAsk; // (g_outAskM) selection key -> render object (0: none yet)
 
+// A client static model's own local box (+0x100 min, +0x110 max), cached by its bounds function
+// (vtable +0xb8, 0x1431833a0) and valid while bit 0 of +0x142 is clear. When it is not valid yet,
+// the bounds function is asked once on the client thread (it computes and caches it).
+bool entityBox(const Selected& s, float* mn, float* mx) {
+    namespace c = e::constant;
+    static const reflect::Type* csm = registry().find("ClientStaticModelEntity");
+    for (const auto& [ent, ty] : s.entities) {
+        if (!csm || !registry().isKindOf(ty, csm) || !inspector::alive(ent, ty)) continue;
+        const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+        if (!vt || mem::readOr<uintptr_t>(vt + c::ClientStaticModel_vf_bounds) != mem::rva(e::function::ClientStaticModelEntity_bounds)) continue;
+        if (mem::readOr<uint8_t>(ent + c::ClientStaticModel_BoxFlags) & 1) { // not computed yet: ask once
+            static std::unordered_set<uintptr_t> asked;
+            if (asked.insert(ent).second) {
+                if (asked.size() > 4096) asked.clear();
+                const uintptr_t e2 = ent;
+                const reflect::Type* t2 = ty;
+                client().post([e2, t2] {
+                    if (!inspector::alive(e2, t2)) return;
+                    alignas(16) uint8_t out[0x80] = {};
+                    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::ClientStaticModelEntity_bounds))(e2, out);
+                });
+            }
+            continue;
+        }
+        float b[8];
+        if (!mem::read(ent + c::ClientStaticModel_BoxMin, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) continue;
+        bool ok = true;
+        for (int k = 0; k < 3; ++k) ok = ok && b[4 + k] >= b[k] && b[4 + k] - b[k] < 5000.f;
+        if (!ok) continue;
+        memcpy(mn, b, sizeof(float) * 3);
+        memcpy(mx, b + 4, sizeof(float) * 3);
+        return true;
+    }
+    return false;
+}
+
 bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
+    if (!s.group && entityBox(s, mn, mx)) return *from = "its own box", true;
     const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
     if (it != g_dataBox.end()) {
         memcpy(mn, it->second.data(), sizeof(float) * 3);
@@ -4399,6 +4488,8 @@ struct Outline {
     uintptr_t ro = 0;     // the render object that draws it, when found
     double boxAt = -10.0, roAt = -10.0;
     bool asked = false;   // asked the game for it (a group prop's copy)
+    bool own = false;     // the box is the entity's own (a standalone model's)
+    bool ownSaid = false;
 };
 std::unordered_map<uintptr_t, Outline> g_outlines;
 
@@ -4413,13 +4504,19 @@ void drawOne(const View& v, const Selected& s, bool lead) {
     const uintptr_t data = selectionData(s);
     const double now = ImGui::GetTime();
     // The box: its model's mesh once seen, else the collision; again every 2 s while there is none.
-    if (fresh || (!o.box && now - o.boxAt > 2.0)) {
+    if (fresh || ((!o.box || (!o.ro && !o.own)) && now - o.boxAt > 2.0)) { // until its own box or render object
         o.boxAt = now;
         const char* from = "no box found";
-        o.box = localBox(data, s, o.mn, o.mx, &from);
-        if (fresh)
+        const bool had = o.box;
+        float mn[3], mx[3];
+        if (localBox(data, s, mn, mx, &from)) {
+            memcpy(o.mn, mn, sizeof(mn)), memcpy(o.mx, mx, sizeof(mx)), o.box = true;
+            o.own = strcmp(from, "its own box") == 0;
+        }
+        if (fresh || (o.own && !had) || (o.own && !o.ownSaid))
             GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, o.mn[0], o.mn[1], o.mn[2], o.mx[0], o.mx[1],
-                   o.mx[2]);
+                   o.mx[2]),
+                o.ownSaid = o.ownSaid || o.own;
     }
     // Drawn in the render object's own transform when it is found (what is on screen).
     auto adopt = [&](uintptr_t found, const char* how) {
@@ -4676,7 +4773,7 @@ void gizmoFrame(bool menuOpen) {
         g_drag.axis = hover;
         g_drag.rotate = rotate;
         g_drag.start = s.now;
-        g_drag.waiting = standaloneGroupProps(); // a group prop cannot move as it is
+        g_drag.waiting = g_inPlaceGroups.load() ? false : standaloneGroupProps(); // a group prop cannot move as it is
         g_drag.since = ImGui::GetTime();
         memcpy(g_drag.centre, c, sizeof(g_drag.centre));
         memcpy(g_drag.dir, ax[hover], sizeof(g_drag.dir));
@@ -4714,7 +4811,7 @@ void gizmoFrame(bool menuOpen) {
         for (const Selected& e : selectionAll()) groups = groups || e.group;
         Selected s;
         if (groups && ImGui::GetTime() - g_drag.since < 3.0) return;
-        if (!selection(s) || s.group) { // it did not happen
+        if (!selection(s) || (s.group && !g_inPlaceGroups.load())) { // it did not happen
             g_drag.axis = -1;
             return;
         }

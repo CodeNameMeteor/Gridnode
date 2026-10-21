@@ -38,8 +38,21 @@ the selection.
   +0x210, with the copy's first physics part) for it, as `0x14318fbc0` does. That is a call, so
   GridNode makes it on the client thread.
 - **Standalone models and copies**: a render object the client entity points to, directly or one
-  level down. This path is less certain; a selection without a render object falls back to the
-  collision box.
+  level down. When there is none to be found (copies of large models), the outline uses the client
+  entity's own local box: `ClientStaticModelEntity` caches it at +0x100 (min) and +0x110 (max),
+  valid when bit 0 of +0x142 is clear, computed by its bounds function (vtable +0xb8,
+  0x1431833a0: out +0x00 world transform, +0x40 / +0x50 box), which GridNode asks once on the
+  client thread when it is not computed yet.
+
+## What draws a group copy (2026-10-21)
+
+A group member's block makes each copy's render object in 0x1431841f0 (taken down in 0x143184c30):
+the RigidMeshEntity (from the block's +0xb8 factory), its render-world update, an entry in the
+visibility system at 0x142563a30 (bounding sphere; handle at the object's +0x84), and an entry in
+the **mesh streaming** manager at 0x142563410 (named "rigidMeshEntity": mesh index, radius,
+position; handle at the object's +0x78, moved with 0x143555450). The 2026-10-20 test that moved
+only the render object saw the copy vanish; the layout editor's in-place option now also moves its
+streaming entry, as a test of whether that was the cause.
 
 Read from the group's render objects, the transforms match the physics instance transforms
 exactly (same rows, same translation), so group-prop placement read from Havok is what is drawn.
