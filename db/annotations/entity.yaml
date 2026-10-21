@@ -69,6 +69,30 @@ functions:
     note: >-
       Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
       +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.
+  # Destroying an entity (2026-10-21): the engine destroys a component with vtable +0x30, then
+  # +0x38 (delete); entities share that layout.
+  - name: SpatialEntity_destroy
+    va: 0x1432e3c10
+    signature: "void(void* entity)"
+    note: >-
+      Vtable +0x30 of spatial entities (ServerStaticModelEntity, ClientStaticModelEntity and many
+      more): sets the destroyed flag (+0x18 |= 0x2000000) and destroys the entity's components
+      (ComponentEntity_destroyComponents), which takes away its physics and render parts. The
+      object stays allocated until vtable +0x38 deletes it. Game thread of the entity's realm.
+    confidence: inferred
+    sources: [ghidra]
+  - name: ComponentEntity_destroyComponents
+    va: 0x1431634a0
+    signature: "void(void* entity)"
+    note: "For each component in the collection at +0x38 (count at +8, 0x20-byte entries from +0x10): vtable +0x30 (destroy), then +0x38 with 1 (delete); clears the count."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Entity_dtor
+    va: 0x143117610
+    signature: "void(void* entity)"
+    note: "Base destructor (end of every entity's +0x38): frees the peer data at +0x28 and releases the entity's bus (+0x20) with EntityBus_release. An entity holds a reference to its bus, so a bus is freed once its entities are gone."
+    confidence: inferred
+    sources: [ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: entityObject_initWithParentTransform
     va: 0x1431411d0
@@ -140,3 +164,8 @@ functions:
     note: "The user's research names it Entity_deliverPropertyChange. Calls each listener's vtable +0x10 with the change; the dispatcher is one of two globals (0x14215d050)."
     confidence: hypothesis
     sources: [ghidra, user]
+
+constants:
+  - { name: Entity_vf_destroy, value: 0x30, confidence: inferred, sources: [ghidra], note: "SpatialEntity_destroy for spatial entities." }
+  - { name: Entity_vf_delete, value: 0x38, confidence: inferred, sources: [ghidra], note: "Scalar deleting destructor: (entity, 1) destroys and frees." }
+  - { name: Entity_FlagDestroyed, value: 0x2000000, confidence: inferred, sources: [ghidra], note: "In the flags at +0x18, set by vtable +0x30." }

@@ -1127,6 +1127,13 @@ bool alive(uintptr_t p, const reflect::Type* type) {
     return typeOf(p) == type;
 }
 
+void markDead(uintptr_t p) {
+    if (!p) return;
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_dead.size() >= kMaxDead) g_dead.clear();
+    g_dead[p] = 1; // its tracked entry is dropped by the pruning thread once the memory changes
+}
+
 void start() {
     if (g_started) return;
     g_started = true;

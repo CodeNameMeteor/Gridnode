@@ -184,6 +184,7 @@ void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
 std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
 bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type
+void markDead(uintptr_t entity); // GridNode is destroying it: alive() is false from now on (until a new entity is made there)
 } // namespace inspector
 
 } // namespace gn::host

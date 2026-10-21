@@ -91,6 +91,7 @@ functions:
   - name: EntityBus_release
     va: 0x1431547b0
     signature: "void(void* bus)"
+    note: "Drops a reference; at zero, unlinks the bus from its parent, frees it and releases the parent. It does not destroy the bus's entities: each holds a reference and releases it in its destructor (Entity_dtor), so releasing the bus of a live entity frees it under that entity."
   - name: ServerEntityCreationInfo_ctor
     va: 0x14335cab0
     signature: "void(EntityCreationInfo* ci, void* data, void* bus, const LinearTransform* transform)"

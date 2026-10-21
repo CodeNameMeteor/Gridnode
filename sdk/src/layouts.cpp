@@ -2074,6 +2074,77 @@ void hideCopy(int copyId) {
         }
 }
 
+// Destroys an entity GridNode made, as the engine destroys a component: vtable +0x30 (destroy: the
+// destroyed flag, its physics and render parts taken away), then +0x38 with 1 (destructor and free,
+// which releases the entity's reference to its bus). Only for spatial entities whose +0x30 is the
+// engine's SpatialEntity_destroy. On the game thread of the entity's realm.
+bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) {
+    static const bool known = build::codeMatches("SpatialEntity_destroy");
+    if (!known) {
+        GN_LOG("layouts: destroy: SpatialEntity_destroy does not match this build; not destroying");
+        return false;
+    }
+    if (!inspector::alive(ent, type)) {
+        GN_LOG("layouts: destroy: %s entity %llx is already gone", realm, static_cast<unsigned long long>(ent));
+        return false;
+    }
+    const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+    const uintptr_t destroy = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_destroy) : 0;
+    const uintptr_t del = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_delete) : 0;
+    const uint32_t flags = mem::readOr<uint32_t>(ent + 0x18);
+    if (destroy != mem::rva(e::function::SpatialEntity_destroy) || !del || !mem::inImage(del)) {
+        GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
+               static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
+        return false;
+    }
+    if (flags & e::constant::Entity_FlagDestroyed) {
+        GN_LOG("layouts: destroy: %s entity %llx is already being destroyed", realm, static_cast<unsigned long long>(ent));
+        return false;
+    }
+    inspector::markDead(ent); // nothing of GridNode's touches it from here on
+    GN_LOG("layouts: destroying %s entity %llx (%s)", realm, static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
+    reinterpret_cast<void (*)(uintptr_t)>(destroy)(ent);
+    reinterpret_cast<void* (*)(uintptr_t, uint32_t)>(del)(ent, 1);
+    GN_LOG("layouts: destroyed %s entity %llx", realm, static_cast<unsigned long long>(ent));
+    return true;
+}
+
+// The removed copies (parked below the level) destroyed for good: client halves on the client
+// thread, server halves on the server thread. Their undo steps can no longer bring them back.
+void destroyParked() {
+    std::vector<Spawned> gone;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (auto it = g_spawned.begin(); it != g_spawned.end();)
+            if (it->hidden) gone.push_back(*it), it = g_spawned.erase(it);
+            else ++it;
+    }
+    if (gone.empty()) return setStatus("No removed copies to destroy.");
+    GN_LOG("layouts: destroying %llu removed copies", static_cast<unsigned long long>(gone.size()));
+    for (const Spawned& sp : gone) {
+        if (sp.client && sp.clientType) {
+            const uintptr_t c = sp.client;
+            const reflect::Type* ct = sp.clientType;
+            client().post([c, ct] { destroyEntity(c, ct, "client"); });
+        }
+        if (sp.server && sp.serverType) {
+            const uintptr_t s = sp.server;
+            const reflect::Type* st = sp.serverType;
+            server().post([s, st] { destroyEntity(s, st, "server"); });
+        }
+    }
+    char b[96];
+    snprintf(b, sizeof(b), "Destroyed %llu removed cop%s (see the log).", static_cast<unsigned long long>(gone.size()), gone.size() == 1 ? "y" : "ies");
+    setStatus(b);
+}
+
+size_t parkedCount() {
+    std::lock_guard<std::mutex> lock(g_spawnM);
+    size_t n = 0;
+    for (const Spawned& sp : g_spawned) n += sp.hidden;
+    return n;
+}
+
 // One object put back (a copy: taken away); its undo step. False when there is nothing to undo.
 bool resetObject(const Selected& s, UndoStep& st) {
     if (s.copyId >= 0) {
@@ -3508,6 +3579,18 @@ void draw(bool* open) {
     ImGui::BeginDisabled(count == 0 && loaded.empty());
     if (ImGui::Button("Unload (put the level back)")) server().post([] { unloadLayout(); });
     ImGui::EndDisabled();
+    {   // Experimental: removed copies are parked below the level; this destroys them for real.
+        static double countedAt = -10.0;
+        static size_t parked = 0;
+        if (ImGui::GetTime() - countedAt > 0.5) parked = parkedCount(), countedAt = ImGui::GetTime();
+        ImGui::BeginDisabled(parked == 0);
+        char label[64];
+        snprintf(label, sizeof(label), "Destroy removed copies (%llu)##destroy", static_cast<unsigned long long>(parked));
+        if (ImGui::Button(label)) destroyParked();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(experimental; undo cannot bring them back)");
+    }
     ImGui::SeparatorText("Object");
     if (ImGui::Button("Pick what the camera points at")) pickCentre();
     ImGui::SameLine();
