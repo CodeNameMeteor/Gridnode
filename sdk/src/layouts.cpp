@@ -1227,6 +1227,20 @@ std::vector<Selected> selectionAll() {
     return out;
 }
 
+// The group props in the selection made standalone (so they can move); false if there were none.
+bool standaloneGroupProps() {
+    int n = 0;
+    for (const Selected& s : selectionAll())
+        if (s.group) {
+            const GroupProp gp = s.gp;
+            const gn_transform at = s.orig;
+            server().post([gp, at] { makeStandalone(gp, at, at, true); });
+            ++n;
+        }
+    if (n) setStatus(n == 1 ? "Making the group prop standalone so it can move..." : "Making the group props standalone so they can move...");
+    return n > 0;
+}
+
 // g_selM held: " (N selected)" when more than one is.
 std::string countNoteLocked() {
     if (!g_haveSel || g_extra.empty()) return "";
@@ -1362,10 +1376,22 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
     snprintf(b, sizeof(b), "Made a standalone %s (%llu entities) in place of the group prop. Move it as usual.",
              s.kind.c_str(), static_cast<unsigned long long>(s.entities.size()));
     std::lock_guard<std::mutex> lock(g_selM);
-    g_extra.clear();
-    g_sel = s;
-    g_haveSel = !s.entities.empty();
-    g_status = b;
+    if (s.entities.empty()) return;
+    // It takes the place of the group prop it was made from, wherever that is in the selection.
+    auto from = [&](const Selected& x) { return x.group && dist2(x.orig.trans, orig.trans) <= kMatch * kMatch; };
+    if (g_haveSel && from(g_sel)) {
+        g_sel = s;
+    } else {
+        bool replaced = false;
+        for (Selected& e : g_extra)
+            if (!replaced && from(e)) e = s, replaced = true;
+        if (!replaced) {
+            g_extra.clear();
+            g_sel = s;
+            g_haveSel = true;
+        }
+    }
+    g_status = b + countNoteLocked();
 }
 
 // Client thread, after a copy was placed: select it for editing (with `add`, alongside the selection).
@@ -2465,7 +2491,7 @@ void freeCamFrame(bool menuOpen) {
         if (selection(cur)) {
             ImGui::Separator();
             const size_t n = selectionAll().size();
-            ImGui::Text("Selected: %s", cur.group ? "a group prop (Make standalone in the menu to move it)"
+            ImGui::Text("Selected: %s", cur.group ? "a group prop (made standalone when you move it)"
                                        : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
             if (n > 1) ImGui::Text("and %llu more (they move and turn with it)", static_cast<unsigned long long>(n - 1));
         }
@@ -2479,7 +2505,7 @@ void freeCamFrame(bool menuOpen) {
         std::string text = g_pointer ? "POINTER   " + key(kPointer) + ": back to looking   right mouse: look"
                                      : "LOOKING   " + key(kPointer) + ": pointer" + (sel ? ", to drag the handles" : "");
         if (sel && g_pointer) text += std::string("   ") + key(kHandles) + ": handles " + (g_gizmoMode ? "rotate" : "move");
-        if (sel && cur.group) text += "   (group prop: Make standalone to move it)";
+        if (sel && cur.group) text += "   (group prop: made standalone when you move it)";
         const ImVec2 size = ImGui::CalcTextSize(text.c_str());
         const ImVec2 at(vp->Pos.x + (vp->Size.x - size.x) * 0.5f, vp->Pos.y + vp->Size.y - size.y - ImGui::GetFontSize() * 2.f);
         ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -2680,10 +2706,10 @@ void pasteCentre() {
 void nudge(int dir, float scale) {
     Selected s;
     if (!selection(s)) return;
-    if (s.group) { // a group prop leads: only the rest of the selection can move
-        bool movable = false;
-        for (const Selected& e : selectionAll()) movable = movable || !e.group;
-        if (!movable) return setStatus("Group props move once made standalone (Make standalone in the menu).");
+    if (s.group) { // a group prop leads: it becomes standalone first (the next press moves it)
+        static double askedAt = -10.0;
+        if (ImGui::GetTime() - askedAt > 1.0) askedAt = ImGui::GetTime(), standaloneGroupProps();
+        return;
     }
     float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
     if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return;
@@ -3480,6 +3506,8 @@ struct GizmoDrag {
     float sign = 1.f;        // rotate: screen angle -> rotation about dir
     bool first = true;
     float last = 0.f;        // the last value applied (a still mouse moves nothing)
+    bool waiting = false;    // group props in the selection are being made standalone first
+    double since = 0.0;
 };
 GizmoDrag g_drag;
 
@@ -3513,7 +3541,7 @@ void gizmoFrame(bool menuOpen) {
     g_gizmoShown = false;
     const ImGuiIO& io = ImGui::GetIO();
     const bool cursor = menuOpen || g_pointer;
-    if (!g_cam.active || !cursor || !g_lead.valid || g_lead.group) {
+    if (!g_cam.active || !cursor || !g_lead.valid) {
         g_drag.axis = -1;
         return;
     }
@@ -3602,6 +3630,8 @@ void gizmoFrame(bool menuOpen) {
         g_drag.axis = hover;
         g_drag.rotate = rotate;
         g_drag.start = s.now;
+        g_drag.waiting = standaloneGroupProps(); // a group prop cannot move as it is
+        g_drag.since = ImGui::GetTime();
         memcpy(g_drag.centre, c, sizeof(g_drag.centre));
         memcpy(g_drag.dir, ax[hover], sizeof(g_drag.dir));
         float ray[6];
@@ -3632,6 +3662,18 @@ void gizmoFrame(bool menuOpen) {
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { // released: done
         g_drag.axis = -1;
         return;
+    }
+    if (g_drag.waiting) { // until the standalone copies have taken the group props' places
+        bool groups = false;
+        for (const Selected& e : selectionAll()) groups = groups || e.group;
+        Selected s;
+        if (groups && ImGui::GetTime() - g_drag.since < 3.0) return;
+        if (!selection(s) || s.group) { // it did not happen
+            g_drag.axis = -1;
+            return;
+        }
+        g_drag.waiting = false;
+        g_drag.start = s.now;
     }
     // Drag: the leading selection's new transform (the rest follow it).
     gn_transform t = g_drag.start;

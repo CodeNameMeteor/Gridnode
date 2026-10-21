@@ -69,9 +69,10 @@ The handles need a cursor. With the menu open there is one. While flying with th
 under the cursor); Tab again goes back to looking.
 
 Most props in a level are *group props*: copies the game draws as one batch with the rest of
-their group. They cannot be moved one by one. Select one and press **Make standalone** in the
-editor: the group's copy is hidden and a standalone copy takes its place, which moves like any
-object.
+their group. They cannot be moved one by one, so the first time you move one (a handle, or a move
+key) GridNode makes it *standalone*: the group's copy is hidden and a standalone copy takes its
+place, selected as before. A handle drag goes on once that is done; with a key, press again.
+**Make standalone** in the editor does the same without moving it.
 
 ## Copies
 
