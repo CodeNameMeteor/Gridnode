@@ -2058,11 +2058,44 @@ void moveSelection(const gn_transform& to, bool record = true) {
     for (const auto& [obj, where] : moves) moveObject(obj, where);
 }
 
-// A copy is taken away: parked below the level (entities cannot be destroyed yet) for reuse.
+bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm);
+
+bool canDestroy() {
+    static const bool known = build::codeMatches("SpatialEntity_destroy") && build::codeMatches("SpatialEntity_deinit");
+    return known;
+}
+
+// Both halves of a copy destroyed, each on its realm's thread.
+void postDestroy(const Spawned& sp) {
+    if (sp.client && sp.clientType) {
+        const uintptr_t c = sp.client;
+        const reflect::Type* ct = sp.clientType;
+        client().post([c, ct] { destroyEntity(c, ct, "client"); });
+    }
+    if (sp.server && sp.serverType) {
+        const uintptr_t s = sp.server;
+        const reflect::Type* st = sp.serverType;
+        server().post([s, st] { destroyEntity(s, st, "server"); });
+    }
+}
+
+// A copy is taken away: destroyed. Where this game build's destroy functions are not the known
+// ones, parked below the level instead (for reuse).
 void hideCopy(int copyId) {
-    std::lock_guard<std::mutex> lock(g_spawnM);
-    for (Spawned& sp : g_spawned)
-        if (sp.copyId == copyId && !sp.hidden) {
+    std::vector<Spawned> gone;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (auto it = g_spawned.begin(); it != g_spawned.end();) {
+            Spawned& sp = *it;
+            if (sp.copyId != copyId || sp.hidden) {
+                ++it;
+                continue;
+            }
+            if (canDestroy()) {
+                gone.push_back(sp);
+                it = g_spawned.erase(it);
+                continue;
+            }
             gn_transform away = sp.orig;
             if (sp.serverType && inspector::alive(sp.server, sp.serverType))
                 entityTransform(reinterpret_cast<void*>(sp.server), away);
@@ -2071,7 +2104,10 @@ void hideCopy(int copyId) {
             if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
             sp.hidden = true;
             sp.copyId = -1;
+            ++it;
         }
+    }
+    for (const Spawned& sp : gone) postDestroy(sp);
 }
 
 // Destroys an entity GridNode made, as the engine takes one down: vtable +0x88 (deinit: its
@@ -2081,8 +2117,7 @@ void hideCopy(int copyId) {
 // into freed memory. Only for spatial entities whose slots hold the engine's SpatialEntity_deinit
 // and SpatialEntity_destroy. On the game thread of the entity's realm.
 bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) {
-    static const bool known = build::codeMatches("SpatialEntity_destroy") && build::codeMatches("SpatialEntity_deinit");
-    if (!known) {
+    if (!canDestroy()) {
         GN_LOG("layouts: destroy: SpatialEntity_deinit/destroy do not match this build; not destroying");
         return false;
     }
@@ -2158,18 +2193,7 @@ void destroyParked() {
     }
     if (gone.empty()) return setStatus("No removed copies to destroy.");
     GN_LOG("layouts: destroying %llu removed copies", static_cast<unsigned long long>(gone.size()));
-    for (const Spawned& sp : gone) {
-        if (sp.client && sp.clientType) {
-            const uintptr_t c = sp.client;
-            const reflect::Type* ct = sp.clientType;
-            client().post([c, ct] { destroyEntity(c, ct, "client"); });
-        }
-        if (sp.server && sp.serverType) {
-            const uintptr_t s = sp.server;
-            const reflect::Type* st = sp.serverType;
-            server().post([s, st] { destroyEntity(s, st, "server"); });
-        }
-    }
+    for (const Spawned& sp : gone) postDestroy(sp);
     char b[96];
     snprintf(b, sizeof(b), "Destroyed %llu removed cop%s (see the log).", static_cast<unsigned long long>(gone.size()), gone.size() == 1 ? "y" : "ies");
     setStatus(b);
@@ -2282,7 +2306,33 @@ void undoStep(const UndoStep& st, std::vector<Selected>& moved, bool& addSel) {
                     break;
                 }
         }
-        if (!found) return setStatus("Undo: that copy is gone (its part of the level was unloaded).");
+        if (!found) { // destroyed: a new copy from its edit
+            const Edit ed = st.edit;
+            const bool add = addSel;
+            server().post([ed, add] {
+                Template t;
+                bool ok = resolveSource(ed.source, ed.at, t);
+                if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t);
+                if (!ok) {
+                    {
+                        std::lock_guard<std::mutex> lock(g_m); // nothing to place it from: its edit goes again
+                        g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& e2) { return e2.kind == "Copy" && e2.copyId == ed.copyId; }),
+                                      g_edits.end());
+                    }
+                    setStatus("Undo: that copy's source is not loaded here (fly back to it and undo again).");
+                    return;
+                }
+                spawnCopy(t, ed.to, ed.copyId, true, add);
+            });
+            {
+                std::lock_guard<std::mutex> lock(g_m);
+                g_edits.push_back(st.edit);
+                g_dirty = true;
+            }
+            addSel = true;
+            setStatus("Undone: the removed copy is back.");
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(g_m);
             g_edits.push_back(st.edit);
@@ -3626,7 +3676,7 @@ void draw(bool* open) {
         if (ImGui::Button(label)) destroyParked();
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::TextDisabled("(experimental; undo cannot bring them back)");
+        ImGui::TextDisabled("(copies parked where this build cannot destroy them)");
     }
     ImGui::SeparatorText("Object");
     if (ImGui::Button("Pick what the camera points at")) pickCentre();

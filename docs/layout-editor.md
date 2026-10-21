@@ -85,7 +85,7 @@ place, selected as before. A handle drag goes on once that is done; with a key, 
 A copy is a new object made from the original's data. Copies are saved with the layout. With
 several objects selected, Copy takes them all, and Paste puts the leading one at the crosshair and
 the rest where they were from it. New copies are selected, ready to move. **Remove this copy** in
-the editor takes a copy away.
+the editor destroys a copy (undo makes it again from the layout).
 
 A copy belongs to the part of the level its original comes from. When that part streams out (you
 fly or teleport far away), the copy goes with it, and GridNode places it again when the part

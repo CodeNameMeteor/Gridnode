@@ -51,7 +51,7 @@ match; the findings still applied. Each was checked against the current code bef
 | L14 Rust panics | Fixed: every trampoline and the mod's main run under `catch_unwind` and log. |
 | L15 truncated PE files | Fixed: a section past the end of the file is an error; zeros past a section's raw data (its virtual size) are still real. |
 | L16 hard-coded addresses | Fixed for the layout editor and the Recorder: render-object offsets and vtables, the LOD scale, the sublevel bus and stream events are annotations now; the functions they depend on (`RenderObject_buildUpdate`, `RenderWorld_submitUpdate`, `RigidMeshEntity_setTransform`, `ServerSubLevelEntity_onEvent`, `WriteBoolGameState_write`, `TypedValue_getValuePtr`, `ServerWriteAntGameStateEntity_onEvent`) are fingerprinted, and the features that use them turn off when they do not match. The sublevel hook also requires the slot to hold that function. |
-| L17 the 15 km park depth | Named (`kParkDepth`), with why. A real removal is still to do. |
+| L17 the 15 km park depth | Fixed: removed copies are destroyed as the engine takes an entity down (unlinked from its owner list, then deinit, destroy, delete; confirmed in game, including the level's own teardown afterwards). Parking (`kParkDepth`) is left only as the fallback for a game build whose destroy functions do not match. |
 | L18 large files | Open. |
 
 ## Found while fixing
