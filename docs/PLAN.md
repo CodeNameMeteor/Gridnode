@@ -443,13 +443,13 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
    entity. Only a render object drawn where the selection is counts (within 0.75 m). Until it is
    found the box is the group's collision (the compound shape's instance tree), which can be
    larger than the mesh.
-10. **Multiple selection** (asked for 2026-10-21, built, not yet tested in game): Shift + click
+10. **Multiple selection** (asked for 2026-10-21, confirmed in game): Shift + click
    (or Shift + R) adds an object to the selection or takes it out. The first picked leads (yellow
    outline, axes); the rest (light blue) move and turn with it about its pivot. Copy takes them
    all (Paste places the lead at the crosshair and the rest where they were from it), Duplicate,
    Put back and Undo work on all of them, as one undo step. Group props can be in the selection
    and copied, but move only once made standalone.
-12. **Move / rotate handles** (2026-10-21, built, not yet tested in game): arrows and rings on the
+12. **Move / rotate handles** (2026-10-21, confirmed in game; group props are made standalone on the first move): arrows and rings on the
    leading selection, from its box's middle, along its own or the world's axes; dragged with the
    cursor (menu open, or pointer mode with the menu closed: Tab), Ctrl snaps, one undo step per
    drag, the rest of the selection follows. Drawn and hit-tested by GridNode (no ImGuizmo): a move
