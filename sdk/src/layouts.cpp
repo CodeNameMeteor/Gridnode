@@ -2485,7 +2485,8 @@ void freeCamFrame(bool menuOpen) {
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
         ImGui::Separator();
-        row(k(kTeleport), "teleport Faith here");
+        row(k(kTeleport), "teleport Faith here (and back to her)");
+        row("Shift+" + k(kTeleport), "teleport Faith here, keep flying");
         row(k(kFreeCam), "back to Faith");
         Selected cur;
         if (selection(cur)) {
@@ -2635,12 +2636,13 @@ void teleportFaith(const float* pos, const float* facing, const std::string& wha
 
 // Faith where the crosshair points (on what it hits, or at the camera when it hits nothing within
 // 200 m), facing the way the camera looks; then the view goes back to her.
-void teleportCrosshair() {
+// With `keepFlying`, the free camera stays where it is (only Faith moves).
+void teleportCrosshair(bool keepFlying = false) {
     float ray[6];
     if (!centreRay(ray)) return setStatus("Teleport: no camera");
     std::array<float, 6> r{};
     memcpy(r.data(), ray, sizeof(ray));
-    g_cam.enabled = false; // back to Faith's view
+    if (!keepFlying) g_cam.enabled = false; // back to Faith's view
     server().post([r] {
         const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
         gn_ray_hit hit{};
@@ -2771,6 +2773,8 @@ void draw(bool* open) {
         if (pointsFor != level) points = level.empty() ? std::vector<TeleportPoint>{} : loadTeleports(level), pointsFor = level;
         ImGui::BeginDisabled(!g_cam.active);
         if (ImGui::Button("Teleport Faith to the crosshair")) teleportCrosshair();
+        ImGui::SameLine();
+        if (ImGui::Button("... and keep flying")) teleportCrosshair(true);
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::TextDisabled(g_cam.active ? "(%s while flying)" : "(fly the free camera to use it; %s)", ui::keyName(g_binds[kTeleport].vk).c_str());
@@ -3071,7 +3075,7 @@ void keysFrame(bool menuOpen) {
     if (fire[kCopy]) copySelection();
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
-    if (fire[kTeleport]) teleportCrosshair();
+    if (fire[kTeleport]) teleportCrosshair(io.KeyShift || keyHeld(VK_SHIFT)); // Shift: the camera stays
     if (fire[kPointer]) g_pointer = !g_pointer;
     if (fire[kHandles]) g_gizmoMode ^= 1;
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
