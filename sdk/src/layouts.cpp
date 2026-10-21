@@ -1131,6 +1131,16 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
     return t.data && t.serverBus && t.clientBus && templateAlive(t);
 }
 
+uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr);
+
+// Whether a source is a backdrop (a distant view's version of an object, in a Backdrops sublevel):
+// used only when nothing else has the mesh.
+bool isBackdrop(uintptr_t serverBus) {
+    std::string b;
+    subLevelOfBus(serverBus, &b);
+    return b.find("/Backdrops/") != std::string::npos;
+}
+
 // Server thread: a template for any loaded object drawn with `mesh` (a standalone model, or a prop in
 // a static model group), wherever it is. Used by the library, and for saved copies whose own source
 // is not found.
@@ -1141,6 +1151,8 @@ bool resolveByMesh(const std::string& mesh, Template& t, bool quiet = false) {
     static const reflect::Type* sg = registry().find("ServerStaticModelGroupEntity");
     static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
     const auto tracked = inspector::tracked();
+    Template backdrop;
+    bool haveBackdrop = false;
     // Standalone models first: data, buses and owners of both halves.
     std::unordered_map<uintptr_t, uintptr_t> clientByData, clientGroupByData;
     for (const auto& [p, ty] : tracked) {
@@ -1165,6 +1177,10 @@ bool resolveByMesh(const std::string& mesh, Template& t, bool quiet = false) {
         memcpy(x.at, x.place.trans, sizeof(x.at));
         setOwners(x, p, ci->second);
         if (!templateAlive(x)) continue;
+        if (isBackdrop(x.serverBus)) {
+            if (!haveBackdrop) backdrop = x, haveBackdrop = true;
+            continue;
+        }
         t = x;
         return true;
     }
@@ -1199,9 +1215,17 @@ bool resolveByMesh(const std::string& mesh, Template& t, bool quiet = false) {
                 ++dead;
                 continue;
             }
+            if (isBackdrop(x.serverBus)) {
+                if (!haveBackdrop) backdrop = x, haveBackdrop = true;
+                continue;
+            }
             t = x;
             return true;
         }
+    }
+    if (haveBackdrop) {
+        t = backdrop;
+        return true;
     }
     if (!quiet) GN_LOG("layouts: no loaded object with mesh %s (%llu entities tracked, %llu client models, %d groups, %d paired, %d members with it, %d "
            "without buses, %d not usable)",
@@ -1295,7 +1319,7 @@ std::vector<uintptr_t> subLevels() {
 
 // The sublevel `bus` belongs to: the nearest bus up its parent chain (an object is usually on a
 // blueprint's or layer's bus inside the sublevel's own) that is a sublevel's bus. 0 if none is.
-uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr) {
+uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle) {
     std::unordered_map<uintptr_t, uintptr_t> byBus; // sublevel bus -> sublevel
     for (uintptr_t sl : subLevels())
         if (const uintptr_t b = mem::readOr<uintptr_t>(sl + e::constant::ServerSubLevelEntity_Bus)) byBus.emplace(b, sl);
@@ -1366,6 +1390,168 @@ bool streamIn(const std::string& bundle) {
 void clearPins() {
     std::lock_guard<std::mutex> lock(g_pinM);
     g_pinned.clear();
+}
+
+// ---- zone focus points ------------------------------------------------------------------------------
+// The city's districts are zone-streamed: a ZoneStreamerEntity loads the zones around its focus points
+// (Faith, normally). Its focus manager (+0x280) keeps records {u64, focus, -1, flags} (+0x08, count
+// +0x48); each frame it calls focus->vtable[0](focus, record[0], out) for a position and direction
+// (0x143c81850). GridNode adds focus objects of its own (a vtable with that one function, in its own
+// static memory, so a record may point at them until the streamer drops it) with the streamer's own
+// add (0x143c7e7c0), at the sources of the level's copies and, for a while, where a library entry
+// is being placed from. Removing marks GridNode's record removed (bit 0 of +0x14) as the game's
+// remove does, but only once found: the game's writes out of bounds for a record it does not find.
+struct alignas(16) ZoneFocus {
+    void* vtbl;
+    uint64_t pad;
+    float pos[4];
+    float dir[4];
+};
+void zoneFocusGet(ZoneFocus* self, uint64_t, float* out) {
+    memcpy(out, self->pos, sizeof(self->pos));
+    memcpy(out + 4, self->dir, sizeof(self->dir));
+}
+void* g_zoneFocusVtbl[1] = {reinterpret_cast<void*>(&zoneFocusGet)};
+constexpr int kMaxFocus = 8;
+ZoneFocus g_focus[kMaxFocus];
+struct FocusWant {
+    float at[3];
+    ULONGLONG until; // 0: as long as it is wanted (a copy's source)
+};
+std::mutex g_focusM;
+std::vector<FocusWant> g_focusTemp;                // (g_focusM) library placements under way
+std::unordered_map<uintptr_t, uint32_t> g_focusReg; // (g_focusM) streamer -> slots GridNode registered
+int g_focusCount = 0;                              // (g_focusM) slots in use
+
+bool focusKnown() {
+    static const bool known = build::codeMatches("ZoneStreamerFocus_add");
+    return known;
+}
+
+// The record of `f` in the focus manager `mgr` that is not marked removed, or 0.
+uintptr_t focusRecord(uintptr_t mgr, const ZoneFocus* f) {
+    namespace c = e::constant;
+    const uintptr_t recs = mem::readOr<uintptr_t>(mgr + c::FocusManager_Records);
+    const uint32_t n = mem::readOr<uint32_t>(mgr + c::FocusManager_Count);
+    for (uint32_t i = 0; recs && i < n && i < 256; ++i) {
+        const uintptr_t r = recs + static_cast<uintptr_t>(i) * c::FocusRecord_Size;
+        if (mem::readOr<uintptr_t>(r + c::FocusRecord_Focus) == reinterpret_cast<uintptr_t>(f) &&
+            !(mem::readOr<uint32_t>(r + c::FocusRecord_Flags) & 1))
+            return r;
+    }
+    return 0;
+}
+
+// On the streamer's own thread: GridNode's slots in `mask` registered with it, the others not.
+void focusApply(uintptr_t streamer, const reflect::Type* type, uint32_t mask) {
+    if (!inspector::alive(streamer, type)) {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        g_focusReg.erase(streamer);
+        return;
+    }
+    const uintptr_t mgr = streamer + e::constant::ZoneStreamer_FocusManager;
+    using AddFn = void (*)(uintptr_t, uint64_t, ZoneFocus*);
+    for (int i = 0; i < kMaxFocus; ++i) {
+        const uintptr_t rec = focusRecord(mgr, &g_focus[i]);
+        if ((mask >> i) & 1) {
+            if (!rec) reinterpret_cast<AddFn>(mem::rva(e::function::ZoneStreamerFocus_add))(mgr, 0, &g_focus[i]);
+        } else if (rec) {
+            *reinterpret_cast<volatile uint32_t*>(rec + e::constant::FocusRecord_Flags) |= 1;
+        }
+    }
+    std::lock_guard<std::mutex> lock(g_focusM);
+    g_focusReg[streamer] = mask;
+}
+
+// Asks for the zones around `at` to be loaded for `seconds` (a library placement from far away).
+void zoneFocusRequest(const float* at, int seconds) {
+    std::lock_guard<std::mutex> lock(g_focusM);
+    FocusWant w{};
+    memcpy(w.at, at, sizeof(w.at));
+    w.until = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
+    g_focusTemp.push_back(w);
+}
+
+// The live zone streamers (looked for at most every 5 s: the tracked list is long).
+std::vector<std::pair<uintptr_t, const reflect::Type*>> zoneStreamers() {
+    static const reflect::Type* zs = registry().find("ZoneStreamerEntity");
+    static std::vector<std::pair<uintptr_t, const reflect::Type*>> cache;
+    static ULONGLONG at = 0;
+    if (GetTickCount64() - at >= 5000) {
+        cache.clear();
+        for (const auto& [p, ty] : inspector::tracked())
+            if (ty && zs && registry().isKindOf(ty, zs)) cache.push_back({p, ty});
+        at = GetTickCount64();
+    }
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> live;
+    for (const auto& s : cache)
+        if (inspector::alive(s.first, s.second)) live.push_back(s);
+    return live;
+}
+
+// Server thread, every 2 s: the focus points wanted now (library placements first, then the
+// sources of the level's copies, within 60 m of each other counted once), registered with every
+// zone streamer on its own thread. A streamer whose grid does not hold a point finds no zone for it.
+void zoneFocusSync() {
+    if (!focusKnown()) return;
+    std::vector<std::array<float, 3>> want;
+    const auto addWant = [&](const float* p) {
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(p[k]) || std::fabs(p[k]) > 1e6f) return;
+        if (p[0] == 0.f && p[1] == 0.f && p[2] == 0.f) return;
+        for (const auto& w : want)
+            if ((w[0] - p[0]) * (w[0] - p[0]) + (w[1] - p[1]) * (w[1] - p[1]) + (w[2] - p[2]) * (w[2] - p[2]) < 60.f * 60.f) return;
+        if (want.size() < kMaxFocus) want.push_back({p[0], p[1], p[2]});
+    };
+    {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        const ULONGLONG now = GetTickCount64();
+        g_focusTemp.erase(std::remove_if(g_focusTemp.begin(), g_focusTemp.end(), [&](const FocusWant& w) { return w.until <= now; }),
+                          g_focusTemp.end());
+        for (const FocusWant& w : g_focusTemp) addWant(w.at);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Copy") addWant(ed.at);
+    }
+    for (size_t i = 0; i < want.size(); ++i) {
+        ZoneFocus& f = g_focus[i];
+        f.vtbl = g_zoneFocusVtbl;
+        f.pos[0] = want[i][0], f.pos[1] = want[i][1], f.pos[2] = want[i][2], f.pos[3] = 1.f;
+        f.dir[0] = 0.f, f.dir[1] = 0.f, f.dir[2] = 1.f, f.dir[3] = 0.f;
+    }
+    const uint32_t mask = want.empty() ? 0u : ((1u << want.size()) - 1u);
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        changed = g_focusCount != static_cast<int>(want.size());
+        g_focusCount = static_cast<int>(want.size());
+    }
+    const auto streamers = zoneStreamers();
+    if (changed) GN_LOG("layouts: %llu zone focus points (copies' sources and placements) on %llu zone streamers",
+                        static_cast<unsigned long long>(want.size()), static_cast<unsigned long long>(streamers.size()));
+    for (const auto& [s, ty] : streamers) {
+        uint32_t had = ~0u;
+        {
+            std::lock_guard<std::mutex> lock(g_focusM);
+            const auto it = g_focusReg.find(s);
+            if (it != g_focusReg.end()) had = it->second;
+        }
+        if (had == mask) continue;
+        const uintptr_t streamer = s;
+        const reflect::Type* type = ty;
+        const bool serverRealm = mem::readOr<uint32_t>(s + 0x18) & 1; // the realm bit of an entity's flags
+        if (serverRealm) server().post([streamer, type, mask] { focusApply(streamer, type, mask); });
+        else client().post([streamer, type, mask] { focusApply(streamer, type, mask); });
+    }
+}
+
+void clearZoneFocus() { // a new level: its streamers are new
+    std::lock_guard<std::mutex> lock(g_focusM);
+    g_focusTemp.clear();
+    g_focusReg.clear();
+    g_focusCount = 0;
 }
 
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
@@ -2582,6 +2768,7 @@ namespace {
 struct LibPart {
     std::string mesh;
     std::string bundle;            // the sublevel it came from (streamed in to place it from far away)
+    float at[3] = {};              // where its source is in the level (its zone is loaded to place it from far away)
     float offset[3] = {};          // from the first part, in the world
     float rows[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; // its rotation (and scale)
 };
@@ -2606,9 +2793,9 @@ void saveLibrary() {
         o += "entry: " + e.name + "\nlevel: " + e.level + "\n";
         for (const LibPart& p : e.parts) {
             char b[512];
-            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s\n", p.mesh.c_str(), p.offset[0],
-                     p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2], p.rows[2][0],
-                     p.rows[2][1], p.rows[2][2], p.bundle.c_str());
+            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s | %.3f %.3f %.3f\n", p.mesh.c_str(),
+                     p.offset[0], p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2],
+                     p.rows[2][0], p.rows[2][1], p.rows[2][2], p.bundle.c_str(), p.at[0], p.at[1], p.at[2]);
             o += b;
         }
     }
@@ -2638,7 +2825,14 @@ void loadLibrary() {
                        &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 12) {
                 size_t pos = bar;
                 for (int k = 0; k < 4 && pos != std::string::npos; ++k) pos = l.find(" | ", pos + 3);
-                if (pos != std::string::npos) p.bundle = l.substr(pos + 3);
+                if (pos != std::string::npos) { // bundle, then (newer entries) the source's position
+                    p.bundle = l.substr(pos + 3);
+                    const size_t more = p.bundle.find(" | ");
+                    if (more != std::string::npos) {
+                        if (sscanf(p.bundle.c_str() + more + 3, "%f %f %f", &p.at[0], &p.at[1], &p.at[2]) != 3) p.at[0] = p.at[1] = p.at[2] = 0.f;
+                        p.bundle.resize(more);
+                    }
+                }
                 g_lib.back().parts.push_back(p);
             }
         }
@@ -2675,6 +2869,7 @@ void addSelectionToLibrary(const std::string& wanted) {
             LibPart p;
             p.mesh = t.mesh;
             subLevelOfBus(t.serverBus, &p.bundle);
+            memcpy(p.at, t.at, sizeof(p.at));
             for (int k = 0; k < 3; ++k) {
                 p.offset[k] = s.now.trans[k] - all[0].now.trans[k];
                 p.rows[0][k] = s.now.right[k], p.rows[1][k] = s.now.up[k], p.rows[2][k] = s.now.forward[k];
@@ -2712,6 +2907,7 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
     std::vector<const LibPart*> parts;
     std::unordered_map<std::string, std::pair<bool, Template>> found;
     std::vector<std::string> wantBundles;
+    std::vector<const LibPart*> wantZones; // parts not loaded whose source position is known
     for (const LibPart& p : e.parts) {
         auto it = found.find(p.mesh);
         if (it == found.end()) {
@@ -2727,14 +2923,21 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
         if (it->second.first) {
             ts.push_back(it->second.second);
             parts.push_back(&p);
-        } else if (!p.bundle.empty() && std::find(wantBundles.begin(), wantBundles.end(), p.bundle) == wantBundles.end()) {
-            wantBundles.push_back(p.bundle);
+        } else {
+            if (!p.bundle.empty() && std::find(wantBundles.begin(), wantBundles.end(), p.bundle) == wantBundles.end()) wantBundles.push_back(p.bundle);
+            if (p.at[0] != 0.f || p.at[1] != 0.f || p.at[2] != 0.f) wantZones.push_back(&p);
         }
     }
     const size_t missing = e.parts.size() - ts.size();
-    if (missing && !wantBundles.empty() && attempt < kLibTries) { // stream their parts of the level in, and try again shortly
+    if (missing && (!wantBundles.empty() || !wantZones.empty()) && attempt < kLibTries) { // load their zones, and try again shortly
         if (attempt == 0) {
             int asked = 0;
+            for (const LibPart* p : wantZones) { // a focus point at the source: the zone streamer loads around it
+                zoneFocusRequest(p->at, 45);
+                ++asked;
+                GN_LOG("layouts: library: loading the zone around (%.1f, %.1f, %.1f) for \"%s\"", p->at[0], p->at[1], p->at[2], e.name.c_str());
+            }
+            if (!wantZones.empty()) server().post([] { zoneFocusSync(); }); // now, not in up to 2 s
             for (const std::string& b : wantBundles) asked += streamIn(b) ? 1 : 0;
             if (!asked) {
                 GN_LOG("layouts: library: \"%s\": none of its parts of the level could be streamed in", e.name.c_str());
@@ -2942,6 +3145,7 @@ void onLevel(const std::string& level) {
     }
     {
         clearPins(); // a new level: new sublevel entities
+        clearZoneFocus();
     }
     {
         std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
@@ -3002,6 +3206,7 @@ void serverTick() {
     if (now - last >= 2000) {
         last = now;
         maintainSpawned();
+        zoneFocusSync();
     }
 }
 

@@ -3,6 +3,24 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: ZoneStreamerFocus_add
+    va: 0x143c7e7c0
+    signature: "void(void* focusManager, u64 a2, void* focus)"
+    note: "Appends a focus record (grows the list with 0x143c813f0). A ZoneStreamerFocusEntity calls it on Enable (0x8ba423e4 as i32 -0x745bdc1c) with (streamer + 0x280, 0, entity + 0x40)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ZoneStreamerFocus_remove
+    va: 0x143c81390
+    signature: "void(void* focusManager, u64 a2, void* focus)"
+    note: "Marks the matching record removed (bit 0 of +0x14); dropped by 0x143c7f570 in the next update. Writes out of bounds when no record matches: mark the record yourself once found."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ZoneStreamer_update
+    va: 0x143c81900
+    signature: "void(void* streamer, void* updateInfo)"
+    note: "Per frame: focus positions (0x143c81850: each record's focus->vtable[0] into +0x2a8), each one's zone (0x143c82060), dropping removed records (0x143c7f570), zone loads and unloads."
+    confidence: inferred
+    sources: [ghidra]
   - name: ServerSubLevelEntity_onEvent
     va: 0x14335efb0
     signature: "void(void* subLevel, void* event)"
@@ -271,6 +289,12 @@ functions:
     sources: [ghidra]
 
 constants:
+  - { name: ZoneStreamer_FocusManager, value: 0x280, confidence: inferred, sources: [ghidra], note: "Focus manager inside a ZoneStreamerEntity (a focus entity keeps streamer + 0x280)." }
+  - { name: FocusManager_Records, value: 0x8, confidence: inferred, sources: [ghidra], note: "Records of 0x18 bytes {u64, focus, -1 (u32), flags (u32, bit 0: removed)}; end at +0x10." }
+  - { name: FocusManager_Count, value: 0x48, confidence: inferred, sources: [ghidra] }
+  - { name: FocusRecord_Size, value: 0x18, confidence: inferred, sources: [ghidra] }
+  - { name: FocusRecord_Focus, value: 0x8, confidence: inferred, sources: [ghidra], note: "The focus object: vtable[0](focus, record[0], out 0x20 bytes: position float4, direction float4)." }
+  - { name: FocusRecord_Flags, value: 0x14, confidence: inferred, sources: [ghidra] }
   - { name: EntityBus_Owner, value: 0x0, confidence: inferred, sources: [ghidra], note: "Set by the bus base init (0x14313ffe0)." }
   - { name: EntityBus_Parent, value: 0x8, confidence: inferred, sources: [ghidra], note: "The parent bus (holds a reference, +0x30). An object is usually on a blueprint's or layer's bus inside its sublevel's: walk up to find the sublevel." }
   - { name: EntityBus_FirstChild, value: 0x28, confidence: inferred, sources: [ghidra], note: "Children are linked through +0x18 (prev) and +0x20 (next)." }

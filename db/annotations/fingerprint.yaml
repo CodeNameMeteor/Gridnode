@@ -21,6 +21,7 @@ fingerprint:
   code:
     - { at: NetState_setDirty, bytes: "48 8B 41 18 48 85 C0 74 18", note: "mov rax,[rcx+18h]; test rax,rax; jz" }
     - { at: SpatialEntity_setTransform, bytes: "48 83 EC 38 8B 41 18 45 0F B6 C8" }
+    - { at: ZoneStreamerFocus_add, bytes: "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 89 CB 8B 49", required: false, note: "Optional: only the layout editor's zone focus points depend on it." }
     - { at: SpatialEntity_deinit, bytes: "48 89 5C 24 10 57 48 83 EC 20 8B 41 18 48 89 D7", required: false, note: "Optional: only destroying copies depends on it." }
     - { at: SpatialEntity_destroy, bytes: "81 49 18 00 00 00 02 E9", required: false, note: "Optional: only destroying copies depends on it (or dword [rcx+18h], 2000000h; jmp)." }
     - { at: LocalClientCharacter, bytes: "48 83 EC 28 48 8B 05 B5 C6 A9 FE", note: "loads the client game context" }

@@ -24,33 +24,26 @@ callers (`0x143c854ed`, `0x143c866b4`) and `0x143c82069` read +0x28 only. Nothin
 the option is left over and has no effect in this build (confirmed in game: ticking it changed
 nothing).
 
-## The streamer's focus points (to be finished in Ghidra)
+## Focus points (worked out 2026-10-21 in Ghidra)
 
-In the ZoneStreamer (code around `0x143c7e000`–`0x143c8a000`):
+A ZoneStreamerEntity's **focus manager** is at +0x280. It keeps records of 0x18 bytes at +0x08
+(end +0x10, count +0x48): `{u64, focus, -1, flags}`, flags bit 0 = removed.
 
-| Offset | Holds (inferred) |
-|---|---|
-| +0x288 | focus records, 0x18 bytes each (+0x10 set to -1 when reset, `0x143c81780`) |
-| +0x2a8 | focus positions (x, y, z read at `0x143c820c0`) |
-| +0x2c8 | focus count |
-| +0x2d8 | the zone grid (zone lookup of a position: `0x143c7fa60`, or `0x143c7fb40` with zone heights) |
-| +0x2e8 | an object whose vtable +8 takes (positions, count, ...) |
-| +0x2f0 | zone states, 8 bytes each: flags byte (bit 0, bit 1, bit 2), u16 at +4 |
+- `ZoneStreamer_update` (0x143c81900) calls 0x143c81850 each frame: for every record not removed,
+  `focus->vtable[0](focus, record[0], out)`, where `out` (0x20 bytes, the streamer's +0x2a8) gets a
+  position (float4) and a direction (float4). 0x143c82060 then finds each position's zone, and
+  0x143c7f570 drops removed records.
+- `ZoneStreamerFocus_add` (0x143c7e7c0) appends `{a2, focus, -1, 0}`. `ZoneStreamerFocus_remove`
+  (0x143c81390) marks the matching record removed, and writes out of bounds when none matches.
+- `ZoneStreamerFocusEntity` (0x58 bytes; creator 0x143c7f0c0) is the game's own focus: its
+  interface is at +0x40 (vtable 0x141cfe528, slot 0 = 0x143c7f9a0 reads its `FocusPoint`), the
+  streamer at +0x30 and its focus manager at +0x48; Enable (event 0x8ba423e4) adds it, Disable
+  removes it.
+- `ZoneStreamerSettings.PinVisitedZones` is never read (see above).
 
-`0x143c82069` walks the focus positions and finds each one's zone. A **second focus point** at a
-chosen position should make the streamer load the zones around it, as it does around Faith: the
-way to load a source far away before placing from it, and to keep the zones holding copies'
-sources loaded.
-
-The game has entities for this: `ZoneStreamerFocusEntityData` (`FocusPoint` +0x20, a
-LinearTransform; `AutoEnabled` +0x60; TypeInfo `0x14289fc00`, creator `0x143c82570`) and
-`ZoneStreamerFocusEntity` (TypeInfo `0x14289ed60`, vtable `0x141cfe460`). `0x143c7fe50` appends a
-0x18-byte record {0, caller, -1} to a list (count at +0x48): possibly a focus entity registering.
-
-Next, in Ghidra:
-
-1. How a `ZoneStreamerFocusEntity` adds its position to +0x2a8 (its vtable; the references to its
-   TypeInfo at `0x143c7f183`, `0x143c7fda1`, `0x143c8009f`).
-2. Then either spawn a focus entity from a copy of a loaded `ZoneStreamerFocusEntityData` with our
-   position (the engine's own path, removed with the destroy sequence), or call the same
-   registration with GridNode's own record.
+**What GridNode does** (layout editor): it keeps up to 8 focus objects of its own, in static memory
+(a record may point at one until the streamer drops it), each a vtable with that one function. Every
+2 s it places them at the sources of the level's copies and, for 45 s, where a library entry is being
+placed from, and registers them with every live zone streamer on its own thread (the add above; to
+remove, it marks its own record once found). A streamer whose grid does not hold a point finds no zone
+for it. Library entries save their source's position for this.
