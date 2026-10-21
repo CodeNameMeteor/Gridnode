@@ -471,7 +471,11 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       GridNode wraps that onEvent and drops StreamOut for pinned sublevels (those whose bus holds a
       copy's source), and streams one in to place a library part from far away (a StreamIn event
       made with the vtable of one the game sent). Library parts now save their bundle. Library confirmed
-      working in game 2026-10-21.
+      working in game 2026-10-21 near the source. Far away it does not: the city's districts are
+      zone-streamed (`CentralCityBuildings_ZS`: a ZoneStreamer loads zones inside it around Faith),
+      so dropping a sublevel's StreamOut keeps nothing, and a StreamIn on it loads nothing. Next:
+      `ZoneStreamerSettings.PinVisitedZones` (keep visited zones) and a `ZoneStreamerFocusEntity`
+      (`FocusPoint`: a second point the streamer loads around) to load a source's zone on demand.
    2. ~~Other levels~~: not needed. Catalyst has one level (the city); its sublevels are streamed
       in on demand (step 1), so every library entry can be placed. Confirmed 2026-10-21: a group's
       bus is a child of its sublevel's bus (+0x88); the lookup walks EntityBus +0x08 (parent).

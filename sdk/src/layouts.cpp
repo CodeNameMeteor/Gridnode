@@ -1134,7 +1134,7 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
 // Server thread: a template for any loaded object drawn with `mesh` (a standalone model, or a prop in
 // a static model group), wherever it is. Used by the library, and for saved copies whose own source
 // is not found.
-bool resolveByMesh(const std::string& mesh, Template& t) {
+bool resolveByMesh(const std::string& mesh, Template& t, bool quiet = false) {
     namespace c = e::constant;
     if (mesh.empty()) return false;
 
@@ -1203,7 +1203,7 @@ bool resolveByMesh(const std::string& mesh, Template& t) {
             return true;
         }
     }
-    GN_LOG("layouts: no loaded object with mesh %s (%llu entities tracked, %llu client models, %d groups, %d paired, %d members with it, %d "
+    if (!quiet) GN_LOG("layouts: no loaded object with mesh %s (%llu entities tracked, %llu client models, %d groups, %d paired, %d members with it, %d "
            "without buses, %d not usable)",
            mesh.c_str(), static_cast<unsigned long long>(tracked.size()), static_cast<unsigned long long>(clientByData.size()), groups, paired,
            matched, noBus, dead);
@@ -1458,7 +1458,7 @@ void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing) {
         auto memo = resolved.find(key);
         if (memo == resolved.end()) {
             bool ok = resolveSource(ed.source, ed.at, t);
-            if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t); // any loaded object with its mesh
+            if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t, onlyMissing); // any loaded object with its mesh
             memo = resolved.emplace(key, std::make_pair(ok, t)).first;
         }
         t = memo->second.second;
@@ -2696,7 +2696,9 @@ void addSelectionToLibrary(const std::string& wanted) {
 }
 
 // Places a library entry where the ray (from, direction) hits, or 10 m along it. Parts whose mesh is
-// not loaded have their sublevel streamed in first; placing waits for them (up to 30 s).
+// not loaded have their sublevel streamed in first; placing waits for them (up to 30 s, looking every
+// 2 s: each look goes through every tracked entity on the server thread).
+constexpr int kLibTries = 15;
 void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt);
 
 void placeLibrary(const LibEntry& e, const float* ray) {
@@ -2719,7 +2721,7 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
                 Template x;
                 if (!ok && templateOf(sel, x) && x.mesh == p.mesh && templateAlive(x)) t = x, ok = true;
             }
-            if (!ok) ok = resolveByMesh(p.mesh, t);
+            if (!ok) ok = resolveByMesh(p.mesh, t, attempt > 0 && attempt + 1 < kLibTries); // logged first and last
             it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
         }
         if (it->second.first) {
@@ -2730,20 +2732,20 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
         }
     }
     const size_t missing = e.parts.size() - ts.size();
-    if (missing && !wantBundles.empty() && attempt < 60) { // stream their parts of the level in, and try again shortly
+    if (missing && !wantBundles.empty() && attempt < kLibTries) { // stream their parts of the level in, and try again shortly
         if (attempt == 0) {
             int asked = 0;
             for (const std::string& b : wantBundles) asked += streamIn(b) ? 1 : 0;
             if (!asked) {
                 GN_LOG("layouts: library: \"%s\": none of its parts of the level could be streamed in", e.name.c_str());
-                attempt = 60; // fall through: place what there is
+                attempt = kLibTries; // fall through: place what there is
             } else {
                 setStatus("Loading the part of the level \"" + e.name + "\" comes from...");
             }
         }
-        if (attempt < 60) {
+        if (attempt < kLibTries) {
             std::thread([e, r, attempt] {
-                Sleep(500);
+                Sleep(2000);
                 server().post([e, r, attempt] { placeLibraryTry(e, r, attempt + 1); });
             }).detach();
             return;
