@@ -66,8 +66,8 @@ bool patchableSlot(uintptr_t addr) {
     return true;
 }
 
-bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old) {
-    if (!patchableSlot(addr)) return false; // aligned (so the store is atomic), in the image's data
+namespace {
+bool writeSlot(uintptr_t addr, uintptr_t value, uintptr_t* old) {
     // Keep the page executable if it is: in this game every page of the image is, and code may share
     // the page with the slot; taking execute away for the write would fault a thread running it.
     MEMORY_BASIC_INFORMATION mbi{};
@@ -81,6 +81,40 @@ bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old) {
     DWORD tmp;
     VirtualProtect(reinterpret_cast<void*>(addr), sizeof(uintptr_t), prot, &tmp);
     return true;
+}
+
+// The slot lies in a loaded module's image, in a section that holds no code.
+bool moduleDataSlot(uintptr_t addr) {
+    if (addr & 7) return false;
+    HMODULE mod = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(addr), &mod) ||
+        !mod)
+        return false;
+    const auto base = reinterpret_cast<uintptr_t>(mod);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+    const IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
+        const uintptr_t b = base + sec->VirtualAddress;
+        const uintptr_t e = b + (sec->Misc.VirtualSize ? sec->Misc.VirtualSize : sec->SizeOfRawData);
+        if (addr >= b && addr + sizeof(uintptr_t) <= e)
+            return !(sec->Characteristics & (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE));
+    }
+    return false;
+}
+} // namespace
+
+bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old) {
+    if (!patchableSlot(addr)) return false; // aligned (so the store is atomic), in the image's data
+    return writeSlot(addr, value, old);
+}
+
+bool patchModulePointer(uintptr_t addr, uintptr_t value, uintptr_t* old) {
+    if (inImage(addr) || !moduleDataSlot(addr)) return false; // the game's image goes through patchPointer
+    return writeSlot(addr, value, old);
 }
 
 } // namespace gn::mem

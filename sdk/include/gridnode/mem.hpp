@@ -104,6 +104,9 @@ bool readCString(uintptr_t addr, std::string& out, size_t maxLen = 256);
 // This is the only kind of write GridNode makes to the game image: code bytes are never patched.
 bool patchableSlot(uintptr_t addr); // an aligned pointer slot in the image, outside its code sections
 bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
+// The same swap for a slot of another loaded module (DXGI's swap chain vtable, for the overlay):
+// aligned, inside that module's image, in a section that is not code.
+bool patchModulePointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
 
 // MemoryView over this process (for gn::reflect).
 class ProcessMemory final : public reflect::MemoryView {

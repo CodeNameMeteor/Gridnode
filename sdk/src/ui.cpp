@@ -538,7 +538,10 @@ HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UIN
 template <class Fn> bool swapSlot(void** slot, Fn detour, Fn* original) {
     *original = reinterpret_cast<Fn>(*slot); // published before the swap
     uintptr_t old = 0;
-    if (!mem::patchPointer(reinterpret_cast<uintptr_t>(slot), reinterpret_cast<uintptr_t>(detour), &old)) return false;
+    if (!mem::patchModulePointer(reinterpret_cast<uintptr_t>(slot), reinterpret_cast<uintptr_t>(detour), &old)) {
+        GN_LOG("ui: swap chain slot %p is not in a loaded module's data; not hooking it", static_cast<void*>(slot));
+        return false;
+    }
     *original = reinterpret_cast<Fn>(old);
     return true;
 }
