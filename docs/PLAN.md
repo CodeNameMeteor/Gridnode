@@ -470,13 +470,16 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       unload); its content's bus is +0x88, its data a SubWorldReferenceObjectData (BundleName +0x90).
       GridNode wraps that onEvent and drops StreamOut for pinned sublevels (those whose bus holds a
       copy's source), and streams one in to place a library part from far away (a StreamIn event
-      made with the vtable of one the game sent). Library parts now save their bundle. Assumed, to
-      be checked: a group's bus is its sublevel's own bus (+0x88), not a child bus.
-   2. **Other levels.** Load a bundle that is not part of the current level (ResourceManager /
-      bundle loading, `docs/research`), so entries from any level can be placed.
-   3. **Custom meshes.** Two routes: (a) meshes made with Frosty (FBX import into a MeshSet, in a
-      mod the Frosty Mod Manager installs) and added to a bundle the level loads, then placed from
-      the library like any mesh, which needs step 2's bundle loading and no new format work; (b)
+      made with the vtable of one the game sent). Library parts now save their bundle. Library confirmed
+      working in game 2026-10-21.
+   2. ~~Other levels~~: not needed. Catalyst has one level (the city); its sublevels are streamed
+      in on demand (step 1), so every library entry can be placed. Confirmed 2026-10-21: a group's
+      bus is a child of its sublevel's bus (+0x88); the lookup walks EntityBus +0x08 (parent).
+   3. **Custom meshes** (`docs/custom-meshes.md`). Two routes: (a) meshes made with Frosty (FBX
+      import into a MeshSet, in a mod the Frosty Mod Manager installs). Phase 1, replacing an
+      existing prop's mesh, works now; phase 2, a new mesh beside the originals, needs GridNode to
+      place a mesh by name (find the MeshAsset, clone a static model's data with that mesh, spawn
+      it); (b)
       meshes built at runtime from glTF (vertex / index buffers, a MeshSet and its render object
       made in memory), a research track of its own (renderer, shaders, materials), later.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property

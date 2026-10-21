@@ -89,7 +89,7 @@ the editor destroys a copy (undo makes it again from the layout).
 
 A copy belongs to the part of the level its original comes from. When that part streams out (you
 fly or teleport far away), the copy goes with it, and GridNode places it again when the part
-loads. A library of objects you can place anywhere is planned.
+loads.
 
 ## Library
 
@@ -104,7 +104,10 @@ level where that mesh is loaded: GridNode copies any loaded object drawn with it
 parts of a level (sublevels): an entry also remembers which one, and placing it from far away
 streams that part in first (the status line says so; it can take a few seconds). The parts that
 hold the sources of your copies are kept loaded, so copies no longer disappear when Faith moves
-away. Entries from another level cannot be placed yet.
+away. Catalyst has one level (the city), so an entry can be placed anywhere in it.
+
+Your own meshes can be placed the same way once they are in the game: see
+[Custom meshes](custom-meshes.md).
 
 ## Teleport
 
