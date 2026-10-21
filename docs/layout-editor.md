@@ -91,6 +91,20 @@ A copy belongs to the part of the level its original comes from. When that part 
 fly or teleport far away), the copy goes with it, and GridNode places it again when the part
 loads. A library of objects you can place anywhere is planned.
 
+## Library
+
+The library keeps objects you like, by name, across sessions and levels (`layouts/library.txt`).
+Select one or more objects and press **B** (or **Add the selection** under *Library* in the
+editor, with an optional name); a multiple selection becomes one entry that keeps how its objects
+sit together. **Place** puts the entry where the crosshair points, as copies (saved in the layout
+like any copy).
+
+An entry remembers each object's *mesh*, not the object itself, so it can be placed anywhere in a
+level where that mesh is loaded: GridNode copies any loaded object drawn with it. Meshes belong to
+parts of a level, so an entry from far away (or from another level) can only be placed once its
+part is loaded; the editor says so when it is not. Keeping those parts loaded on demand is the
+next step.
+
 ## Teleport
 
 **T** teleports Faith to where the crosshair points, facing the way the camera looks, and leaves

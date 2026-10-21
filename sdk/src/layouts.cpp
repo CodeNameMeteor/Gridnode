@@ -48,6 +48,7 @@ struct Edit {
     // kind "Copy": a new object made from another one. `source` is that object's kind ("GroupProp" for
     // a prop in a static model group) and `at` its level position; copyId tells copies apart (not saved).
     std::string source;
+    std::string mesh;   // "Copy": the source's mesh (MeshAsset name): found by it when the source is not
     int copyId = -1;
 };
 
@@ -185,8 +186,9 @@ Bind g_binds[] = {
     {"teleport", "Teleport Faith to the crosshair (Shift: and go back to her)", 'T', true, false, 'T'},
     {"pointer", "Mouse: look / pointer (to drag the handles)", VK_TAB, true, false, VK_TAB},
     {"handles", "Handles: move / rotate", 'Y', true, false, 'Y'},
+    {"library_add", "Add the selection to the library", 'B', true, false, 'B'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kPointer, kHandles, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kPointer, kHandles, kLibAdd, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -409,6 +411,7 @@ bool save(const std::string& name) {
     for (const Edit& ed : edits) {
         o += "  - kind: " + ed.kind + "\n";
         if (!ed.source.empty()) o += "    source: " + ed.source + "\n";
+        if (!ed.mesh.empty()) o += "    mesh: " + ed.mesh + "\n";
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -476,6 +479,10 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         bool ok = true;
         if (key == "source") {
             cur.source = val;
+            continue;
+        }
+        if (key == "mesh") {
+            cur.mesh = val;
             continue;
         }
         if (key == "kind") cur.kind = val, ok = !val.empty();
@@ -807,6 +814,36 @@ uintptr_t memberType(uintptr_t member) {
     return member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
 }
 
+// An Asset's Name (Asset +0x10, a CString), e.g. a MeshAsset's "Whitebox/Railing/.../railing_01_256_Mesh".
+std::string assetName(uintptr_t asset) {
+    static const reflect::Type* assetT = registry().find("Asset");
+    const reflect::Type* t = asset ? registry().typeOf(mem::ProcessMemory(), asset) : nullptr;
+    if (!t || !assetT || !registry().isKindOf(t, assetT)) return {};
+    const uintptr_t p = mem::readOr<uintptr_t>(asset + 0x10);
+    char b[256] = {};
+    if (!p || !mem::read(p, b, sizeof(b) - 1)) return {};
+    b[sizeof(b) - 1] = 0;
+    std::string n = b;
+    for (char c : n)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) return {};
+    return n;
+}
+
+// The mesh an entity data draws (its reflected "Mesh" field), by name; empty when it has none.
+std::string meshOfData(uintptr_t data) {
+    const reflect::Type* t = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    reflect::FieldInfo fi;
+    if (!t || !registry().findField(t, "Mesh", fi)) return {};
+    return assetName(mem::readOr<uintptr_t>(data + fi.field->offset));
+}
+
+// A group member's mesh: its MeshAsset, else its member type's.
+std::string meshOfMember(uintptr_t member) {
+    static const uint32_t off = memberField("MeshAsset");
+    std::string n = member && off != 0xffffffffu ? assetName(mem::readOr<uintptr_t>(member + off)) : std::string();
+    return n.empty() ? meshOfData(memberType(member)) : n;
+}
+
 // Creates and initialises an entity from `data` on the server (as levelSublevel_spawnEntityGroup
 // does). Server thread.
 uintptr_t spawnServer(uintptr_t data, uintptr_t bus, const gn_transform& at) {
@@ -954,6 +991,7 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
 struct Template {
     uintptr_t data = 0, serverBus = 0, clientBus = 0;
     std::string source;   // "GroupProp" or the object's kind
+    std::string mesh;     // its mesh (MeshAsset name), when it has one
     float at[3] = {};     // the source's level position
     gn_transform place{}; // the source's placement when copied (rotation for pasting)
     std::string label;
@@ -1027,6 +1065,70 @@ bool resolveSource(const std::string& source, const float* at, Template& t) {
     t.clientBus = client ? busOf(client) : 0;
     setOwners(t, server, client);
     return t.data && t.serverBus && t.clientBus && templateAlive(t);
+}
+
+// Server thread: a template for any loaded object drawn with `mesh` (a standalone model, or a prop in
+// a static model group), wherever it is. Used by the library, and for saved copies whose own source
+// is not found.
+bool resolveByMesh(const std::string& mesh, Template& t) {
+    namespace c = e::constant;
+    if (mesh.empty()) return false;
+    static const reflect::Type* sg = registry().find("ServerStaticModelGroupEntity");
+    static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
+    const auto tracked = inspector::tracked();
+    // Standalone models first: data, buses and owners of both halves.
+    std::unordered_map<uintptr_t, uintptr_t> clientByData, clientGroupByData;
+    for (const auto& [p, ty] : tracked) {
+        if (!ty || isServerClass(ty->name)) continue;
+        if (cg && registry().isKindOf(ty, cg)) {
+            if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientGroupByData.emplace(d, p);
+        } else if (ty->name.find("StaticModelEntity") != std::string::npos) {
+            if (const uintptr_t d = dataOf(p, "StaticModelEntityData")) clientByData.emplace(d, p);
+        }
+    }
+    for (const auto& [p, ty] : tracked) {
+        if (!ty || !isServerClass(ty->name) || ty->name.find("StaticModelEntity") == std::string::npos) continue;
+        const uintptr_t d = dataOf(p, "StaticModelEntityData");
+        if (!d || meshOfData(d) != mesh) continue;
+        const auto ci = clientByData.find(d);
+        if (ci == clientByData.end()) continue;
+        Template x;
+        x.data = d, x.serverBus = busOf(p), x.clientBus = busOf(ci->second);
+        if (!x.serverBus || !x.clientBus) continue;
+        x.source = kindOf(ty->name), x.mesh = mesh;
+        if (!entityTransform(reinterpret_cast<void*>(p), x.place)) continue;
+        memcpy(x.at, x.place.trans, sizeof(x.at));
+        setOwners(x, p, ci->second);
+        if (!templateAlive(x)) continue;
+        t = x;
+        return true;
+    }
+    // Then group members (the copies' placement is not needed: a library object is placed upright).
+    for (const auto& [server, ty] : tracked) {
+        if (!ty || !sg || !registry().isKindOf(ty, sg)) continue;
+        const uintptr_t gd = dataOf(server, "StaticModelGroupEntityData");
+        const auto cgi = gd ? clientGroupByData.find(gd) : clientGroupByData.end();
+        if (cgi == clientGroupByData.end()) continue;
+        const uintptr_t client = cgi->second;
+        const uintptr_t blocks = mem::readOr<uintptr_t>(client + c::ClientStaticModelGroup_Members);
+        const int32_t count = mem::readOr<int32_t>(client + c::ClientStaticModelGroup_MemberCount);
+        for (int32_t b = 0; blocks && b < count && b < 4096; ++b) {
+            const uintptr_t m = mem::readOr<uintptr_t>(blocks + static_cast<uintptr_t>(b) * c::GroupMemberBlock_Size + c::GroupMemberBlock_Member);
+            if (!m || meshOfMember(m) != mesh) continue;
+            Template x;
+            x.data = memberType(m), x.serverBus = busOf(server), x.clientBus = busOf(client);
+            if (!x.data || !x.serverBus || !x.clientBus) continue;
+            x.source = "GroupProp", x.mesh = mesh;
+            x.place = gn_transform{};
+            x.place.right[0] = x.place.up[1] = x.place.forward[2] = 1.f;
+            x.place.trans[3] = 1.f;
+            setOwners(x, server, client);
+            if (!templateAlive(x)) continue;
+            t = x;
+            return true;
+        }
+    }
+    return false;
 }
 
 // Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
@@ -1116,7 +1218,11 @@ void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing) {
         char key[160];
         snprintf(key, sizeof(key), "%s|%.3f|%.3f|%.3f", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
         auto memo = resolved.find(key);
-        if (memo == resolved.end()) memo = resolved.emplace(key, std::make_pair(resolveSource(ed.source, ed.at, t), t)).first;
+        if (memo == resolved.end()) {
+            bool ok = resolveSource(ed.source, ed.at, t);
+            if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t); // any loaded object with its mesh
+            memo = resolved.emplace(key, std::make_pair(ok, t)).first;
+        }
         t = memo->second.second;
         if (!memo->second.first) {
             if (!onlyMissing) GN_LOG("layouts: copy of %s at (%.2f, %.2f, %.2f): the source was not found", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
@@ -1906,7 +2012,13 @@ Template g_clip;          // (g_selM)
 bool g_haveClip = false;  // (g_selM)
 
 // The template for the selection (server thread).
+bool templateOfRaw(const Selected& s, Template& t);
 bool templateOf(const Selected& s, Template& t) {
+    const bool ok = templateOfRaw(s, t);
+    if (ok && t.mesh.empty()) t.mesh = meshOfData(t.data);
+    return ok;
+}
+bool templateOfRaw(const Selected& s, Template& t) {
     t = Template{};
     if (s.copyId >= 0 || s.spawned) {
         std::lock_guard<std::mutex> lock(g_spawnM);
@@ -1925,6 +2037,7 @@ bool templateOf(const Selected& s, Template& t) {
     }
     if (s.group) {
         t.data = memberType(s.gp.member);
+        t.mesh = meshOfMember(s.gp.member);
         t.serverBus = busOf(s.gp.serverGroup);
         t.clientBus = busOf(s.gp.clientGroup);
         t.source = "GroupProp";
@@ -1950,6 +2063,7 @@ int addCopyEdit(const Template& t, const gn_transform& to) {
     Edit ed;
     ed.kind = "Copy";
     ed.source = t.source;
+    ed.mesh = t.mesh;
     memcpy(ed.at, t.at, sizeof(ed.at));
     ed.to = ed.from = to;
     ed.haveFrom = true;
@@ -2054,6 +2168,249 @@ void duplicateSelection() {
         if (ts.empty()) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
         placeCopies(ts, places);
     });
+}
+
+
+} // namespace
+bool centreRay(float* ray); // (below, outside the anonymous namespace)
+namespace {
+
+// ---- object library ---------------------------------------------------------------------------------
+// Objects (or sets of objects) kept by name across sessions and levels, in layouts\library.txt.
+// An entry remembers each part's mesh (MeshAsset name) and where it is from the first part, not
+// pointers: placing one finds any loaded object drawn with that mesh (resolveByMesh) and copies it,
+// so it can be placed anywhere in a level where that mesh is loaded. Copies made from it are saved in
+// the layout as usual, with the mesh, so they are found again the same way.
+struct LibPart {
+    std::string mesh;
+    float offset[3] = {};          // from the first part, in the world
+    float rows[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; // its rotation (and scale)
+};
+struct LibEntry {
+    std::string name, level;
+    std::vector<LibPart> parts;
+};
+std::mutex g_libM;
+std::vector<LibEntry> g_lib; // (g_libM)
+bool g_libLoaded = false;    // (g_libM)
+
+std::wstring libraryFile() { return g_dir + L"library.txt"; }
+
+void saveLibrary() {
+    std::vector<LibEntry> lib;
+    {
+        std::lock_guard<std::mutex> lock(g_libM);
+        lib = g_lib;
+    }
+    std::string o = "# GridNode object library: name, level, then one part per line (mesh | offset | right | up | forward)\n";
+    for (const LibEntry& e : lib) {
+        o += "entry: " + e.name + "\nlevel: " + e.level + "\n";
+        for (const LibPart& p : e.parts) {
+            char b[512];
+            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f\n", p.mesh.c_str(), p.offset[0],
+                     p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2], p.rows[2][0],
+                     p.rows[2][1], p.rows[2][2]);
+            o += b;
+        }
+    }
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    writeLine(libraryFile(), o);
+}
+
+void loadLibrary() {
+    std::lock_guard<std::mutex> lock(g_libM);
+    if (g_libLoaded) return;
+    g_libLoaded = true;
+    FILE* f = _wfopen(libraryFile().c_str(), L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.rfind("entry: ", 0) == 0) g_lib.push_back(LibEntry{l.substr(7), "", {}});
+        else if (l.rfind("level: ", 0) == 0 && !g_lib.empty()) g_lib.back().level = l.substr(7);
+        else if (l.rfind("part: ", 0) == 0 && !g_lib.empty()) {
+            const size_t bar = l.find(" | ");
+            if (bar == std::string::npos) continue;
+            LibPart p;
+            p.mesh = l.substr(6, bar - 6);
+            float* r = &p.rows[0][0];
+            if (sscanf(l.c_str() + bar, " | %f %f %f | %f %f %f | %f %f %f | %f %f %f", &p.offset[0], &p.offset[1], &p.offset[2], &r[0], &r[1], &r[2],
+                       &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 12)
+                g_lib.back().parts.push_back(p);
+        }
+    }
+    fclose(f);
+    g_lib.erase(std::remove_if(g_lib.begin(), g_lib.end(), [](const LibEntry& e) { return e.parts.empty(); }), g_lib.end());
+}
+
+std::string shortMesh(const std::string& mesh) {
+    std::string n = mesh.substr(mesh.find_last_of('/') + 1);
+    if (n.size() > 5 && n.compare(n.size() - 5, 5, "_Mesh") == 0) n.resize(n.size() - 5);
+    return n;
+}
+
+// Adds the selection to the library as one entry (its objects keep where they are from each other).
+void addSelectionToLibrary(const std::string& wanted) {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Library: pick an object first");
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+    }
+    server().post([all, wanted, level] {
+        LibEntry e;
+        e.level = level;
+        int skipped = 0;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t) || t.mesh.empty()) {
+                ++skipped;
+                continue;
+            }
+            LibPart p;
+            p.mesh = t.mesh;
+            for (int k = 0; k < 3; ++k) {
+                p.offset[k] = s.now.trans[k] - all[0].now.trans[k];
+                p.rows[0][k] = s.now.right[k], p.rows[1][k] = s.now.up[k], p.rows[2][k] = s.now.forward[k];
+            }
+            e.parts.push_back(p);
+        }
+        if (e.parts.empty()) return setStatus("Library: these objects have no mesh GridNode can find again (only static models and group props)");
+        e.name = !wanted.empty() ? wanted
+                                 : shortMesh(e.parts[0].mesh) + (e.parts.size() > 1 ? " +" + std::to_string(e.parts.size() - 1) : std::string());
+        {
+            std::lock_guard<std::mutex> lock(g_libM);
+            g_lib.push_back(e);
+        }
+        saveLibrary();
+        GN_LOG("layouts: library: added \"%s\" (%llu parts, first %s)", e.name.c_str(), static_cast<unsigned long long>(e.parts.size()),
+               e.parts[0].mesh.c_str());
+        setStatus("Added \"" + e.name + "\" to the library" + (skipped ? " (" + std::to_string(skipped) + " objects without a mesh left out)." : "."));
+    });
+}
+
+// Places a library entry where the ray (from, direction) hits, or 10 m along it.
+void placeLibrary(const LibEntry& e, const float* ray) {
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(float) * 6);
+    server().post([e, r] {
+        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+        gn_ray_hit hit{};
+        float lead[3];
+        if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(lead, hit.position, sizeof(lead));
+        else
+            for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
+        std::vector<Template> ts;
+        std::vector<gn_transform> places;
+        std::unordered_map<std::string, std::pair<bool, Template>> found;
+        int missing = 0;
+        for (const LibPart& p : e.parts) {
+            auto it = found.find(p.mesh);
+            if (it == found.end()) {
+                Template t;
+                const bool ok = resolveByMesh(p.mesh, t);
+                it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
+            }
+            if (!it->second.first) {
+                ++missing;
+                continue;
+            }
+            alignas(16) gn_transform place{};
+            for (int k = 0; k < 3; ++k) {
+                place.right[k] = p.rows[0][k], place.up[k] = p.rows[1][k], place.forward[k] = p.rows[2][k];
+                place.trans[k] = lead[k] + p.offset[k];
+            }
+            place.trans[3] = 1.f;
+            ts.push_back(it->second.second);
+            places.push_back(place);
+        }
+        if (ts.empty()) {
+            GN_LOG("layouts: library: \"%s\": none of its meshes is loaded here", e.name.c_str());
+            return setStatus("\"" + e.name + "\" is not loaded here: its objects come from " + (e.level.empty() ? "another place" : e.level) +
+                             ". Fly near where it came from (or load that level) and place it again.");
+        }
+        placeCopies(ts, places);
+        GN_LOG("layouts: library: placed \"%s\" (%llu parts, %d not loaded here)", e.name.c_str(), static_cast<unsigned long long>(ts.size()), missing);
+        if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
+    });
+}
+
+void drawLibrary() {
+    loadLibrary();
+    if (!ImGui::CollapsingHeader("Library")) return;
+    static char newName[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##libname", "name (optional)", newName, sizeof(newName));
+    ImGui::SameLine();
+    Selected cur;
+    ImGui::BeginDisabled(!selection(cur));
+    if (ImGui::Button("Add the selection")) {
+        std::string n = newName;
+        for (char& c : n)
+            if (c == '\n' || c == '\r') c = ' ';
+        addSelectionToLibrary(n);
+        newName[0] = 0;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%s)", ui::keyName(g_binds[kLibAdd].vk).c_str());
+    static char filter[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##libfilter", "search", filter, sizeof(filter));
+    std::vector<LibEntry> lib;
+    {
+        std::lock_guard<std::mutex> lock(g_libM);
+        lib = g_lib;
+    }
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+    }
+    auto lower = [](std::string x) {
+        for (char& c : x) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        return x;
+    };
+    const std::string f = lower(filter);
+    int remove = -1;
+    if (ImGui::BeginChild("##lib", ImVec2(0, ImGui::GetFontSize() * 12), ImGuiChildFlags_Borders)) {
+        for (size_t i = 0; i < lib.size(); ++i) {
+            const LibEntry& e = lib[i];
+            if (!f.empty() && lower(e.name).find(f) == std::string::npos && lower(e.parts[0].mesh).find(f) == std::string::npos) continue;
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::SmallButton("Place")) {
+                float ray[6];
+                if (centreRay(ray)) placeLibrary(e, ray);
+                else setStatus("Library: no camera");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(e.name.c_str());
+            if (ImGui::IsItemHovered()) {
+                std::string tip = e.level + "\n";
+                for (const LibPart& p : e.parts) tip += p.mesh + "\n";
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            ImGui::SameLine();
+            const std::string from = e.level.substr(e.level.find_last_of('/') + 1);
+            ImGui::TextDisabled("%s%s", e.parts.size() > 1 ? (std::to_string(e.parts.size()) + " parts, ").c_str() : "",
+                                e.level == level ? "this level" : from.c_str());
+            ImGui::PopID();
+        }
+        if (lib.empty()) ImGui::TextDisabled("Empty. Select objects and add them; they can then be placed anywhere their meshes are loaded.");
+    }
+    ImGui::EndChild();
+    if (remove >= 0) {
+        {
+            std::lock_guard<std::mutex> lock(g_libM);
+            if (remove < static_cast<int>(g_lib.size())) g_lib.erase(g_lib.begin() + remove);
+        }
+        saveLibrary();
+    }
+    ImGui::TextDisabled("Place puts it where the crosshair points.");
 }
 
 // Turns the object about a world axis through its position (its rows keep their lengths, so scale stays).
@@ -2484,6 +2841,7 @@ void freeCamFrame(bool menuOpen) {
         row(k(kCopy), "copy");
         row(k(kPaste), "paste at the crosshair");
         row(k(kDuplicate), "duplicate in place");
+        row(k(kLibAdd), "add to the library (menu: Library to place)");
         ImGui::Separator();
         row(k(kTeleport), "teleport Faith here (keep flying)");
         row("Shift+" + k(kTeleport), "teleport Faith here and go back to her");
@@ -2986,6 +3344,7 @@ void draw(bool* open) {
     if (haveClip) ImGui::TextDisabled("Copied: %s", clip.c_str());
     else ImGui::TextDisabled("Copy an object (a building, a prop) to paste new ones of it anywhere in this level. Copies are saved with the layout.");
     ImGui::PopTextWrapPos();
+    drawLibrary();
     drawKeys();
     ImGui::End();
 }
@@ -3080,6 +3439,7 @@ void keysFrame(bool menuOpen) {
     if (fire[kTeleport]) teleportCrosshair(!(io.KeyShift || keyHeld(VK_SHIFT)));
     if (fire[kPointer]) g_pointer = !g_pointer;
     if (fire[kHandles]) g_gizmoMode ^= 1;
+    if (fire[kLibAdd]) addSelectionToLibrary("");
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
     for (int i = kFwd; i <= kUpright; ++i)
         if (fire[i]) nudge(i - kFwd, scale);

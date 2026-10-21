@@ -458,6 +458,23 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 13. **Teleport without the reload** (2026-10-21, user's idea, confirmed in game): T teleports Faith
    and keeps the free camera, which keeps copies alive; Shift + T goes back to her view as well
    (the old way, which reloads the area). See `docs/research/recording-teleport.md`.
+14. **Object library** (asked for 2026-10-21; step 1 built, not yet tested in game). Entries by
+   name in `layouts/library.txt`, each a list of parts: mesh (MeshAsset name), offset from the first
+   part, rotation rows. Placing one copies any loaded object drawn with that mesh
+   (`resolveByMesh`: standalone models by their StaticModelEntityData's Mesh, group members by
+   their MeshAsset); saved copies now carry `mesh:` so they are found by it when their own source
+   is gone. Next steps:
+   1. **Loaded on demand.** A mesh is only there while the part of the level (sublevel bundle) it
+      belongs to is loaded. Find the `ServerSubLevelEntity` behind a source's bus and keep it
+      streamed in while copies of it exist (its `StreamIn` / `StreamOut` events, M8 recordings),
+      and stream it in to place an entry from far away.
+   2. **Other levels.** Load a bundle that is not part of the current level (ResourceManager /
+      bundle loading, `docs/research`), so entries from any level can be placed.
+   3. **Custom meshes.** Two routes: (a) meshes made with Frosty (FBX import into a MeshSet, in a
+      mod the Frosty Mod Manager installs) and added to a bundle the level loads, then placed from
+      the library like any mesh, which needs step 2's bundle loading and no new format work; (b)
+      meshes built at runtime from glTF (vertex / index buffers, a MeshSet and its render object
+      made in memory), a research track of its own (renderer, shaders, materials), later.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
    hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
    dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
