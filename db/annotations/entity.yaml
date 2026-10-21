@@ -77,7 +77,9 @@ functions:
     note: >-
       Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
       +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.
-  # Destroying an entity (2026-10-21): vtable +0x88 (deinit), +0x30 (destroy), +0x38 (delete).
+  # Destroying an entity (2026-10-21): unlink it from its owner (Entity_OwnerLink), then vtable
+  # +0x88 (deinit), +0x30 (destroy), +0x38 (delete). Without the unlink the owner destroyed it again
+  # when its part of the level unloaded (the game closed silently).
   # Without the deinit the components stay registered in the world (the spatial grid queried by
   # 0x1436d1dd0 then calls into freed memory: crashed in game).
   - name: SpatialEntity_deinit
@@ -185,6 +187,7 @@ functions:
     sources: [ghidra, user]
 
 constants:
+  - { name: Entity_OwnerLink, value: 0x8, confidence: inferred, sources: [ghidra, game], note: "Node {prev node, next node} in the entity's EntityOwner list (the owner destroys its entities when it goes, e.g. a sublevel streaming out). Entity_dtor does not unlink it: unlink before deleting an entity yourself. Moved between owners by 0x143161be0 (flag 0x4000); EntityOwnerRange markers (flags 0x802) bound ranges in it (0x143163270)." }
   - { name: Entity_vf_deinit, value: 0x88, confidence: inferred, sources: [ghidra], note: "SpatialEntity_deinit for spatial entities." }
   - { name: Entity_FlagInitialised, value: 0x8, confidence: inferred, sources: [ghidra] }
   - { name: Entity_vf_destroy, value: 0x30, confidence: inferred, sources: [ghidra], note: "SpatialEntity_destroy for spatial entities." }

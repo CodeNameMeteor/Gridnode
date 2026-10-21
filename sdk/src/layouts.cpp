@@ -2105,8 +2105,32 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
         GN_LOG("layouts: destroy: %s entity %llx is already being destroyed", realm, static_cast<unsigned long long>(ent));
         return false;
     }
+    // The entity's link in its owner's list (an EntityOwner: the part of the level it was made in
+    // destroys every entity in its list when it unloads). Node at +0x08: {prev node, next node};
+    // a node's next is at +8. Unlinked first, or the owner destroys the freed entity again.
+    const uintptr_t node = ent + e::constant::Entity_OwnerLink;
+    const uintptr_t prev = mem::readOr<uintptr_t>(node);
+    const uintptr_t next = mem::readOr<uintptr_t>(node + 8);
+    if (prev) {
+        const bool prevOk = mem::readOr<uintptr_t>(prev + 8) == node;
+        const bool nextOk = !next || mem::readOr<uintptr_t>(next) == node;
+        if (!prevOk || !nextOk) {
+            GN_LOG("layouts: destroy: %s entity %llx: its owner list does not look as expected (prev %llx -> %llx, next %llx -> %llx); not destroying",
+                   realm, static_cast<unsigned long long>(ent), static_cast<unsigned long long>(prev),
+                   static_cast<unsigned long long>(mem::readOr<uintptr_t>(prev + 8)), static_cast<unsigned long long>(next),
+                   static_cast<unsigned long long>(next ? mem::readOr<uintptr_t>(next) : 0));
+            return false;
+        }
+    }
     inspector::markDead(ent); // nothing of GridNode's touches it from here on
-    GN_LOG("layouts: destroying %s entity %llx (%s, flags %08x)", realm, static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?", flags);
+    GN_LOG("layouts: destroying %s entity %llx (%s, flags %08x, owner link prev %llx next %llx)", realm, static_cast<unsigned long long>(ent),
+           type ? type->name.c_str() : "?", flags, static_cast<unsigned long long>(prev), static_cast<unsigned long long>(next));
+    if (prev) { // unlink, as the engine does when it moves an entity to another owner (0x143161be0)
+        *reinterpret_cast<volatile uintptr_t*>(prev + 8) = next;
+        if (next) *reinterpret_cast<volatile uintptr_t*>(next) = prev;
+        *reinterpret_cast<volatile uintptr_t*>(node) = 0;
+        *reinterpret_cast<volatile uintptr_t*>(node + 8) = 0;
+    }
     if (flags & e::constant::Entity_FlagInitialised) {
         struct DeinitInfo {
             int32_t realm;
