@@ -473,9 +473,10 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       made with the vtable of one the game sent). Library parts now save their bundle. Library confirmed
       working in game 2026-10-21 near the source. Far away it does not: the city's districts are
       zone-streamed (`CentralCityBuildings_ZS`: a ZoneStreamer loads zones inside it around Faith),
-      so dropping a sublevel's StreamOut keeps nothing, and a StreamIn on it loads nothing. Next:
-      `ZoneStreamerSettings.PinVisitedZones` (keep visited zones) and a `ZoneStreamerFocusEntity`
-      (`FocusPoint`: a second point the streamer loads around) to load a source's zone on demand.
+      so dropping a sublevel's StreamOut keeps nothing, and a StreamIn on it loads nothing.
+      `ZoneStreamerSettings.PinVisitedZones` is never read (no effect). Next: a second focus point
+      (`ZoneStreamerFocusEntity`, or the streamer's focus list at +0x288/+0x2a8/+0x2c8) to load and
+      keep a source's zone (`docs/research/zone-streaming.md`).
    2. ~~Other levels~~: not needed. Catalyst has one level (the city); its sublevels are streamed
       in on demand (step 1), so every library entry can be placed. Confirmed 2026-10-21: a group's
       bus is a child of its sublevel's bus (+0x88); the lookup walks EntityBus +0x08 (parent).

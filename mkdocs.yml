@@ -54,6 +54,7 @@ nav:
   - Plans:
       - assets-assessment.md
       - research/destroying-entities.md
+      - research/zone-streaming.md
       - research/frosty-unity-pipeline.md
       - research/mecmp-camera-and-collision.md
       - research/recording-teleport.md
