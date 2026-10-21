@@ -2074,14 +2074,16 @@ void hideCopy(int copyId) {
         }
 }
 
-// Destroys an entity GridNode made, as the engine destroys a component: vtable +0x30 (destroy: the
-// destroyed flag, its physics and render parts taken away), then +0x38 with 1 (destructor and free,
-// which releases the entity's reference to its bus). Only for spatial entities whose +0x30 is the
-// engine's SpatialEntity_destroy. On the game thread of the entity's realm.
+// Destroys an entity GridNode made, as the engine takes one down: vtable +0x88 (deinit: its
+// components out of the world, off its bus), +0x30 (destroy: the destroyed flag, its components
+// torn down), then +0x38 with 1 (destructor and free, which releases the entity's reference to its
+// bus). Without the deinit its physics part stayed in the spatial grid and the next query called
+// into freed memory. Only for spatial entities whose slots hold the engine's SpatialEntity_deinit
+// and SpatialEntity_destroy. On the game thread of the entity's realm.
 bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) {
-    static const bool known = build::codeMatches("SpatialEntity_destroy");
+    static const bool known = build::codeMatches("SpatialEntity_destroy") && build::codeMatches("SpatialEntity_deinit");
     if (!known) {
-        GN_LOG("layouts: destroy: SpatialEntity_destroy does not match this build; not destroying");
+        GN_LOG("layouts: destroy: SpatialEntity_deinit/destroy do not match this build; not destroying");
         return false;
     }
     if (!inspector::alive(ent, type)) {
@@ -2089,10 +2091,12 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
         return false;
     }
     const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+    const uintptr_t deinit = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_deinit) : 0;
     const uintptr_t destroy = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_destroy) : 0;
     const uintptr_t del = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_delete) : 0;
     const uint32_t flags = mem::readOr<uint32_t>(ent + 0x18);
-    if (destroy != mem::rva(e::function::SpatialEntity_destroy) || !del || !mem::inImage(del)) {
+    if (deinit != mem::rva(e::function::SpatialEntity_deinit) || destroy != mem::rva(e::function::SpatialEntity_destroy) || !del ||
+        !mem::inImage(del)) {
         GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
                static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
         return false;
@@ -2102,7 +2106,16 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
         return false;
     }
     inspector::markDead(ent); // nothing of GridNode's touches it from here on
-    GN_LOG("layouts: destroying %s entity %llx (%s)", realm, static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
+    GN_LOG("layouts: destroying %s entity %llx (%s, flags %08x)", realm, static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?", flags);
+    if (flags & e::constant::Entity_FlagInitialised) {
+        struct DeinitInfo {
+            int32_t realm;
+            uint8_t removeFromManager;
+            uint8_t pad[3];
+        } info{static_cast<int32_t>(flags & 1), 0, {}};
+        reinterpret_cast<void (*)(uintptr_t, DeinitInfo*)>(deinit)(ent, &info);
+        GN_LOG("layouts: deinit done (flags now %08x)", mem::readOr<uint32_t>(ent + 0x18));
+    }
     reinterpret_cast<void (*)(uintptr_t)>(destroy)(ent);
     reinterpret_cast<void* (*)(uintptr_t, uint32_t)>(del)(ent, 1);
     GN_LOG("layouts: destroyed %s entity %llx", realm, static_cast<unsigned long long>(ent));

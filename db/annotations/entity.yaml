@@ -18,6 +18,14 @@ classes:
       - { offset: 0x08, name: collection, type: "void**", note: "Owner's component collection; element [0] is the owner entity." }
 
 structs:
+  - name: EntityDeinitInfo
+    size: 0x8
+    note: "Built by the caller of an entity's deinit (+0x88)."
+    confidence: inferred
+    sources: [ghidra]
+    members:
+      - { offset: 0x0, name: realm, type: i32, note: "Index into the manager table at 0x1423e5710 (the entity's flags & 1)." }
+      - { offset: 0x4, name: removeFromManager, type: u8, note: "Base deinit removes the entity from that manager when set and flags & 0x30000; spatial entities clear it." }
   - name: EntityTransformSpace
     size: 0x10
     opaque: true
@@ -69,8 +77,19 @@ functions:
     note: >-
       Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
       +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.
-  # Destroying an entity (2026-10-21): the engine destroys a component with vtable +0x30, then
-  # +0x38 (delete); entities share that layout.
+  # Destroying an entity (2026-10-21): vtable +0x88 (deinit), +0x30 (destroy), +0x38 (delete).
+  # Without the deinit the components stay registered in the world (the spatial grid queried by
+  # 0x1436d1dd0 then calls into freed memory: crashed in game).
+  - name: SpatialEntity_deinit
+    va: 0x1432e3b80
+    signature: "void(void* entity, EntityDeinitInfo* info)"
+    note: >-
+      Vtable +0x88 of spatial entities, the counterpart of init (+0x78): if flags bit 23, +0x1a8
+      (components' +0xd0: out of the world); +0x1b0 (the class's own teardown: physics, the client
+      context's list); clears info.removeFromManager; then the base deinit 0x143175390 (unregisters
+      from the bus, flag 4; clears the initialised flag 8).
+    confidence: inferred
+    sources: [ghidra, game]
   - name: SpatialEntity_destroy
     va: 0x1432e3c10
     signature: "void(void* entity)"
@@ -166,6 +185,8 @@ functions:
     sources: [ghidra, user]
 
 constants:
+  - { name: Entity_vf_deinit, value: 0x88, confidence: inferred, sources: [ghidra], note: "SpatialEntity_deinit for spatial entities." }
+  - { name: Entity_FlagInitialised, value: 0x8, confidence: inferred, sources: [ghidra] }
   - { name: Entity_vf_destroy, value: 0x30, confidence: inferred, sources: [ghidra], note: "SpatialEntity_destroy for spatial entities." }
   - { name: Entity_vf_delete, value: 0x38, confidence: inferred, sources: [ghidra], note: "Scalar deleting destructor: (entity, 1) destroys and frees." }
   - { name: Entity_FlagDestroyed, value: 0x2000000, confidence: inferred, sources: [ghidra], note: "In the flags at +0x18, set by vtable +0x30." }
