@@ -16,6 +16,12 @@ globals:
     note: "A static model's render object (transform +0x10, bounding sphere +0x50, mesh box via +0x60)."
     confidence: inferred
     sources: [ghidra, research]
+  - name: CompositeMeshEntity_vtable
+    va: 0x141c012c0
+    type: "void*"
+    note: "The other static model render object (ctor 0x14377f750); same base and set-transform as RigidMeshEntity."
+    confidence: inferred
+    sources: [ghidra]
   - name: g_renderDevice
     va: 0x142563300
     type: "u64"

@@ -3,7 +3,7 @@
 Findings from building the layout editor's selection outline (2026-10-20 and 21). The outline's
 fit was confirmed in game on 2026-10-21.
 
-## What draws a model: RigidMeshEntity
+## What draws a model: RigidMeshEntity (or CompositeMeshEntity)
 
 A static model is drawn by a render object, a `RigidMeshEntity` (vtable `0x141bf72c8` in the
 EA app build). Its set-transform, `0x14376c060` (vtable +0x10), shows its layout:
@@ -14,6 +14,11 @@ EA app build). Its set-transform, `0x14376c060` (vtable +0x10), shows its layout
 | +0x50 | world bounding sphere (centre xyz, radius), computed from the box below |
 | +0x60 | `**(object + 0x60) + 0x20` points at the mesh's local box: min xyz, pad, max xyz |
 | +0x88 | culling handle |
+
+Some standalone models are drawn by a `CompositeMeshEntity` instead (vtable `0x141c012c0`, made
+by `0x14377f750`; the creator `0x143183670` picks one or the other from a flag at +0x41 of its
+arguments). It is built on the same base (`0x14375f930`) and shares the set-transform, so the
+layout above is the same.
 
 The local box is the mesh's own, the one the renderer culls with, so it fits what is drawn.
 Drawn in the object's own transform, it also has the right axes.

@@ -2471,6 +2471,22 @@ void freeCamFrame(bool menuOpen) {
         }
         ImGui::End();
     }
+    if (!menuOpen) { // which way the mouse works, at the bottom of the screen
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        auto key = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
+        Selected cur;
+        const bool sel = selection(cur);
+        std::string text = g_pointer ? "POINTER   " + key(kPointer) + ": back to looking   right mouse: look"
+                                     : "LOOKING   " + key(kPointer) + ": pointer" + (sel ? ", to drag the handles" : "");
+        if (sel && g_pointer) text += std::string("   ") + key(kHandles) + ": handles " + (g_gizmoMode ? "rotate" : "move");
+        if (sel && cur.group) text += "   (group prop: Make standalone to move it)";
+        const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+        const ImVec2 at(vp->Pos.x + (vp->Size.x - size.x) * 0.5f, vp->Pos.y + vp->Size.y - size.y - ImGui::GetFontSize() * 2.f);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const float pad = ImGui::GetFontSize() * 0.4f;
+        dl->AddRectFilled(ImVec2(at.x - pad, at.y - pad), ImVec2(at.x + size.x + pad, at.y + size.y + pad), IM_COL32(0, 0, 0, 140), pad);
+        dl->AddText(at, g_pointer ? IM_COL32(255, 220, 110, 255) : IM_COL32(230, 230, 230, 230), text.c_str());
+    }
     if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
 
     ImGuiIO& io = ImGui::GetIO();
@@ -3165,7 +3181,8 @@ bool meshBox(uintptr_t ro, float* mn, float* mx) {
 bool isMeshEntity(uintptr_t p) {
     if (p < 0x10000 || (p & 7)) return false;
     const uintptr_t vt = mem::readOr<uintptr_t>(p);
-    if (vt == mem::rva(0x141bf72c8)) return true; // RigidMeshEntity
+    if (vt == mem::rva(0x141bf72c8)) return true; // RigidMeshEntity (group props, most models)
+    if (vt == mem::rva(0x141c012c0)) return true; // CompositeMeshEntity (some standalone models); same base and layout
     const reflect::Type* t = mem::inImage(vt) ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
     return t && t->name.size() > 10 && t->name.compare(t->name.size() - 10, 10, "MeshEntity") == 0;
 }
@@ -3218,6 +3235,15 @@ uintptr_t drawnObjectOf(const Selected& s) {
         if (isServerClass(ty->name)) continue;
         if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1, at)) return m;
         if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 2, at)) return m;
+    }
+    static uintptr_t deepFor = 0; // once per selection: three levels down (slower)
+    if (!s.entities.empty() && deepFor != s.entities[0].first) {
+        deepFor = s.entities[0].first;
+        for (const auto& [ent, ty] : s.entities) {
+            if (isServerClass(ty->name)) continue;
+            if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 3, at)) return m;
+            GN_LOG("layouts: outline: no render object found from %s %llx", ty->name.c_str(), static_cast<unsigned long long>(ent));
+        }
     }
     return 0;
 }
