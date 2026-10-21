@@ -99,12 +99,12 @@ editor, with an optional name); a multiple selection becomes one entry that keep
 sit together. **Place** puts the entry where the crosshair points, as copies (saved in the layout
 like any copy).
 
-An entry remembers each object's *mesh*, not the object itself, so it can be placed anywhere in a
-level where that mesh is loaded: GridNode copies any loaded object drawn with it. Meshes belong to
-parts of a level (sublevels): an entry also remembers which one, and placing it from far away
-streams that part in first (the status line says so; it can take a few seconds). The parts that
-hold the sources of your copies are kept loaded, so copies no longer disappear when Faith moves
-away. Catalyst has one level (the city), so an entry can be placed anywhere in it.
+An entry remembers each object's *mesh*, not the object itself, and where its source is: GridNode
+copies any loaded object drawn with that mesh. The city loads in zones around Faith; placing an
+entry from far away asks the game to load the zone around its source first (the status line says
+so; it can take a few seconds). The zones holding the sources of your copies are kept loaded too
+(up to 8 places), so copies no longer disappear when Faith moves away. That costs some memory.
+Entries added before 2026-10-21 evening have no source position: remove and add them again. Catalyst has one level (the city), so an entry can be placed anywhere in it.
 
 Your own meshes can be placed the same way once they are in the game: see
 [Custom meshes](custom-meshes.md).

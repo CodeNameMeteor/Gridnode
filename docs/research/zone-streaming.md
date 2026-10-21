@@ -1,7 +1,8 @@
 # Zone streaming (why far-away placing and keeping copies loaded fail)
 
 Findings of 2026-10-21 (EA app build), from in-game logs and the executable (Ghidra, then a
-disassembly of the dump when Ghidra was closed). Work in progress.
+disassembly of the dump when Ghidra was closed). Confirmed in game on 2026-10-21 (3 streamers found; copies kept and a library entry placed 1.1 km
+from its source).
 
 ## What the logs showed
 
@@ -47,3 +48,9 @@ A ZoneStreamerEntity's **focus manager** is at +0x280. It keeps records of 0x18 
 placed from, and registers them with every live zone streamer on its own thread (the add above; to
 remove, it marks its own record once found). A streamer whose grid does not hold a point finds no zone
 for it. Library entries save their source's position for this.
+
+The streamers are not made through a creator GridNode hooks, so they are found as the game's focus
+entities find them (0x143c7d800): each game world (`GameWorlds`, 0x1424a9b98: [0] client,
+[1] server) has an index (+0x28) into every ClassInfo's per-world entity lists, whose first node is
+at ClassInfo + (index + 6) * 0x10 (0x143164d50); a ZoneStreamerEntity's node is at +0x268, and a
+node's first field is the next node.
