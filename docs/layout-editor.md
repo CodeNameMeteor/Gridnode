@@ -50,9 +50,23 @@ Directions follow the camera: "right" is the camera's right along the ground.
 | H | flip upside down |
 | U | stand upright again |
 | Ctrl + Z | undo (also with the menu open) |
+| Tab | mouse: look / pointer (for the handles) |
+| Y | handles: move / rotate |
 
 Shift makes a step 4 times larger, Ctrl a quarter. The step sizes are in the editor. Holding a key
 repeats it; one hold is one undo step.
+
+### Handles
+
+The leading selection has handles from the middle of its box: three **arrows** to move it along
+an axis, or three **rings** to turn it about one. **Y** switches between them, and the editor has
+the same choice, plus whether the handles follow the object's own axes or the world's. Drag one
+with the left mouse button; hold **Ctrl** to snap to the step sizes. A drag is one undo step, and
+the rest of a multiple selection follows.
+
+The handles need a cursor. With the menu open there is one. While flying with the menu closed,
+**Tab** turns the mouse into a pointer (the right button still looks, and a click picks what is
+under the cursor); Tab again goes back to looking.
 
 Most props in a level are *group props*: copies the game draws as one batch with the rest of
 their group. They cannot be moved one by one. Select one and press **Make standalone** in the

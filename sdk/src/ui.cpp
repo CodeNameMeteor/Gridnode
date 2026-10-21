@@ -111,6 +111,7 @@ std::atomic<uint32_t> g_btnDown{0}, g_btnUp{0};
 std::atomic<int> g_wheel{0};
 // Free-camera look (layouts): while on, raw mouse movement turns the camera, not the cursor.
 std::atomic<bool> g_lookCapture{false};
+std::atomic<bool> g_pointer{false}; // the free camera's pointer mode: the cursor shows with the menu closed
 std::atomic<float> g_lookX{0}, g_lookY{0};
 // Free camera with the menu closed: the game gets no keyboard or mouse, GridNode takes them as if
 // the menu were open (keys still reach ImGui), and the mouse always looks.
@@ -471,7 +472,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
         if (g_settings.recorder) recorder::frame();
         holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
-        ImGui::GetIO().MouseDrawCursor = open;
+        ImGui::GetIO().MouseDrawCursor = open || (g_capture.load() && g_pointer.load());
         {
             static DWORD scaleAt = 0;
             if (GetTickCount() - scaleAt > 500) {
@@ -560,6 +561,15 @@ void setLookCapture(bool on) {
     if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;
 }
 void setInputCapture(bool on) { g_capture = on; }
+void setPointer(bool on) {
+    if (on && !g_pointer.load() && g_window) { // from the middle of the window, where the crosshair was
+        RECT rc{};
+        GetClientRect(g_window, &rc);
+        g_cursorX = (rc.right - rc.left) * 0.5f;
+        g_cursorY = (rc.bottom - rc.top) * 0.5f;
+    }
+    g_pointer = on;
+}
 void takeLook(float& dx, float& dy) {
     dx = g_lookX.exchange(0.f);
     dy = g_lookY.exchange(0.f);

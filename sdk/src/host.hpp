@@ -167,6 +167,7 @@ bool gameFocused(); // the game's window is the foreground window (for keys read
 void toggleMenu();
 void setLookCapture(bool on);            // raw mouse movement goes to takeLook, not the cursor
 void setInputCapture(bool on);           // free camera with the menu closed: the game gets no input
+void setPointer(bool on);                // free camera with the menu closed: show the cursor (for handles); centres it when turned on
 void takeLook(float& dx, float& dy);     // movement since the last call (raw counts)
 std::string keyName(int vk);
 int keyFromName(const std::string& name);

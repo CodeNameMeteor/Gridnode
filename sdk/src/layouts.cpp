@@ -183,8 +183,10 @@ Bind g_binds[] = {
     {"upright", "Stand upright again", 'U', true, false, 'U'},
     {"undo", "Undo (with Ctrl; also with the menu open)", 'Z', true, false, 'Z'},
     {"teleport", "Teleport Faith to the crosshair (and back to her)", 'T', true, false, 'T'},
+    {"pointer", "Mouse: look / pointer (to drag the handles)", VK_TAB, true, false, VK_TAB},
+    {"handles", "Handles: move / rotate", 'Y', true, false, 'Y'},
 };
-enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kBindCount };
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kPointer, kHandles, kBindCount };
 static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
 float g_nudge = 0.5f;     // metres per move step
 float g_turnStep = 15.f;  // degrees per turn step
@@ -2218,6 +2220,11 @@ struct FreeCam {
     bool looking = false;
 };
 FreeCam g_cam;                       // render thread
+bool g_pointer = false;              // render thread: with the menu closed the mouse moves a cursor (right button: look)
+bool g_gizmoHot = false;             // render thread: the mouse is on (or dragging) a handle, so a click does not pick
+bool g_gizmoShown = false;           // render thread: the handles are showing (last frame)
+int g_gizmoMode = 0;                 // render thread: 0 move, 1 rotate
+bool g_gizmoLocal = true;            // render thread: handles along the object's own axes (else the world's)
 int g_editorFrame = -10;             // last frame the Layout editor was drawn (render thread)
 
 uintptr_t firstViewManager() {
@@ -2403,6 +2410,8 @@ void freeCamFrame(bool menuOpen) {
     } else if (!want && g_cam.active) {
         g_cam.active = false;
         g_cam.looking = false;
+        g_pointer = false;
+        ui::setPointer(false);
         ui::setLookCapture(false);
         ui::setInputCapture(false);
         {
@@ -2428,7 +2437,7 @@ void freeCamFrame(bool menuOpen) {
             ImGui::TextUnformatted(what);
         };
         auto k = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
-        row("Mouse", "look");
+        row("Mouse", g_pointer ? "pointer (right button: look)" : "look");
         row("W A S D", "fly");
         row("Q / E", "down / up");
         row("Shift / Ctrl", "faster / slower");
@@ -2436,6 +2445,8 @@ void freeCamFrame(bool menuOpen) {
         ImGui::Separator();
         row("Click / " + k(kPick), "pick at the crosshair");
         row("Shift + click", "add to / take from the selection");
+        row(k(kPointer), g_pointer ? "mouse: back to looking" : "mouse: a pointer, to drag the handles");
+        row(k(kHandles), g_gizmoMode ? "handles: rotate (now) / move" : "handles: move (now) / rotate");
         row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
         row(k(kUp) + " / " + k(kDown), "move it up / down");
         row(k(kTurnL) + " / " + k(kTurnR), "turn it");
@@ -2464,8 +2475,12 @@ void freeCamFrame(bool menuOpen) {
 
     ImGuiIO& io = ImGui::GetIO();
     ui::setInputCapture(!menuOpen);
-    if (!menuOpen) {
+    ui::setPointer(!menuOpen && g_pointer);
+    if (!menuOpen && !g_pointer) {
         g_cam.looking = true;
+    } else if (!menuOpen) { // pointer mode: like the menu, the right button looks
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !g_gizmoHot) g_cam.looking = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
     } else {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
         if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
@@ -2498,7 +2513,7 @@ void freeCamFrame(bool menuOpen) {
         if (io.KeyShift) s *= 4.f;
         if (io.KeyCtrl) s *= 0.25f;
         for (int k = 0; k < 3; ++k) g_cam.pos[k] += v[k] * s;
-        if (io.MouseWheel != 0.f && g_cam.looking) g_cam.speed = std::clamp(g_cam.speed * (io.MouseWheel > 0 ? 1.25f : 0.8f), 0.5f, 200.f);
+        if (io.MouseWheel != 0.f && (g_cam.looking || (!menuOpen && g_pointer))) g_cam.speed = std::clamp(g_cam.speed * (io.MouseWheel > 0 ? 1.25f : 0.8f), 0.5f, 200.f);
     }
     alignas(16) gn_transform t{};
     for (int k = 0; k < 3; ++k) {
@@ -2889,6 +2904,19 @@ void draw(bool* open) {
         ImGui::SameLine();
         if (ImGui::Button("Stand upright")) nudge(13, 1.f);
         ImGui::TextDisabled("Directions follow the camera. Shift: 4 steps, Ctrl: a quarter.");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Handles:");
+        ImGui::SameLine();
+        ImGui::RadioButton("move", &g_gizmoMode, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("rotate", &g_gizmoMode, 1);
+        ImGui::SameLine();
+        ImGui::Checkbox("its own axes", &g_gizmoLocal);
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("Drag the arrows or rings on the selection (Ctrl snaps to the steps above). While flying with the menu closed, "
+                            "%s gives the mouse a pointer for them; %s switches move / rotate.",
+                            ui::keyName(g_binds[kPointer].vk).c_str(), ui::keyName(g_binds[kHandles].vk).c_str());
+        ImGui::PopTextWrapPos();
         const size_t selected = selectionAll().size();
         if (selected > 1) ImGui::TextDisabled("%llu objects selected (Shift+click adds or takes away); they move and turn with this one.",
                                               static_cast<unsigned long long>(selected));
@@ -3002,12 +3030,19 @@ void keysFrame(bool menuOpen) {
     if (fire[kPaste]) pasteCentre();
     if (fire[kDuplicate]) duplicateSelection();
     if (fire[kTeleport]) teleportCrosshair();
+    if (fire[kPointer]) g_pointer = !g_pointer;
+    if (fire[kHandles]) g_gizmoMode ^= 1;
     const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
     for (int i = kFwd; i <= kUpright; ++i)
         if (fire[i]) nudge(i - kFwd, scale);
     // With the menu closed: a left click picks what the crosshair points at, and the crosshair shows.
-    if (!menuOpen) {
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) pickCentre(adding);
+    if (!menuOpen && g_pointer) { // the cursor picks, as with the menu open
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_gizmoHot) {
+            float ray[6];
+            if (cursorRay(ray)) pick(ray, adding);
+        }
+    } else if (!menuOpen) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_gizmoHot) pickCentre(adding);
         const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         const float k = ImGui::GetFontSize() * 0.5f;
@@ -3250,6 +3285,15 @@ void line3d(ImDrawList* dl, const View& v, const float* a, const float* b, ImU32
     dl->AddLine(project(v, p), project(v, q), col, thick);
 }
 
+// The leading selection as drawn this frame, for the handles (render thread).
+struct LeadFrame {
+    bool valid = false;
+    gn_transform t{};    // its drawn transform
+    float centre[3] = {}; // the middle of its box, in the world
+    bool group = false;
+};
+LeadFrame g_lead;
+
 // One selected object's outline, looked up once and kept while it stays selected (render thread).
 struct Outline {
     bool box = false;
@@ -3339,6 +3383,16 @@ void drawOne(const View& v, const Selected& s, bool lead) {
     world(0, 0, 0, pv);
     if (depthOf(v, pv) > kNear) dl->AddCircleFilled(project(v, pv), lead ? 3.5f : 2.5f, col);
     if (!lead) return;
+    {
+        float mid[3] = {0, 0, 0};
+        if (o.box)
+            for (int k = 0; k < 3; ++k) mid[k] = 0.5f * (o.mn[k] + o.mx[k]);
+        g_lead.valid = true;
+        g_lead.t = t;
+        g_lead.group = s.group;
+        world(mid[0], mid[1], mid[2], g_lead.centre);
+    }
+    if (g_gizmoShown) return; // the handles are drawn instead of the axes
     // Its own axes from the middle of its box (its pivot, often a corner, is the small dot): right red,
     // up green, forward blue.
     float len = 1.f, c0[3] = {0, 0, 0};
@@ -3363,6 +3417,7 @@ void drawOne(const View& v, const Selected& s, bool lead) {
 
 // The selection's outlines, shown while the free camera is on.
 void drawOutline() {
+    g_lead.valid = false;
     const std::vector<Selected> all = g_cam.enabled ? selectionAll() : std::vector<Selected>{};
     // Forget the outlines of what is no longer selected.
     for (auto it = g_outlines.begin(); it != g_outlines.end();) {
@@ -3382,13 +3437,215 @@ void drawOutline() {
     for (size_t i = all.size(); i-- > 0;) drawOne(v, all[i], i == 0); // the lead last, on top
 }
 
+
+// ---- handles (move / rotate by dragging) -----------------------------------------------------------
+// On the leading selection, from the middle of its box: three arrows (move along an axis) or three
+// rings (turn about one), along its own axes or the world's. They are used with the cursor: with
+// the menu open, or with the menu closed in pointer mode. A drag is one undo step; Ctrl snaps to
+// the editor's steps. Everything selected follows (moveSelection).
+struct GizmoDrag {
+    int axis = -1;
+    bool rotate = false;
+    gn_transform start{};    // the leading selection's transform when the drag began
+    float centre[3] = {};    // the handles' origin then
+    float dir[3] = {};       // the axis (unit, world)
+    float t0 = 0.f;          // move: where on the axis the drag began
+    float a0 = 0.f;          // rotate: the cursor's screen angle about the centre then
+    float sign = 1.f;        // rotate: screen angle -> rotation about dir
+    bool first = true;
+    float last = 0.f;        // the last value applied (a still mouse moves nothing)
+};
+GizmoDrag g_drag;
+
+// Closest point on the line (o, a) to the ray (f, d): the parameter along the line.
+bool lineRayParam(const float* o, const float* a, const float* f, const float* d, float& t) {
+    const float w[3] = {o[0] - f[0], o[1] - f[1], o[2] - f[2]};
+    const float b = dot3(a, d), c = dot3(d, d), aa = dot3(a, a);
+    const float den = aa * c - b * b;
+    if (std::fabs(den) < 1e-6f) return false; // looking along the axis
+    t = (b * dot3(d, w) - c * dot3(a, w)) / den;
+    return std::isfinite(t);
+}
+
+float distToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
+    const float vx = b.x - a.x, vy = b.y - a.y, wx = p.x - a.x, wy = p.y - a.y;
+    const float l2 = vx * vx + vy * vy;
+    const float t = l2 > 0.f ? std::clamp((wx * vx + wy * vy) / l2, 0.f, 1.f) : 0.f;
+    const float dx = a.x + t * vx - p.x, dy = a.y + t * vy - p.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+void rotateVec(float* v, const float* axis, float degrees) {
+    gn_transform tmp{};
+    memcpy(tmp.right, v, sizeof(float) * 3);
+    rotateAbout(tmp, axis, degrees);
+    memcpy(v, tmp.right, sizeof(float) * 3);
+}
+
+void gizmoFrame(bool menuOpen) {
+    g_gizmoHot = false;
+    g_gizmoShown = false;
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool cursor = menuOpen || g_pointer;
+    if (!g_cam.active || !cursor || !g_lead.valid || g_lead.group) {
+        g_drag.axis = -1;
+        return;
+    }
+    View v;
+    if (!currentView(v)) return;
+    const float* c = g_lead.centre; // the handles follow the object; a drag's own sums use where it began
+    if (depthOf(v, c) < kNear * 4.f) return;
+    g_gizmoShown = true;
+    // Axes: the object's (its drawn rows) or the world's.
+    float ax[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    if (g_gizmoLocal) {
+        const float* rows[3] = {g_lead.t.right, g_lead.t.up, g_lead.t.forward};
+        for (int k = 0; k < 3; ++k) {
+            memcpy(ax[k], rows[k], sizeof(float) * 3);
+            normalize(ax[k]);
+        }
+    }
+    if (g_drag.axis >= 0) memcpy(ax[g_drag.axis], g_drag.dir, sizeof(float) * 3);
+    const float dist = std::sqrt(std::max(dist2(v.from, c), 1e-4f));
+    const float L = dist * v.th * 0.32f; // about a sixth of the screen's height
+    const ImVec2 mouse = io.MousePos;
+    const ImVec2 c2 = project(v, c);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
+    const ImU32 hotCol = IM_COL32(255, 230, 90, 255);
+    const bool overUi = menuOpen && io.WantCaptureMouse && g_drag.axis < 0;
+    const bool rotate = g_drag.axis >= 0 ? g_drag.rotate : g_gizmoMode == 1;
+    // Hover: the nearest handle within 9 px.
+    int hover = -1;
+    float best = 9.f;
+    std::vector<ImVec2> ring[3];
+    for (int k = 0; k < 3; ++k) {
+        if (!rotate) {
+            float e[3];
+            for (int i = 0; i < 3; ++i) e[i] = c[i] + ax[k][i] * L;
+            if (depthOf(v, e) < kNear) continue;
+            const float d = distToSegment(mouse, c2, project(v, e));
+            if (d < best) best = d, hover = k;
+        } else {
+            const int a = (k + 1) % 3, b = (k + 2) % 3; // a ring in the plane of the other two axes
+            for (int i = 0; i <= 64; ++i) {
+                const float th = 6.2831853f * static_cast<float>(i) / 64.f;
+                float p[3];
+                for (int j = 0; j < 3; ++j) p[j] = c[j] + (ax[a][j] * std::cos(th) + ax[b][j] * std::sin(th)) * L * 0.9f;
+                ring[k].push_back(depthOf(v, p) > kNear ? project(v, p) : ImVec2(-1e9f, -1e9f));
+            }
+            for (size_t i = 1; i < ring[k].size(); ++i) {
+                if (ring[k][i - 1].x < -1e8f || ring[k][i].x < -1e8f) continue;
+                const float d = distToSegment(mouse, ring[k][i - 1], ring[k][i]);
+                if (d < best) best = d, hover = k;
+            }
+        }
+    }
+    if (overUi || g_cam.looking) hover = -1;
+    const int active = g_drag.axis >= 0 ? g_drag.axis : hover;
+    g_gizmoHot = active >= 0;
+    // Draw.
+    for (int k = 0; k < 3; ++k) {
+        const ImU32 col = k == active ? hotCol : cols[k];
+        const float thick = k == active ? 4.f : 3.f;
+        if (!rotate) {
+            float e[3];
+            for (int i = 0; i < 3; ++i) e[i] = c[i] + ax[k][i] * L;
+            line3d(dl, v, c, e, col, thick);
+            if (depthOf(v, e) > kNear) { // a head: a triangle across the arrow's end
+                const ImVec2 p0 = c2, p1 = project(v, e);
+                float dx = p1.x - p0.x, dy = p1.y - p0.y;
+                const float n = std::sqrt(dx * dx + dy * dy);
+                if (n > 1.f) {
+                    dx /= n, dy /= n;
+                    const float h = 12.f, w = 6.f;
+                    dl->AddTriangleFilled(ImVec2(p1.x + dx * h, p1.y + dy * h), ImVec2(p1.x - dy * w, p1.y + dx * w), ImVec2(p1.x + dy * w, p1.y - dx * w), col);
+                }
+            }
+        } else {
+            for (size_t i = 1; i < ring[k].size(); ++i)
+                if (ring[k][i - 1].x > -1e8f && ring[k][i].x > -1e8f) dl->AddLine(ring[k][i - 1], ring[k][i], col, thick);
+        }
+    }
+    dl->AddCircleFilled(c2, 4.f, IM_COL32(255, 255, 255, 220));
+    // Begin a drag.
+    if (g_drag.axis < 0 && hover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        Selected s;
+        if (!selection(s)) return;
+        g_drag = GizmoDrag{};
+        g_drag.axis = hover;
+        g_drag.rotate = rotate;
+        g_drag.start = s.now;
+        memcpy(g_drag.centre, c, sizeof(g_drag.centre));
+        memcpy(g_drag.dir, ax[hover], sizeof(g_drag.dir));
+        float ray[6];
+        if (!rotate) {
+            if (!cursorRay(ray) || !lineRayParam(c, g_drag.dir, ray, ray + 3, g_drag.t0)) {
+                g_drag.axis = -1;
+                return;
+            }
+        } else {
+            g_drag.a0 = std::atan2(-(mouse.y - c2.y), mouse.x - c2.x);
+            // Which way a positive turn about the axis goes on screen: turn a point a little and look.
+            const int a = (hover + 1) % 3;
+            float p[3], q[3];
+            for (int j = 0; j < 3; ++j) p[j] = ax[a][j] * L;
+            memcpy(q, p, sizeof(q));
+            rotateVec(q, g_drag.dir, 5.f);
+            for (int j = 0; j < 3; ++j) p[j] += c[j], q[j] += c[j];
+            const ImVec2 sp = project(v, p), sq = project(v, q);
+            const float ap = std::atan2(-(sp.y - c2.y), sp.x - c2.x), aq = std::atan2(-(sq.y - c2.y), sq.x - c2.x);
+            float da = aq - ap;
+            while (da > 3.14159265f) da -= 6.2831853f;
+            while (da < -3.14159265f) da += 6.2831853f;
+            g_drag.sign = da >= 0.f ? 1.f : -1.f;
+        }
+        return;
+    }
+    if (g_drag.axis < 0) return;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { // released: done
+        g_drag.axis = -1;
+        return;
+    }
+    // Drag: the leading selection's new transform (the rest follow it).
+    gn_transform t = g_drag.start;
+    float value = 0.f;
+    if (!g_drag.rotate) {
+        float ray[6], tp;
+        if (!cursorRay(ray) || !lineRayParam(g_drag.centre, g_drag.dir, ray, ray + 3, tp)) return;
+        value = tp - g_drag.t0;
+        if (io.KeyCtrl && g_nudge > 0.f) value = std::round(value / g_nudge) * g_nudge;
+        for (int k = 0; k < 3; ++k) t.trans[k] += g_drag.dir[k] * value;
+    } else {
+        const ImVec2 s2 = project(v, g_drag.centre);
+        float a = std::atan2(-(mouse.y - s2.y), mouse.x - s2.x) - g_drag.a0;
+        while (a > 3.14159265f) a -= 6.2831853f;
+        while (a < -3.14159265f) a += 6.2831853f;
+        value = a * 57.2957795f * g_drag.sign;
+        if (io.KeyCtrl && g_turnStep > 0.f) value = std::round(value / g_turnStep) * g_turnStep;
+        rotateAbout(t, g_drag.dir, value);
+        float off[3] = {t.trans[0] - g_drag.centre[0], t.trans[1] - g_drag.centre[1], t.trans[2] - g_drag.centre[2]};
+        rotateVec(off, g_drag.dir, value); // about the middle of the box, not the pivot
+        for (int k = 0; k < 3; ++k) t.trans[k] = g_drag.centre[k] + off[k];
+    }
+    if (!g_drag.first && value == g_drag.last) return;
+    moveSelection(t, g_drag.first); // the first move of a drag leaves the undo step
+    g_drag.first = false;
+    g_drag.last = value;
+    char b[64];
+    snprintf(b, sizeof(b), g_drag.rotate ? "%+.1f deg" : "%+.2f m", value);
+    dl->AddText(ImVec2(mouse.x + 16.f, mouse.y + 8.f), IM_COL32(255, 255, 255, 230), b);
+}
+
 void frame(bool menuOpen) {
     drawOutline();
+    gizmoFrame(menuOpen);
     keysFrame(menuOpen);
     freeCamFrame(menuOpen);
     // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
     const ImGuiIO& io = ImGui::GetIO();
-    if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+    if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse &&
+        !g_gizmoHot) {
         float ray[6];
         if (cursorRay(ray)) pick(ray, io.KeyShift);
     }
