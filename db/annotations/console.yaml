@@ -14,6 +14,17 @@ globals:
     note: "Labelled in Ghidra as g_consoleEnabledForPlatform."
     confidence: hypothesis
     sources: [ghidra]
+  - name: GameTimeSettings_cached
+    va: 0x142142a68
+    type: "void*"
+    note: "Cached GameTimeSettings object: null until a getter first fills it from SettingsManager_getByType(SettingsManager, GameTimeSettings_TypeInfo) (0x142a2ceb0, 0x14319c0e0). Check it for null, or call getByType. TimeScale +0x48, MaxVariableFps +0x34, ForceDeltaTime +0x3c, EnableSinglePlayerFixedTick +0x5a (reflected)."
+    confidence: confirmed
+    sources: [ghidra, user]
+  - name: GameTimeSettings_TypeInfo
+    va: 0x142810920
+    type: "TypeInfo*"
+    confidence: confirmed
+    sources: [reflected, ghidra]
 
 code:
   - name: SettingsManager_load

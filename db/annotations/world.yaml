@@ -11,6 +11,18 @@ globals:
     va: 0x1425469e0
     type: "ServerGameWorld*"
     note: The server world. Changes on every level load; null between levels.
+  - name: SubLevelManagerA
+    va: 0x1424a9f58
+    type: "void*"
+    note: "The user's research names it ClientSubLevelManager; read by levelLoad_stopAndUnregisterGroups and the bundle code (0x142c72760). Which realm is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra, user]
+  - name: SubLevelManagerB
+    va: 0x1424a9f60
+    type: "void*"
+    note: "The user's research names it ServerSubLevelManager. Not checked yet."
+    confidence: hypothesis
+    sources: [ghidra, user]
 
 structs:
   - name: ServerGameWorld
@@ -89,3 +101,9 @@ functions:
     va: 0x1431a11d0
     signature: "void(void* level, void* updateInfo)"
     confidence: inferred
+  - name: ClientWorld_tickFrame
+    va: 0x1431a2b50
+    signature: "void(void* clientWorld, void* updateInfo)"
+    note: "The user's research: the client's per-frame world update. Reads GameTimeSettings_cached. Not named or checked in Ghidra yet."
+    confidence: hypothesis
+    sources: [ghidra, user]

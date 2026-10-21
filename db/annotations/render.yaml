@@ -58,6 +58,12 @@ globals:
     note: "Labelled in Ghidra as g_dx12Renderer."
     confidence: hypothesis
     sources: [ghidra]
+  - name: DebugRenderSettings_TypeInfo
+    va: 0x1427b24c0
+    type: "TypeInfo*"
+    note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
+    confidence: confirmed
+    sources: [reflected]
 
 functions:
   - name: ClientStaticModelGroup_placeMember
@@ -457,6 +463,13 @@ functions:
     note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research).
+  - name: DebugRenderer_getContext
+    va: 0x142aa9e80
+    signature: "void*()"
+    note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
+    confidence: inferred
+    sources: [ghidra, user]
 
 constants:
   - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }

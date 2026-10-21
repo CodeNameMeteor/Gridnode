@@ -110,3 +110,33 @@ functions:
     note: "Named in Ghidra as GameComponent_ctor. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+  # The user's research, checked in Ghidra 2026-10-21; signatures corrected.
+  - name: EntityBus_postEvent
+    va: 0x14314a9c0
+    signature: "void(void* busPeer, void* source, u32 eventId, void* a4)"
+    note: "Builds an EntityEvent on the stack (id at +8) and fires it: EntityBus_fireEvent(busPeer - 8, source, &event, a4) on the bus's own thread, else queues it (bus +0x50). busPeer is the bus's interface at bus + 8. Takes the event hash, not an event."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: EntityBusPeer_queueEvent
+    va: 0x143127d20
+    signature: "void(void* queue, void* target, void* event)"
+    note: "Appends {kind, target, event} to a chunked queue (0x1800-byte blocks of 0x18-byte entries, count at +0x808); an EntityEvent is stored by id (kind 7), anything else cloned (vtable +8, kind 8)."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: EntityBus_getPropertyContext
+    va: 0x143149080
+    note: "The user's name. It calls one of two functions by the bus's realm bit (+0x34 bit 27) and returns its second argument unchanged; what it does is not clear yet."
+    confidence: hypothesis
+    sources: [ghidra, user]
+  - name: PropertyValue_set
+    va: 0x142a464e0
+    signature: "void(void* property, const void* value)"
+    note: "The user's research names it Entity_postPropertyChange. Copies the value (0x142a47650, 0x40 bytes max) and delivers the change now, or queues it when deliveries are deferred. Its first argument is a property object, not an entity."
+    confidence: hypothesis
+    sources: [ghidra, user]
+  - name: PropertyDispatcher_deliver
+    va: 0x142a42890
+    signature: "void(void* dispatcher, const void* change, u8 flags)"
+    note: "The user's research names it Entity_deliverPropertyChange. Calls each listener's vtable +0x10 with the change; the dispatcher is one of two globals (0x14215d050)."
+    confidence: hypothesis
+    sources: [ghidra, user]

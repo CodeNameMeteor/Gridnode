@@ -197,4 +197,13 @@ constants:
   - { name: InputFlag_OverrideMade, value: 0x20 }
   - { name: EntryInputState_Size, value: 0x530 }
   - { name: EntryInputState_Digital, value: 0x4b8 }
-  - { name: Action_Jump, value: 0xb5a0a981, note: "Digital action 38 (bit 32). Probe F12, 2026-10-20: the only bit Space sets, in both states." }
+  - { name: Action_Jump, value: 0xb5a0a981, note: "EIAKeyboardSpace (djb2-xor). Digital action 38 (bit 32). Probe F12, 2026-10-20: the only bit Space sets, in both states." }
+  # Action ids read by PamClientAntInput_processCharacter, named by their hash (checked 2026-10-21).
+  - { name: Action_LeftStickX, value: 0x1dcfd4cd, note: "EIALeftStickX (move)." }
+  - { name: Action_LeftStickY, value: 0x1dcfd4cc, note: "EIALeftStickY (move)." }
+  - { name: Action_RightStickX, value: 0x436f6516, note: "EIARightStickX (look yaw)." }
+  - { name: Action_RightStickY, value: 0x436f6517, note: "EIARightStickY (look pitch)." }
+  - { name: Action_KeyboardCtrl, value: 0x578abcc, note: "EIAKeyboardCtrl." }
+  - { name: Action_KeyboardShift, value: 0xb5adb0e5, note: "EIAKeyboardShift." }
+  - { name: Action_Unnamed_04120d12, value: 0x4120d12, confidence: hypothesis, note: "The user's research: mouse look X. Name not found from its hash." }
+  - { name: Action_Unnamed_03bad4d3, value: 0x3bad4d3, confidence: hypothesis, note: "The user's research: mouse look Y. Name not found from its hash." }

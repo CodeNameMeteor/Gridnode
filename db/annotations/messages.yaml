@@ -24,10 +24,13 @@ structs:
       - { offset: 0x68, name: serverPlayerManager, type: "ServerPlayerManager*", note: "Confirmed in game (GridNode M4)." }
       - { offset: 0x70, name: playerGameState, type: "void*", confidence: inferred, note: "Looked up per ServerPlayer by 0x1433b6f90." }
   - name: ClientGameContext
-    size: 0x18
+    size: 0x70
     opaque: true
     members:
       - { offset: 0x10, name: messageManager, type: MessageManager }
+      - { offset: 0x38, name: level, type: "void*", confidence: hypothesis, note: "The user's research; not checked yet." }
+      - { offset: 0x40, name: world, type: "void*", confidence: hypothesis, note: "The user's research; not checked yet." }
+      - { offset: 0x68, name: playerManager, type: "void*", confidence: confirmed, note: "Passed to ClientPlayerManager_getLocalPlayer (0x14319c1ba)." }
   - name: MessageManager
     size: 0x8
     note: A handle; every MessageManager_* function starts with mov rcx,[rcx] and works on the implementation.

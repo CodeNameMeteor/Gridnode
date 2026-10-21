@@ -123,6 +123,12 @@ functions:
     note: "Named in Ghidra as RaycastEntity_buildQuery. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+  - name: PhysicsOwner_objectOfHit
+    va: 0x1434ee750
+    signature: "void*(void* owner, const u16* bodyIndex)"
+    note: "(*(owner + 0x130))[*bodyIndex]: a pointer to a table, not a table at +0x130. The user's research names it PhysicsEntity_resolveFromHitId; the hit's object is a physics component (+8 its collection, whose first entry is the entity)."
+    confidence: confirmed
+    sources: [ghidra, user]
 
 constants:
   - { name: World_PhysicsManager, value: 0x50 }

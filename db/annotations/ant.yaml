@@ -18,8 +18,9 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: ant_initPamplonaSubsystem
     va: 0x142f23700
-    note: "Named in Ghidra as ant_initPamplonaSubsystem. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Registers the custom expressions (0x142f2b030 with the ANT context 0x1423bd9b8), every Pamplona driver, processor and scene op (0x142f38640), the phase blend assets, then creates the Pamplona, Damage and Weapon features (0x142f20580, 0x142f204a0, 0x142f20900)."
+    confidence: inferred
     sources: [ghidra]
   - name: ant_defineAlignmentCollisionDriverAsset
     va: 0x142f2cc10
@@ -161,8 +162,44 @@ functions:
     note: "Named in Ghidra as ant_registerAllPamplonaDriverDefinitions. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
-  - name: ant_registerPamplonaDriversAndProcessors
+  - name: ant_unregisterAllPamplonaDriverDefinitions
     va: 0x142f38b10
-    note: "Named in Ghidra as ant_registerPamplonaDriversAndProcessors. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Removes every Pamplona asset definition by name (only names are passed, so it is the removal; called from ant_shutdownPamplonaSubsystem). Was named ant_registerPamplonaDriversAndProcessors."
+    confidence: inferred
     sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research, signatures corrected).
+  - name: ant_shutdownPamplonaSubsystem
+    va: 0x142f237a0
+    signature: "void()"
+    note: "The reverse of ant_initPamplonaSubsystem: unregisters the expressions and definitions, destroys the three features."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_registerPamplonaCustomExpressions
+    va: 0x142f2b030
+    signature: "void(void* antContext)"
+    note: "Called with the global at 0x1423bd9b8."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_unregisterPamplonaCustomExpressions
+    va: 0x142f3c480
+    signature: "void(void* antContext)"
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createPamplonaFeature
+    va: 0x142f20580
+    signature: "void()"
+    note: "Allocates the 0x40-byte PamplonaFeature from the ANT allocator and stores it in the global at 0x1423da030."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createDamageFeature
+    va: 0x142f204a0
+    signature: "void()"
+    note: "Stores the feature in a global (destroyed by ant_shutdownPamplonaSubsystem)."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createWeaponFeature
+    va: 0x142f20900
+    signature: "void()"
+    confidence: inferred
+    sources: [ghidra, user]

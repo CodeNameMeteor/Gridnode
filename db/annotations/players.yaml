@@ -19,6 +19,14 @@ structs:
       - { offset: 0x1398, name: isHuman, type: u8 }
       - { offset: 0x1478, name: character, type: "ServerCharacterEntity*", confidence: confirmed, note: "param_2[0x28f] in ServerTeleportEntity_teleportPlayer (0x143391430)." }
       - { offset: 0x1500, name: blueprintOverride, type: "void*", note: "Character blueprint used instead of the level's when the player spawns." }
+  - name: ClientPlayer
+    size: 0x1500
+    opaque: true
+    confidence: inferred
+    sources: [ghidra, user]
+    members:
+      - { offset: 0x78, name: localPlayerIndex, type: i32, confidence: confirmed }
+      - { offset: 0x1480, name: characterHolder, type: "void**", confidence: confirmed, note: "*holder - 8 is the character entity (ClientPlayer_getCharacterEntity)." }
 
 functions:
   - name: ServerTeleportEntity_teleportPlayer
@@ -62,6 +70,19 @@ functions:
     note: "Named in Ghidra as ServerConnection_validateLocalPlayerId. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research).
+  - name: ClientPlayerManager_getLocalPlayer
+    va: 0x143205f90
+    signature: "void*(void* playerManager, i32 localPlayerIndex)"
+    note: "Walks the players vector (+0x540..+0x548) for the one whose +0x78 is the index; null if none. The player manager is ClientGameContext +0x68."
+    confidence: confirmed
+    sources: [ghidra, user]
+  - name: ClientPlayer_getCharacterEntity
+    va: 0x14334ef90
+    signature: "void*(void* player)"
+    note: "**(player + 0x1480) - 8, or null: the controlled PamClientCharacterEntity."
+    confidence: confirmed
+    sources: [ghidra, user]
 
 globals:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
