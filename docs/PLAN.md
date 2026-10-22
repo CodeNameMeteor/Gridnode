@@ -502,6 +502,17 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       makes the object: view mask, factory value, placement hash; without them it was drawn in no
       view). The collision stays; next: move the collision instance too, and save these moves in
       layouts.
+   6. **Barriers and magropes** (2026-10-22, in progress; `docs/research/barriers-and-magropes.md`):
+      shown in the overlay, selected by clicking, moved with the move keys (barriers: transform
+      and body; magropes: their transform reference pointed at GridNode's). Next: the magrope's
+      facing axis, saving these moves in layouts, then copies.
+   7. **Occluders: show them** (asked 2026-10-22, after the magrope work): draw
+      `OccluderVolumeEntity` and `OccluderPlaneEntity` in the overlay, as barriers are (data:
+      `CoverageValue` +0x60, `OccluderHighPriority` +0x64, `OccluderIsConservative` +0x65,
+      `Visible` +0x66; planes `DoubledSided` +0x66, `Visible` +0x67; `OccluderMeshEntityData.Mesh`
+      +0x60). Why: a building moved or removed leaves its occluder behind, still culling what is
+      behind it. Later, if needed: toggle `OcclusionSettings.Enable` to check culling, and move an
+      occluder with its building.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
    hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
    dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
