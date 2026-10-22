@@ -3983,13 +3983,24 @@ void scanBarriers() {
             Magrope m;
             m.ent = p;
             const uintptr_t md = dataOf(p, "PamMagropeEntityData");
-            if (!entityTransform(reinterpret_cast<void*>(p), m.t) || !usableTransform(m.t)) {
-                // No transform of its own: its data's (SpatialEntityData Transform, +0x20).
-                if (!md || !mem::read(md + 0x20, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
-                    ++counts.ropesNoTransform;
-                    continue;
-                }
-                m.fromData = true;
+            // A magrope is a plain spatial entity (0x68 bytes, no transform space): its place is its
+            // data's Transform (SpatialEntityData +0x20), world when placed directly in the level.
+            if (!md || !mem::read(md + 0x20, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
+                ++counts.ropesNoTransform;
+                continue;
+            }
+            m.fromData = true;
+            static std::atomic<int> dumped{0};
+            if (dumped.fetch_add(1) < 3) {
+                uint64_t w[13] = {};
+                mem::read(p, w, sizeof(w));
+                char line[700];
+                int n = snprintf(line, sizeof(line), "layouts: magrope %llx (vtable %llx): data %llx at (%.2f %.2f %.2f);",
+                                 static_cast<unsigned long long>(p), static_cast<unsigned long long>(mem::va(w[0])), static_cast<unsigned long long>(md),
+                                 m.t.trans[0], m.t.trans[1], m.t.trans[2]);
+                for (int i = 1; i < 13 && n > 0 && n < static_cast<int>(sizeof(line)) - 24; ++i)
+                    n += snprintf(line + n, sizeof(line) - n, " +%02x %llx", i * 8, static_cast<unsigned long long>(w[i]));
+                GN_LOG("%s", line);
             }
             const float q[3] = {m.t.trans[0] - from[0], m.t.trans[1] - from[1], m.t.trans[2] - from[2]};
             const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
@@ -4103,7 +4114,7 @@ void barriersPanel() {
     if (!ropeList.empty() && ImGui::TreeNode("Magropes")) {
         for (size_t i = 0; i < ropeList.size() && i < 40; ++i)
             ImGui::Text("%5.1f m  type %d  radius %.2f%s", ropeList[i].dist, ropeList[i].type, ropeList[i].radius,
-                        ropeList[i].fromData ? "  (position from its data)" : "");
+                        "");
         ImGui::TreePop();
     }
     const Barrier* sel = nullptr;
