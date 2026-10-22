@@ -2384,8 +2384,13 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
     const uintptr_t destroy = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_destroy) : 0;
     const uintptr_t del = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_delete) : 0;
     const uint32_t flags = mem::readOr<uint32_t>(ent + 0x18);
-    if (deinit != mem::rva(e::function::SpatialEntity_deinit) || destroy != mem::rva(e::function::SpatialEntity_destroy) || !del ||
-        !mem::inImage(del)) {
+    // The delete slot holds the game's function, or a wrapper of it in a loaded module (GridNode's
+    // own destructor hook, hookDestructors, or another mod's): either is called as the engine would.
+    HMODULE delModule = nullptr;
+    const bool delOk = del && (mem::inImage(del) ||
+                               GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                  reinterpret_cast<LPCWSTR>(del), &delModule));
+    if (deinit != mem::rva(e::function::SpatialEntity_deinit) || destroy != mem::rva(e::function::SpatialEntity_destroy) || !delOk) {
         GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
                static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
         return false;
