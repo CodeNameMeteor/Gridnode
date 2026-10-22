@@ -300,6 +300,15 @@ def fill(template_geom: F.Node, verts, tris, warn, label: str) -> F.Node:
     return g
 
 
+def unit_scale(fbx: F.Fbx) -> float:
+    """Centimetres per unit in the file (FBX's UnitScaleFactor: 1 = cm, 100 = m)."""
+    try:
+        v = props70(fbx.section("GlobalSettings")).get("UnitScaleFactor", [1.0])[0]
+        return float(v) if v else 1.0
+    except ValueError:
+        return 1.0
+
+
 def bbox(points):
     if not points:
         return (0, 0, 0), (0, 0, 0)
@@ -338,6 +347,12 @@ def main(argv=None) -> int:
         print("The template has no LOD nodes with mesh sections: is it an export from Frosty's mesh editor?", file=sys.stderr)
         return 1
 
+    # Each file's own unit (Frosty can export in mm, cm or m; Blender writes cm by default): Blender's
+    # positions are converted to the template's.
+    units = unit_scale(blend) / unit_scale(tmpl)
+    if abs(units - 1.0) > 1e-9:
+        print(f"Units: the template is in {unit_scale(tmpl):g} cm per unit, the Blender file in {unit_scale(blend):g}: "
+              f"Blender's positions times {units:g}")
     blender_meshes = [(i, n) for i, n in bs.models("Mesh") if bs.geometry_of(i)]
     chosen = None
     if a.mesh:
@@ -379,6 +394,7 @@ def main(argv=None) -> int:
         matrix = world_matrix(bs, mid, warn)
         if a.no_move:
             matrix[0][3] = matrix[1][3] = matrix[2][3] = 0.0
+        matrix = [[matrix[i][j] * (units if i < 3 else 1.0) for j in range(4)] for i in range(4)]
         bgeom = bs.geometry_of(mid)[1]
         uv_layer = tgeom.child("LayerElementUV")
         uv_name = uv_layer.child("Name").value() if uv_layer and uv_layer.child("Name") else None

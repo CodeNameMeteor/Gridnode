@@ -30,6 +30,9 @@ for example `objects/props/.../crate_01_Mesh`. Note it.
 2. In the Data Explorer, find the mesh by the name you noted (it ends in `_Mesh`).
 3. **Double-click it** to open its editor (a 3D preview with a toolbar above it), and use that
    toolbar's **Export** to write an FBX. Keep this file: it is the *template* below.
+   In the export options, choose **Meters** as the scale: the game's units are metres, and with the
+   default (centimetres) Blender shows the mesh a hundred times too small. Any FBX version from
+   2013 on works.
 
 Use the mesh editor's own **Export** and **Import** buttons. The Import in the Data Explorer's
 right-click menu is a different command (it asks for `.bin` / `.res` files).
@@ -60,7 +63,9 @@ your geometry into Frosty's own export, keeping its names and structure:
 python tools/mesh/frosty_fbx.py <the template from step 2>.fbx <your Blender export>.fbx
 ```
 
-It writes `<your Blender export>_frosty.fbx` and says, per LOD, what it took from your file, and
+It converts between the two files' units (Frosty's export in metres, Blender's in centimetres by
+default), so leave Blender's import and export scale as they are. It writes
+`<your Blender export>_frosty.fbx` and says, per LOD, what it took from your file, and
 the size of yours against the original. If it says your mesh was moved and you did not mean to
 move it (an easy accident when scaling several objects at once), run it again with `--no-move`.
 If it cannot match a section to an object, name the object to use with `--mesh NAME`.
