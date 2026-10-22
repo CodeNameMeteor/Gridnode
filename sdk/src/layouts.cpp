@@ -720,7 +720,7 @@ uintptr_t renderObjectOf(const GroupProp& g) {
 // Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
 // transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
 // (0x1436d6ce0 with *(0x1424a9b98)+0x48).
-void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = false) {
+void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = false, const gn_transform* fromWorld = nullptr) {
     // The render-object functions it calls must be the ones this was worked out on.
     static const bool known = build::codeMatches("RenderObject_buildUpdate") && build::codeMatches("RenderWorld_submitUpdate");
     if (!known) return;
@@ -731,6 +731,22 @@ void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = f
     const uintptr_t renderWorld = renderRoot ? mem::readOr<uintptr_t>(renderRoot + 0x48) : 0;
     if (!mem::inImage(setT) || !renderWorld) return;
     alignas(16) gn_transform t = world;
+    // The render object is drawn with its own transform, which need not be the collision
+    // instance's (`world`). Moved from `fromWorld`: the same move is applied to the render
+    // object's current transform (+0x10), so whatever differs between the two is kept.
+    alignas(16) gn_transform cur{};
+    if (fromWorld && mem::read(obj + 0x10, &cur, sizeof(cur)) && finite(cur.right, 3) && finite(cur.trans, 3)) {
+        static std::atomic<int> said{0};
+        if (streaming && said.fetch_add(1) < 3)
+            GN_LOG("layouts: in place: render object at (%.2f %.2f %.2f) right (%.3f %.3f %.3f) up (%.3f %.3f %.3f); collision at (%.2f %.2f %.2f) right (%.3f %.3f %.3f) up (%.3f %.3f %.3f)",
+                   cur.trans[0], cur.trans[1], cur.trans[2], cur.right[0], cur.right[1], cur.right[2], cur.up[0], cur.up[1], cur.up[2],
+                   fromWorld->trans[0], fromWorld->trans[1], fromWorld->trans[2], fromWorld->right[0], fromWorld->right[1], fromWorld->right[2],
+                   fromWorld->up[0], fromWorld->up[1], fromWorld->up[2]);
+        reframe(*fromWorld, world, cur.right, false, t.right);
+        reframe(*fromWorld, world, cur.up, false, t.up);
+        reframe(*fromWorld, world, cur.forward, false, t.forward);
+        reframe(*fromWorld, world, cur.trans, true, t.trans);
+    }
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     // The streaming record (MeshStreamingManager +0x350070, 0x20 each: radius, mesh u16, ..., centre xyz, value),
     // logged before and after for the first moves (research: why a moved prop can vanish).
@@ -803,6 +819,16 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming
     reframe(G, I, world.trans, true, local.trans);
     const uintptr_t si = groupInstance(g.serverBody, g.part);
     const uintptr_t ci = groupInstance(g.clientBody, g.part);
+    // Where it was (world), for moving the render object by the same amount.
+    gn_transform oldLocal{}, oldWorld{};
+    bool haveOld = si && readInstance(si, oldLocal);
+    if (haveOld) {
+        reframe(I, G, oldLocal.right, false, oldWorld.right);
+        reframe(I, G, oldLocal.up, false, oldWorld.up);
+        reframe(I, G, oldLocal.forward, false, oldWorld.forward);
+        reframe(I, G, oldLocal.trans, true, oldWorld.trans);
+        haveOld = finite(oldWorld.right, 3) && finite(oldWorld.up, 3) && finite(oldWorld.forward, 3) && finite(oldWorld.trans, 3);
+    }
     writeInstance(si, local);
     if (ci && ci != si) writeInstance(ci, local);
     if (const uintptr_t mt = memberTransform(g.member, g.copy)) {
@@ -812,7 +838,8 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming
     }
     const GroupProp gp = g;
     alignas(16) gn_transform w = world;
-    client().post([gp, w, streaming] { placeCopy(gp, w, streaming); });
+    alignas(16) gn_transform from = oldWorld;
+    client().post([gp, w, streaming, haveOld, from] { placeCopy(gp, w, streaming, haveOld ? &from : nullptr); });
 }
 
 // Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
