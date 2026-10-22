@@ -21,6 +21,8 @@ import yaml
 SYMBOL_SECTIONS = ("functions", "globals", "code", "hooks", "constants")
 TYPE_SECTIONS = ("classes", "structs")
 META_KEYS = ("note", "confidence", "sources")
+KIND = {"functions": "function", "globals": "global", "code": "code", "hooks": "hook", "constants": "constant",
+        "classes": "class", "structs": "struct"}
 ADDRESS_KEYS = {"functions": "va", "globals": "va", "code": "va", "hooks": "slot"}
 
 
@@ -209,7 +211,7 @@ def report(d: Diff) -> str:
         o.append(f"== {title} ({len(items)})")
         for c in items:
             e = c.other if side == "other" else c.base
-            o.append(f"  {c.section[:-1] if c.section != 'code' else 'code'} {c.name}{_where(e)}")
+            o.append(f"  {KIND[c.section]} {c.name}{_where(e)}")
             if details:
                 o.extend(f"      {w}" for w in c.what)
         o.append("")
