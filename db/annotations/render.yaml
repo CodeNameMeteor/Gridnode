@@ -88,6 +88,18 @@ functions:
     confidence: inferred
     sources: [ghidra]
     note: "Moves a culling sphere {centre xyz, radius}: locks, writes, marks the entry dirty. Called by RigidMeshEntity_setTransform (0x14376c060) with the render object's +0x84 handle."
+  - name: StaticModelGroup_placementHash
+    va: 0x143b722e0
+    signature: "void(u8* out16, void* assetMinus10, const LinearTransform* world)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Hashes a mesh asset (asset - 0x10, when its +10 u16 has 0x100; else null) with the quantised position, rotation and scale; the 16 bytes go in a group member's render update at +0x78. See docs/research/render-objects.md."
+  - name: ClientStaticModelGroup_makeMemberObject
+    va: 0x143185940
+    signature: "void(void* block, void* group, void* a3, u32 copy, void* a5)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Fills a stack update template (render world, factory value at +0x8a, flags) and calls 0x1431841f0, which makes the copy's RigidMeshEntity, sets the view mask (+0x8c), placement hash (+0x78) and submits it."
   - name: ClientStaticModelGroup_placeMember
     va: 0x14318fbc0
     signature: "void(void* block, const LinearTransform* group, u32 firstPart)"

@@ -46,13 +46,36 @@ the selection.
 
 ## What draws a group copy (2026-10-21)
 
-A group member's block makes each copy's render object in 0x1431841f0 (taken down in 0x143184c30):
-the RigidMeshEntity (from the block's +0xb8 factory), its render-world update, an entry in the
-visibility system at 0x142563a30 (bounding sphere; handle at the object's +0x84), and an entry in
-the **mesh streaming** manager at 0x142563410 (named "rigidMeshEntity": mesh index, radius,
-position; handle at the object's +0x78, moved with 0x143555450). The 2026-10-20 test that moved
-only the render object saw the copy vanish; the layout editor's in-place option now also moves its
-streaming entry, as a test of whether that was the cause.
+A group member's block makes each copy's render object in 0x1431841f0 (from 0x143185940; taken
+down in 0x143184c30): the RigidMeshEntity (from the block's +0xb8 factory), its render-world update,
+an entry in the visibility system at 0x142563a30 (bounding sphere; handle at the object's +0x84),
+and an entry in the **mesh streaming** manager at 0x142563410 (named "rigidMeshEntity": mesh index,
+radius, position; handle at the object's +0x78).
+
+### Moving one copy in place (solved 2026-10-22)
+
+The object's set-transform (vtable +0x10, 0x14376c060) moves it and also its culling sphere (+0x50,
+and its visibility entry through 0x14357b970) and its streaming entry (0x143555450, with the value
+at 0x1419fd590, which is 1). Nothing else needs updating for those.
+
+What made a moved copy vanish was the **render update**. The builder (0x143769330) writes only the
+transform (+0x00), the mesh box (+0x40) and one float (+0x60). The rest comes from the caller, and
+the group's own re-place (0x14318fbc0) leaves several fields unset. When the group makes the
+object, it sets:
+
+| Offset | What | From |
+|---|---|---|
+| +0x70 | object + 8 | |
+| +0x78 | 16-byte hash of the mesh asset and the placement | 0x143b722e0(out, asset - 0x10 if `*(u16*)(asset+10) & 0x100`, else null; world transform) |
+| +0x88 | u16 0 | |
+| +0x8a | u16 | the block's factory (+0xb8), vtable +0x18 (factory, bool: member data +0x38 is a RigidMeshAsset) |
+| +0x8c | per-view mask | member data +0x18, 12 bytes a copy {a, b, c}: a 0/1/2 → 1/3/2; c 0/1/2 → 4/0xc/8; b 0/1/2 → 0x20/0x30/0x10 (all zero, or no entry: 0x25) |
+| +0x8d | 6 (bits 2 and 4) | |
+| +0x90 | the object's +0x8c (its render-world id) | |
+
+Sent with a zero mask, the copy is drawn in no view. With these filled (the hash kept from the
+original placement), a 50 m building moved in place stays drawn (confirmed in game). Only the drawn
+mesh moves; the collision (the group's compound shape) is a separate step.
 
 Read from the group's render objects, the transforms match the physics instance transforms
 exactly (same rows, same translation), so group-prop placement read from Havok is what is drawn.

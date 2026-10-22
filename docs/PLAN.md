@@ -498,7 +498,10 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       share the member data. Later; intensive.
    5. **Move group props in place** (2026-10-22, confirmed in game): moves a member's render object
       without making it standalone (set-transform, vtable +0x10, which also moves its culling
-      sphere and streaming entry; a second streaming call made it invisible). The collision stays.
+      sphere and streaming entry, then a render update with the fields the group sets when it
+      makes the object: view mask, factory value, placement hash; without them it was drawn in no
+      view). The collision stays; next: move the collision instance too, and save these moves in
+      layouts.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
    hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
    dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
