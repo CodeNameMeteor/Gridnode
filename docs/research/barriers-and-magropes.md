@@ -81,6 +81,13 @@ by `LocalTransform`. GridNode's overlay draws an arrow from the magrope toward i
    selection outline), from the live entities of these classes. **Built 2026-10-22**: both are
    selected by clicking and moved or turned with the move keys (not saved yet). Magrope moves
    confirmed in game.
-2. Copy one: spawn its class from a copy of its data (GridNode's own memory, kept for the copy's
-   life), with the transform, size and flags edited in the editor.
-3. Save them in layouts with their fields, and remove them (their own deinit and teardown).
+2. Copy one: **built 2026-10-22**. A copy is spawned from its source's own data and bus (barriers on
+   both realms, magropes on the client), then placed (barriers: +0x50 and the body; magropes:
+   their transform reference). Its data is shared with the source, so size and flags are the
+   source's; editing them would need a cloned data object (later).
+3. Saved in layouts (**built 2026-10-22**): edit kinds `Barrier` / `Magrope` (an original moved,
+   keyed by its original position) and `BarrierCopy` / `MagropeCopy` (keyed by the source's
+   original position). A sweep every 2 s on the server thread moves originals found at an edit's
+   position and re-makes missing copies. Copies are destroyed with their own deinits (barrier
+   0x143335b30, magrope 0x143175390; +0x30 is the empty stub for both), after the owner-list unlink,
+   then the deleting destructor (+0x38).

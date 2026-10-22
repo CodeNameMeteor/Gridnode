@@ -95,6 +95,23 @@ A copy belongs to the part of the level its original comes from. When that part 
 fly or teleport far away), the copy goes with it, and GridNode places it again when the part
 loads.
 
+## Barriers and magropes
+
+Under **Barriers and magropes (research)**, **Show barriers and magropes** draws the ones near the
+camera (the range slider sets how far):
+
+- **barriers** (invisible walls and "can't" zones) as orange boxes, grey when switched off; the list
+  gives each one's size and flags (can't stand, climb, vault, wallrun);
+- **magropes** as cyan circles labelled Swing, PullUp or PullDown, with an arrow toward the side they
+  are used from, their own axes (red right, green up, blue forward) and their triggers (green: where
+  Faith has to be). A moved magrope's old triggers show in grey.
+
+Click one in the world or in a list to select it (yellow). Then, while flying, the move and turn keys
+move it, or use its position field (typed values apply on Enter) and the turn buttons. **Copy** makes
+a copy a metre and a half to the camera's right; select it and move it. **Remove this copy** and
+**Put back** undo either. Moves and copies are saved with the layout and come back when it loads, and
+when their part of the city streams back in. Ctrl+Z does not cover them yet.
+
 ## Library
 
 The library keeps objects you like, by name, across sessions and levels (`layouts/library.txt`).

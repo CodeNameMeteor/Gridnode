@@ -39,6 +39,9 @@
 namespace gn::host::layouts {
 void clearRopeMoves();
 bool nudgeSpecial(int dir, float scale); // a selected barrier or magrope (defined with them)
+void specialSweep();                      // barrier and magrope edits (server thread)
+void unloadSpecial();
+void clearSpecialCopies();
 void clearSpecialSelection();
 namespace {
 
@@ -533,7 +536,7 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     flush();
     fclose(f);
     for (Edit& ed : out) {
-        if (ed.kind == "Copy") { // a copy has no level placement: putting it back removes it
+        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") { // a copy has no level placement: putting it back removes it
             ed.from = ed.to;
             ed.haveFrom = true;
             std::lock_guard<std::mutex> lock(g_m);
@@ -946,6 +949,11 @@ std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
 
 std::mutex g_busM;
 std::unordered_map<uintptr_t, uintptr_t> g_groupBus; // group entity -> its bus (g_busM)
+
+void recordBus(uintptr_t entity, uintptr_t bus);
+void onCreatedSpecial(void* entity, void* ci, void*) {
+    if (entity && ci) recordBus(reinterpret_cast<uintptr_t>(entity), mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10));
+}
 
 void recordBus(uintptr_t entity, uintptr_t bus) {
     if (!entity || !bus) return;
@@ -1973,6 +1981,7 @@ void unloadLayout() {
     }
     clearSelection();
     clearUndo(); // the steps were for the layout that is gone
+    unloadSpecial(); // barriers and magropes back, their copies removed
     int n = 0;
     for (const auto& [p, t] : inspector::tracked()) {
         if (!t) continue;
@@ -2485,7 +2494,12 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
     const bool delOk = del && (mem::inImage(del) ||
                                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                                   reinterpret_cast<LPCWSTR>(del), &delModule));
-    if (deinit != mem::rva(e::function::SpatialEntity_deinit) || destroy != mem::rva(e::function::SpatialEntity_destroy) || !delOk) {
+    // Spatial entities, and the two GridNode copies besides: barriers (their own deinit 0x143335b30:
+    // disable, destroy the body) and magropes (0x143175390, the small entities' deinit); their +0x30 is
+    // the empty stub.
+    const bool spatial = deinit == mem::rva(e::function::SpatialEntity_deinit) && destroy == mem::rva(e::function::SpatialEntity_destroy);
+    const bool special = deinit == mem::rva(0x143335b30) || deinit == mem::rva(0x143175390);
+    if ((!spatial && !special) || !delOk) {
         GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
                static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
         return false;
@@ -3256,6 +3270,8 @@ void start(const std::wstring& dir) {
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
         onCreated("gridnode", cls, &onCreatedGroup, nullptr);
+    for (const char* cls : {"PamOBBCollisionEntity", "PamClientMagropeEntity"}) // their buses, for copies
+        onCreated("gridnode", cls, &onCreatedSpecial, nullptr);
     loadSettings();
 }
 
@@ -3299,6 +3315,7 @@ void onLevel(const std::string& level) {
         clearZoneFocus();
         { std::lock_guard<std::mutex> lock(g_origM); g_origHash.clear(); }
         clearRopeMoves(); // their magropes went with the old level
+        clearSpecialCopies();
         clearSpecialSelection();
     }
     {
@@ -3361,6 +3378,7 @@ void serverTick() {
         last = now;
         maintainSpawned();
         zoneFocusSync();
+        specialSweep();
     }
 }
 
@@ -4157,6 +4175,270 @@ bool ropeMoved(uintptr_t ent) {
     return g_ropeMoves.count(ent) != 0;
 }
 
+// ---- barrier and magrope edits: saved in layouts ----------------------------------------------------
+// Edit kinds: "Barrier" / "Magrope" (an original moved: `at` its original position) and
+// "BarrierCopy" / "MagropeCopy" (a copy: `at` its source's original position, `to` its place).
+struct SpecialCopy {
+    int copyId = -1;
+    bool rope = false;
+    uintptr_t server = 0, client = 0;
+    const reflect::Type *serverType = nullptr, *clientType = nullptr;
+};
+std::mutex g_specM;
+std::vector<SpecialCopy> g_specCopies; // (g_specM)
+
+bool specialCopyOf(uintptr_t ent, SpecialCopy* out = nullptr) {
+    std::lock_guard<std::mutex> lock(g_specM);
+    for (const SpecialCopy& c : g_specCopies)
+        if (c.server == ent || c.client == ent) {
+            if (out) *out = c;
+            return true;
+        }
+    return false;
+}
+
+// Adds or updates an edit (g_m taken here).
+void recordSpecial(const char* kind, const float* at, const gn_transform& from, const gn_transform& to, int copyId = -1, const char* source = nullptr) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (Edit& ed : g_edits)
+        if (ed.kind == kind && (copyId >= 0 ? ed.copyId == copyId : dist2(ed.at, at) <= kMatch * kMatch)) {
+            ed.to = to;
+            g_dirty = true;
+            return;
+        }
+    Edit ed;
+    ed.kind = kind;
+    memcpy(ed.at, at, sizeof(ed.at));
+    ed.to = to;
+    ed.from = from;
+    ed.haveFrom = true;
+    ed.copyId = copyId;
+    if (source) ed.source = source;
+    g_edits.push_back(ed);
+    g_dirty = true;
+}
+void forgetSpecial(const char* kind, const float* at, int copyId = -1) {
+    std::lock_guard<std::mutex> lock(g_m);
+    g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(),
+                                 [&](const Edit& ed) {
+                                     return ed.kind == kind && (copyId >= 0 ? ed.copyId == copyId : dist2(ed.at, at) <= kMatch * kMatch);
+                                 }),
+                  g_edits.end());
+    g_dirty = true;
+}
+
+// A barrier's or magrope's original placement: as the level made it, before any GridNode move.
+bool originalOf(uintptr_t ent, bool rope, gn_transform& out) {
+    if (rope) {
+        {
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            if (auto it = g_ropeMoves.find(ent); it != g_ropeMoves.end()) return mem::read(it->second.original, &out, sizeof(out));
+        }
+        const uintptr_t tp = mem::readOr<uintptr_t>(ent + 0x60);
+        return tp && mem::read(tp, &out, sizeof(out));
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        if (auto it = g_barOrig.find(ent); it != g_barOrig.end()) return out = it->second, true;
+    }
+    return mem::read(ent + 0x50, &out, sizeof(out));
+}
+
+// Places a copy's halves directly (no search for twins: a copy shares its source's data).
+void placeCopyHalves(const SpecialCopy& c, const gn_transform& to) {
+    if (c.rope) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+        return;
+    }
+    if (c.server) {
+        const uintptr_t ent = c.server;
+        const reflect::Type* ty = c.serverType;
+        server().post([ent, ty, to] { placeBarrier(ent, ty, to); });
+    }
+    if (c.client) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        client().post([ent, ty, to] { placeBarrier(ent, ty, to); });
+    }
+}
+
+// Server thread: a copy of the barrier or magrope `src` (an original) at `to`.
+void spawnSpecialCopy(uintptr_t src, bool rope, const gn_transform& to, int copyId) {
+    const reflect::Type* srcType = registry().typeOf(mem::ProcessMemory(), src);
+    if (!srcType || !inspector::alive(src, srcType)) return;
+    if (rope) {
+        const uintptr_t data = mem::readOr<uintptr_t>(src + 0x30);
+        uintptr_t bus = busOf(src);
+        if (!bus) bus = mem::readOr<uintptr_t>(src + 0x28);
+        if (!data || !bus) return GN_LOG("layouts: magrope copy %d: its source's data or bus is unknown", copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            g_specCopies.push_back({copyId, true, 0, 0, nullptr, nullptr});
+        }
+        pinBus(bus);
+        client().post([data, bus, to, copyId] {
+            const uintptr_t ce = spawnClient(data, bus, to);
+            const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+            GN_LOG("layouts: magrope copy %d at (%.2f %.2f %.2f): client entity %llx", copyId, to.trans[0], to.trans[1], to.trans[2],
+                   static_cast<unsigned long long>(ce));
+            {
+                std::lock_guard<std::mutex> lock(g_specM);
+                for (SpecialCopy& c : g_specCopies)
+                    if (c.copyId == copyId) c.client = ce, c.clientType = ct;
+            }
+            if (ce) placeMagrope(ce, ct, to);
+        });
+        return;
+    }
+    // A barrier: both realms, each from its own half's bus (the same data).
+    const uintptr_t data = mem::readOr<uintptr_t>(src + 0x28);
+    uintptr_t sbus = 0, cbus = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || mem::readOr<uintptr_t>(p + 0x28) != data || !barrierKnown(p) || specialCopyOf(p)) continue;
+        const bool srv = (mem::readOr<uint32_t>(p + 0x18) & 1) != 0;
+        uintptr_t b = busOf(p);
+        if (!b) b = mem::readOr<uintptr_t>(p + 0x20);
+        (srv ? sbus : cbus) = b;
+    }
+    if (!data || !sbus) return GN_LOG("layouts: barrier copy %d: its source's data or server bus is unknown", copyId);
+    pinBus(sbus);
+    const uintptr_t se = spawnServer(data, sbus, to);
+    const reflect::Type* st = se ? registry().typeOf(mem::ProcessMemory(), se) : nullptr;
+    GN_LOG("layouts: barrier copy %d at (%.2f %.2f %.2f): server entity %llx", copyId, to.trans[0], to.trans[1], to.trans[2],
+           static_cast<unsigned long long>(se));
+    if (!se) return;
+    placeBarrier(se, st, to); // made where its data says (its source's place): moved at once
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        g_specCopies.push_back({copyId, false, se, 0, st, nullptr});
+    }
+    if (!cbus) return;
+    client().post([data, cbus, to, copyId] {
+        const uintptr_t ce = spawnClient(data, cbus, to);
+        const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            for (SpecialCopy& c : g_specCopies)
+                if (c.copyId == copyId) c.client = ce, c.clientType = ct;
+        }
+        if (ce) placeBarrier(ce, ct, to);
+    });
+}
+
+// A copy's halves destroyed, each on its thread, and forgotten.
+void removeSpecialCopy(int copyId) {
+    SpecialCopy c;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        auto it = std::find_if(g_specCopies.begin(), g_specCopies.end(), [&](const SpecialCopy& x) { return x.copyId == copyId; });
+        if (it == g_specCopies.end()) return;
+        c = *it;
+        g_specCopies.erase(it);
+    }
+    if (c.server && c.serverType) {
+        const uintptr_t ent = c.server;
+        const reflect::Type* ty = c.serverType;
+        server().post([ent, ty] { destroyEntity(ent, ty, "server"); });
+    }
+    if (c.client && c.clientType) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        const bool rope = c.rope;
+        client().post([ent, ty, rope] {
+            if (rope) putBackMagrope(ent, ty); // its own transform reference back before it goes
+            destroyEntity(ent, ty, "client");
+        });
+    }
+}
+
+// Server thread, every 2 s: originals at an edit's position are moved; missing copies are made.
+void specialSweepNow() {
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Barrier" || ed.kind == "Magrope" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") edits.push_back(ed);
+        if (g_level != levelName()) return;
+    }
+    if (edits.empty()) return;
+    static const reflect::Type* obb = registry().find("OBBCollisionEntity");
+    static const reflect::Type* rope = registry().find("PamClientMagropeEntity");
+    std::unordered_map<int, uintptr_t> sources; // copy id -> an original at its source position
+    int moved = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t) continue;
+        const bool isBar = obb && registry().isKindOf(t, obb);
+        const bool isRope = !isBar && rope && registry().isKindOf(t, rope);
+        if ((!isBar && !isRope) || !inspector::alive(p, t) || specialCopyOf(p)) continue;
+        if (isBar && (!barrierKnown(p) || !(mem::readOr<uint32_t>(p + 0x18) & 1))) continue; // server halves (moveBarrier takes the client too)
+        gn_transform orig{};
+        if (!originalOf(p, isRope, orig)) continue;
+        for (const Edit& ed : edits) {
+            if (dist2(ed.at, orig.trans) > kMatch * kMatch) continue;
+            if (ed.kind == (isRope ? "MagropeCopy" : "BarrierCopy")) sources.emplace(ed.copyId, p);
+            if (ed.kind != (isRope ? "Magrope" : "Barrier")) continue;
+            gn_transform now{};
+            if (isRope) {
+                const uintptr_t tp = mem::readOr<uintptr_t>(p + 0x60);
+                if (!tp || !mem::read(tp, &now, sizeof(now))) continue;
+            } else if (!mem::read(p + 0x50, &now, sizeof(now))) {
+                continue;
+            }
+            if (dist2(now.trans, ed.to.trans) <= kMatch * kMatch && std::fabs(now.right[0] - ed.to.right[0]) < 1e-3f &&
+                std::fabs(now.right[2] - ed.to.right[2]) < 1e-3f)
+                continue; // already there
+            if (isRope) {
+                const uintptr_t ent = p;
+                const reflect::Type* ty = t;
+                const gn_transform to = ed.to;
+                client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(g_ropeM);
+                    g_barOrig.emplace(p, orig);
+                }
+                Barrier b;
+                b.ent = p, b.server = true, b.t = now, b.data = mem::readOr<uintptr_t>(p + 0x28);
+                moveBarrier(b, ed.to);
+            }
+            ++moved;
+        }
+    }
+    int made = 0, waiting = 0;
+    for (const Edit& ed : edits) {
+        if (ed.kind != "BarrierCopy" && ed.kind != "MagropeCopy") continue;
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            for (const SpecialCopy& c : g_specCopies) {
+                if (c.copyId != ed.copyId) continue;
+                const uintptr_t e = c.rope ? c.client : c.server;
+                const reflect::Type* et = c.rope ? c.clientType : c.serverType;
+                have = !e || inspector::alive(e, et); // a client half still being made counts
+            }
+            if (!have) // destroyed with its part of the level: made again below
+                g_specCopies.erase(std::remove_if(g_specCopies.begin(), g_specCopies.end(), [&](const SpecialCopy& c) { return c.copyId == ed.copyId; }),
+                                   g_specCopies.end());
+        }
+        if (have) continue;
+        auto src = sources.find(ed.copyId);
+        if (src == sources.end()) {
+            ++waiting; // its source's part of the level is not loaded
+            continue;
+        }
+        spawnSpecialCopy(src->second, ed.kind == "MagropeCopy", ed.to, ed.copyId);
+        ++made;
+    }
+    static int lastMoved = -1, lastMade = -1, lastWaiting = -1;
+    if (moved || made || waiting != lastWaiting) {
+        if (moved != lastMoved || made != lastMade || waiting != lastWaiting)
+            GN_LOG("layouts: barriers and magropes: %d moved, %d copies made, %d copies waiting for their source's part of the level", moved, made, waiting);
+        lastMoved = moved, lastMade = made, lastWaiting = waiting;
+    }
+}
+
 // A position field: dragging applies at once; a typed value applies on Enter or when the field is left
 // (applying each keystroke sent "623" to 6 first).
 bool positionField(const char* label, float* pos) {
@@ -4177,21 +4459,92 @@ bool positionField(const char* label, float* pos) {
 }
 
 void moveSelectedBarrier(const Barrier& b, const gn_transform& to) {
-    {
-        std::lock_guard<std::mutex> lock(g_ropeM);
-        g_barOrig.emplace(b.ent, b.t);
+    SpecialCopy c;
+    if (specialCopyOf(b.ent, &c)) {
+        placeCopyHalves(c, to);
+        recordSpecial("BarrierCopy", to.trans, to, to, c.copyId);
+    } else {
+        gn_transform orig{};
+        if (!originalOf(b.ent, false, orig)) orig = b.t;
+        {
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            g_barOrig.emplace(b.ent, orig);
+        }
+        moveBarrier(b, to);
+        recordSpecial("Barrier", orig.trans, orig, to);
     }
-    moveBarrier(b, to);
     std::lock_guard<std::mutex> lock(g_barM); // drawn at once at the new place
     for (Barrier& x : g_barriers)
         if (x.ent == b.ent) x.t = to;
 }
 void moveSelectedRope(uintptr_t ent, const gn_transform& to) {
-    const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
-    client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+    SpecialCopy c;
+    if (specialCopyOf(ent, &c)) {
+        placeCopyHalves(c, to);
+        recordSpecial("MagropeCopy", to.trans, to, to, c.copyId);
+    } else {
+        gn_transform orig{};
+        if (originalOf(ent, true, orig)) recordSpecial("Magrope", orig.trans, orig, to);
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+    }
     std::lock_guard<std::mutex> lock(g_barM);
     for (Magrope& r : g_magropes)
         if (r.ent == ent) r.t = to;
+}
+
+// A copy of the selected barrier or magrope, a metre and a half to the camera's right, selected.
+void copySelectedSpecial() {
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return;
+    const bool rope = g_ropeSel != 0;
+    uintptr_t src = rope ? g_ropeSel : g_barSel;
+    if (!src) return;
+    SpecialCopy sc;
+    if (specialCopyOf(src, &sc)) return setStatus("Copy the original, not a copy (for now)");
+    gn_transform orig{}, now{};
+    if (!originalOf(src, rope, orig)) return;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        bool found = false;
+        if (rope) {
+            for (const Magrope& m : g_magropes) if (m.ent == src) now = m.t, found = true;
+        } else {
+            for (const Barrier& b : g_barriers) if (b.ent == src) now = b.t, found = true;
+        }
+        if (!found) return;
+    }
+    if (!rope && !(mem::readOr<uint32_t>(src + 0x18) & 1)) { // copies are made from the server half
+        const uintptr_t data = mem::readOr<uintptr_t>(src + 0x28);
+        for (const auto& [p, t] : inspector::tracked())
+            if (t && p != src && mem::readOr<uintptr_t>(p + 0x28) == data && barrierKnown(p) && (mem::readOr<uint32_t>(p + 0x18) & 1) && !specialCopyOf(p)) src = p;
+    }
+    gn_transform to = now;
+    float side[3] = {r[0], 0.f, r[2]};
+    normalize(side);
+    for (int k = 0; k < 3; ++k) to.trans[k] += 1.5f * side[k];
+    int id;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        id = g_nextCopyId++;
+    }
+    recordSpecial(rope ? "MagropeCopy" : "BarrierCopy", orig.trans, to, to, id, rope ? "Magrope" : "Barrier");
+    {   // `at` is its source's position: recordSpecial keyed it by the copy id
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Edit& ed : g_edits)
+            if (ed.copyId == id && ed.kind == (rope ? "MagropeCopy" : "BarrierCopy")) memcpy(ed.at, orig.trans, sizeof(ed.at));
+    }
+    server().post([src, rope, to, id] { spawnSpecialCopy(src, rope, to, id); });
+    setStatus(rope ? "Magrope copied: select it (it appears to the right) and move it" : "Barrier copied: select it (it appears to the right) and move it");
+}
+
+void removeSelectedSpecialCopy() {
+    const uintptr_t ent = g_ropeSel ? g_ropeSel : g_barSel;
+    SpecialCopy c;
+    if (!ent || !specialCopyOf(ent, &c)) return;
+    forgetSpecial(c.rope ? "MagropeCopy" : "BarrierCopy", nullptr, c.copyId);
+    removeSpecialCopy(c.copyId);
+    g_ropeSel = g_barSel = 0;
 }
 
 void barriersPanel() {
@@ -4213,15 +4566,15 @@ void barriersPanel() {
     ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
     ImGui::SameLine();
     ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
-    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves and copies are saved with the layout.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
             char cant[40] = "";
             if (b.pam) snprintf(cant, sizeof(cant), "%s%s%s%s", b.cant[0] ? " stand" : "", b.cant[1] ? " climb" : "", b.cant[2] ? " vault" : "", b.cant[3] ? " wallrun" : "");
             char label[200];
-            snprintf(label, sizeof(label), "%5.1f m  %.1f x %.1f x %.1f%s%s%s##b%llx", b.dist, b.half[0] * 2, b.half[1] * 2, b.half[2] * 2,
-                     b.enabled ? "" : "  (off)", cant[0] ? "  can't:" : "", cant, static_cast<unsigned long long>(b.ent));
+            snprintf(label, sizeof(label), "%5.1f m  %.1f x %.1f x %.1f%s%s%s%s##b%llx", b.dist, b.half[0] * 2, b.half[1] * 2, b.half[2] * 2,
+                     b.enabled ? "" : "  (off)", cant[0] ? "  can't:" : "", cant, specialCopyOf(b.ent) ? "  (copy)" : "", static_cast<unsigned long long>(b.ent));
             if (ImGui::Selectable(label, g_barSel == b.ent)) g_barSel = b.ent, g_ropeSel = 0;
         }
     }
@@ -4230,7 +4583,7 @@ void barriersPanel() {
         for (size_t i = 0; i < ropeList.size() && i < 40; ++i) {
             const Magrope& m = ropeList[i];
             char label[120];
-            snprintf(label, sizeof(label), "%5.1f m  %s  radius %.2f%s##r%llx", m.dist, m.type == 0 ? "Swing" : m.type == 1 ? "PullUp" : m.type == 2 ? "PullDown" : "?", m.radius, ropeMoved(m.ent) ? "  (moved)" : "",
+            snprintf(label, sizeof(label), "%5.1f m  %s  radius %.2f%s##r%llx", m.dist, m.type == 0 ? "Swing" : m.type == 1 ? "PullUp" : m.type == 2 ? "PullDown" : "?", m.radius, specialCopyOf(m.ent) ? "  (copy)" : ropeMoved(m.ent) ? "  (moved)" : "",
                      static_cast<unsigned long long>(m.ent));
             if (ImGui::Selectable(label, g_ropeSel == m.ent)) g_ropeSel = m.ent, g_barSel = 0;
         }
@@ -4251,10 +4604,17 @@ void barriersPanel() {
         if (ImGui::Button("Tip away##rope")) nudgeSpecial(10, 1.f);
         ImGui::SameLine();
         if (ImGui::Button("Tip toward##rope")) nudgeSpecial(11, 1.f);
+        if (specialCopyOf(m.ent)) {
+            if (ImGui::Button("Remove this copy##rope")) removeSelectedSpecialCopy();
+        } else if (ImGui::Button("Copy##rope")) {
+            copySelectedSpecial();
+        }
         if (ropeMoved(m.ent)) {
             ImGui::SameLine();
-            if (ImGui::Button("Put back##rope")) {
+            if (!specialCopyOf(m.ent) && ImGui::Button("Put back##rope")) {
                 const uintptr_t ent = m.ent;
+                gn_transform orig{};
+                if (originalOf(ent, true, orig)) forgetSpecial("Magrope", orig.trans);
                 const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
                 client().post([ent, ty] { putBackMagrope(ent, ty); });
             }
@@ -4273,6 +4633,12 @@ void barriersPanel() {
     if (ImGui::Button("Turn left##bar")) nudgeSpecial(6, 1.f);
     ImGui::SameLine();
     if (ImGui::Button("Turn right##bar")) nudgeSpecial(7, 1.f);
+    ImGui::SameLine();
+    if (specialCopyOf(sel->ent)) {
+        if (ImGui::Button("Remove this copy##bar")) removeSelectedSpecialCopy();
+    } else if (ImGui::Button("Copy##bar")) {
+        copySelectedSpecial();
+    }
     bool moved = false;
     gn_transform back{};
     {
@@ -4283,7 +4649,13 @@ void barriersPanel() {
         ImGui::SameLine();
         if (ImGui::Button("Put back##bar")) {
             const Barrier b = *sel;
-            moveSelectedBarrier(b, back);
+            moveBarrier(b, back);
+            forgetSpecial("Barrier", back.trans);
+            {
+                std::lock_guard<std::mutex> lock(g_barM);
+                for (Barrier& x : g_barriers)
+                    if (x.ent == b.ent) x.t = back;
+            }
             std::lock_guard<std::mutex> lock(g_ropeM);
             g_barOrig.erase(b.ent);
         }
@@ -4299,6 +4671,46 @@ void clearRopeMoves() {
 }
 
 void clearSpecialSelection() { g_barSel = 0, g_ropeSel = 0; }
+
+void specialSweep() { specialSweepNow(); }
+
+void clearSpecialCopies() { // a new level: the copies went with the old one
+    std::lock_guard<std::mutex> lock(g_specM);
+    g_specCopies.clear();
+}
+
+// The layout is unloaded: moved barriers and magropes back, copies removed (g_edits already cleared).
+void unloadSpecial() {
+    std::vector<int> ids;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        for (const SpecialCopy& c : g_specCopies) ids.push_back(c.copyId);
+    }
+    for (int id : ids) removeSpecialCopy(id);
+    std::vector<std::pair<uintptr_t, gn_transform>> bars;
+    std::vector<uintptr_t> ropes;
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        for (const auto& [ent, t] : g_barOrig) bars.push_back({ent, t});
+        for (const auto& [ent, m] : g_ropeMoves) ropes.push_back(ent);
+        g_barOrig.clear();
+    }
+    for (const auto& [ent, orig] : bars) {
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        if (!ty || !inspector::alive(ent, ty)) continue;
+        Barrier b;
+        b.ent = ent, b.server = (mem::readOr<uint32_t>(ent + 0x18) & 1) != 0, b.data = mem::readOr<uintptr_t>(ent + 0x28);
+        if (!mem::read(ent + 0x50, &b.t, sizeof(b.t))) continue;
+        moveBarrier(b, orig);
+    }
+    for (uintptr_t ent : ropes) {
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        client().post([ent, ty] { putBackMagrope(ent, ty); });
+    }
+    if (!bars.empty() || !ropes.empty() || !ids.empty())
+        GN_LOG("layouts: unloaded: %d barriers and %d magropes put back, %d of their copies removed", static_cast<int>(bars.size()),
+               static_cast<int>(ropes.size()), static_cast<int>(ids.size()));
+}
 
 // The move keys on a selected barrier or magrope (shown): false when neither is selected.
 bool nudgeSpecial(int dir, float scale) {
