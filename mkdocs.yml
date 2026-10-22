@@ -53,6 +53,7 @@ nav:
       - dump-format.md
   - Plans:
       - assets-assessment.md
+      - research/barriers-and-magropes.md
       - research/destroying-entities.md
       - research/zone-streaming.md
       - research/frosty-unity-pipeline.md
