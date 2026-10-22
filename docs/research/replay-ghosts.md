@@ -102,8 +102,7 @@ Still to find:
 
 - 0x14338e5d0 in full (what destroying the character involves), and whether +0x108 must run on the
   server thread (the replay entity calls it from its updater, which runs there).
-- The event ids for stopping and what the client replay does on CharacterSpawned. Candidates to
-  look for in the onEvent switch (djb2-xor): StopReplay `0xd6a2182e`, PauseReplay `0x9e54be24`,
-  ResumeReplay `0xffd01cef`, RestartReplay `0xe8c6a041`, ReplayDone `0x66afe476`. The Recorder's
-  **Send an event** can try them on a live `PamServerReplayEntity` during the mission.
+- What the client replay entity does on CharacterSpawned. (The server replay entity handles only
+  StartReplay and StopReplay.) In game: the Recorder's **Send an event** can send StopReplay
+  (`0xd6a2182e`) to a live `PamServerReplayEntity` during the mission to watch the unspawn.
 - Whether a replay entity can run without a `PamReplayResource` (MECMP supplies the poses itself).
