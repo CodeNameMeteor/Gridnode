@@ -488,6 +488,17 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
       it); (b)
       meshes built at runtime from glTF (vertex / index buffers, a MeshSet and its render object
       made in memory), a research track of its own (renderer, shaders, materials), later.
+   4. **Copy a whole group prop** (idea from the user, 2026-10-22): copy every member of a
+      StaticModelGroupEntity (a building and its parts, often hundreds of instances) as one
+      selection, moved together. The single-member route (a standalone StaticModelEntity per
+      instance) works but would mean hundreds of entities per copy; a cheaper route is a second
+      group entity spawned from the same StaticModelGroupEntityData with its own transform (one
+      entity, one physics compound, render objects made by the group itself, 0x1431841f0).
+      Needs: how a group entity is created and placed from its data, and whether two groups can
+      share the member data. Later; intensive.
+   5. **Move group props in place** (2026-10-22, confirmed in game): moves a member's render object
+      without making it standalone (set-transform, vtable +0x10, which also moves its culling
+      sphere and streaming entry; a second streaming call made it invisible). The collision stays.
 11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
    hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
    dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
