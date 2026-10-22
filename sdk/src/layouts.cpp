@@ -717,6 +717,67 @@ uintptr_t renderObjectOf(const GroupProp& g) {
     return isMeshEntity(ro) ? ro : 0;
 }
 
+// The parts of a group member's render update the builder (0x143769330) does not fill, as the
+// group sets them when it makes the member's render object (0x1431841f0, called from 0x143185940):
+//   +0x78  16 bytes: 0x143b722e0(out, mesh asset - 0x10 or null, world transform), a hash of the
+//          asset and the placement (kept from the original placement here);
+//   +0x8a  u16: the group's render factory (block +0xb8), vtable +0x18 (factory, has a RigidMeshAsset);
+//   +0x8c  per-view mask from the member data's per-copy settings (+0x18, 12 bytes a copy: a, b, c):
+//          a 0/1/2 -> 1/3/2, c 0/1/2 -> 4/0xc/8, b 0/1/2 -> 0x20/0x30/0x10;
+//   +0x8d  |= 4 (and 2).
+// The group's re-place (0x14318fbc0) leaves them unset; sent as zeros, the mask said "no view" and the
+// moved prop was not drawn (2026-10-22).
+std::mutex g_origM;
+std::unordered_map<uintptr_t, std::array<uint8_t, 16>> g_origHash; // render object -> hash at its original placement
+void fillGroupUpdate(const GroupProp& g, uintptr_t obj, uint8_t* update) {
+    const uintptr_t memberData = mem::readOr<uintptr_t>(g.block + 0x18);
+    int32_t abc[3] = {0, 0, 0};
+    if (const uintptr_t arr = memberData ? mem::readOr<uintptr_t>(memberData + 0x18) : 0) {
+        const uint32_t count = mem::readOr<uint32_t>(arr - 4);
+        if (g.copy < count && count < 100000) mem::read(arr + uintptr_t(g.copy) * 12, abc, sizeof(abc));
+    }
+    const int32_t a = abc[0], b = abc[1], c = abc[2];
+    uint8_t mask = a == 0 ? 1 : a == 1 ? 3 : a == 2 ? 2 : 0;
+    mask |= c == 0 ? 4 : c == 1 ? 0xc : c == 2 ? 8 : 0;
+    mask |= b == 0 ? 0x20 : b == 1 ? 0x30 : b == 2 ? 0x10 : 0;
+    update[0x8c] = mask;
+    update[0x8d] = 2 | 4;
+    // The mesh asset (member data +0x38), as the group passes it.
+    static const reflect::Type* rma = registry().find("RigidMeshAsset");
+    const uintptr_t asset = memberData ? mem::readOr<uintptr_t>(memberData + 0x38) : 0;
+    const reflect::Type* at = asset ? registry().typeOf(mem::ProcessMemory(), asset) : nullptr;
+    const bool isRigid = at && rma && registry().isKindOf(at, rma);
+    uint16_t factoryValue = 0;
+    const uintptr_t factory = mem::readOr<uintptr_t>(g.block + 0xb8);
+    const uintptr_t fvt = factory ? mem::readOr<uintptr_t>(factory) : 0;
+    const uintptr_t ffn = fvt ? mem::readOr<uintptr_t>(fvt + 0x18) : 0;
+    if (mem::inImage(ffn)) factoryValue = reinterpret_cast<uint16_t (*)(uintptr_t, bool)>(ffn)(factory, isRigid);
+    memcpy(update + 0x8a, &factoryValue, 2);
+    std::array<uint8_t, 16> hash{};
+    bool have = false;
+    {
+        std::lock_guard<std::mutex> lock(g_origM);
+        if (auto it = g_origHash.find(obj); it != g_origHash.end()) hash = it->second, have = true;
+    }
+    if (!have && isRigid) { // first move: hashed at the placement it still has
+        alignas(16) float t[16];
+        if (mem::read(obj + 0x10, t, sizeof(t))) {
+            const uintptr_t src = (mem::readOr<uint16_t>(asset + 10) & 0x100) ? asset - 0x10 : 0;
+            alignas(16) uint8_t out[16] = {};
+            reinterpret_cast<void (*)(uint8_t*, uintptr_t, float*)>(mem::rva(0x143b722e0))(out, src, t);
+            memcpy(hash.data(), out, 16);
+            have = true;
+            std::lock_guard<std::mutex> lock(g_origM);
+            g_origHash.emplace(obj, hash);
+        }
+    }
+    if (have) memcpy(update + 0x78, hash.data(), 16);
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 3)
+        GN_LOG("layouts: in place: render update view mask %02x (copy settings %d %d %d), factory value %04x, hash %s", mask, a, b, c, factoryValue,
+               have ? "kept" : "none (not a RigidMeshAsset)");
+}
+
 // Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
 // transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
 // (0x1436d6ce0 with *(0x1424a9b98)+0x48).
@@ -783,6 +844,7 @@ void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = f
     update[0x88] = update[0x89] = 0;
     update[0x8d] = 2;
     update[0x8e] = 0;
+    if (streaming) fillGroupUpdate(g, obj, update);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderObject_buildUpdate))(obj, update);
     const uintptr_t objPlus8 = obj + 8;
     memcpy(update + 0x70, &objPlus8, 8);
@@ -3258,6 +3320,7 @@ void onLevel(const std::string& level) {
     {
         clearPins(); // a new level: new sublevel entities
         clearZoneFocus();
+        { std::lock_guard<std::mutex> lock(g_origM); g_origHash.clear(); }
     }
     {
         std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
