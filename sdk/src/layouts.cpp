@@ -3900,6 +3900,194 @@ void nudge(int dir, float scale) {
     moveSelection(t);
 }
 
+// ---- barriers and magropes (research, 2026-10-22) ---------------------------------------------------
+// PamOBBCollisionEntity (client and server; an Entity, not spatial): its world transform at +0x50
+// (resolved from its data's Transform when it is enabled, 0x143333310), its body id at +0x90, enabled
+// at +0x95; the box is the data's HalfExtents (+0x60) about that transform. Flags from
+// PamOBBCollisionEntityData +0x90..0x93 (can't stand, climb, vault, wallrun).
+// PamClientMagropeEntity (client, spatial): its transform, PamMagropeEntityData Radius (+0x74).
+namespace {
+struct Barrier {
+    uintptr_t ent = 0, data = 0;
+    bool server = false, enabled = false, pam = false;
+    gn_transform t{};
+    float half[3] = {};
+    uint8_t cant[4] = {};
+    uint32_t body = 0xffffffffu;
+    float dist = 0.f;
+};
+struct Magrope {
+    uintptr_t ent = 0;
+    gn_transform t{};
+    float radius = 0.f, dist = 0.f;
+};
+std::mutex g_barM;
+std::vector<Barrier> g_barriers; // nearest first (render thread writes, the editor window reads)
+std::vector<Magrope> g_magropes;
+bool g_showBarriers = false;
+float g_barRange = 150.f;
+uintptr_t g_barSel = 0;     // selected barrier (its server entity, or client when alone)
+double g_barScanAt = -10.0;
+
+bool barrierKnown(uintptr_t ent) { // the class whose layout this was read off
+    const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+    return vt && mem::readOr<uintptr_t>(vt + 0x88) == mem::rva(0x143335b30);
+}
+
+void scanBarriers() {
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return;
+    static const reflect::Type* obb = registry().find("OBBCollisionEntity");
+    static const reflect::Type* rope = registry().find("PamClientMagropeEntity");
+    static const reflect::Type* pamData = registry().find("PamOBBCollisionEntityData");
+    std::vector<Barrier> bars;
+    std::vector<Magrope> ropes;
+    const float range2 = g_barRange * g_barRange;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t) continue;
+        const bool isBar = obb && registry().isKindOf(t, obb);
+        const bool isRope = !isBar && rope && registry().isKindOf(t, rope);
+        if ((!isBar && !isRope) || !inspector::alive(p, t)) continue;
+        if (isBar) {
+            if (!barrierKnown(p)) continue;
+            Barrier b;
+            b.ent = p;
+            if (!mem::read(p + 0x50, &b.t, sizeof(b.t)) || !usableTransform(b.t)) continue;
+            const float q[3] = {b.t.trans[0] - from[0], b.t.trans[1] - from[1], b.t.trans[2] - from[2]};
+            const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+            if (d2 > range2) continue;
+            b.dist = std::sqrt(d2);
+            b.server = (mem::readOr<uint32_t>(p + 0x18) & 1) != 0;
+            b.enabled = mem::readOr<uint8_t>(p + 0x95) != 0;
+            b.body = mem::readOr<uint32_t>(p + 0x90, 0xffffffffu);
+            b.data = mem::readOr<uintptr_t>(p + 0x28);
+            mem::read(b.data + 0x60, b.half, sizeof(b.half));
+            const reflect::Type* dt = b.data ? registry().typeOf(mem::ProcessMemory(), b.data) : nullptr;
+            b.pam = dt && pamData && registry().isKindOf(dt, pamData);
+            if (b.pam) mem::read(b.data + 0x90, b.cant, sizeof(b.cant));
+            if (!finite(b.half, 3)) continue;
+            bars.push_back(b);
+        } else {
+            Magrope m;
+            m.ent = p;
+            if (!entityTransform(reinterpret_cast<void*>(p), m.t) || !usableTransform(m.t)) continue;
+            const float q[3] = {m.t.trans[0] - from[0], m.t.trans[1] - from[1], m.t.trans[2] - from[2]};
+            const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+            if (d2 > range2) continue;
+            m.dist = std::sqrt(d2);
+            if (const uintptr_t md = dataOf(p, "PamMagropeEntityData")) m.radius = mem::readOr<float>(md + 0x74);
+            ropes.push_back(m);
+        }
+    }
+    // One entry per barrier: the server half where both realms have one (same data, same place).
+    std::vector<Barrier> one;
+    for (const Barrier& b : bars) {
+        bool twin = false;
+        if (!b.server)
+            for (const Barrier& o : bars)
+                twin = twin || (o.server && o.data == b.data && std::fabs(o.t.trans[0] - b.t.trans[0]) + std::fabs(o.t.trans[1] - b.t.trans[1]) +
+                                                                     std::fabs(o.t.trans[2] - b.t.trans[2]) < 0.01f);
+        if (!twin) one.push_back(b);
+    }
+    std::sort(one.begin(), one.end(), [](const Barrier& a, const Barrier& b) { return a.dist < b.dist; });
+    std::sort(ropes.begin(), ropes.end(), [](const Magrope& a, const Magrope& b) { return a.dist < b.dist; });
+    std::lock_guard<std::mutex> lock(g_barM);
+    g_barriers = std::move(one);
+    g_magropes = std::move(ropes);
+}
+
+// On the barrier's realm thread: its transform and its body's, as the enable does
+// (0x1434f6d90 then 0x1434f8930 with 1).
+void placeBarrier(uintptr_t ent, const reflect::Type* type, gn_transform to) {
+    if (!inspector::alive(ent, type) || !barrierKnown(ent) || !usableTransform(to)) return;
+    alignas(16) gn_transform t = to;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    mem::write(ent + 0x50, &t, sizeof(t));
+    const uint32_t id = mem::readOr<uint32_t>(ent + 0x90, 0xffffffffu);
+    if (id == 0xffffffffu) return; // no body (never enabled): the field is all there is
+    const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds) + (mem::readOr<uint32_t>(ent + 0x18) & 1) * 8);
+    const uintptr_t mgr = world ? mem::readOr<uintptr_t>(world + 0x50) : 0;
+    const uintptr_t owners = mgr ? mem::readOr<uintptr_t>(mgr + e::constant::PhysicsManager_Owners) : 0;
+    const uintptr_t owner = owners ? mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8) : 0;
+    if (!owner) return;
+    uint32_t a = id, b = id;
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*)>(mem::rva(e::function::RigidBody_transformSource))(owner, &a, &t);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, bool)>(mem::rva(e::function::RigidBody_setTransformNative))(owner, &b, &t, true);
+}
+
+// Both halves of a barrier (the same data at the same place), each on its thread.
+void moveBarrier(const Barrier& b, const gn_transform& to) {
+    struct Half {
+        uintptr_t p;
+        const reflect::Type* t;
+        bool server;
+    };
+    std::vector<Half> halves{{b.ent, registry().typeOf(mem::ProcessMemory(), b.ent), b.server}};
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (p == b.ent || !t || mem::readOr<uintptr_t>(p + 0x28) != b.data || !barrierKnown(p)) continue;
+        gn_transform o{};
+        if (!mem::read(p + 0x50, &o, sizeof(o))) continue;
+        if (std::fabs(o.trans[0] - b.t.trans[0]) + std::fabs(o.trans[1] - b.t.trans[1]) + std::fabs(o.trans[2] - b.t.trans[2]) < 0.01f)
+            halves.push_back({p, t, (mem::readOr<uint32_t>(p + 0x18) & 1) != 0});
+    }
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 3)
+        GN_LOG("layouts: barrier %llx (body %08x) moved to (%.2f %.2f %.2f), %d half(s)", static_cast<unsigned long long>(b.ent), b.body,
+               to.trans[0], to.trans[1], to.trans[2], static_cast<int>(halves.size()));
+    for (const Half& h : halves) {
+        const uintptr_t ent = h.p;
+        const reflect::Type* ty = h.t;
+        alignas(16) gn_transform t = to;
+        if (h.server) server().post([ent, ty, t] { placeBarrier(ent, ty, t); });
+        else client().post([ent, ty, t] { placeBarrier(ent, ty, t); });
+    }
+}
+
+void barriersPanel() {
+    ImGui::SeparatorText("Barriers and magropes (research)");
+    ImGui::Checkbox("Show barriers and magropes", &g_showBarriers);
+    if (!g_showBarriers) return;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.f);
+    ImGui::SliderFloat("range##bar", &g_barRange, 20.f, 500.f, "%.0f m");
+    std::vector<Barrier> bars;
+    size_t ropes = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        bars = g_barriers;
+        ropes = g_magropes.size();
+    }
+    ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropes));
+    ImGui::TextDisabled("Orange: barrier (enabled), grey: disabled, cyan: magrope. Moves are not saved yet.");
+    if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
+        for (size_t i = 0; i < bars.size() && i < 60; ++i) {
+            const Barrier& b = bars[i];
+            char cant[40] = "";
+            if (b.pam) snprintf(cant, sizeof(cant), "%s%s%s%s", b.cant[0] ? " stand" : "", b.cant[1] ? " climb" : "", b.cant[2] ? " vault" : "", b.cant[3] ? " wallrun" : "");
+            char label[200];
+            snprintf(label, sizeof(label), "%5.1f m  %.1f x %.1f x %.1f%s%s%s##b%llx", b.dist, b.half[0] * 2, b.half[1] * 2, b.half[2] * 2,
+                     b.enabled ? "" : "  (off)", cant[0] ? "  can't:" : "", cant, static_cast<unsigned long long>(b.ent));
+            if (ImGui::Selectable(label, g_barSel == b.ent)) g_barSel = b.ent;
+        }
+    }
+    ImGui::EndChild();
+    const Barrier* sel = nullptr;
+    for (const Barrier& b : bars)
+        if (b.ent == g_barSel) sel = &b;
+    if (!sel) return;
+    float pos[3] = {sel->t.trans[0], sel->t.trans[1], sel->t.trans[2]};
+    if (ImGui::DragFloat3("Position##bar", pos, 0.05f, 0.f, 0.f, "%.2f")) {
+        gn_transform to = sel->t;
+        for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
+        moveBarrier(*sel, to);
+        std::lock_guard<std::mutex> lock(g_barM); // drawn at once at the new place
+        for (Barrier& b : g_barriers)
+            if (b.ent == sel->ent) b.t = to;
+    }
+    ImGui::TextDisabled("body %08x, %s%s", sel->body, sel->server ? "server" : "client", sel->pam ? "" : ", not a Pam barrier (no flags)");
+}
+} // namespace
+
 void drawKeys();
 
 void draw(bool* open) {
@@ -4054,6 +4242,7 @@ void draw(bool* open) {
         ImGui::SameLine();
         ImGui::TextDisabled("(copies parked where this build cannot destroy them)");
     }
+    barriersPanel();
     ImGui::SeparatorText("Object");
     {
         bool inPlace = g_inPlaceGroups.load();
@@ -4944,8 +5133,45 @@ void gizmoFrame(bool menuOpen) {
     dl->AddText(ImVec2(mouse.x + 16.f, mouse.y + 8.f), IM_COL32(255, 255, 255, 230), b);
 }
 
+// Barriers and magropes near the camera (render thread).
+void drawBarriers() {
+    if (!g_showBarriers) return;
+    if (ImGui::GetTime() - g_barScanAt > 1.0) g_barScanAt = ImGui::GetTime(), scanBarriers();
+    View v;
+    if (!currentView(v)) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (const Barrier& b : g_barriers) {
+        const float* rows[3] = {b.t.right, b.t.up, b.t.forward};
+        float c[8][3];
+        for (int i = 0; i < 8; ++i)
+            for (int k = 0; k < 3; ++k)
+                c[i][k] = b.t.trans[k] + ((i & 1) ? 1.f : -1.f) * b.half[0] * rows[0][k] + ((i & 2) ? 1.f : -1.f) * b.half[1] * rows[1][k] +
+                          ((i & 4) ? 1.f : -1.f) * b.half[2] * rows[2][k];
+        const bool sel = b.ent == g_barSel;
+        const ImU32 col = sel ? IM_COL32(255, 255, 80, 255) : b.enabled ? IM_COL32(255, 140, 0, 220) : IM_COL32(150, 150, 150, 160);
+        const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto& e2 : edges) line3d(dl, v, c[e2[0]], c[e2[1]], col, sel ? 2.5f : 1.5f);
+    }
+    for (const Magrope& m : g_magropes) {
+        const float r = m.radius > 0.05f ? m.radius : 0.5f;
+        float prev[3] = {};
+        for (int i = 0; i <= 24; ++i) {
+            const float a = i * 6.2831853f / 24.f;
+            float p[3];
+            for (int k = 0; k < 3; ++k) p[k] = m.t.trans[k] + r * (std::cos(a) * m.t.right[k] + std::sin(a) * m.t.forward[k]);
+            if (i) line3d(dl, v, prev, p, IM_COL32(0, 220, 255, 220), 1.5f);
+            memcpy(prev, p, sizeof(p));
+        }
+        float top[3];
+        for (int k = 0; k < 3; ++k) top[k] = m.t.trans[k] + 2.f * m.t.up[k];
+        line3d(dl, v, m.t.trans, top, IM_COL32(0, 220, 255, 220), 1.5f);
+    }
+}
+
 void frame(bool menuOpen) {
     drawOutline();
+    drawBarriers();
     gizmoFrame(menuOpen);
     keysFrame(menuOpen);
     freeCamFrame(menuOpen);
