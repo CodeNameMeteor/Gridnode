@@ -38,6 +38,8 @@
 
 namespace gn::host::layouts {
 void clearRopeMoves();
+bool nudgeSpecial(int dir, float scale); // a selected barrier or magrope (defined with them)
+void clearSpecialSelection();
 namespace {
 
 namespace e = gn::engine;
@@ -2089,6 +2091,7 @@ void selectCopy(const Spawned& sp, const gn_transform& now, bool add) {
 // `ray` (from, direction; 6 floats) or, if null, the camera's view.
 // With `add` (Shift held), what is picked joins the selection, or leaves it if it is already in.
 void pick(const float* ray = nullptr, bool add = false) {
+    clearSpecialSelection(); // picking an object leaves a barrier or magrope selection
     std::array<float, 6> given{};
     const bool haveRay = ray != nullptr;
     if (ray) memcpy(given.data(), ray, sizeof(float) * 6);
@@ -3296,6 +3299,7 @@ void onLevel(const std::string& level) {
         clearZoneFocus();
         { std::lock_guard<std::mutex> lock(g_origM); g_origHash.clear(); }
         clearRopeMoves(); // their magropes went with the old level
+        clearSpecialSelection();
     }
     {
         std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
@@ -3873,7 +3877,9 @@ void pasteCentre() {
 
 // Moves the selection one step relative to the view: dir 0 away, 1 toward, 2 left, 3 right, 4 up, 5 down;
 // 6 / 7 turn left / right. Shift: 4 steps, Ctrl: a quarter.
+bool nudgeTransform(gn_transform& t, int dir, float scale);
 void nudge(int dir, float scale) {
+    if (nudgeSpecial(dir, scale)) return;
     Selected s;
     if (!selection(s)) return;
     if (s.group && !g_inPlaceGroups.load()) { // a group prop leads: it becomes standalone first (the next press moves it)
@@ -3881,9 +3887,15 @@ void nudge(int dir, float scale) {
         if (ImGui::GetTime() - askedAt > 1.0) askedAt = ImGui::GetTime(), standaloneGroupProps();
         return;
     }
-    float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
-    if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return;
     gn_transform t = s.now;
+    if (nudgeTransform(t, dir, scale)) moveSelection(t);
+}
+
+// `t` moved or turned by one press of a move key (`dir` as the keys: 0..3 along the ground from the
+// view, 4 / 5 up / down, 6 / 7 turn, 8..13 tilt, tip, flip, upright).
+bool nudgeTransform(gn_transform& t, int dir, float scale) {
+    float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
+    if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return false;
     float f[3] = {d[0], 0.f, d[2]}, side[3] = {r[0], 0.f, r[2]}; // the view's directions along the ground
     if (dir < 4 || (dir >= 8 && dir <= 12)) normalize(f), normalize(side);
     if (dir >= 8) { // 8 / 9 tilt left / right, 10 / 11 tip away / toward, 12 upside down, 13 upright
@@ -3900,7 +3912,7 @@ void nudge(int dir, float scale) {
         const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
         for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
     }
-    moveSelection(t);
+    return true;
 }
 
 // ---- barriers and magropes (research, 2026-10-22) ---------------------------------------------------
@@ -3947,6 +3959,7 @@ struct RopeMove {
 };
 std::mutex g_ropeM;
 std::unordered_map<uintptr_t, RopeMove> g_ropeMoves;
+std::unordered_map<uintptr_t, gn_transform> g_barOrig; // moved barriers' first transforms (render thread)
 double g_barScanAt = -10.0;
 
 bool barrierKnown(uintptr_t ent) { // the class whose layout this was read off
@@ -4114,6 +4127,43 @@ bool ropeMoved(uintptr_t ent) {
     return g_ropeMoves.count(ent) != 0;
 }
 
+// A position field: dragging applies at once; a typed value applies on Enter or when the field is left
+// (applying each keystroke sent "623" to 6 first).
+bool positionField(const char* label, float* pos) {
+    static float pending[3];
+    static ImGuiID pendingFor = 0;
+    const bool changed = ImGui::DragFloat3(label, pos, 0.05f, 0.f, 0.f, "%.2f");
+    const ImGuiID id = ImGui::GetItemID();
+    if (changed && ImGui::GetIO().WantTextInput) {
+        memcpy(pending, pos, sizeof(pending)), pendingFor = id;
+        return false;
+    }
+    if (pendingFor == id && ImGui::IsItemDeactivated()) {
+        pendingFor = 0;
+        memcpy(pos, pending, sizeof(pending));
+        return true;
+    }
+    return changed;
+}
+
+void moveSelectedBarrier(const Barrier& b, const gn_transform& to) {
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        g_barOrig.emplace(b.ent, b.t);
+    }
+    moveBarrier(b, to);
+    std::lock_guard<std::mutex> lock(g_barM); // drawn at once at the new place
+    for (Barrier& x : g_barriers)
+        if (x.ent == b.ent) x.t = to;
+}
+void moveSelectedRope(uintptr_t ent, const gn_transform& to) {
+    const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+    client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (Magrope& r : g_magropes)
+        if (r.ent == ent) r.t = to;
+}
+
 void barriersPanel() {
     ImGui::SeparatorText("Barriers and magropes (research)");
     ImGui::Checkbox("Show barriers and magropes", &g_showBarriers);
@@ -4133,7 +4183,7 @@ void barriersPanel() {
     ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
     ImGui::SameLine();
     ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
-    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope.\nClick a barrier in the world or in the list. Moves are not saved yet.");
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope.\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
@@ -4159,15 +4209,10 @@ void barriersPanel() {
     for (const Magrope& m : ropeList) {
         if (m.ent != g_ropeSel) continue;
         float pos[3] = {m.t.trans[0], m.t.trans[1], m.t.trans[2]};
-        if (ImGui::DragFloat3("Magrope position", pos, 0.05f, 0.f, 0.f, "%.2f")) {
+        if (positionField("Magrope position", pos)) {
             gn_transform to = m.t;
             for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
-            const uintptr_t ent = m.ent;
-            const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
-            client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
-            std::lock_guard<std::mutex> lock(g_barM);
-            for (Magrope& r : g_magropes)
-                if (r.ent == ent) r.t = to;
+            moveSelectedRope(m.ent, to);
         }
         if (ropeMoved(m.ent)) {
             ImGui::SameLine();
@@ -4183,13 +4228,25 @@ void barriersPanel() {
         if (b.ent == g_barSel) sel = &b;
     if (!sel) return;
     float pos[3] = {sel->t.trans[0], sel->t.trans[1], sel->t.trans[2]};
-    if (ImGui::DragFloat3("Position##bar", pos, 0.05f, 0.f, 0.f, "%.2f")) {
+    if (positionField("Barrier position", pos)) {
         gn_transform to = sel->t;
         for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
-        moveBarrier(*sel, to);
-        std::lock_guard<std::mutex> lock(g_barM); // drawn at once at the new place
-        for (Barrier& b : g_barriers)
-            if (b.ent == sel->ent) b.t = to;
+        moveSelectedBarrier(*sel, to);
+    }
+    bool moved = false;
+    gn_transform back{};
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        if (auto it = g_barOrig.find(sel->ent); it != g_barOrig.end()) moved = true, back = it->second;
+    }
+    if (moved) {
+        ImGui::SameLine();
+        if (ImGui::Button("Put back##bar")) {
+            const Barrier b = *sel;
+            moveSelectedBarrier(b, back);
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            g_barOrig.erase(b.ent);
+        }
     }
     ImGui::TextDisabled("body %08x, %s%s", sel->body, sel->server ? "server" : "client", sel->pam ? "" : ", not a Pam barrier (no flags)");
 }
@@ -4198,6 +4255,35 @@ void barriersPanel() {
 void clearRopeMoves() {
     std::lock_guard<std::mutex> lock(g_ropeM);
     g_ropeMoves.clear();
+    g_barOrig.clear();
+}
+
+void clearSpecialSelection() { g_barSel = 0, g_ropeSel = 0; }
+
+// The move keys on a selected barrier or magrope (shown): false when neither is selected.
+bool nudgeSpecial(int dir, float scale) {
+    if (!g_showBarriers || (!g_barSel && !g_ropeSel)) return false;
+    if (g_ropeSel) {
+        gn_transform t{};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(g_barM);
+            for (const Magrope& m : g_magropes)
+                if (m.ent == g_ropeSel) t = m.t, found = true;
+        }
+        if (found && nudgeTransform(t, dir, scale)) moveSelectedRope(g_ropeSel, t);
+        return true;
+    }
+    Barrier b;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        for (const Barrier& x : g_barriers)
+            if (x.ent == g_barSel) b = x, found = true;
+    }
+    gn_transform t = b.t;
+    if (found && nudgeTransform(t, dir, scale)) moveSelectedBarrier(b, t);
+    return true;
 }
 
 void drawKeys();
