@@ -54,6 +54,7 @@ nav:
   - Plans:
       - assets-assessment.md
       - research/barriers-and-magropes.md
+      - research/city-alert.md
       - research/destroying-entities.md
       - research/zone-streaming.md
       - research/frosty-unity-pipeline.md
