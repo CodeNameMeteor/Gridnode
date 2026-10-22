@@ -4213,7 +4213,7 @@ void barriersPanel() {
     ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
     ImGui::SameLine();
     ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
-    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (red arrow: its facing; green: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
@@ -5414,12 +5414,16 @@ void drawBarriers() {
                 float a[3], b[3], u2[3];
                 xf(at, tr.local.right, false, a), xf(at, tr.local.up, false, u2), xf(at, tr.local.forward, false, b);
                 normalize(a), normalize(b), normalize(u2);
-                const float r = std::max(tr.size[0], 0.05f);
+                // Sized by Target.x, or (zero) by the trigger transform's scale (unit sphere).
+                const float r = tr.size[0] > 0.01f ? tr.size[0] : std::sqrt(dot3(tr.local.right, tr.local.right));
                 circle(c, a, b, r, col, 1.f), circle(c, a, u2, r, col, 1.f), circle(c, u2, b, r, col, 1.f);
             } else {
                 float corner[8][3];
                 for (int i = 0; i < 8; ++i) {
-                    const float q[3] = {((i & 1) ? 1.f : -1.f) * tr.size[0], ((i & 2) ? 1.f : -1.f) * tr.size[1], ((i & 4) ? 1.f : -1.f) * tr.size[2]};
+                    // Half extents from Target, or (zero) a unit box scaled by the trigger transform.
+                    const bool sized = tr.size[0] > 0.01f || tr.size[1] > 0.01f || tr.size[2] > 0.01f;
+                    const float h[3] = {sized ? tr.size[0] : 1.f, sized ? tr.size[1] : 1.f, sized ? tr.size[2] : 1.f};
+                    const float q[3] = {((i & 1) ? 1.f : -1.f) * h[0], ((i & 2) ? 1.f : -1.f) * h[1], ((i & 4) ? 1.f : -1.f) * h[2]};
                     float a[3];
                     xf(tr.local, q, true, a);
                     xf(at, a, true, corner[i]);
@@ -5437,20 +5441,37 @@ void drawBarriers() {
         float a[3] = {m.t.right[0], m.t.right[1], m.t.right[2]}, b[3] = {m.t.forward[0], m.t.forward[1], m.t.forward[2]};
         normalize(a), normalize(b);
         circle(m.t.trans, a, b, m.radius > 0.05f ? m.radius : 0.5f, col, thick);
-        // Its axes: forward as an arrow (red), up (cyan line).
-        float fwd[3], up[3], tip[3], top[3], l[3], r2[3];
-        memcpy(fwd, m.t.forward, sizeof(fwd)), memcpy(up, m.t.up, sizeof(up));
-        normalize(fwd), normalize(up);
+        // The side it is used from: an arrow along the ground toward its first trigger (where Faith
+        // stands), or along its forward row when it has none.
+        float fwd[3];
+        if (!m.triggers.empty()) {
+            float c[3];
+            xf(m.t, m.triggers[0].local.trans, true, c);
+            for (int k = 0; k < 3; ++k) fwd[k] = c[k] - m.t.trans[k];
+            fwd[1] = 0.f;
+        } else {
+            memcpy(fwd, m.t.forward, sizeof(fwd));
+        }
+        normalize(fwd);
+        float side[3] = {fwd[2], 0.f, -fwd[0]};
+        float tip[3], l[3], r2[3];
         for (int k = 0; k < 3; ++k) {
             tip[k] = m.t.trans[k] + 2.f * fwd[k];
-            top[k] = m.t.trans[k] + 2.f * up[k];
-            l[k] = tip[k] - 0.4f * fwd[k] + 0.25f * a[k];
-            r2[k] = tip[k] - 0.4f * fwd[k] - 0.25f * a[k];
+            l[k] = tip[k] - 0.4f * fwd[k] + 0.25f * side[k];
+            r2[k] = tip[k] - 0.4f * fwd[k] - 0.25f * side[k];
         }
-        line3d(dl, v, m.t.trans, tip, IM_COL32(255, 70, 70, 255), thick);
-        line3d(dl, v, tip, l, IM_COL32(255, 70, 70, 255), thick);
-        line3d(dl, v, tip, r2, IM_COL32(255, 70, 70, 255), thick);
-        line3d(dl, v, m.t.trans, top, col, thick);
+        line3d(dl, v, m.t.trans, tip, col, thick);
+        line3d(dl, v, tip, l, col, thick);
+        line3d(dl, v, tip, r2, col, thick);
+        // Its own axes, a metre each: right red, up green, forward blue.
+        const float* rows[3] = {m.t.right, m.t.up, m.t.forward};
+        const ImU32 axisCol[3] = {IM_COL32(255, 60, 60, 255), IM_COL32(60, 255, 60, 255), IM_COL32(80, 120, 255, 255)};
+        for (int i = 0; i < 3; ++i) {
+            float d2[3] = {rows[i][0], rows[i][1], rows[i][2]}, e[3];
+            normalize(d2);
+            for (int k = 0; k < 3; ++k) e[k] = m.t.trans[k] + d2[k];
+            line3d(dl, v, m.t.trans, e, axisCol[i], 2.f);
+        }
         triggers(m, m.t, sel ? IM_COL32(255, 255, 80, 200) : IM_COL32(0, 255, 140, 180));
         if (m.moved) triggers(m, m.original, IM_COL32(160, 160, 160, 160)); // where its triggers were
         if (depthOf(v, m.t.trans) > kNear && m.dist < 60.f) {
