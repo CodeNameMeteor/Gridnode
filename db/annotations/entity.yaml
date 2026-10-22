@@ -1,6 +1,14 @@
 # Generic entity layout (Frostbite Entity / Component hierarchy).
 defaults: { confidence: confirmed, sources: [mecmp, research] }
 
+globals:
+  - name: EntityEvent_vtable
+    va: 0x141a4a8b0
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: "An EntityEvent is {vtable 0x141a4a8b0, u32 id (+8), u32 0 (+0xc)}, as EntityBus_postEvent builds one; delivered to an entity's onEvent (vtable +0x20)."
+
 classes:
   - name: ComponentEntity
     realm: any

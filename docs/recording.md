@@ -40,6 +40,31 @@ Writes by game code are seen once the game state interface they go through has b
 logic write first (GridNode wraps each interface the first time it sees it); if a door is driven
 only by code, its first writes in a session can be missed.
 
+### Watching fields
+
+**Watch fields** records every change to a field of the live entities of a class (any subclass
+too): give the class, the offset and its type (byte, i32, f32), and a label. They are read ten
+times a second while recording; each change is a `field` line with the value and the old one (the
+first reading of each entity is marked `first`). **Add the city alert manager's state** watches
+the KSEC alert's active flag, level, kills, cameras seeing and active hotspots
+(`docs/research/city-alert.md`). Watches last until the game closes.
+
+### Sending an event
+
+**Send an event (research)** delivers an event to every live entity of a class, as one of the
+level's connections would: the entity's `onEvent` (vtable +0x20) with an `EntityEvent`
+{0x141a4a8b0, id, 0}, on its realm's thread. Give the event by name (hashed with djb2-xor) or as
+`0x…`. Each delivery is recorded as a `sent` line, so what the game did next shows in the same
+recording. It is a research tool: an event the class does not expect may do nothing, or something
+unexpected.
+
+### Who called
+
+Each exported stack also has `callers`: the frames that are inside a function of a reflected
+class's vtable, named `Class::vf+0xNN` (with how many classes share it). The function is found in
+the executable's unwind table. Those frames say which entity's code made the event or message
+happen; `summarize.py` prints the names beside the addresses.
+
 ## Reading it
 
 ```

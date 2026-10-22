@@ -85,6 +85,10 @@ def label(ev):
         if isinstance(val, list):
             val = "(" + " ".join(f"{v:.2f}" for v in val[:3]) + (" ..." if len(val) > 3 else "") + ")"
         return f"anim {prop or '(game code)'} = {val} -> {ev.get('target', '?')}"
+    if k == "field":
+        return f"field {ev.get('field', '?')} = {ev.get('value')} -> {ev.get('target', '?')}"
+    if k == "sent":
+        return f"SENT {event_label(ev)} -> {ev.get('target', '?')}"
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":
@@ -179,6 +183,9 @@ def main():
             if label(e) in keep and e.get("stack"):
                 frames = tuple(int(x, 16) for x in e["stack"][:6])
                 stacks[(label(e), frames)] += 1
+                # GridNode names frames inside a reflected class's vtable function ("callers").
+                for c in e.get("callers", []):
+                    names.setdefault(int(c["at"], 16), c["in"])
         if stacks:
             print("  call stacks (innermost first):")
             for (lab, frames), n in stacks.most_common(min(args.top, 12)):
