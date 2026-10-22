@@ -3935,8 +3935,16 @@ struct Magrope {
     uintptr_t ent = 0;
     gn_transform t{};
     float radius = 0.f, dist = 0.f;
-    int32_t type = -1; // MagropeType (FBMagropeType)
+    int32_t type = -1; // MagropeType (FBMagropeType: 0 Swing, 1 PullUp, 2 PullDown, by the names' order)
     bool fromData = false;
+    struct Trigger {
+        gn_transform local{};
+        float size[4] = {}; // Target (+0x00): a sphere's radius in x, a box's half extents
+        int32_t shape = 0;  // ShapeType (+0x50): 0 sphere, 1 box (PamMagropeTriggerType)
+    };
+    std::vector<Trigger> triggers; // the data's Triggers (+0x80), 0x60 bytes each
+    bool moved = false;
+    gn_transform original{};       // where it was, when GridNode moved it
 };
 struct BarrierCounts {
     int barriers = 0, unknownBarriers = 0, magropes = 0, ropesNoTransform = 0;
@@ -4022,7 +4030,29 @@ void scanBarriers() {
             const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
             if (d2 > range2) continue;
             m.dist = std::sqrt(d2);
-            if (md) m.radius = mem::readOr<float>(md + 0x74), m.type = mem::readOr<int32_t>(md + 0x70);
+            if (md) {
+                m.radius = mem::readOr<float>(md + 0x74), m.type = mem::readOr<int32_t>(md + 0x70);
+                const uintptr_t arr = mem::readOr<uintptr_t>(md + 0x80);
+                const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
+                for (uint32_t i = 0; i < n && i < 16; ++i) {
+                    Magrope::Trigger tr;
+                    const uintptr_t e = arr + uintptr_t(i) * 0x60;
+                    mem::read(e, tr.size, sizeof(tr.size));
+                    mem::read(e + 0x10, &tr.local, sizeof(tr.local));
+                    tr.shape = mem::readOr<int32_t>(e + 0x50);
+                    if (finite(tr.size, 3) && usableTransform(tr.local)) m.triggers.push_back(tr);
+                }
+                static std::atomic<int> said{0};
+                if (!m.triggers.empty() && said.fetch_add(1) < 2)
+                    GN_LOG("layouts: magrope %llx type %d: %d trigger(s), first shape %d size (%.2f %.2f %.2f) at local (%.2f %.2f %.2f)",
+                           static_cast<unsigned long long>(p), m.type, static_cast<int>(m.triggers.size()), m.triggers[0].shape,
+                           m.triggers[0].size[0], m.triggers[0].size[1], m.triggers[0].size[2], m.triggers[0].local.trans[0],
+                           m.triggers[0].local.trans[1], m.triggers[0].local.trans[2]);
+                // Moved by GridNode: where it was (the pointer it had).
+                std::lock_guard<std::mutex> lock(g_ropeM);
+                if (auto it = g_ropeMoves.find(p); it != g_ropeMoves.end() && mem::read(it->second.original, &m.original, sizeof(m.original)))
+                    m.moved = true;
+            }
             ropes.push_back(m);
         }
     }
@@ -4183,7 +4213,7 @@ void barriersPanel() {
     ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
     ImGui::SameLine();
     ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
-    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope.\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (red arrow: its facing; green: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves are not saved yet.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
@@ -4200,7 +4230,7 @@ void barriersPanel() {
         for (size_t i = 0; i < ropeList.size() && i < 40; ++i) {
             const Magrope& m = ropeList[i];
             char label[120];
-            snprintf(label, sizeof(label), "%5.1f m  type %d  radius %.2f%s##r%llx", m.dist, m.type, m.radius, ropeMoved(m.ent) ? "  (moved)" : "",
+            snprintf(label, sizeof(label), "%5.1f m  %s  radius %.2f%s##r%llx", m.dist, m.type == 0 ? "Swing" : m.type == 1 ? "PullUp" : m.type == 2 ? "PullDown" : "?", m.radius, ropeMoved(m.ent) ? "  (moved)" : "",
                      static_cast<unsigned long long>(m.ent));
             if (ImGui::Selectable(label, g_ropeSel == m.ent)) g_ropeSel = m.ent, g_barSel = 0;
         }
@@ -4214,6 +4244,13 @@ void barriersPanel() {
             for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
             moveSelectedRope(m.ent, to);
         }
+        if (ImGui::Button("Turn left##rope")) nudgeSpecial(6, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Turn right##rope")) nudgeSpecial(7, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip away##rope")) nudgeSpecial(10, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip toward##rope")) nudgeSpecial(11, 1.f);
         if (ropeMoved(m.ent)) {
             ImGui::SameLine();
             if (ImGui::Button("Put back##rope")) {
@@ -4233,6 +4270,9 @@ void barriersPanel() {
         for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
         moveSelectedBarrier(*sel, to);
     }
+    if (ImGui::Button("Turn left##bar")) nudgeSpecial(6, 1.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Turn right##bar")) nudgeSpecial(7, 1.f);
     bool moved = false;
     gn_transform back{};
     {
@@ -5351,19 +5391,74 @@ void drawBarriers() {
         const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
         for (const auto& e2 : edges) line3d(dl, v, c[e2[0]], c[e2[1]], col, sel ? 2.5f : 1.5f);
     }
-    for (const Magrope& m : g_magropes) {
-        const float r = m.radius > 0.05f ? m.radius : 0.5f;
+    // A point (or direction) of `t`'s frame in the world.
+    auto xf = [](const gn_transform& t, const float* q, bool point, float* out) {
+        for (int k = 0; k < 3; ++k) out[k] = q[0] * t.right[k] + q[1] * t.up[k] + q[2] * t.forward[k] + (point ? t.trans[k] : 0.f);
+    };
+    auto circle = [&](const float* c, const float* a, const float* b, float r, ImU32 col, float thick) {
         float prev[3] = {};
         for (int i = 0; i <= 24; ++i) {
-            const float a = i * 6.2831853f / 24.f;
-            float p[3];
-            for (int k = 0; k < 3; ++k) p[k] = m.t.trans[k] + r * (std::cos(a) * m.t.right[k] + std::sin(a) * m.t.forward[k]);
-            if (i) line3d(dl, v, prev, p, m.ent == g_ropeSel ? IM_COL32(255, 255, 80, 255) : IM_COL32(0, 220, 255, 220), m.ent == g_ropeSel ? 2.5f : 1.5f);
-            memcpy(prev, p, sizeof(p));
+            const float ang = i * 6.2831853f / 24.f;
+            float q[3];
+            for (int k = 0; k < 3; ++k) q[k] = c[k] + r * (std::cos(ang) * a[k] + std::sin(ang) * b[k]);
+            if (i) line3d(dl, v, prev, q, col, thick);
+            memcpy(prev, q, sizeof(q));
         }
-        float top[3];
-        for (int k = 0; k < 3; ++k) top[k] = m.t.trans[k] + 2.f * m.t.up[k];
-        line3d(dl, v, m.t.trans, top, IM_COL32(0, 220, 255, 220), 1.5f);
+    };
+    // A magrope's triggers (where Faith has to be), each in the magrope's frame.
+    auto triggers = [&](const Magrope& m, const gn_transform& at, ImU32 col) {
+        for (const Magrope::Trigger& tr : m.triggers) {
+            float c[3];
+            xf(at, tr.local.trans, true, c);
+            if (tr.shape == 0) {
+                float a[3], b[3], u2[3];
+                xf(at, tr.local.right, false, a), xf(at, tr.local.up, false, u2), xf(at, tr.local.forward, false, b);
+                normalize(a), normalize(b), normalize(u2);
+                const float r = std::max(tr.size[0], 0.05f);
+                circle(c, a, b, r, col, 1.f), circle(c, a, u2, r, col, 1.f), circle(c, u2, b, r, col, 1.f);
+            } else {
+                float corner[8][3];
+                for (int i = 0; i < 8; ++i) {
+                    const float q[3] = {((i & 1) ? 1.f : -1.f) * tr.size[0], ((i & 2) ? 1.f : -1.f) * tr.size[1], ((i & 4) ? 1.f : -1.f) * tr.size[2]};
+                    float a[3];
+                    xf(tr.local, q, true, a);
+                    xf(at, a, true, corner[i]);
+                }
+                const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+                for (const auto& e2 : edges) line3d(dl, v, corner[e2[0]], corner[e2[1]], col, 1.f);
+            }
+        }
+    };
+    static const char* kRopeType[] = {"Swing", "PullUp", "PullDown"};
+    for (const Magrope& m : g_magropes) {
+        const bool sel = m.ent == g_ropeSel;
+        const ImU32 col = sel ? IM_COL32(255, 255, 80, 255) : IM_COL32(0, 220, 255, 220);
+        const float thick = sel ? 2.5f : 1.5f;
+        float a[3] = {m.t.right[0], m.t.right[1], m.t.right[2]}, b[3] = {m.t.forward[0], m.t.forward[1], m.t.forward[2]};
+        normalize(a), normalize(b);
+        circle(m.t.trans, a, b, m.radius > 0.05f ? m.radius : 0.5f, col, thick);
+        // Its axes: forward as an arrow (red), up (cyan line).
+        float fwd[3], up[3], tip[3], top[3], l[3], r2[3];
+        memcpy(fwd, m.t.forward, sizeof(fwd)), memcpy(up, m.t.up, sizeof(up));
+        normalize(fwd), normalize(up);
+        for (int k = 0; k < 3; ++k) {
+            tip[k] = m.t.trans[k] + 2.f * fwd[k];
+            top[k] = m.t.trans[k] + 2.f * up[k];
+            l[k] = tip[k] - 0.4f * fwd[k] + 0.25f * a[k];
+            r2[k] = tip[k] - 0.4f * fwd[k] - 0.25f * a[k];
+        }
+        line3d(dl, v, m.t.trans, tip, IM_COL32(255, 70, 70, 255), thick);
+        line3d(dl, v, tip, l, IM_COL32(255, 70, 70, 255), thick);
+        line3d(dl, v, tip, r2, IM_COL32(255, 70, 70, 255), thick);
+        line3d(dl, v, m.t.trans, top, col, thick);
+        triggers(m, m.t, sel ? IM_COL32(255, 255, 80, 200) : IM_COL32(0, 255, 140, 180));
+        if (m.moved) triggers(m, m.original, IM_COL32(160, 160, 160, 160)); // where its triggers were
+        if (depthOf(v, m.t.trans) > kNear && m.dist < 60.f) {
+            char label[48];
+            snprintf(label, sizeof(label), "%s%s", m.type >= 0 && m.type <= 2 ? kRopeType[m.type] : "magrope", m.moved ? " (moved)" : "");
+            const ImVec2 at = project(v, m.t.trans);
+            dl->AddText(ImVec2(at.x + 6.f, at.y - 18.f), col, label);
+        }
     }
 }
 
