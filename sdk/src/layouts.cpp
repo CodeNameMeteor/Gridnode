@@ -3920,7 +3920,13 @@ struct Magrope {
     uintptr_t ent = 0;
     gn_transform t{};
     float radius = 0.f, dist = 0.f;
+    int32_t type = -1; // MagropeType (FBMagropeType)
+    bool fromData = false;
 };
+struct BarrierCounts {
+    int barriers = 0, unknownBarriers = 0, magropes = 0, ropesNoTransform = 0;
+};
+BarrierCounts g_barCounts;
 std::mutex g_barM;
 std::vector<Barrier> g_barriers; // nearest first (render thread writes, the editor window reads)
 std::vector<Magrope> g_magropes;
@@ -3942,6 +3948,7 @@ void scanBarriers() {
     static const reflect::Type* pamData = registry().find("PamOBBCollisionEntityData");
     std::vector<Barrier> bars;
     std::vector<Magrope> ropes;
+    BarrierCounts counts;
     const float range2 = g_barRange * g_barRange;
     for (const auto& [p, t] : inspector::tracked()) {
         if (!t) continue;
@@ -3949,7 +3956,11 @@ void scanBarriers() {
         const bool isRope = !isBar && rope && registry().isKindOf(t, rope);
         if ((!isBar && !isRope) || !inspector::alive(p, t)) continue;
         if (isBar) {
-            if (!barrierKnown(p)) continue;
+            ++counts.barriers;
+            if (!barrierKnown(p)) {
+                ++counts.unknownBarriers;
+                continue;
+            }
             Barrier b;
             b.ent = p;
             if (!mem::read(p + 0x50, &b.t, sizeof(b.t)) || !usableTransform(b.t)) continue;
@@ -3968,14 +3979,23 @@ void scanBarriers() {
             if (!finite(b.half, 3)) continue;
             bars.push_back(b);
         } else {
+            ++counts.magropes;
             Magrope m;
             m.ent = p;
-            if (!entityTransform(reinterpret_cast<void*>(p), m.t) || !usableTransform(m.t)) continue;
+            const uintptr_t md = dataOf(p, "PamMagropeEntityData");
+            if (!entityTransform(reinterpret_cast<void*>(p), m.t) || !usableTransform(m.t)) {
+                // No transform of its own: its data's (SpatialEntityData Transform, +0x20).
+                if (!md || !mem::read(md + 0x20, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
+                    ++counts.ropesNoTransform;
+                    continue;
+                }
+                m.fromData = true;
+            }
             const float q[3] = {m.t.trans[0] - from[0], m.t.trans[1] - from[1], m.t.trans[2] - from[2]};
             const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
             if (d2 > range2) continue;
             m.dist = std::sqrt(d2);
-            if (const uintptr_t md = dataOf(p, "PamMagropeEntityData")) m.radius = mem::readOr<float>(md + 0x74);
+            if (md) m.radius = mem::readOr<float>(md + 0x74), m.type = mem::readOr<int32_t>(md + 0x70);
             ropes.push_back(m);
         }
     }
@@ -3994,6 +4014,11 @@ void scanBarriers() {
     std::lock_guard<std::mutex> lock(g_barM);
     g_barriers = std::move(one);
     g_magropes = std::move(ropes);
+    if (counts.barriers != g_barCounts.barriers || counts.magropes != g_barCounts.magropes)
+        GN_LOG("layouts: barriers: %d tracked (%d of another layout), magropes: %d tracked (%d without a transform); in range: %d, %d",
+               counts.barriers, counts.unknownBarriers, counts.magropes, counts.ropesNoTransform, static_cast<int>(g_barriers.size()),
+               static_cast<int>(g_magropes.size()));
+    g_barCounts = counts;
 }
 
 // On the barrier's realm thread: its transform and its body's, as the enable does
@@ -4051,14 +4076,18 @@ void barriersPanel() {
     ImGui::SetNextItemWidth(120.f);
     ImGui::SliderFloat("range##bar", &g_barRange, 20.f, 500.f, "%.0f m");
     std::vector<Barrier> bars;
-    size_t ropes = 0;
+    std::vector<Magrope> ropeList;
+    BarrierCounts counts;
     {
         std::lock_guard<std::mutex> lock(g_barM);
         bars = g_barriers;
-        ropes = g_magropes.size();
+        ropeList = g_magropes;
+        counts = g_barCounts;
     }
-    ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropes));
-    ImGui::TextDisabled("Orange: barrier (enabled), grey: disabled, cyan: magrope. Moves are not saved yet.");
+    ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
+    ImGui::SameLine();
+    ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope.\nClick a barrier in the world or in the list. Moves are not saved yet.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
@@ -4071,6 +4100,12 @@ void barriersPanel() {
         }
     }
     ImGui::EndChild();
+    if (!ropeList.empty() && ImGui::TreeNode("Magropes")) {
+        for (size_t i = 0; i < ropeList.size() && i < 40; ++i)
+            ImGui::Text("%5.1f m  type %d  radius %.2f%s", ropeList[i].dist, ropeList[i].type, ropeList[i].radius,
+                        ropeList[i].fromData ? "  (position from its data)" : "");
+        ImGui::TreePop();
+    }
     const Barrier* sel = nullptr;
     for (const Barrier& b : bars)
         if (b.ent == g_barSel) sel = &b;
@@ -5169,6 +5204,39 @@ void drawBarriers() {
     }
 }
 
+// A click on a shown barrier selects it (instead of the object behind it). Ray: origin, direction.
+bool pickBarrier(const float* ray) {
+    if (!g_showBarriers) return false;
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    float best = 1e30f;
+    uintptr_t hit = 0;
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (const Barrier& b : g_barriers) {
+        float o[3], d[3];
+        reframe(b.t, I, ray, true, o);
+        reframe(b.t, I, ray + 3, false, d);
+        float t0 = 0.f, t1 = 1e30f;
+        bool ok = true;
+        for (int k = 0; k < 3 && ok; ++k) {
+            const float h = std::max(b.half[k], 0.05f); // thin boxes stay clickable
+            if (std::fabs(d[k]) < 1e-8f) {
+                ok = std::fabs(o[k]) <= h;
+                continue;
+            }
+            float a = (-h - o[k]) / d[k], c = (h - o[k]) / d[k];
+            if (a > c) std::swap(a, c);
+            t0 = std::max(t0, a), t1 = std::min(t1, c);
+            ok = t0 <= t1;
+        }
+        if (ok && t0 < best) best = t0, hit = b.ent;
+    }
+    if (!hit) return false;
+    g_barSel = hit;
+    GN_LOG("layouts: barrier %llx selected (%.1f m)", static_cast<unsigned long long>(hit), best);
+    return true;
+}
+
 void frame(bool menuOpen) {
     drawOutline();
     drawBarriers();
@@ -5180,7 +5248,7 @@ void frame(bool menuOpen) {
     if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse &&
         !g_gizmoHot) {
         float ray[6];
-        if (cursorRay(ray)) pick(ray, io.KeyShift);
+        if (cursorRay(ray) && !pickBarrier(ray)) pick(ray, io.KeyShift);
     }
 }
 
