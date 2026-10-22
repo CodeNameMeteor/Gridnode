@@ -49,28 +49,59 @@ Data:
 - Messages: `PamReplayStopReplayMessage`, `PamReplayReplayDoneMessage`,
   `PamReplayStartPreviewMessage` / `StopPreviewMessage`, `PamReplayRecordingStarted/Stopped`.
 
+## How the replay entity spawns and despawns (Ghidra, 2026-10-22)
+
+`PamServerReplayEntity`'s onEvent (vtable +0x20, **0x14396d750**) handles two events:
+
+- **StartReplay** (`0x2734a476`) → **0x14396e8b0**: finds the entity linked to the replay entity in
+  its blueprint that was made from a **`CharacterSpawnReferenceObjectData`** (a lookup with its bus
+  +0x20, its data +0x28 and the link id `0xa695a747`: 0x143115190, then 0x14311c850). That is a
+  character spawner (`ServerCharacterSpawnEntity` / `PamServerCharacterSpawnEntity`). If the spawner
+  has no last-spawned character (`ServerSpawnEntity_getLastSpawnedCharacter`), it calls the
+  spawner's **vtable +0xd0** (spawn) with a spawn info: transform (unset), player 0, existing 0,
+  0, −1, busId −1, +0x60 = 1, **useTransform 0** (the ghost appears at the spawner's own place).
+  This is the same call and the same struct as MECMP's `SpawnInfo`.
+- **StopReplay** (`0xd6a2182e`): under the entity's lock (+0x50) sets a flag (+0x4c), registers the
+  entity with its class's updater (0x14396ccd0; updater vtable 0x141c4ffb0, created on first use as
+  "PamServerReplayEntity"), and sends the player a message (probably `PamReplayStopReplayMessage`,
+  with the 16 bytes at +0x3c) through 0x1433b6f90 / 0x1433d56a0. On the next update
+  (**0x1439724d0**) the flag leads to **0x1439741d0**: the same spawner lookup, its last spawned
+  character, and the spawner's **vtable +0x108 (spawner, character, 1, 0)**: the unspawn.
+
+The unspawn, **0x14338e4c0** (vtable +0x108 of both `ServerCharacterSpawnEntity` 0x141b4e0c8 and
+`PamServerCharacterSpawnEntity` 0x141c4b388):
+
+1. if the character's player (+0x250) has its +0x1398 flag set (a player made for the character),
+   releases it (0x143351330) and removes it from the server player manager (0x14334c2d0);
+2. **0x14338e5d0(spawner, character, 1, 0)**: out of the spawner's spawned list (+0x148/+0x150)
+   and destroyed;
+3. when the list is empty, unregisters the spawner's message listener (`0x1286cf79`).
+
+The replay entity's init is vtable +0x78 (0x143971380) and its deinit +0x88 (0x143971120: leaves
+the updater, then the base deinit 0x143168770).
+
 ## For MECMP
 
-MECMP spawns a remote player's ghost from the level's city-ghost spawner (a one-off enable), finds
-its client objects by time (anything created within 1.5 s), and has no despawn. The replay entity
-does the same job on its own:
+MECMP already spawns ghosts the same way the mission does (spawner vtable +0xd0 with the same
+`SpawnInfo`); the differences are which spawner and what happens after:
 
-1. **Spawn without the city-ghost spawner.** A replay entity spawns its character when it gets
-   StartReplay. A replay entity can be made like any entity from its data and a bus (GridNode's
-   layout editor does this for copies), or an existing one can be told to start.
-2. **The client follows the server.** The client character comes by replication, and the client
-   replay entity gets CharacterSpawned: a definite signal instead of a time window.
-3. **Despawn.** The replay entity replaces its character on a second StartReplay, and the game has
-   StopReplay / ReplayDone: the replay entity's own teardown is the safe despawn to look for.
-4. **Driving it.** The character has the same replay player component MECMP already writes poses
-   into (PamServerReplayPlayerComponent), so streaming poses should work as it does now.
+1. **Despawn: the spawner's vtable +0x108 (spawner, character, 1, 0)**, on the server thread. It is
+   what the game itself does to take a replay ghost away, and it also tidies the spawner's list and
+   the character's player. MECMP's "ghosts are never destroyed" can use it.
+2. **A spawner of its own.** The mission's ghost comes from a character spawner linked to its replay
+   entity, not the city-ghost spawner, so the city's "Your Echo" character is left alone and the
+   list does not need reordering. A spawner can be made like any entity from a
+   `CharacterSpawnReferenceObjectData` and a bus (GridNode does this for prop copies).
+3. **The client side.** The client character arrives by replication, and the client replay entity
+   is told `CharacterSpawned` (`0xa29c98e6`): a definite signal, where MECMP matches by time.
+4. **Placement.** The mission passes useTransform 0 (the spawner's own place); MECMP's
+   useTransform 1 with its own transform is the same call with the other choice.
+5. **Driving it.** The character has the replay player component MECMP already writes poses into.
 
-To find in Ghidra:
+Still to find:
 
-- The replay entity's onEvent (vtable 0x141c4ffe0 +0x20) and the functions 0x14396d798,
-  0x14396e965, 0x1433908a1, 0x143390d94: what StartReplay does, where the character data and blueprint
-  come from (the ghost's `PamCharacterEntityData` is not in `PamReplayEntityData`'s fields), and
-  what happens to the previous character.
+- 0x14338e5d0 in full (what destroying the character involves), and whether +0x108 must run on the
+  server thread (the replay entity calls it from its updater, which runs there).
 - The event ids for stopping and what the client replay does on CharacterSpawned. Candidates to
   look for in the onEvent switch (djb2-xor): StopReplay `0xd6a2182e`, PauseReplay `0x9e54be24`,
   ResumeReplay `0xffd01cef`, RestartReplay `0xe8c6a041`, ReplayDone `0x66afe476`. The Recorder's
