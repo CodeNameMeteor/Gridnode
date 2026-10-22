@@ -46,6 +46,26 @@ copy of a loaded barrier's data, with other `HalfExtents` and flags, should coll
   {realm, 1})), then the base deinit (0x143168770). Its +0x30 is an empty stub. Destroying a
   barrier GridNode made will be: unlink from the owner list, this deinit, delete (+0x38).
 
+### Magropes (2026-10-22)
+
+`PamClientMagropeEntity` (0x68 bytes; constructor 0x1439b9b70) is a plain spatial entity with no
+transform space of its own:
+
+| Offset | What |
+|---|---|
+| +0x08 | owner link (like every entity) |
+| +0x18 | flags |
+| +0x20 | id |
+| +0x30 | its data (PamMagropeEntityData) |
+| +0x38 | a second vtable (0x141c61ab0, an interface) |
+| +0x40 / +0x48 | a list node, registered at creation (0x14316c0d0) |
+| +0x50 | a running number (from 0x14257c638) |
+| +0x58 / +0x60 | its Transform as a resolved property reference (0x1446513d0 through the bus's property context): +0x60 points at the value (the data's Transform, or a blueprint override) |
+
+The game reads a magrope's place through +0x60, so GridNode moves one by pointing +0x60 at a
+transform it owns (and puts the pointer back to undo). MagropeType is data +0x70, Radius +0x74.
+In game, 32 magropes were loaded around the start (2026-10-22).
+
 ## Plan
 
 1. Show the barriers and magropes near the camera in the editor (boxes and circles drawn like the

@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,6 +37,7 @@
 #include "imgui.h"
 
 namespace gn::host::layouts {
+void clearRopeMoves();
 namespace {
 
 namespace e = gn::engine;
@@ -3293,6 +3295,7 @@ void onLevel(const std::string& level) {
         clearPins(); // a new level: new sublevel entities
         clearZoneFocus();
         { std::lock_guard<std::mutex> lock(g_origM); g_origHash.clear(); }
+        clearRopeMoves(); // their magropes went with the old level
     }
     {
         std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
@@ -3933,6 +3936,17 @@ std::vector<Magrope> g_magropes;
 bool g_showBarriers = false;
 float g_barRange = 150.f;
 uintptr_t g_barSel = 0;     // selected barrier (its server entity, or client when alone)
+uintptr_t g_ropeSel = 0;    // selected magrope
+// Moved magropes: a magrope reads its transform through a resolved property reference
+// (+0x58 context, +0x60 value pointer, made in its constructor 0x1439b9b70 with 0x1446513d0;
+// the value is its data's Transform, or a blueprint's override). GridNode points +0x60 at a
+// transform of its own; putting it back restores the pointer.
+struct RopeMove {
+    uintptr_t original = 0;               // the pointer that was there
+    std::unique_ptr<gn_transform> value;  // GridNode's transform
+};
+std::mutex g_ropeM;
+std::unordered_map<uintptr_t, RopeMove> g_ropeMoves;
 double g_barScanAt = -10.0;
 
 bool barrierKnown(uintptr_t ent) { // the class whose layout this was read off
@@ -3983,25 +3997,14 @@ void scanBarriers() {
             Magrope m;
             m.ent = p;
             const uintptr_t md = dataOf(p, "PamMagropeEntityData");
-            // A magrope is a plain spatial entity (0x68 bytes, no transform space): its place is its
-            // data's Transform (SpatialEntityData +0x20), world when placed directly in the level.
-            if (!md || !mem::read(md + 0x20, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
+            // A magrope is a plain spatial entity (0x68 bytes, no transform space): its place is read
+            // through its property reference (+0x60 -> its data's Transform, or GridNode's after a move).
+            const uintptr_t tp = mem::readOr<uintptr_t>(p + 0x60);
+            if (!tp || !mem::read(tp, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
                 ++counts.ropesNoTransform;
                 continue;
             }
             m.fromData = true;
-            static std::atomic<int> dumped{0};
-            if (dumped.fetch_add(1) < 3) {
-                uint64_t w[13] = {};
-                mem::read(p, w, sizeof(w));
-                char line[700];
-                int n = snprintf(line, sizeof(line), "layouts: magrope %llx (vtable %llx): data %llx at (%.2f %.2f %.2f);",
-                                 static_cast<unsigned long long>(p), static_cast<unsigned long long>(mem::va(w[0])), static_cast<unsigned long long>(md),
-                                 m.t.trans[0], m.t.trans[1], m.t.trans[2]);
-                for (int i = 1; i < 13 && n > 0 && n < static_cast<int>(sizeof(line)) - 24; ++i)
-                    n += snprintf(line + n, sizeof(line) - n, " +%02x %llx", i * 8, static_cast<unsigned long long>(w[i]));
-                GN_LOG("%s", line);
-            }
             const float q[3] = {m.t.trans[0] - from[0], m.t.trans[1] - from[1], m.t.trans[2] - from[2]};
             const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
             if (d2 > range2) continue;
@@ -4079,6 +4082,38 @@ void moveBarrier(const Barrier& b, const gn_transform& to) {
     }
 }
 
+// On the client thread: the magrope reads `to` from now on.
+void placeMagrope(uintptr_t ent, const reflect::Type* type, gn_transform to) {
+    if (!inspector::alive(ent, type) || !usableTransform(to)) return;
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    RopeMove& m = g_ropeMoves[ent];
+    if (!m.value) {
+        m.original = mem::readOr<uintptr_t>(ent + 0x60);
+        if (!m.original) return (void)g_ropeMoves.erase(ent);
+        m.value = std::make_unique<gn_transform>();
+    }
+    *m.value = to;
+    m.value->right[3] = m.value->up[3] = m.value->forward[3] = 0.f, m.value->trans[3] = 1.f;
+    const uintptr_t mine = reinterpret_cast<uintptr_t>(m.value.get());
+    if (mem::readOr<uintptr_t>(ent + 0x60) != mine) mem::write(ent + 0x60, mine);
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 3)
+        GN_LOG("layouts: magrope %llx moved to (%.2f %.2f %.2f) (its transform reference now GridNode's)", static_cast<unsigned long long>(ent),
+               to.trans[0], to.trans[1], to.trans[2]);
+}
+void putBackMagrope(uintptr_t ent, const reflect::Type* type) {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    auto it = g_ropeMoves.find(ent);
+    if (it == g_ropeMoves.end()) return;
+    if (inspector::alive(ent, type) && mem::readOr<uintptr_t>(ent + 0x60) == reinterpret_cast<uintptr_t>(it->second.value.get()))
+        mem::write(ent + 0x60, it->second.original);
+    g_ropeMoves.erase(it);
+}
+bool ropeMoved(uintptr_t ent) {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    return g_ropeMoves.count(ent) != 0;
+}
+
 void barriersPanel() {
     ImGui::SeparatorText("Barriers and magropes (research)");
     ImGui::Checkbox("Show barriers and magropes", &g_showBarriers);
@@ -4107,15 +4142,41 @@ void barriersPanel() {
             char label[200];
             snprintf(label, sizeof(label), "%5.1f m  %.1f x %.1f x %.1f%s%s%s##b%llx", b.dist, b.half[0] * 2, b.half[1] * 2, b.half[2] * 2,
                      b.enabled ? "" : "  (off)", cant[0] ? "  can't:" : "", cant, static_cast<unsigned long long>(b.ent));
-            if (ImGui::Selectable(label, g_barSel == b.ent)) g_barSel = b.ent;
+            if (ImGui::Selectable(label, g_barSel == b.ent)) g_barSel = b.ent, g_ropeSel = 0;
         }
     }
     ImGui::EndChild();
-    if (!ropeList.empty() && ImGui::TreeNode("Magropes")) {
-        for (size_t i = 0; i < ropeList.size() && i < 40; ++i)
-            ImGui::Text("%5.1f m  type %d  radius %.2f%s", ropeList[i].dist, ropeList[i].type, ropeList[i].radius,
-                        "");
+    if (!ropeList.empty() && ImGui::TreeNodeEx("Magropes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (size_t i = 0; i < ropeList.size() && i < 40; ++i) {
+            const Magrope& m = ropeList[i];
+            char label[120];
+            snprintf(label, sizeof(label), "%5.1f m  type %d  radius %.2f%s##r%llx", m.dist, m.type, m.radius, ropeMoved(m.ent) ? "  (moved)" : "",
+                     static_cast<unsigned long long>(m.ent));
+            if (ImGui::Selectable(label, g_ropeSel == m.ent)) g_ropeSel = m.ent, g_barSel = 0;
+        }
         ImGui::TreePop();
+    }
+    for (const Magrope& m : ropeList) {
+        if (m.ent != g_ropeSel) continue;
+        float pos[3] = {m.t.trans[0], m.t.trans[1], m.t.trans[2]};
+        if (ImGui::DragFloat3("Magrope position", pos, 0.05f, 0.f, 0.f, "%.2f")) {
+            gn_transform to = m.t;
+            for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
+            const uintptr_t ent = m.ent;
+            const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+            client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+            std::lock_guard<std::mutex> lock(g_barM);
+            for (Magrope& r : g_magropes)
+                if (r.ent == ent) r.t = to;
+        }
+        if (ropeMoved(m.ent)) {
+            ImGui::SameLine();
+            if (ImGui::Button("Put back##rope")) {
+                const uintptr_t ent = m.ent;
+                const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+                client().post([ent, ty] { putBackMagrope(ent, ty); });
+            }
+        }
     }
     const Barrier* sel = nullptr;
     for (const Barrier& b : bars)
@@ -4133,6 +4194,11 @@ void barriersPanel() {
     ImGui::TextDisabled("body %08x, %s%s", sel->body, sel->server ? "server" : "client", sel->pam ? "" : ", not a Pam barrier (no flags)");
 }
 } // namespace
+
+void clearRopeMoves() {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    g_ropeMoves.clear();
+}
 
 void drawKeys();
 
@@ -5206,7 +5272,7 @@ void drawBarriers() {
             const float a = i * 6.2831853f / 24.f;
             float p[3];
             for (int k = 0; k < 3; ++k) p[k] = m.t.trans[k] + r * (std::cos(a) * m.t.right[k] + std::sin(a) * m.t.forward[k]);
-            if (i) line3d(dl, v, prev, p, IM_COL32(0, 220, 255, 220), 1.5f);
+            if (i) line3d(dl, v, prev, p, m.ent == g_ropeSel ? IM_COL32(255, 255, 80, 255) : IM_COL32(0, 220, 255, 220), m.ent == g_ropeSel ? 2.5f : 1.5f);
             memcpy(prev, p, sizeof(p));
         }
         float top[3];
@@ -5242,8 +5308,22 @@ bool pickBarrier(const float* ray) {
         }
         if (ok && t0 < best) best = t0, hit = b.ent;
     }
+    uintptr_t rope = 0;
+    for (const Magrope& m : g_magropes) { // a sphere of its radius (at least half a metre)
+        const float r = std::max(m.radius, 0.5f);
+        float o[3];
+        for (int k = 0; k < 3; ++k) o[k] = m.t.trans[k] - ray[k];
+        const float along = o[0] * ray[3] + o[1] * ray[4] + o[2] * ray[5];
+        const float d2 = o[0] * o[0] + o[1] * o[1] + o[2] * o[2] - along * along;
+        if (along > 0.f && d2 <= r * r && along - std::sqrt(r * r - d2) < best) best = along - std::sqrt(r * r - d2), rope = m.ent;
+    }
+    if (rope) {
+        g_ropeSel = rope, g_barSel = 0;
+        GN_LOG("layouts: magrope %llx selected (%.1f m)", static_cast<unsigned long long>(rope), best);
+        return true;
+    }
     if (!hit) return false;
-    g_barSel = hit;
+    g_barSel = hit, g_ropeSel = 0;
     GN_LOG("layouts: barrier %llx selected (%.1f m)", static_cast<unsigned long long>(hit), best);
     return true;
 }
