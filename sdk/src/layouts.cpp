@@ -745,19 +745,20 @@ void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = f
     const uint32_t tag = mem::readOr<uint32_t>(obj + 0x8c);
     memcpy(update + 0x90, &tag, 4);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
-    // The copy's entry in the mesh streaming manager (made with it, 0x1431841f0) has its position too.
-    static const bool streamingKnown = build::codeMatches("MeshStreaming_setTransform");
-    const uint32_t handle = mem::readOr<uint32_t>(obj + e::constant::RigidMeshEntity_StreamingHandle, 0xffffffffu);
-    const uintptr_t manager = mem::readOr<uintptr_t>(mem::rva(e::global::MeshStreamingManager));
-    if (streaming && streamingKnown && handle != 0xffffffffu && manager) {
-        uint32_t h = handle;
-        reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, float)>(mem::rva(e::function::MeshStreaming_setTransform))(manager, &h, &t, 1.f);
-    }
+    // The set-transform (vtable +0x10, 0x14376c060 for a RigidMeshEntity) already updates the
+    // object's culling sphere (+0x50, and its visibility entry +0x84 through 0x14357b970) and its
+    // streaming entry (+0x78, MeshStreaming_setTransform with the game's own value from 0x1419fd590).
+    // An extra MeshStreaming_setTransform with a scale of 1 (what this did before 2026-10-22)
+    // overwrote that value, and moved props went invisible.
     if (streaming) {
         static std::atomic<int> said{0};
-        if (said.fetch_add(1) < 20)
-            GN_LOG("layouts: group prop moved in place: render object %llx, streaming handle %08x%s", static_cast<unsigned long long>(obj), handle,
-                   streamingKnown ? "" : " (streaming function not as expected: not updated)");
+        if (said.fetch_add(1) < 5) {
+            float sphere[4] = {};
+            mem::read(obj + 0x50, sphere, sizeof(sphere));
+            GN_LOG("layouts: group prop moved in place: render object %llx, sphere (%.2f %.2f %.2f) r %.2f, visibility %08x, streaming %08x",
+                   static_cast<unsigned long long>(obj), sphere[0], sphere[1], sphere[2], sphere[3],
+                   mem::readOr<uint32_t>(obj + 0x84, 0xffffffffu), mem::readOr<uint32_t>(obj + e::constant::RigidMeshEntity_StreamingHandle, 0xffffffffu));
+        }
     }
 }
 

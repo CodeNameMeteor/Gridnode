@@ -9,6 +9,10 @@ globals:
     note: "The game worlds by realm: [0] client, [1] server (0x1432e1210 indexes it by an entity's flags & 1). +0x48 of the client one is the render world that static model groups hand render-object updates to (0x14318fbc0); +0x28 is the index of its per-class entity lists in each ClassInfo (0x143164d50). Was named RenderRoot."
     confidence: inferred
     sources: [research, ghidra]
+  - name: VisibilitySystem
+    va: 0x142563a30
+    type: "void*"
+    note: "Culling spheres: a RigidMeshEntity registers {centre xyz, radius} (0x14356ac00, from 0x143766f60), handle at the render object's +0x84; moved by 0x14357b970, removed by 0x1435782e0."
   - name: MeshStreamingManager
     va: 0x142563410
     type: "void*"
@@ -78,6 +82,12 @@ globals:
     sources: [reflected]
 
 functions:
+  - name: VisibilitySystem_update
+    va: 0x14357b970
+    signature: "void(void* system, u32 handle, const f32* sphere)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Moves a culling sphere {centre xyz, radius}: locks, writes, marks the entry dirty. Called by RigidMeshEntity_setTransform (0x14376c060) with the render object's +0x84 handle."
   - name: ClientStaticModelGroup_placeMember
     va: 0x14318fbc0
     signature: "void(void* block, const LinearTransform* group, u32 firstPart)"
@@ -107,8 +117,8 @@ functions:
     sources: [ghidra]
   - name: MeshStreaming_setTransform
     va: 0x143555450
-    signature: "void(void* manager, u32* handle, const LinearTransform* transform, f32 scale)"
-    note: "Sets a streaming instance's position (the mesh box's centre in the transform) and scale (0x1435556a0 with a count of 1)."
+    signature: "void(void* manager, u32* handle, const LinearTransform* transform, f32 value)"
+    note: "Sets a streaming instance's position (the mesh box's centre in the transform) and a value kept at +0x1c (0x1435556a0 with a count of 1). The game passes the float at 0x1419fd590; RigidMeshEntity_setTransform already calls it, so callers moving a render object should not."
     confidence: inferred
     sources: [ghidra]
   - name: RigidMeshEntity_setTransform
