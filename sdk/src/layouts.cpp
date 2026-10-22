@@ -3957,7 +3957,9 @@ struct Magrope {
     bool fromData = false;
     struct Trigger {
         gn_transform local{};
-        float size[4] = {}; // Target (+0x00): a sphere's radius in x, a box's half extents
+        // Target (+0x00). Not a size: zero on pull-ups and large on swings (their volumes were drawn kilometres wide
+        // when read as half extents). Drawn as a point in the magrope's frame, probably where a swing sends Faith.
+        float target[4] = {};
         int32_t shape = 0;  // ShapeType (+0x50): 0 sphere, 1 box (PamMagropeTriggerType)
     };
     std::vector<Trigger> triggers; // the data's Triggers (+0x80), 0x60 bytes each
@@ -4055,16 +4057,16 @@ void scanBarriers() {
                 for (uint32_t i = 0; i < n && i < 16; ++i) {
                     Magrope::Trigger tr;
                     const uintptr_t e = arr + uintptr_t(i) * 0x60;
-                    mem::read(e, tr.size, sizeof(tr.size));
+                    mem::read(e, tr.target, sizeof(tr.target));
                     mem::read(e + 0x10, &tr.local, sizeof(tr.local));
                     tr.shape = mem::readOr<int32_t>(e + 0x50);
-                    if (finite(tr.size, 3) && usableTransform(tr.local)) m.triggers.push_back(tr);
+                    if (finite(tr.target, 3) && usableTransform(tr.local)) m.triggers.push_back(tr);
                 }
-                static std::atomic<int> said{0};
-                if (!m.triggers.empty() && said.fetch_add(1) < 2)
-                    GN_LOG("layouts: magrope %llx type %d: %d trigger(s), first shape %d size (%.2f %.2f %.2f) at local (%.2f %.2f %.2f)",
+                static std::atomic<int> said[4] = {}; // the first two of each type
+                if (!m.triggers.empty() && said[m.type >= 0 && m.type <= 2 ? m.type : 3].fetch_add(1) < 2)
+                    GN_LOG("layouts: magrope %llx type %d: %d trigger(s), first shape %d target (%.2f %.2f %.2f) at local (%.2f %.2f %.2f)",
                            static_cast<unsigned long long>(p), m.type, static_cast<int>(m.triggers.size()), m.triggers[0].shape,
-                           m.triggers[0].size[0], m.triggers[0].size[1], m.triggers[0].size[2], m.triggers[0].local.trans[0],
+                           m.triggers[0].target[0], m.triggers[0].target[1], m.triggers[0].target[2], m.triggers[0].local.trans[0],
                            m.triggers[0].local.trans[1], m.triggers[0].local.trans[2]);
                 // Moved by GridNode: where it was (the pointer it had).
                 std::lock_guard<std::mutex> lock(g_ropeM);
@@ -4566,7 +4568,7 @@ void barriersPanel() {
     ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
     ImGui::SameLine();
     ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
-    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were).\nClick one in the world or in a list; the move keys then move it (while flying). Moves and copies are saved with the layout.");
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were; magenta cross: a trigger's Target).\nClick one in the world or in a list; the move keys then move it (while flying). Moves and copies are saved with the layout.");
     if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < bars.size() && i < 60; ++i) {
             const Barrier& b = bars[i];
@@ -5826,22 +5828,32 @@ void drawBarriers() {
                 float a[3], b[3], u2[3];
                 xf(at, tr.local.right, false, a), xf(at, tr.local.up, false, u2), xf(at, tr.local.forward, false, b);
                 normalize(a), normalize(b), normalize(u2);
-                // Sized by Target.x, or (zero) by the trigger transform's scale (unit sphere).
-                const float r = tr.size[0] > 0.01f ? tr.size[0] : std::sqrt(dot3(tr.local.right, tr.local.right));
+                // A unit sphere scaled by the trigger transform.
+                const float r = std::sqrt(dot3(tr.local.right, tr.local.right));
                 circle(c, a, b, r, col, 1.f), circle(c, a, u2, r, col, 1.f), circle(c, u2, b, r, col, 1.f);
             } else {
                 float corner[8][3];
                 for (int i = 0; i < 8; ++i) {
-                    // Half extents from Target, or (zero) a unit box scaled by the trigger transform.
-                    const bool sized = tr.size[0] > 0.01f || tr.size[1] > 0.01f || tr.size[2] > 0.01f;
-                    const float h[3] = {sized ? tr.size[0] : 1.f, sized ? tr.size[1] : 1.f, sized ? tr.size[2] : 1.f};
-                    const float q[3] = {((i & 1) ? 1.f : -1.f) * h[0], ((i & 2) ? 1.f : -1.f) * h[1], ((i & 4) ? 1.f : -1.f) * h[2]};
+                    // A unit box scaled by the trigger transform.
+                    const float q[3] = {(i & 1) ? 1.f : -1.f, (i & 2) ? 1.f : -1.f, (i & 4) ? 1.f : -1.f};
                     float a[3];
                     xf(tr.local, q, true, a);
                     xf(at, a, true, corner[i]);
                 }
                 const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
                 for (const auto& e2 : edges) line3d(dl, v, corner[e2[0]], corner[e2[1]], col, 1.f);
+            }
+            // Its Target, when it has one: a small cross joined to the trigger by a thin line.
+            if (std::fabs(tr.target[0]) + std::fabs(tr.target[1]) + std::fabs(tr.target[2]) > 0.01f) {
+                float t[3];
+                xf(at, tr.target, true, t);
+                const ImU32 tc = IM_COL32(255, 80, 255, 200);
+                line3d(dl, v, c, t, tc, 1.f);
+                for (int k = 0; k < 3; ++k) {
+                    float p0[3] = {t[0], t[1], t[2]}, p1[3] = {t[0], t[1], t[2]};
+                    p0[k] -= 0.3f, p1[k] += 0.3f;
+                    line3d(dl, v, p0, p1, tc, 2.f);
+                }
             }
         }
     };

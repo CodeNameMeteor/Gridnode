@@ -70,8 +70,11 @@ Confirmed in game (2026-10-22): a magrope moved and turned this way is used at i
 no longer at the old one). Its use direction is toward its trigger: each magrope's data has
 `Triggers` (+0x80, 0x60 bytes each: +0x00 `Target`, read as zero so far; +0x10 `LocalTransform`, in
 the magrope's frame; +0x50 `ShapeType`, 0 sphere / 1 box), and the first PullUps' triggers sit
-7..16 m below and 8..16 m out, where Faith stands. With `Target` zero, the box is the unit box scaled
-by `LocalTransform`. GridNode's overlay draws an arrow from the magrope toward its first trigger
+7..16 m below and 8..16 m out, where Faith stands. The volume is the unit box (or sphere) scaled by
+`LocalTransform`. `Target` is zero on pull-ups but not on swings, and read as a box's half extents
+it drew swing volumes far too big (seen in game 2026-10-22), so it is not a size. It is drawn as a
+point in the magrope's frame (probably where a swing sends Faith; to confirm), and the log names the
+first two triggers of each magrope type. GridNode's overlay draws an arrow from the magrope toward its first trigger
 (along the ground), its own axes, and its triggers. MagropeType 0/1/2 = Swing / PullUp / PullDown
 (by the order of the FBMagropeType names; PullUp confirmed).
 
