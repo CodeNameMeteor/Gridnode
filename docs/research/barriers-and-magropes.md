@@ -66,11 +66,21 @@ The game reads a magrope's place through +0x60, so GridNode moves one by pointin
 transform it owns (and puts the pointer back to undo). MagropeType is data +0x70, Radius +0x74.
 In game, 32 magropes were loaded around the start (2026-10-22).
 
+Confirmed in game (2026-10-22): a magrope moved and turned this way is used at its new place (and
+no longer at the old one). Its use direction is toward its trigger: each magrope's data has
+`Triggers` (+0x80, 0x60 bytes each: +0x00 `Target`, read as zero so far; +0x10 `LocalTransform`, in
+the magrope's frame; +0x50 `ShapeType`, 0 sphere / 1 box), and the first PullUps' triggers sit
+7..16 m below and 8..16 m out, where Faith stands. With `Target` zero, the box is the unit box scaled
+by `LocalTransform`. GridNode's overlay draws an arrow from the magrope toward its first trigger
+(along the ground), its own axes, and its triggers. MagropeType 0/1/2 = Swing / PullUp / PullDown
+(by the order of the FBMagropeType names; PullUp confirmed).
+
 ## Plan
 
 1. Show the barriers and magropes near the camera in the editor (boxes and circles drawn like the
-   selection outline), from the live entities of these classes. **Built 2026-10-22**, with moving a
-   listed barrier (not saved yet).
+   selection outline), from the live entities of these classes. **Built 2026-10-22**: both are
+   selected by clicking and moved or turned with the move keys (not saved yet). Magrope moves
+   confirmed in game.
 2. Copy one: spawn its class from a copy of its data (GridNode's own memory, kept for the copy's
    life), with the transform, size and flags edited in the editor.
 3. Save them in layouts with their fields, and remove them (their own deinit and teardown).
