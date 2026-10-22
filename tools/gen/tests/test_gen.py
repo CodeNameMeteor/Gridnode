@@ -327,6 +327,62 @@ class GhidraSync(unittest.TestCase):
             _, p = annotations.load(d)
             self.assertEqual(p.errors, [])
 
+    def test_friend_import_and_relay(self):
+        """A friend's export: their name in sources and notes, their comment carried; relayed, it
+        becomes an import file for another Ghidra."""
+        from gridnode_gen import ghidra_sync
+        export = {"format": "gridnode-ghidra-export", "version": 1, "program": "MEC",
+                  "functions": [{"name": "Rope::swing", "va": 0x140223450, "prototype": "", "signatureUserDefined": False,
+                                 "comment": "launches Faith"}],
+                  "labels": [{"name": "g_rope", "va": 0x142000020, "type": "", "comment": ""}], "structs": []}
+        text, _ = ghidra_sync.from_ghidra(export, self.db, who="Alex")
+        self.assertIn("sources: [ghidra, alex]", text)
+        self.assertIn("Named in Alex's Ghidra as Rope::swing. Signature not known yet. launches Faith", text)
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(os.path.join(FIXTURE, "annotations")):
+                shutil.copy(os.path.join(FIXTURE, "annotations", fn), d)
+            with open(os.path.join(d, "zz.yaml"), "w") as f:
+                f.write(text)
+            _, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
+        doc = ghidra_sync.relay(export, who="Alex")
+        self.assertEqual(doc["format"], "gridnode-ghidra")
+        self.assertEqual(doc["functions"][0]["name"], "Rope::swing")
+        self.assertTrue(doc["functions"][0]["comment"].startswith("GridNode [relay] (Alex's Ghidra)"))
+        self.assertIn("launches Faith", doc["functions"][0]["comment"])
+
+
+class AnnotationsDiff(unittest.TestCase):
+    def test_diff(self):
+        from gridnode_gen import annotations_diff
+        base = {"a.yaml": "defaults: { confidence: confirmed }\n"
+                          "functions:\n  - { name: f1, va: 0x140001000, signature: \"void()\" }\n"
+                          "  - { name: f2, va: 0x140002000 }\n  - { name: gone, va: 0x140003000 }\n"
+                          "classes:\n  - name: C\n    members:\n      - { offset: 0x10, name: m, type: u32 }\n"}
+        other = {"a.yaml": "defaults: { confidence: inferred }\n"
+                           "functions:\n  - { name: f1, va: 0x140001000, signature: \"i32()\" }\n"
+                           "  - { name: f2_better, va: 0x140002000 }\n  - { name: new, va: 0x140004000 }\n"
+                           "classes:\n  - name: C\n    members:\n      - { offset: 0x10, name: m, type: u64 }\n"
+                           "      - { offset: 0x18, name: n, type: f32 }\n"}
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            for d, files in ((a, base), (b, other)):
+                for n, t in files.items():
+                    with open(os.path.join(d, n), "w") as f:
+                        f.write(t)
+            d = annotations_diff.diff(a, b)
+            self.assertEqual([c.name for c in d.added], ["new"])
+            self.assertEqual([c.name for c in d.removed], ["gone"])
+            self.assertEqual([(c.base.name, c.name) for c in d.renamed], [("f2", "f2_better")])
+            changed = {c.name: c.what for c in d.changed}
+            self.assertIn("signature: 'void()' -> 'i32()'", changed["f1"])
+            self.assertIn("confidence: 'confirmed' -> 'inferred'", changed["f1"])
+            self.assertTrue(any("member 0x10 m: type 'u32' -> 'u64'" == w for w in changed["C"]))
+            self.assertTrue(any(w.startswith("member 0x18 n: only in other") for w in changed["C"]))
+            text = annotations_diff.inbox(d)
+            self.assertIn("va: 0x140004000", text)
+            self.assertIn("confidence: inferred", text)
+            annotations_diff.report(d)
+
 
 class OptionalSignature(unittest.TestCase):
     def test_function_without_signature(self):

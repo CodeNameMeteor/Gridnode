@@ -9,7 +9,9 @@
   gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
   gridnode docs [--reflected FILE] [--build]   the docs site (with a dump: the full reference, local)
   gridnode ghidra-export [--out FILE]          annotations for GridNodeSync.java to apply in Ghidra
-  gridnode ghidra-import FILE [--out FILE]     what was named in Ghidra, as annotations to review
+  gridnode ghidra-import FILE [--who NAME]     what was named in Ghidra (yours or a friend's), to review
+  gridnode ghidra-relay FILE [--who NAME]      a friend's Ghidra export, to import into your own Ghidra
+  gridnode annotations-diff OTHER [--base B]   compare two annotation sets (folders or git:REF)
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
@@ -131,6 +133,15 @@ def _main(argv=None) -> int:
     gi = sub.add_parser("ghidra-import", help="GridNodeSync.java's export -> annotations to review")
     gi.add_argument("file")
     gi.add_argument("--out", default=os.path.join(ROOT, "db", "ghidra-inbox.yaml"))
+    gi.add_argument("--who", help="whose Ghidra it came from (a friend's name): added to sources and notes")
+    gr = sub.add_parser("ghidra-relay", help="a GridNodeSync export -> a file GridNodeSync imports into another Ghidra")
+    gr.add_argument("file")
+    gr.add_argument("--who", help="whose Ghidra it came from (shown in the comments)")
+    gr.add_argument("--out", default=os.path.join(ROOT, "build", "gridnode-ghidra-relay.json"))
+    ad = sub.add_parser("annotations-diff", help="compare two annotation sets")
+    ad.add_argument("other", help="annotation folder, or git:REF (e.g. git:origin/main)")
+    ad.add_argument("--base", help="annotation folder or git:REF to compare against (default: --annotations)")
+    ad.add_argument("--inbox", help="also write the other set's new and changed entries to this YAML file")
 
     h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
     h.add_argument("names", nargs="+")
@@ -197,7 +208,7 @@ def _main(argv=None) -> int:
         if p.errors:
             return 1
         with open(_find(a.file, "GridNodeSync export"), encoding="utf-8") as f:
-            text, counts = ghidra_sync.from_ghidra(json.load(f), db)
+            text, counts = ghidra_sync.from_ghidra(json.load(f), db, who=a.who)
         # The result must load next to the existing annotations before it is written.
         with tempfile.TemporaryDirectory() as d:
             for fn in os.listdir(a.annotations):
@@ -213,6 +224,38 @@ def _main(argv=None) -> int:
         _write(a.out, text)
         print(f"ghidra-import: {counts['functions']} functions, {counts['globals']} globals, {counts['members']} members, "
               f"{counts['renamed']} named differently -> {a.out}\n  Review them and move each into its annotation file.")
+        return 0
+
+    if a.cmd == "ghidra-relay":
+        import json
+        from . import ghidra_sync
+        with open(_find(a.file, "GridNodeSync export"), encoding="utf-8") as f:
+            doc = ghidra_sync.relay(json.load(f), who=a.who)
+        _write(a.out, json.dumps(doc, indent=1) + "\n")
+        print(f"ghidra-relay: {len(doc['functions'])} functions, {len(doc['labels'])} labels -> {a.out}\n"
+              "  In your Ghidra: GridNodeSync, choose Import, pick this file. Names you gave yourself are kept.")
+        return 0
+
+    if a.cmd == "annotations-diff":
+        from . import annotations_diff
+
+        def side(spec: str) -> tuple[str, str]:
+            if spec.startswith("git:"):
+                ref = spec[4:]
+                sub_dir = os.path.relpath(os.path.abspath(a.annotations), ROOT).replace(os.sep, "/")
+                return annotations_diff.checkout(ref, ROOT, sub_dir), ref
+            path = spec if os.path.isdir(spec) else os.path.join(ROOT, spec)
+            if not os.path.isdir(path):
+                raise UserError(f"annotation folder not found: {spec}")
+            return path, spec
+
+        base_dir, base_label = side(a.base) if a.base else (a.annotations, "repo")
+        other_dir, other_label = side(a.other)
+        d = annotations_diff.diff(base_dir, other_dir, base_label, other_label)
+        print(annotations_diff.report(d), end="")
+        if a.inbox:
+            _write(a.inbox, annotations_diff.inbox(d))
+            print(f"inbox: {len(d.added) + len(d.renamed) + len(d.changed)} entries -> {a.inbox}")
         return 0
 
     if a.cmd == "hash":

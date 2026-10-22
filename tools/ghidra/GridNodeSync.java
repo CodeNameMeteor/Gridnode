@@ -19,6 +19,10 @@
 //
 // Export before importing again if you edited the /GridNode structs: an import replaces them.
 //
+// Friends: their export goes through `gridnode.py ghidra-import THEIR-FILE --who NAME` (annotations to
+// review) or `gridnode.py ghidra-relay THEIR-FILE --who NAME` (a file this script imports straight
+// into your Ghidra: their names where you have none of your own, their comments in a block of their own).
+//
 // Needs Ghidra 12 (CommentType); checked against 12.0.3.
 //
 //@category GridNode
@@ -218,7 +222,9 @@ public class GridNodeSync extends GhidraScript {
 		}
 	}
 
-	// GridNode's comment replaces an earlier GridNode comment; any other comment is kept above it.
+	// A comment is your own text, then blocks that start with a "GridNode [" line: GridNode's own, and one
+	// per friend relayed (gridnode.py ghidra-relay, "GridNode [relay] (whose)"). An import replaces only the
+	// block it brings (same first line up to the closing parenthesis); your text and other blocks stay.
 	private void setComment(Address a, CommentType kind, String comment) {
 		if (comment == null || comment.isEmpty()) {
 			return;
@@ -228,16 +234,52 @@ public class GridNodeSync extends GhidraScript {
 			return;
 		}
 		String old = cu.getComment(kind);
-		String text = comment;
-		if (old != null && !old.isEmpty()) {
-			int at = old.indexOf(MARK);
-			String mine = at >= 0 ? old.substring(0, at).trim() : old.trim();
-			text = mine.isEmpty() ? comment : mine + "\n" + comment;
+		String key = blockKey(comment);
+		StringBuilder kept = new StringBuilder(ownText(old));
+		for (String block : blocks(old)) {
+			if (!blockKey(block).equals(key)) {
+				kept.append(kept.length() > 0 ? "\n" : "").append(block);
+			}
 		}
+		String text = kept.length() > 0 ? kept + "\n" + comment : comment;
 		if (!text.equals(old)) {
 			cu.setComment(kind, text);
 			comments++;
 		}
+	}
+
+	// The text before the first block (what you wrote).
+	private static String ownText(String c) {
+		if (c == null) {
+			return "";
+		}
+		int at = c.startsWith(MARK) ? 0 : c.indexOf("\n" + MARK);
+		return (at < 0 ? c : c.substring(0, at)).trim();
+	}
+
+	private static List<String> blocks(String c) {
+		List<String> out = new ArrayList<>();
+		if (c == null) {
+			return out;
+		}
+		int at = c.startsWith(MARK) ? 0 : c.indexOf("\n" + MARK);
+		while (at >= 0) {
+			int start = c.charAt(at) == '\n' ? at + 1 : at;
+			int next = c.indexOf("\n" + MARK, start);
+			out.add(c.substring(start, next < 0 ? c.length() : next).trim());
+			at = next;
+		}
+		return out;
+	}
+
+	// "GridNode [relay] (Alex's Ghidra)" -> "relay (Alex's Ghidra)"; any other GridNode block -> "gridnode".
+	private static String blockKey(String block) {
+		String first = block.split("\n", 2)[0];
+		if (first.startsWith(MARK + "relay]")) {
+			int close = first.indexOf(')');
+			return "relay " + (close >= 0 ? first.substring(MARK.length() + 6, close + 1).trim() : "");
+		}
+		return "gridnode";
 	}
 
 	private void setQualifiedName(Symbol s, String name) throws Exception {
@@ -338,6 +380,7 @@ public class GridNodeSync extends GhidraScript {
 			o.addProperty("va", f.getEntryPoint().getOffset());
 			o.addProperty("prototype", f.getPrototypeString(false, false));
 			o.addProperty("signatureUserDefined", f.getSignatureSource() == SourceType.USER_DEFINED);
+			o.addProperty("comment", yourComment(f.getEntryPoint(), CommentType.PLATE));
 			funcs.add(o);
 		}
 		JsonArray labels = new JsonArray();
@@ -356,6 +399,8 @@ public class GridNodeSync extends GhidraScript {
 			o.addProperty("va", s.getAddress().getOffset());
 			Data d = getDataAt(s.getAddress());
 			o.addProperty("type", d != null && d.isDefined() ? d.getDataType().getDisplayName() : "");
+			String c = yourComment(s.getAddress(), CommentType.PLATE);
+			o.addProperty("comment", c.isEmpty() ? yourComment(s.getAddress(), CommentType.EOL) : c);
 			labels.add(o);
 		}
 		JsonArray ss = new JsonArray();
@@ -392,6 +437,12 @@ public class GridNodeSync extends GhidraScript {
 		println(String.format("GridNodeSync export: %d functions and %d labels you named, %d GridNode structs -> %s",
 			funcs.size(), labels.size(), ss.size(), file));
 		println("Next: python tools/gen/gridnode.py ghidra-import \"" + file + "\"");
+	}
+
+	// The part of a comment you wrote (GridNode's and relayed blocks left out).
+	private String yourComment(Address a, CommentType kind) {
+		CodeUnit cu = currentProgram.getListing().getCodeUnitAt(a);
+		return cu == null ? "" : ownText(cu.getComment(kind));
 	}
 
 	private String qualified(Symbol s) {

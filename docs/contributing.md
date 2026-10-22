@@ -66,3 +66,30 @@ Everything is `inferred` from `ghidra` until checked. Move each item into the an
 belongs to.
 
 Export before importing again if you edited the `/GridNode` structs in Ghidra: an import replaces them.
+
+**A friend's Ghidra.** They run GridNodeSync → *Export* in their Ghidra and send you the file. Either
+review their findings as annotations, or put their names straight into your Ghidra:
+
+```text
+python tools/gen/gridnode.py ghidra-import alex-names.json --who Alex   # db/ghidra-inbox.yaml, sources [ghidra, alex]
+python tools/gen/gridnode.py ghidra-relay alex-names.json --who Alex    # build/gridnode-ghidra-relay.json
+```
+
+Import the relay file with GridNodeSync → *Import*. Their names go where you have none of your own
+(yours are kept; a name an earlier GridNode import set is replaced, so import GridNode's file again
+after a relay if you prefer its names), and their comments go in a `GridNode [relay] (Alex's Ghidra)` block that a later
+relay from them replaces; your own text, GridNode's block and other friends' blocks stay. Exports now
+carry the comments you wrote (plate comments of functions, plate or end-of-line comments of labels).
+
+**Two sets of annotations.** To see how another copy differs from the repository (a fork, another
+checkout, what another tool wrote):
+
+```text
+python tools/gen/gridnode.py annotations-diff D:/other/db/annotations                 # against db/annotations
+python tools/gen/gridnode.py annotations-diff git:origin/main --base D:/mine/annotations
+python tools/gen/gridnode.py annotations-diff OTHER --inbox db/annotations-inbox.yaml  # their new and changed entries
+```
+
+Entries are matched by section and name, and functions, globals, code sites and hooks also by address
+(a rename at the same address shows as one). Classes and structs are compared member by member,
+virtual by virtual. The inbox keeps each entry's confidence and sources and notes what changed.

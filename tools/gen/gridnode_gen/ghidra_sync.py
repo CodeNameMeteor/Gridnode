@@ -147,8 +147,38 @@ def _ident(name: str) -> str:
     return n if not n[:1].isdigit() else "_" + n
 
 
-def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
-    """YAML text for the new findings in a GridNodeSync export, and counts."""
+def _their_comment(o: dict) -> str:
+    """The comment a Ghidra user wrote (GridNodeSync exports it without GridNode's own part)."""
+    c = (o.get("comment") or "").strip()
+    return " ".join(c.split())[:400]
+
+
+def relay(doc: dict, who: str | None = None) -> dict:
+    """A GridNodeSync export (someone's Ghidra) as a GridNodeSync import for another Ghidra: their names
+    and comments, applied as GridNode's (so the importer's own names are kept)."""
+    if doc.get("format") != FORMAT_OUT:
+        raise ValueError(f"not a GridNodeSync export (format {doc.get('format')!r})")
+    whose = f"{who}'s Ghidra" if who else f"Ghidra ({doc.get('program', '?')})"
+    functions, labels = [], []
+    for f in doc.get("functions", []):
+        extra = f"Named in {whose} as {f['name']}"
+        if f.get("signatureUserDefined") and f.get("prototype"):
+            extra += f"; their prototype: {f['prototype']}"
+        mine = _their_comment(f)
+        functions.append({"name": f["name"], "va": int(f["va"]), "signature": "",
+                          "comment": f"GridNode [relay] ({whose})\n{extra}" + (f"\n{mine}" if mine else "")})
+    for g in doc.get("labels", []):
+        mine = _their_comment(g)
+        labels.append({"name": g["name"], "va": int(g["va"]), "type": "",
+                       "comment": f"GridNode [relay] ({whose})\nLabelled in {whose} as {g['name']}" + (f"\n{mine}" if mine else "")})
+    functions.sort(key=lambda f: f["va"])
+    labels.sort(key=lambda x: x["va"])
+    return {"format": FORMAT_IN, "version": VERSION, "structs": [], "functions": functions, "labels": labels}
+
+
+def from_ghidra(doc: dict, db: Database, who: str | None = None) -> tuple[str, dict]:
+    """YAML text for the new findings in a GridNodeSync export, and counts. `who`: whose Ghidra it
+    came from (added to each entry's sources and note)."""
     if doc.get("format") != FORMAT_OUT:
         raise ValueError(f"not a GridNodeSync export (format {doc.get('format')!r})")
     if doc.get("version") != VERSION:
@@ -171,6 +201,8 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
     taken = (set(db.functions) | set(db.globals) | set(db.code) | set(db.hooks) | set(db.classes) | set(db.structs)
              | set(db.constants))
 
+    whose = f"{who}'s Ghidra" if who else "Ghidra"
+    src = ["ghidra"] + ([_ident(who).lower()] if who else [])
     funcs, globs, renamed, members = [], [], [], {}
     for f in doc.get("functions", []):
         va, name = int(f["va"]), f["name"]
@@ -183,11 +215,15 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
             continue
         taken.add(ident)
         sig = _sig_from_ghidra(f.get("prototype", ""), known_types) if f.get("signatureUserDefined") else None
-        note = f"Named in Ghidra as {name}." + ("" if sig else " Signature not known yet.")
+        note = f"Named in {whose} as {name}." + ("" if sig else " Signature not known yet.")
+        if _their_comment(f):
+            note += " " + _their_comment(f)
         entry = {"name": ident, "va": va}
         if sig:
             entry["signature"] = sig
         entry["note"] = note
+        if who:
+            entry["sources"] = src
         funcs.append(entry)
     function_vas = {int(f["va"]) for f in doc.get("functions", [])}
     for g in doc.get("labels", []):
@@ -202,8 +238,11 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
         if ident in taken:
             continue
         taken.add(ident)
-        globs.append({"name": ident, "va": va, "type": ghidra_type(g.get("type") or "void*", known_types),
-                      "note": f"Labelled in Ghidra as {name}."})
+        entry = {"name": ident, "va": va, "type": ghidra_type(g.get("type") or "void*", known_types),
+                 "note": f"Labelled in {whose} as {name}." + (" " + _their_comment(g) if _their_comment(g) else "")}
+        if who:
+            entry["sources"] = src
+        globs.append(entry)
     for s in doc.get("structs", []):
         ann = db.classes.get(s["name"]) or db.structs.get(s["name"])
         have = {m.offset for m in ann.members} if ann else set()
@@ -240,7 +279,7 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
             for m in sorted(ms, key=lambda m: m["offset"]):
                 o.append(f"#     - {{ offset: {m['offset']:#x}, name: {m['name']}, type: \"{m['type']}\" }}")
     if renamed:
-        o.append("# Named differently in Ghidra (GridNode's name kept):")
+        o.append(f"# Named differently in {whose} (GridNode's name kept):")
         for va, ours, theirs in sorted(renamed):
             o.append(f"#   {va:#x}: GridNode {ours}, Ghidra {theirs}")
     counts = {"functions": len(funcs), "globals": len(globs), "members": sum(len(v) for v in members.values()),
@@ -251,5 +290,7 @@ def from_ghidra(doc: dict, db: Database) -> tuple[str, dict]:
 def _yaml(v) -> str:
     if isinstance(v, int) and not isinstance(v, bool):
         return f"{v:#x}"
+    if isinstance(v, list):
+        return "[" + ", ".join(str(x) for x in v) + "]"
     s = str(v)
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
