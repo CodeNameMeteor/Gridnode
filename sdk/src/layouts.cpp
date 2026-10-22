@@ -161,6 +161,7 @@ std::atomic<bool> g_autoload{false};
 // Experimental (2026-10-21): move group props where they are (collision instance, render object and
 // mesh streaming position) instead of making them standalone first. Not saved in layouts yet.
 std::atomic<bool> g_inPlaceGroups{false};
+std::atomic<bool> g_inPlaceStreamOne{false}; // test: also set the streaming value to 1 (the build before 2026-10-22's fix)
 
 // Key binds (layouts\settings.txt, "key_<id>=<name>"). Free-camera binds work only while it flies.
 struct Bind {
@@ -731,7 +732,34 @@ void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = f
     if (!mem::inImage(setT) || !renderWorld) return;
     alignas(16) gn_transform t = world;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    // The streaming record (MeshStreamingManager +0x350070, 0x20 each: radius, mesh u16, ..., centre xyz, value),
+    // logged before and after for the first moves (research: why a moved prop can vanish).
+    const uint32_t sh = mem::readOr<uint32_t>(obj + e::constant::RigidMeshEntity_StreamingHandle, 0xffffffffu);
+    const uintptr_t smgr = mem::readOr<uintptr_t>(mem::rva(e::global::MeshStreamingManager));
+    const uintptr_t sarr = smgr ? mem::readOr<uintptr_t>(smgr + 0x350070) : 0;
+    const uintptr_t srec = (sarr && sh != 0xffffffffu && sh < 0x100000u) ? sarr + uintptr_t(sh) * 0x20 : 0;
+    static std::atomic<int> recSaid{0};
+    const bool sayRec = streaming && srec && recSaid.fetch_add(1) < 6;
+    auto logRec = [&](const char* when) {
+        float r[8] = {};
+        uint16_t mesh = 0;
+        mem::read(srec, r, sizeof(r));
+        mem::read(srec + 4, &mesh, sizeof(mesh));
+        GN_LOG("layouts: streaming %08x %s: radius %.2f mesh %u centre (%.2f %.2f %.2f) value %g; render object sphere r %.2f, flags +0x88 %08x +0x90 %04x",
+               sh, when, r[0], mesh, r[4], r[5], r[6], r[7], mem::readOr<float>(obj + 0x5c), mem::readOr<uint32_t>(obj + 0x88),
+               mem::readOr<uint16_t>(obj + 0x90));
+    };
+    if (sayRec) {
+        GN_LOG("layouts: game streaming value (0x1419fd590) %g, mesh path %s", mem::readOr<float>(mem::rva(0x1419fd590)),
+               mem::readOr<uintptr_t>(mem::rva(0x142568ce8)) ? "WPR pool (0x143706f00)" : "direct");
+        logRec("before");
+    }
     reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
+    if (g_inPlaceStreamOne.load() && streaming && sh != 0xffffffffu && smgr && build::codeMatches("MeshStreaming_setTransform")) {
+        uint32_t h = sh;
+        reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, float)>(mem::rva(e::function::MeshStreaming_setTransform))(smgr, &h, &t, 1.f);
+    }
+    if (sayRec) logRec("after");
     alignas(16) uint8_t update[0x100] = {};
     // Set before building, as 0x14318fbc0 does (offsets from its local at rsp-0x148).
     const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(e::global::StaticModelGroup_LodScale));
@@ -3968,6 +3996,12 @@ void draw(bool* open) {
     {
         bool inPlace = g_inPlaceGroups.load();
         if (ImGui::Checkbox("Move group props in place (experimental)", &inPlace)) g_inPlaceGroups = inPlace;
+        if (inPlace) {
+            bool one = g_inPlaceStreamOne.load();
+            ImGui::SameLine();
+            if (ImGui::Checkbox("old streaming call (test)", &one)) g_inPlaceStreamOne = one;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Also sets the moved prop's streaming value to 1, as the build before this one did.\nFor comparing which way props stay visible.");
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Moves a group prop itself instead of hiding it and placing a standalone copy.\n"
                               "A test: such moves are not saved in the layout yet.");
