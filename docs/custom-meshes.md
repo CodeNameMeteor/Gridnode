@@ -11,8 +11,8 @@ You need Frosty Editor and Frosty Mod Manager with the Mirror's Edge Catalyst pr
 (or any tool that writes FBX). Frosty's licence (CC BY-NC-ND) means GridNode only tells you how to
 use it; it does not include or change it.
 
-The Frosty steps below are the usual workflow, but menu names differ between Frosty versions: where
-a step says "the mesh editor's Import", look for the equivalent in yours.
+Confirmed on 2026-10-22: a crate scaled three times, made this way, imported in Frosty and showed
+in game at the new size (with the original collision).
 
 ## Phase 1: replace a prop's mesh
 
@@ -27,30 +27,46 @@ for example `objects/props/.../crate_01_Mesh`. Note it.
 ### 2. Export it from Frosty
 
 1. Open Frosty Editor with the Catalyst profile.
-2. In the Data Explorer, find the mesh by the name you noted (the path, without `_Mesh` at the end
-   if it is not found with it).
-3. Open it and use the mesh editor's **Export** to write an FBX.
+2. In the Data Explorer, find the mesh by the name you noted (it ends in `_Mesh`).
+3. **Double-click it** to open its editor (a 3D preview with a toolbar above it), and use that
+   toolbar's **Export** to write an FBX. Keep this file: it is the *template* below.
 
-Starting from the game's own export keeps the structure Frosty expects on import: the LOD nodes and
-the mesh sections (one per material), with their names.
+Use the mesh editor's own **Export** and **Import** buttons. The Import in the Data Explorer's
+right-click menu is a different command (it asks for `.bin` / `.res` files).
 
 ### 3. Make your mesh in Blender
 
-1. Import the FBX.
-2. Replace the geometry inside each LOD's section with yours, **keeping the objects' names and the
-   hierarchy**. The simplest first test is a cube in place of LOD0's section, with the other LODs
-   copies of it.
-3. Keep one section per original section: each takes that section's material in game.
-4. Export as FBX with the same settings (scale 1, the axes as imported).
+Start from an empty scene, so Blender's default cube, camera and light do not end up in the file:
+**File > New > General**, then press **A**, **X**, **Delete**.
 
-Frostbite is Y-up and right-handed. If the mesh comes in turned or mirrored, fix the export axes, not
-the geometry.
+1. **File > Import > FBX**, the file from step 2. It comes in as one empty per LOD
+   (`<mesh>_lod0`, `_lod1`, ...) with the mesh's sections inside. Blender renames sections that
+   share a name (`Crate`, `Crate.001`, ...); that is fine, the tool below puts the names back.
+2. Change the meshes as you like: edit them, or replace them with your own shapes. Scale or turn
+   whole objects if you want; the tool applies that to the vertices. Keep a UV map on each mesh.
+3. **File > Export > FBX**, with **Geometry > Tangent Space** and **Triangulate Faces** ticked
+   (Frosty refuses a mesh without tangents: "Mesh must be exported with tangents/binormals").
 
-### 4. Import it and make a mod
+A first test that needs no modelling: select only the LOD empties (not the meshes), press **S**,
+**3**, **Enter** to make the mesh three times bigger, and export.
 
-1. In Frosty Editor, open the same mesh and use **Import** with your FBX.
-2. Check it in the mesh preview.
-3. **File > Export mod** (`.fbmod`), with a name and version.
+### 4. Make it Frosty's again, then import it
+
+Blender's file is not laid out the way Frosty reads it (renamed sections, transforms instead of
+vertices, values per polygon corner): imported as it is, the mesh is invisible. GridNode's tool puts
+your geometry into Frosty's own export, keeping its names and structure:
+
+```
+python tools/mesh/frosty_fbx.py <the template from step 2>.fbx <your Blender export>.fbx
+```
+
+It writes `<your Blender export>_frosty.fbx` and says, per LOD, what it took from your file, and
+the size of yours against the original. If it says your mesh was moved and you did not mean to
+move it (an easy accident when scaling several objects at once), run it again with `--no-move`.
+If it cannot match a section to an object, name the object to use with `--mesh NAME`.
+
+Then, in Frosty, open the same mesh, use its toolbar's **Import** with the `_frosty.fbx` file, and
+check the preview. **File > Export Mod** (`.fbmod`), with a name and version.
 
 ### 5. Play with it
 
@@ -64,8 +80,8 @@ the geometry.
 the prop's physics data, which this does not change. Pick a prop whose shape is close to your mesh,
 or accept that collision will not match for now.
 
-If the game crashes on load, the usual cause is a section or LOD missing or renamed: re-export the
-original and compare the hierarchy with yours.
+If the game crashes on load, or the mesh is invisible in Frosty's preview, run the tool again and
+read its notes; a Blender export imported without the tool is invisible.
 
 ## Phase 2: a new mesh alongside the originals (needs GridNode work)
 
