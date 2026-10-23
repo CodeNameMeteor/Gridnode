@@ -917,6 +917,15 @@ bool allocThunks() {
     return true;
 }
 
+// Executable code anywhere: the game's, or a hook's (GridNode's own detours, another mod's). A vtable slot
+// already hooked holds one of those; the vtable ends at the first slot that holds anything else.
+bool isCode(uintptr_t fn) {
+    if (mem::inImage(fn)) return true;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!fn || !VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT) return false;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+
 // The vtable(s) of `t` (and, with `sub`, of its subclasses), each slot that holds game code.
 std::string traceClass(const std::string& name, bool sub) {
     const Type* base = registry().find(name);
@@ -939,11 +948,14 @@ std::string traceClass(const std::string& name, bool sub) {
     }
     std::sort(vts.begin(), vts.end());
     vts.erase(std::unique(vts.begin(), vts.end(), [](const auto& a, const auto& b) { return a.first == b.first; }), vts.end());
+    std::unordered_map<uint64_t, uint64_t> hooked; // slot -> the game's function (the first hook's "previous")
+    for (const auto& [slotAddr, chain] : hooks().snapshot())
+        if (!chain.empty()) hooked[slotAddr] = chain.front().previous;
     for (const auto& [vt, ty] : vts) {
         ++tc.vtables;
         for (uint32_t off = 0; off < 0x800; off += 8) {
             const uintptr_t fn = mem::readOr<uintptr_t>(vt + off);
-            if (!mem::inImage(fn) && !mem::foreignCode(fn)) break; // the end of the vtable
+            if (!isCode(fn)) break; // the end of the vtable
             if (g_thunksUsed == kMaxTraceSlots) {
                 ++tc.failed;
                 continue;
@@ -952,7 +964,10 @@ std::string traceClass(const std::string& name, bool sub) {
             TraceSlot& rec = g_traceSlots.back();
             rec.cls = ty;
             rec.off = off;
-            rec.fn = mem::inImage(fn) ? mem::va(fn) : 0;
+            uint64_t game = fn;
+            if (!mem::inImage(fn)) // hooked already (by GridNode or another mod): the game's function is the first hook's "previous"
+                if (const auto it = hooked.find(vt + off); it != hooked.end()) game = it->second;
+            rec.fn = mem::inImage(static_cast<uintptr_t>(game)) ? mem::va(static_cast<uintptr_t>(game)) : 0;
             rec.on = &tc.on;
             uint8_t* t = g_thunks + g_thunksUsed * kThunkSize;
             writeThunk(t, &rec);
