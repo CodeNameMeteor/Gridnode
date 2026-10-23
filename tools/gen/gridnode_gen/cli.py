@@ -5,6 +5,8 @@
   gridnode types --reflected FILE --out FILE  write gridnode/generated/types.hpp
   gridnode setup --dump FILE                  install your dump and generate types.hpp
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
+  gridnode fingerprint IMAGE [--write] [--mecmp DIR] [--add NAME]
+                                              fingerprint bytes from a dump of the game (GridNode and MECMP)
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
   gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
   gridnode docs [--reflected FILE] [--build]   the docs site (with a dump: the full reference, local)
@@ -111,6 +113,16 @@ def _main(argv=None) -> int:
 
     vi = sub.add_parser("verify-image", help="check the annotations against a PE dump of the game")
     vi.add_argument("image")
+
+    fp = sub.add_parser("fingerprint", help="check / write fingerprint bytes from a dump of the game (GridNode menu -> Game image)")
+    fp.add_argument("image", help="the dump (bin/dumps/MirrorsEdgeCatalyst-*.exe)")
+    fp.add_argument("--write", action="store_true", help="put the image's bytes into the entries that differ")
+    fp.add_argument("--mecmp", help="also MECMP's src/game/fingerprint.cpp, in this MECMP checkout")
+    fp.add_argument("--add", metavar="NAME", help="add a code entry for this function / code site (or address)")
+    fp.add_argument("--skip", type=lambda v: int(v, 0), default=0, help="with --add: bytes to skip at the start")
+    fp.add_argument("--length", type=int, default=16, help="with --add: how many bytes (1..32, default 16)")
+    fp.add_argument("--required", action="store_true", help="with --add: a mismatch stops GridNode (default: optional)")
+    fp.add_argument("--note", default="", help="with --add: a note")
 
     c = sub.add_parser("compare", help="compare a GridNode dump with a FrostbiteTypeDumper dump")
     c.add_argument("gridnode")
@@ -341,6 +353,41 @@ def _main(argv=None) -> int:
         print(f"{n} checks against {os.path.basename(a.image)} (timestamp {img.timestamp:#x}): "
               f"{len(q.errors)} errors, {len(q.warnings)} warnings")
         return 1 if q.errors else 0
+
+    if a.cmd == "fingerprint":
+        from . import fingerprint_gen, pe_image
+        db, _, p = _load(a.annotations, None, quiet=True)
+        if p.errors:
+            return 1
+        img = pe_image.PeImage(_find(a.image, "image"))
+        fp_yaml = os.path.join(a.annotations, "fingerprint.yaml")
+        if a.add:
+            try:
+                line = fingerprint_gen.add_gridnode(fp_yaml, db, img, a.add, a.skip, a.length, a.required, a.note)
+            except ValueError as e:
+                raise UserError(str(e))
+            print(f"added to {fp_yaml}:\n{line}", end="")
+            db, _, p = _load(a.annotations, None, quiet=True)
+            if p.errors:
+                return 1
+        bad = 0
+        res = fingerprint_gen.check_gridnode(db, img)
+        print(fingerprint_gen.report(res, "GridNode fingerprint.yaml"), end="")
+        bad += sum(1 for r in res if not r.ok and r.required)
+        if a.write:
+            n = fingerprint_gen.write_gridnode(fp_yaml, res)
+            print(f"  {n} code entr{'y' if n == 1 else 'ies'} rewritten from the image" + (" (check their notes)" if n else ""))
+        if a.mecmp:
+            try:
+                mres = fingerprint_gen.check_mecmp(a.mecmp, img)
+            except ValueError as e:
+                raise UserError(str(e))
+            print(fingerprint_gen.report(mres, "MECMP fingerprint.cpp"), end="")
+            bad += sum(1 for r in mres if not r.ok)
+            if a.write:
+                n = fingerprint_gen.write_mecmp(a.mecmp, mres)
+                print(f"  {n} code entr{'y' if n == 1 else 'ies'} rewritten from the image" + (" (check the comments above them)" if n else ""))
+        return 1 if bad and not a.write else 0
 
     if a.cmd == "compare":
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

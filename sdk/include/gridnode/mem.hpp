@@ -110,6 +110,10 @@ bool patchModulePointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
 // Executable code of another loaded module (not the game, not GridNode): another mod's hook in a slot
 // GridNode also wraps (MECMP's tick hook). `module` gets its file name.
 bool foreignCode(uintptr_t fn, std::string* module = nullptr);
+// Writes the running game's image as a PE file laid out as in memory (each section's file offset is its RVA), for
+// `gridnode.py fingerprint` and `verify-image`: the decrypted code as it runs. Pages that cannot be read are zeros.
+// `path`: the file written; `why`: what failed. Any thread; reads about SizeOfImage bytes (~115 MB).
+bool dumpImage(const std::wstring& path, std::string* why = nullptr);
 
 // MemoryView over this process (for gn::reflect).
 class ProcessMemory final : public reflect::MemoryView {

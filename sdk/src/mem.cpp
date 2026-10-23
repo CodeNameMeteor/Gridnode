@@ -1,5 +1,10 @@
 #include "gridnode/mem.hpp"
 
+#include <cstdio>
+#include <vector>
+
+#include "gridnode/log.hpp"
+
 namespace gn::mem {
 
 const std::vector<Section>& imageSections() {
@@ -84,6 +89,44 @@ bool foreignCode(uintptr_t fn, std::string* module) {
             if (name[i] == '\\' || name[i] == '/') base = name + i + 1;
         *module = base;
     }
+    return true;
+}
+
+bool dumpImage(const std::wstring& path, std::string* why) {
+    auto fail = [&](const char* w) {
+        if (why) *why = w;
+        return false;
+    };
+    const uintptr_t base = moduleBase();
+    const IMAGE_NT_HEADERS* nt = ntHeaders();
+    const size_t size = nt->OptionalHeader.SizeOfImage;
+    const size_t headers = nt->OptionalHeader.SizeOfHeaders;
+    if (!size || headers > size) return fail("the image headers are unreadable");
+    std::vector<uint8_t> img(size, 0);
+    // Page by page: a page that cannot be read (a guard page, decommitted) stays zero.
+    size_t unreadable = 0;
+    for (size_t off = 0; off < size; off += 0x1000) {
+        const size_t n = (size - off) < 0x1000 ? size - off : 0x1000;
+        if (!read(base + off, img.data() + off, n)) ++unreadable;
+    }
+    // Headers: the image base as loaded, and every section's file offset = its RVA (a memory-layout file).
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(img.data());
+    auto* fileNt = reinterpret_cast<IMAGE_NT_HEADERS*>(img.data() + dos->e_lfanew);
+    fileNt->OptionalHeader.ImageBase = static_cast<ULONGLONG>(layout::kImageBase);
+    fileNt->OptionalHeader.FileAlignment = fileNt->OptionalHeader.SectionAlignment;
+    IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(fileNt);
+    for (WORD i = 0; i < fileNt->FileHeader.NumberOfSections; ++i) {
+        const DWORD vsize = sec[i].Misc.VirtualSize ? sec[i].Misc.VirtualSize : sec[i].SizeOfRawData;
+        sec[i].PointerToRawData = sec[i].VirtualAddress;
+        sec[i].SizeOfRawData = sec[i].VirtualAddress + vsize <= size ? vsize : static_cast<DWORD>(size - sec[i].VirtualAddress);
+    }
+    FILE* f = _wfopen(path.c_str(), L"wb");
+    if (!f) return fail("the file could not be created");
+    const bool ok = fwrite(img.data(), 1, img.size(), f) == img.size();
+    fclose(f);
+    if (!ok) return fail("the file could not be written (disk full?)");
+    GN_LOG("image: %llu MB written to %ls (%llu unreadable pages left as zeros)", static_cast<unsigned long long>(size >> 20),
+           path.c_str(), static_cast<unsigned long long>(unreadable));
     return true;
 }
 

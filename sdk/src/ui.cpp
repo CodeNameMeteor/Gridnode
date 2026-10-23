@@ -26,6 +26,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "backends/imgui_impl_dx11.h"
@@ -427,6 +428,47 @@ void drawMain() {
             ImGui::Text("Server character %p", sc);
             if (sc && entityTransform(sc, t)) ImGui::Text("  at %.2f, %.2f, %.2f", t.trans[0], t.trans[1], t.trans[2]);
             else if (sc) ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "  position unreadable");
+        }
+        if (g_settings.devInfo && ImGui::CollapsingHeader("Game image")) {
+            ImGui::TextWrapped("Saves the running game's code and data as a file (dumps\\*.exe next to gridnode.dll) for "
+                               "gridnode.py fingerprint and verify-image. About 115 MB. Never share or commit it.");
+            static std::atomic<int> state{0}; // 0 idle, 1 writing, 2 done, 3 failed
+            static std::mutex textM;
+            static std::string text;
+            ImGui::BeginDisabled(state.load() == 1);
+            if (ImGui::Button("Dump the game image")) {
+                state = 1;
+                std::thread([] {
+                    wchar_t mod[MAX_PATH] = {};
+                    HMODULE self = nullptr;
+                    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(&mem::dumpImage), &self);
+                    GetModuleFileNameW(self, mod, MAX_PATH);
+                    std::wstring dir(mod);
+                    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1) + L"dumps";
+                    CreateDirectoryW(dir.c_str(), nullptr);
+                    SYSTEMTIME t;
+                    GetLocalTime(&t);
+                    wchar_t name[64];
+                    swprintf(name, 64, L"\\MirrorsEdgeCatalyst-%04u%02u%02u-%02u%02u%02u.exe", t.wYear, t.wMonth, t.wDay, t.wHour,
+                             t.wMinute, t.wSecond);
+                    const std::wstring path = dir + name;
+                    std::string why;
+                    const bool ok = mem::dumpImage(path, &why);
+                    std::lock_guard<std::mutex> lock(textM);
+                    char buf[600];
+                    if (ok) snprintf(buf, sizeof(buf), "Written: %ls", path.c_str());
+                    else snprintf(buf, sizeof(buf), "Failed: %s", why.c_str());
+                    text = buf;
+                    state = ok ? 2 : 3;
+                }).detach();
+            }
+            ImGui::EndDisabled();
+            if (state.load() == 1) ImGui::TextDisabled("Writing...");
+            else if (state.load() >= 2) {
+                std::lock_guard<std::mutex> lock(textM);
+                ImGui::TextWrapped("%s", text.c_str());
+            }
         }
         if (g_settings.devInfo && ImGui::CollapsingHeader("Hooks")) {
             ImGui::Text("%llu pointer hooks installed", static_cast<unsigned long long>(hooks().count()));

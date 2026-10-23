@@ -395,3 +395,75 @@ class OptionalSignature(unittest.TestCase):
             self.assertEqual(p.errors, [])
             self.assertIsNone(db.functions["Mystery"].signature)
             self.assertIn("Mystery = 0x140001000", emit_engine.emit(db))
+
+
+def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000):
+    """A minimal 64-bit PE: .text at base+0x1000 (code), .rdata at base+0x2000 (rdata)."""
+    import struct
+    d = bytearray(0x3000)
+    d[0:2] = b"MZ"
+    struct.pack_into("<I", d, 0x3C, 0x40)
+    d[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<HHI", d, 0x44, 0x8664, 2, 0x12345678)
+    struct.pack_into("<H", d, 0x54, 0xF0)
+    opt = 0x58
+    struct.pack_into("<H", d, opt, 0x20B)
+    struct.pack_into("<Q", d, opt + 24, base)
+    struct.pack_into("<II", d, opt + 32, 0x1000, 0x1000)
+    struct.pack_into("<I", d, opt + 56, 0x3000)
+    sh = opt + 0xF0
+    for i, (name, rva, ch) in enumerate(((b".text", 0x1000, 0x60000020), (b".rdata", 0x2000, 0x40000040))):
+        h = sh + i * 40
+        d[h:h + 8] = name.ljust(8, b"\0")
+        struct.pack_into("<IIII", d, h + 8, 0x1000, rva, 0x1000, rva)
+        struct.pack_into("<I", d, h + 36, ch)
+    d[0x1000:0x1000 + len(code)] = code
+    d[0x2000:0x2000 + len(rdata)] = rdata
+    with open(path, "wb") as f:
+        f.write(d)
+
+
+class Fingerprints(unittest.TestCase):
+    def test_gridnode_and_mecmp(self):
+        import struct
+        from gridnode_gen import fingerprint_gen, pe_image
+        code = bytes.fromhex("4C 89 CB 41 B9 0F A2 C3 90 C3") + b"\x90" * 6 + bytes.fromhex("48 89 E0 57 48 83 EC 70")
+        rdata = struct.pack("<Q", 0x140001000)  # a vtable slot holding the first function
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _fake_pe(exe, code, rdata)
+            img = pe_image.PeImage(exe)
+            ann = os.path.join(d, "ann")
+            os.mkdir(ann)
+            with open(os.path.join(ann, "core.yaml"), "w") as f:
+                f.write("functions:\n  - { name: FnA, va: 0x140001000 }\n  - { name: FnB, va: 0x140001010 }\n")
+            fpy = os.path.join(ann, "fingerprint.yaml")
+            with open(fpy, "w") as f:
+                f.write('fingerprint:\n  code:\n    - { at: FnA, bytes: "49 8B D9 41 B9", note: "mov rbx,r9" }\n')
+            db, p = annotations.load(ann)
+            self.assertEqual(p.errors, [])
+            res = fingerprint_gen.check_gridnode(db, img)
+            self.assertEqual([r.ok for r in res], [False])
+            self.assertEqual(fingerprint_gen.write_gridnode(fpy, res), 1)
+            self.assertIn('bytes: "4C 89 CB 41 B9"', open(fpy).read())
+            fingerprint_gen.add_gridnode(fpy, annotations.load(ann)[0], img, "FnB", length=8)
+            db, p = annotations.load(ann)
+            self.assertEqual(p.errors, [])
+            self.assertTrue(all(r.ok for r in fingerprint_gen.check_gridnode(db, img)))
+            # MECMP
+            m = os.path.join(d, "mecmp", "src", "game")
+            os.makedirs(m)
+            with open(os.path.join(m, "engine.h"), "w") as f:
+                f.write("constexpr uintptr_t Fn_A = 0x140001000;\nconstexpr uintptr_t Fn_B = 0x140001010;\n"
+                        "constexpr uintptr_t Vtbl_X = 0x140002000;\nconstexpr size_t Off_A = 0x0, Off_B = 0x8;\n")
+            with open(os.path.join(m, "fingerprint.cpp"), "w") as f:
+                f.write('const Slot kSlots[] = {\n    {"X::a", Vtbl_X, Off_A, Fn_A},\n};\n'
+                        'const Code kCode[] = {\n    {"A", Fn_A, 0, {0x49, 0x8B, 0xD9}, 3},\n'
+                        '    {"B", Fn_B, 0,\n     {0x48, 0x8B, 0xC4, 0x57}, 4},\n};\n')
+            mres = fingerprint_gen.check_mecmp(os.path.join(d, "mecmp"), img)
+            self.assertEqual({r.what: r.ok for r in mres}, {"X::a": True, "A": False, "B": False})
+            self.assertEqual(fingerprint_gen.write_mecmp(os.path.join(d, "mecmp"), mres), 2)
+            text = open(os.path.join(m, "fingerprint.cpp")).read()
+            self.assertIn("{0x4C, 0x89, 0xCB}, 3}", text)
+            self.assertIn("{0x48, 0x89, 0xE0, 0x57}, 4}", text)
+            self.assertTrue(all(r.ok for r in fingerprint_gen.check_mecmp(os.path.join(d, "mecmp"), img)))

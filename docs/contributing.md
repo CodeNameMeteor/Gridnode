@@ -93,3 +93,23 @@ python tools/gen/gridnode.py annotations-diff OTHER --inbox db/annotations-inbox
 Entries are matched by section and name, and functions, globals, code sites and hooks also by address
 (a rename at the same address shows as one). Classes and structs are compared member by member,
 virtual by virtual. The inbox keeps each entry's confidence and sources and notes what changed.
+
+## Fingerprints from the game
+
+Fingerprint bytes come from the game, not from a disassembly listing: an instruction can be encoded
+several ways (`mov rbx,r9` is `49 8B D9` or `4C 89 CB`), and a listing does not say which one the game uses.
+
+1. In game: GridNode menu → **Game image** → **Dump the game image**. It writes
+   `bin/dumps/MirrorsEdgeCatalyst-<time>.exe`, the running game's code and data (about 115 MB). It
+   is game data: never share or commit it.
+2. Check, and put the image's bytes into the entries that differ:
+
+```text
+python tools/gen/gridnode.py fingerprint bin/dumps/MirrorsEdgeCatalyst-....exe                  # check
+python tools/gen/gridnode.py fingerprint DUMP --write                                           # fix fingerprint.yaml
+python tools/gen/gridnode.py fingerprint DUMP --add Console_executeCommand --length 16          # a new entry
+python tools/gen/gridnode.py fingerprint DUMP --mecmp D:/Dev/MECMP [--write]                    # MECMP's fingerprint.cpp too
+```
+
+Slots (vtable entries, hooks) are checked as well. After `--write`, read the notes and comments next
+to the rewritten entries: they may still describe the old bytes.
