@@ -334,6 +334,16 @@ functions:
     note: "ClientSpawnEntity_lastSpawned when it is a ClientCharacterEntity. The map's echo and the Your Echo screen take their character with it."
     confidence: confirmed
     sources: [research]
+  - name: ClientCharacterSpawnEntity_lastSpawnedTarget
+    va: 0x1432a92f0
+    note: "Vtable +0x50. Fills out[1] with the last spawned client character's +0x218 (ClientSpawnEntity_lastSpawned); what a connection into a spawned blueprint resolves through (Entity_resolveLinkedEntity). Seen in a trace (2026-10-23) when the map opened."
+    confidence: inferred
+    sources: [research]
+  - name: Entity_resolveLinkedEntity
+    va: 0x142d46db0
+    note: "Finds the GameObjectData entity linked to an entity (its bus +0x20, data +0x28, a link id). A ReferenceObjectData target gives its bus; any other (a spawner) is asked through vtable +0x50 for its last spawned target, then the object is looked up in that bus (0x143145050). So connections into a spawner's blueprint reach its *last* spawned character. Called from property delivery (0x142a4298b)."
+    confidence: inferred
+    sources: [research]
   - name: PamServerReplayEntity_onEvent
     va: 0x14396d750
     note: "Vtable +0x20. StartReplay (0x2734a476) -> PamServerReplayEntity_startReplay; StopReplay (0xd6a2182e) flags the entity for its updater, which unspawns."
