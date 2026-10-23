@@ -25,13 +25,14 @@ Result HookTable::install(const std::string& owner, uint64_t slot, uint64_t expe
     uint64_t current = 0;
     if (!io_.read(slot, current)) return fail(Result::Slot, "slot " + hex(slot) + " is not readable");
     auto& chain = slots_[slot];
+    const bool foreign = io_.isForeignHook && io_.isForeignHook(current);
     if (chain.empty()) {
-        if (expected ? current != expected : !io_.isGameCode(current)) {
+        if (!foreign && (expected ? current != expected : !io_.isGameCode(current))) {
             slots_.erase(slot);
             return fail(Result::Slot, "slot " + hex(slot) + " holds " + hex(current) + ", expected " +
                                           (expected ? hex(expected) : std::string("a game function")));
         }
-    } else if (current != chain.back().detour) {
+    } else if (current != chain.back().detour && !foreign) {
         return fail(Result::Slot, "slot " + hex(slot) + " was changed outside GridNode (holds " + hex(current) +
                                       ", last hook " + hex(chain.back().detour) + ")");
     }

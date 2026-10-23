@@ -66,6 +66,27 @@ bool patchableSlot(uintptr_t addr) {
     return true;
 }
 
+bool foreignCode(uintptr_t fn, std::string* module) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!fn || inImage(fn) || !VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi))) return false;
+    const DWORD exec = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (mbi.State != MEM_COMMIT || !(mbi.Protect & exec)) return false;
+    HMODULE owner = nullptr, self = nullptr;
+    const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+    if (!GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(fn), &owner) || !owner) return false;
+    GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(&foreignCode), &self);
+    if (owner == self || owner == GetModuleHandleW(nullptr)) return false;
+    if (module) {
+        char name[MAX_PATH] = {};
+        const DWORD n = GetModuleFileNameA(owner, name, MAX_PATH);
+        const char* base = name;
+        for (DWORD i = 0; i < n; ++i)
+            if (name[i] == '\\' || name[i] == '/') base = name + i + 1;
+        *module = base;
+    }
+    return true;
+}
+
 namespace {
 bool writeSlot(uintptr_t addr, uintptr_t value, uintptr_t* old) {
     // Keep the page executable if it is: in this game every page of the image is, and code may share

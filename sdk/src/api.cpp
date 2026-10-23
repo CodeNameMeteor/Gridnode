@@ -26,6 +26,7 @@ hook::HookTable& hooks() {
                 if (s.region.code && fn >= s.region.begin && fn < s.region.end) return true;
             return false;
         },
+        [](uint64_t fn) { return mem::foreignCode(static_cast<uintptr_t>(fn)); },
     });
     return t;
 }

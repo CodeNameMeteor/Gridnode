@@ -131,6 +131,26 @@ void testHookTable() {
     mem[0x1000] = 0xEE;
     CHECK(t.install("d", 0x1000, 0xA0, 0xD5, &orig3, &why) == hook::Result::Slot);
     CHECK(why.find("changed outside GridNode") != std::string::npos);
+    // Another mod's hook (foreign code) in a fresh slot or on top of ours: chained, not refused
+    hook::HookTable f({[&](uint64_t s, uint64_t& v) {
+                           auto it = mem.find(s);
+                           if (it == mem.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           mem[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; },
+                       [](uint64_t fn) { return fn >= 0xF00 && fn < 0xF10; }});
+    mem[0x1018] = 0xF01; // e.g. MECMP's tick hook, installed before GridNode
+    uint64_t origF = 0;
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD6, &origF, &why) == hook::Result::Ok && origF == 0xF01 && mem[0x1018] == 0xD6);
+    mem[0x1018] = 0xF02; // another mod went on top of GridNode's hook
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD7, &origF, &why) == hook::Result::Ok && origF == 0xF02 && mem[0x1018] == 0xD7);
+    mem[0x1018] = 0x55; // not code at all: still refused
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD8, &origF, &why) == hook::Result::Slot);
     // Bad arguments
     CHECK(t.install("e", 0x1004, 0, 0xD6, &orig3, &why) == hook::Result::Argument); // misaligned
     CHECK(t.install("e", 0x2000, 0, 0xD6, &orig3, &why) == hook::Result::Slot);     // unreadable

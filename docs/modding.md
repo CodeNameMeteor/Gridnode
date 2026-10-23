@@ -110,6 +110,11 @@ first release). GridNode checks the slot holds the expected function before swap
 chains hooks: if two mods hook the same slot, the second one's `original` is the first one's
 detour. Always call `original`. Hooks stay for the life of the process.
 
+Another mod's hook in a slot GridNode wraps (MECMP's ServerGameWorld tick, for one) is chained
+the same way, whichever was loaded first: a slot that holds code of another loaded module is
+taken as that mod's detour, not as a different game build. The build check reports it as a
+warning, and GridNode's hook calls it as its `original`.
+
 A vtable hook affects every object of that class (and of subclasses that inherit the slot):
 filter inside the detour if you only care about some objects.
 
