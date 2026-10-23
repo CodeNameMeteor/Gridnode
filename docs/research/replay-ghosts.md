@@ -98,6 +98,19 @@ MECMP already spawns ghosts the same way the mission does (spawner vtable +0xd0 
    useTransform 1 with its own transform is the same call with the other choice.
 5. **Driving it.** The character has the replay player component MECMP already writes poses into.
 
+## The map's echo (recording 2026-10-23, "open map")
+
+Opening the map plays an echo too, the same way: 0.39 s in, **StartReplay** (`0x2734a476`) reaches a
+`PamServerReplayEntity` through a network message from the client (stack 0x14314e759 ← 0x143364d03
+← 0x142a395b9 message dispatch), and the client replay entity gets **CharacterSpawned**
+(`0xa29c98e6`, from 0x1431c7faa) at once. No character entity was created in the recording: the
+replay entity found its spawner's last character and reused it (it only spawns when there is
+none). In MECMP's log for the same action, its ghost's client component stopped accepting poses at
+that moment ("rejects the pose", the bone-count flag +0x2e4 cleared), which fits the map's replay
+reaching a character spawner MECMP's ghosts came from (the city-ghost spawner). MECMP's own spawner
+keeps its ghosts out of it; to confirm with that build. Still open: which spawner this replay entity
+is linked to, and what the client replay entity does on CharacterSpawned (0x1431c7faa).
+
 Still to find:
 
 - 0x14338e5d0 in full (what destroying the character involves), and whether +0x108 must run on the
