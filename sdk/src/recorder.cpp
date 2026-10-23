@@ -817,7 +817,8 @@ struct TracedClass {
     std::atomic<bool> on{true};
     size_t vtables = 0, slots = 0, failed = 0;
 };
-constexpr size_t kThunkSize = 0xa0;       // code (0x8c bytes) + the original's address + padding
+constexpr size_t kThunkSize = 0xb0;       // code (0x95 bytes), padding, the original's address at kCell
+constexpr size_t kCell = 0xa0;
 constexpr size_t kMaxTraceSlots = 4096;
 std::atomic<uint32_t> g_callsPerSecond{20};
 std::mutex g_traceM;
@@ -827,7 +828,35 @@ uint8_t* g_thunks = nullptr;             // kMaxTraceSlots thunks, RWX, ours
 RUNTIME_FUNCTION* g_thunkFns = nullptr;
 size_t g_thunksUsed = 0;                 // (g_traceM)
 
-void traceCall(TraceSlot* s, uintptr_t self, uintptr_t ret) {
+// The stack from the caller on (the thunk passes the caller's rsp as it will be after the return): the caller's
+// frame and its callers, unwound from there with the image's unwind data. RtlCaptureStackBackTrace from inside
+// traceCall gave nothing through the thunk.
+void callerStack(uintptr_t ret, uintptr_t rsp, std::vector<uint64_t>& out) {
+    if (!g_wantStacks.load(std::memory_order_relaxed)) return;
+    CONTEXT ctx;
+    RtlCaptureContext(&ctx);
+    ctx.Rip = ret;
+    ctx.Rsp = rsp;
+    for (int i = 0; i < kStackFrames && ctx.Rip; ++i) {
+        if (!mem::inImage(ctx.Rip)) break;
+        out.push_back(ctx.Rip - mem::moduleBase() + kImageBase);
+        DWORD64 base = 0;
+        PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &base, nullptr);
+        if (!rf) { // a leaf: the return address is at rsp
+            uintptr_t r = 0;
+            if (!mem::read(static_cast<uintptr_t>(ctx.Rsp), r)) break;
+            ctx.Rip = r;
+            ctx.Rsp += 8;
+            continue;
+        }
+        void* handler = nullptr;
+        DWORD64 frame = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, rf, &ctx, &handler, &frame, nullptr);
+        if (ctx.Rsp < rsp || ctx.Rsp - rsp > 0x100000) break; // left this thread's stack: stop
+    }
+}
+
+void traceCall(TraceSlot* s, uintptr_t self, uintptr_t ret, uintptr_t callerRsp) {
     if (!g_recording.load(std::memory_order_relaxed) || !s->on->load(std::memory_order_relaxed)) return;
     LARGE_INTEGER c;
     QueryPerformanceCounter(&c);
@@ -851,13 +880,13 @@ void traceCall(TraceSlot* s, uintptr_t self, uintptr_t ret) {
         ev.callFn = s->fn;
         ev.callFrom = mem::inImage(ret) ? mem::va(ret) : 0;
         ev.callSkipped = s->skipped.exchange(0, std::memory_order_relaxed);
-        captureStack(ev.stack);
+        callerStack(ret, callerRsp, ev.stack);
         push(std::move(ev));
     } catch (...) { // recording never breaks the game's call
     }
 }
 
-// One thunk at `t` for record `rec`, jumping to *(t + 0x90) (the original, written by the hook table).
+// One thunk at `t` for record `rec`, jumping to *(t + kCell) (the original, written by the hook table).
 void writeThunk(uint8_t* t, TraceSlot* rec) {
     static const uint8_t kHead[] = {
         0x48, 0x81, 0xEC, 0x98, 0x00, 0x00, 0x00, // sub rsp,98h
@@ -871,6 +900,7 @@ void writeThunk(uint8_t* t, TraceSlot* rec) {
         0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x70,       // movdqu [rsp+70h],xmm3
         0x48, 0x89, 0xCA,                         // mov rdx,rcx (the object)
         0x4C, 0x8B, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov r8,[rsp+98h] (the return address)
+        0x4C, 0x8D, 0x8C, 0x24, 0xA0, 0x00, 0x00, 0x00, // lea r9,[rsp+0A0h] (the caller's rsp after the return)
         0x48, 0xB9};                              // mov rcx,imm64 (the record)
     static const uint8_t kMid[] = {0x48, 0xB8};  // mov rax,imm64 (traceCall)
     static const uint8_t kTail[] = {
@@ -892,9 +922,9 @@ void writeThunk(uint8_t* t, TraceSlot* rec) {
     memcpy(p, kMid, sizeof(kMid)), p += sizeof(kMid);
     memcpy(p, &fnAddr, 8), p += 8;
     memcpy(p, kTail, sizeof(kTail)), p += sizeof(kTail);
-    const int32_t disp = static_cast<int32_t>((t + 0x90) - (p + 4)); // the original's cell
+    const int32_t disp = static_cast<int32_t>((t + kCell) - (p + 4)); // the original's cell
     memcpy(p, &disp, 4), p += 4;
-    memset(p, 0xCC, static_cast<size_t>((t + 0x90) - p));
+    memset(p, 0xCC, static_cast<size_t>((t + kCell) - p));
 }
 
 bool allocThunks() {
@@ -909,7 +939,7 @@ bool allocThunks() {
     g_thunkFns = new RUNTIME_FUNCTION[kMaxTraceSlots];
     for (size_t i = 0; i < kMaxTraceSlots; ++i) {
         g_thunkFns[i].BeginAddress = static_cast<DWORD>(i * kThunkSize);
-        g_thunkFns[i].EndAddress = static_cast<DWORD>(i * kThunkSize + 0x90);
+        g_thunkFns[i].EndAddress = static_cast<DWORD>(i * kThunkSize + kCell);
         g_thunkFns[i].UnwindData = static_cast<DWORD>(kMaxTraceSlots * kThunkSize);
     }
     if (!RtlAddFunctionTable(g_thunkFns, static_cast<DWORD>(kMaxTraceSlots), reinterpret_cast<DWORD64>(g_thunks)))
@@ -972,7 +1002,7 @@ std::string traceClass(const std::string& name, bool sub) {
             uint8_t* t = g_thunks + g_thunksUsed * kThunkSize;
             writeThunk(t, &rec);
             std::string why;
-            const auto r = hooks().install("recorder-trace", vt + off, 0, reinterpret_cast<uint64_t>(t), reinterpret_cast<uint64_t*>(t + 0x90), &why);
+            const auto r = hooks().install("recorder-trace", vt + off, 0, reinterpret_cast<uint64_t>(t), reinterpret_cast<uint64_t*>(t + kCell), &why);
             if (r == hook::Result::Ok) {
                 ++g_thunksUsed;
                 ++tc.slots;
