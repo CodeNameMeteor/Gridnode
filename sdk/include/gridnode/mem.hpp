@@ -107,6 +107,9 @@ bool patchPointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
 // The same swap for a slot of another loaded module (DXGI's swap chain vtable, for the overlay):
 // aligned, inside that module's image, in a section that is not code.
 bool patchModulePointer(uintptr_t addr, uintptr_t value, uintptr_t* old);
+// Executable code of another loaded module (not the game, not GridNode): another mod's hook in a slot
+// GridNode also wraps (MECMP's tick hook). `module` gets its file name.
+bool foreignCode(uintptr_t fn, std::string* module = nullptr);
 
 // MemoryView over this process (for gn::reflect).
 class ProcessMemory final : public reflect::MemoryView {

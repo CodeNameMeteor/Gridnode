@@ -17,6 +17,9 @@ struct SlotAccess {
     std::function<bool(uint64_t slot, uint64_t value)> write;
     // Is this a function in the game image? (used when no expected value is given)
     std::function<bool(uint64_t fn)> isGameCode;
+    // Optional: is this another mod's hook (code of another loaded module)? Such a slot is chained
+    // instead of refused, so GridNode and MECMP can be loaded in either order.
+    std::function<bool(uint64_t fn)> isForeignHook;
 };
 
 struct Entry {
@@ -34,7 +37,8 @@ public:
     // slot and expected are runtime addresses. expected = 0: any game function.
     // A slot may be hooked several times: each hook receives the previous one as its original.
     // Refused when the slot does not hold the expected game function (first hook) or no longer
-    // holds the last hook GridNode installed (someone else changed it).
+    // holds the last hook GridNode installed (someone else changed it), unless what it holds is
+    // another mod's hook (isForeignHook): then GridNode goes on top and calls that hook.
     Result install(const std::string& owner, uint64_t slot, uint64_t expected, uint64_t detour, uint64_t* original,
                    std::string* why = nullptr);
 
