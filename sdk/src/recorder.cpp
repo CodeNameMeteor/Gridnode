@@ -1505,9 +1505,39 @@ void draw(bool* open) {
         ImGui::SameLine();
         ImGui::Checkbox("and subclasses", &sub);
         ImGui::SameLine();
-        ImGui::BeginDisabled(!registry().find(cls));
-        if (ImGui::Button("Trace")) said = traceClass(cls, sub);
+        // The name as typed, else the one class whose name matches it ignoring case.
+        std::string want = cls;
+        if (!want.empty() && !registry().find(want)) {
+            auto lower = [](std::string v) {
+                for (char& ch : v) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+                return v;
+            };
+            const std::string l = lower(want);
+            for (const Type& t : registry().data().types)
+                if (t.category == reflect::Category::Class && lower(t.name) == l) {
+                    want = t.name;
+                    break;
+                }
+        }
+        const bool known = !want.empty() && registry().find(want);
+        ImGui::BeginDisabled(!known);
+        if (ImGui::Button("Trace")) said = traceClass(want, sub);
         ImGui::EndDisabled();
+        if (cls[0] && !known) {
+            // Up to five classes whose name contains what was typed.
+            std::string hint;
+            int n = 0;
+            for (const Type& t : registry().data().types) {
+                if (t.category != reflect::Category::Class || t.vtables.empty()) continue;
+                std::string a2 = t.name, b2 = cls;
+                for (char& ch : a2) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+                for (char& ch : b2) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+                if (a2.find(b2) == std::string::npos) continue;
+                hint += (n ? ", " : "") + t.name;
+                if (++n == 5) break;
+            }
+            ImGui::TextColored(ImVec4(1.f, 0.6f, 0.4f, 1.f), "No class named \"%s\".%s%s", cls, n ? " Did you mean: " : "", hint.c_str());
+        }
         int cps = static_cast<int>(g_callsPerSecond.load());
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
         if (ImGui::SliderInt("calls a second per slot", &cps, 1, 200)) g_callsPerSecond = static_cast<uint32_t>(cps);
