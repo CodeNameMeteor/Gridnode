@@ -58,6 +58,27 @@ level's connections would: the entity's `onEvent` (vtable +0x20) with an `Entity
 recording. It is a research tool: an event the class does not expect may do nothing, or something
 unexpected.
 
+### Tracing a class's calls
+
+**Trace a class's calls**: type a class (`ClientCharacterSpawnEntity`, `PamClientReplayEntity`), tick
+**and subclasses** if wanted, and press **Trace**. While recording, every call to one of its virtual
+functions is recorded: the object, the vtable slot, the function, the return address and the stack.
+Each slot is recorded at most N times a second (the slider, 20 by default); the calls in between are
+counted (`skipped_before` on the next one). In the export:
+
+```json
+{"kind":"call","class":"ClientCharacterSpawnEntity","slot":"0xf8","fn":"0x1432aa460","ptr":"0x1b4015800","from":"0x143234f51", ...}
+```
+
+`summarize.py` names the function when it is annotated
+(`call ClientCharacterSpawnEntity::vf+0xf8 (ClientCharacterSpawnEntity_onCharacterSpawned)`).
+
+How: each slot of the class's vtables is swapped (a pointer swap, as every hook) for a small thunk
+that saves the argument registers, records the call and jumps to the original, so any signature
+passes through unchanged. A traced class stays hooked until the game exits; unticking it stops the
+recording. Avoid tracing very common base classes (`Entity`, with subclasses) while playing: every
+call then goes through the recorder.
+
 ### Who called
 
 Each exported stack also has `callers`: the frames that are inside a function of a reflected

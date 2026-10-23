@@ -43,7 +43,7 @@ constexpr uint64_t kImageBase = 0x140000000ull;
 constexpr size_t kMaxEvents = 250000;
 constexpr int kStackFrames = 16;
 
-enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent, kAnim, kField, kSent };
+enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent, kAnim, kField, kSent, kCall };
 
 struct Ref {           // a pointer found in a message, with what it pointed to then
     uint16_t off;
@@ -83,6 +83,10 @@ struct Event {
     // field: a watched field of an entity changed (ptr / type: the entity; text: the field's label)
     char fieldType = 0;            // 'b' bool / byte, 'i' i32, 'f' f32
     uint32_t fieldOff = 0;
+    // call: a traced class's virtual function ran (ptr / type: the object, fieldOff: the vtable offset)
+    uint64_t callFn = 0;           // the function called (image VA)
+    uint64_t callFrom = 0;         // its return address (image VA, or 0 when outside the game)
+    uint32_t callSkipped = 0;      // calls of this slot not recorded since the previous one (rate limit)
     // marker / level / field label / sent event's class
     std::string text;
     std::vector<uint64_t> stack;   // image VAs of game frames, innermost first
@@ -790,6 +794,187 @@ int sendEventToClass(const std::string& cls, uint32_t id) {
     return n;
 }
 
+// ---- tracing a class's virtual calls ------------------------------------------------------------
+// Every slot of a class's vtable(s) is swapped (a pointer swap, through the hook table) for a small
+// thunk of our own: it saves the argument registers (rcx, rdx, r8, r9, xmm0-3), calls traceCall
+// with the slot's record, the object (rcx) and the return address, restores them and jumps to the
+// original. So any signature passes through untouched (stack arguments are never moved). The thunks
+// have unwind info (RtlAddFunctionTable), so stack walks through them work. A call is recorded at
+// most kCallsPerSecond times a second per slot; the others are counted and the count goes with the
+// next recorded one. Tracing a class stays hooked (as every hook); switching it off stops recording.
+struct TraceSlot {
+    const Type* cls = nullptr;
+    uint32_t off = 0;               // vtable offset
+    uint64_t fn = 0;                // the function it held (image VA)
+    std::atomic<bool>* on = nullptr; // the class's switch
+    std::atomic<uint32_t> skipped{0};
+    std::atomic<int64_t> windowStart{0}; // QPC ticks
+    std::atomic<uint32_t> inWindow{0};
+};
+struct TracedClass {
+    std::string name;
+    const Type* type = nullptr;
+    std::atomic<bool> on{true};
+    size_t vtables = 0, slots = 0, failed = 0;
+};
+constexpr size_t kThunkSize = 0xa0;       // code (0x8c bytes) + the original's address + padding
+constexpr size_t kMaxTraceSlots = 4096;
+std::atomic<uint32_t> g_callsPerSecond{20};
+std::mutex g_traceM;
+std::deque<TracedClass> g_traced;        // (g_traceM) stable addresses
+std::deque<TraceSlot> g_traceSlots;      // (g_traceM)
+uint8_t* g_thunks = nullptr;             // kMaxTraceSlots thunks, RWX, ours
+RUNTIME_FUNCTION* g_thunkFns = nullptr;
+size_t g_thunksUsed = 0;                 // (g_traceM)
+
+void traceCall(TraceSlot* s, uintptr_t self, uintptr_t ret) {
+    if (!g_recording.load(std::memory_order_relaxed) || !s->on->load(std::memory_order_relaxed)) return;
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    const int64_t start = s->windowStart.load(std::memory_order_relaxed);
+    if (c.QuadPart - start > g_freq.QuadPart) {
+        s->windowStart.store(c.QuadPart, std::memory_order_relaxed);
+        s->inWindow.store(0, std::memory_order_relaxed);
+    }
+    if (s->inWindow.fetch_add(1, std::memory_order_relaxed) >= g_callsPerSecond.load(std::memory_order_relaxed)) {
+        s->skipped.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    try {
+        Event ev;
+        ev.t = now();
+        ev.kind = kCall;
+        ev.thread = GetCurrentThreadId();
+        ev.ptr = self;
+        ev.type = s->cls;
+        ev.fieldOff = s->off;
+        ev.callFn = s->fn;
+        ev.callFrom = mem::inImage(ret) ? mem::va(ret) : 0;
+        ev.callSkipped = s->skipped.exchange(0, std::memory_order_relaxed);
+        captureStack(ev.stack);
+        push(std::move(ev));
+    } catch (...) { // recording never breaks the game's call
+    }
+}
+
+// One thunk at `t` for record `rec`, jumping to *(t + 0x90) (the original, written by the hook table).
+void writeThunk(uint8_t* t, TraceSlot* rec) {
+    static const uint8_t kHead[] = {
+        0x48, 0x81, 0xEC, 0x98, 0x00, 0x00, 0x00, // sub rsp,98h
+        0x48, 0x89, 0x4C, 0x24, 0x20,             // mov [rsp+20h],rcx
+        0x48, 0x89, 0x54, 0x24, 0x28,             // mov [rsp+28h],rdx
+        0x4C, 0x89, 0x44, 0x24, 0x30,             // mov [rsp+30h],r8
+        0x4C, 0x89, 0x4C, 0x24, 0x38,             // mov [rsp+38h],r9
+        0xF3, 0x0F, 0x7F, 0x44, 0x24, 0x40,       // movdqu [rsp+40h],xmm0
+        0xF3, 0x0F, 0x7F, 0x4C, 0x24, 0x50,       // movdqu [rsp+50h],xmm1
+        0xF3, 0x0F, 0x7F, 0x54, 0x24, 0x60,       // movdqu [rsp+60h],xmm2
+        0xF3, 0x0F, 0x7F, 0x5C, 0x24, 0x70,       // movdqu [rsp+70h],xmm3
+        0x48, 0x89, 0xCA,                         // mov rdx,rcx (the object)
+        0x4C, 0x8B, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov r8,[rsp+98h] (the return address)
+        0x48, 0xB9};                              // mov rcx,imm64 (the record)
+    static const uint8_t kMid[] = {0x48, 0xB8};  // mov rax,imm64 (traceCall)
+    static const uint8_t kTail[] = {
+        0xFF, 0xD0,                               // call rax
+        0xF3, 0x0F, 0x6F, 0x44, 0x24, 0x40,       // movdqu xmm0,[rsp+40h]
+        0xF3, 0x0F, 0x6F, 0x4C, 0x24, 0x50,       // movdqu xmm1,[rsp+50h]
+        0xF3, 0x0F, 0x6F, 0x54, 0x24, 0x60,       // movdqu xmm2,[rsp+60h]
+        0xF3, 0x0F, 0x6F, 0x5C, 0x24, 0x70,       // movdqu xmm3,[rsp+70h]
+        0x48, 0x8B, 0x4C, 0x24, 0x20,             // mov rcx,[rsp+20h]
+        0x48, 0x8B, 0x54, 0x24, 0x28,             // mov rdx,[rsp+28h]
+        0x4C, 0x8B, 0x44, 0x24, 0x30,             // mov r8,[rsp+30h]
+        0x4C, 0x8B, 0x4C, 0x24, 0x38,             // mov r9,[rsp+38h]
+        0x48, 0x81, 0xC4, 0x98, 0x00, 0x00, 0x00, // add rsp,98h
+        0xFF, 0x25};                              // jmp [rip+disp32]
+    uint8_t* p = t;
+    memcpy(p, kHead, sizeof(kHead)), p += sizeof(kHead);
+    const uint64_t recAddr = reinterpret_cast<uint64_t>(rec), fnAddr = reinterpret_cast<uint64_t>(&traceCall);
+    memcpy(p, &recAddr, 8), p += 8;
+    memcpy(p, kMid, sizeof(kMid)), p += sizeof(kMid);
+    memcpy(p, &fnAddr, 8), p += 8;
+    memcpy(p, kTail, sizeof(kTail)), p += sizeof(kTail);
+    const int32_t disp = static_cast<int32_t>((t + 0x90) - (p + 4)); // the original's cell
+    memcpy(p, &disp, 4), p += 4;
+    memset(p, 0xCC, static_cast<size_t>((t + 0x90) - p));
+}
+
+bool allocThunks() {
+    if (g_thunks) return true;
+    g_thunks = static_cast<uint8_t*>(VirtualAlloc(nullptr, kMaxTraceSlots * kThunkSize + 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!g_thunks) return false;
+    // Unwind info (one for all thunks, at the end): version 1, prolog 7 bytes, 2 code slots,
+    // UWOP_ALLOC_LARGE (op 1, info 0) at offset 7 with size/8 = 0x13.
+    uint8_t* ui = g_thunks + kMaxTraceSlots * kThunkSize;
+    const uint8_t info[] = {0x01, 0x07, 0x02, 0x00, 0x07, 0x01, 0x13, 0x00};
+    memcpy(ui, info, sizeof(info));
+    g_thunkFns = new RUNTIME_FUNCTION[kMaxTraceSlots];
+    for (size_t i = 0; i < kMaxTraceSlots; ++i) {
+        g_thunkFns[i].BeginAddress = static_cast<DWORD>(i * kThunkSize);
+        g_thunkFns[i].EndAddress = static_cast<DWORD>(i * kThunkSize + 0x90);
+        g_thunkFns[i].UnwindData = static_cast<DWORD>(kMaxTraceSlots * kThunkSize);
+    }
+    if (!RtlAddFunctionTable(g_thunkFns, static_cast<DWORD>(kMaxTraceSlots), reinterpret_cast<DWORD64>(g_thunks)))
+        GN_LOG("recorder: thunk unwind info not registered; stacks through traced calls stop at them");
+    return true;
+}
+
+// The vtable(s) of `t` (and, with `sub`, of its subclasses), each slot that holds game code.
+std::string traceClass(const std::string& name, bool sub) {
+    const Type* base = registry().find(name);
+    if (!base || base->category != reflect::Category::Class) return "no class " + name;
+    std::lock_guard<std::mutex> lock(g_traceM);
+    for (TracedClass& c : g_traced)
+        if (c.name == name) {
+            c.on = true;
+            return name + " is traced again";
+        }
+    if (!allocThunks()) return "no memory for the thunks";
+    g_traced.emplace_back();
+    TracedClass& tc = g_traced.back();
+    tc.name = name;
+    tc.type = base;
+    std::vector<std::pair<uintptr_t, const Type*>> vts;
+    for (const Type& t : registry().data().types) {
+        if (t.category != reflect::Category::Class || !(&t == base || (sub && registry().isKindOf(&t, base)))) continue;
+        for (uint64_t va : t.vtables) vts.push_back({static_cast<uintptr_t>(va - kImageBase) + mem::moduleBase(), &t});
+    }
+    std::sort(vts.begin(), vts.end());
+    vts.erase(std::unique(vts.begin(), vts.end(), [](const auto& a, const auto& b) { return a.first == b.first; }), vts.end());
+    for (const auto& [vt, ty] : vts) {
+        ++tc.vtables;
+        for (uint32_t off = 0; off < 0x800; off += 8) {
+            const uintptr_t fn = mem::readOr<uintptr_t>(vt + off);
+            if (!mem::inImage(fn) && !mem::foreignCode(fn)) break; // the end of the vtable
+            if (g_thunksUsed == kMaxTraceSlots) {
+                ++tc.failed;
+                continue;
+            }
+            g_traceSlots.emplace_back();
+            TraceSlot& rec = g_traceSlots.back();
+            rec.cls = ty;
+            rec.off = off;
+            rec.fn = mem::inImage(fn) ? mem::va(fn) : 0;
+            rec.on = &tc.on;
+            uint8_t* t = g_thunks + g_thunksUsed * kThunkSize;
+            writeThunk(t, &rec);
+            std::string why;
+            const auto r = hooks().install("recorder-trace", vt + off, 0, reinterpret_cast<uint64_t>(t), reinterpret_cast<uint64_t*>(t + 0x90), &why);
+            if (r == hook::Result::Ok) {
+                ++g_thunksUsed;
+                ++tc.slots;
+            } else {
+                g_traceSlots.pop_back();
+                if (tc.failed++ < 3) GN_LOG("recorder: trace %s +0x%x: %s", ty->name.c_str(), off, why.c_str());
+            }
+        }
+    }
+    GN_LOG("recorder: tracing %s%s: %llu slots in %llu vtables (%llu failed)", name.c_str(), sub ? " and subclasses" : "",
+           static_cast<unsigned long long>(tc.slots), static_cast<unsigned long long>(tc.vtables), static_cast<unsigned long long>(tc.failed));
+    char b[160];
+    snprintf(b, sizeof(b), "%s: %llu slots in %llu vtables traced", name.c_str(), static_cast<unsigned long long>(tc.slots),
+             static_cast<unsigned long long>(tc.vtables));
+    return b;
+}
+
 // ---- who called: stack frames named by the class whose vtable holds their function ---------------
 // A frame's function is found in the executable's unwind table (RtlLookupFunctionEntry, following
 // chained entries to the primary one); functions in reflected vtables are named "Class::vf+0xNN"
@@ -1043,6 +1228,15 @@ std::string toJson(const Event& ev) {
         snprintf(id, sizeof(id), "%08x", ev.eventId);
         o += ",\"kind\":\"sent\",\"event\":" + jsonStr(eventName(ev.eventId)) + ",\"event_id\":\"" + id + "\",\"target\":" +
              jsonStr(ev.type ? ev.type->name : "?") + ",\"ptr\":" + hexAddr(ev.ptr);
+        break;
+    }
+    case kCall: {
+        char off[16];
+        snprintf(off, sizeof(off), "0x%x", ev.fieldOff);
+        o += ",\"kind\":\"call\",\"class\":" + jsonStr(ev.type ? ev.type->name : "?") + ",\"slot\":\"" + off + "\",\"fn\":" + hexAddr(ev.callFn) +
+             ",\"ptr\":" + hexAddr(ev.ptr);
+        if (ev.callFrom) o += ",\"from\":" + hexAddr(ev.callFrom);
+        if (ev.callSkipped) o += ",\"skipped_before\":" + std::to_string(ev.callSkipped);
         break;
     }
     case kEvent: {
@@ -1300,6 +1494,35 @@ void draw(bool* open) {
         if (!ws.empty()) ImGui::TextDisabled("(%d live)", static_cast<int>(found));
     }
 
+    ImGui::SeparatorText("Trace a class's calls");
+    ImGui::TextDisabled("Records each call to the class's virtual functions: which object, which slot, who called (while recording).");
+    {
+        static char cls[64] = "";
+        static bool sub = false;
+        static std::string said;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        ImGui::InputTextWithHint("##tcls", "class, e.g. ClientCharacterSpawnEntity", cls, sizeof(cls));
+        ImGui::SameLine();
+        ImGui::Checkbox("and subclasses", &sub);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!registry().find(cls));
+        if (ImGui::Button("Trace")) said = traceClass(cls, sub);
+        ImGui::EndDisabled();
+        int cps = static_cast<int>(g_callsPerSecond.load());
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        if (ImGui::SliderInt("calls a second per slot", &cps, 1, 200)) g_callsPerSecond = static_cast<uint32_t>(cps);
+        if (!said.empty()) ImGui::TextDisabled("%s", said.c_str());
+        std::lock_guard<std::mutex> lock(g_traceM);
+        for (TracedClass& c : g_traced) {
+            bool on = c.on.load();
+            ImGui::PushID(&c);
+            if (ImGui::Checkbox(c.name.c_str(), &on)) c.on = on;
+            ImGui::SameLine();
+            ImGui::TextDisabled("%llu slots", static_cast<unsigned long long>(c.slots));
+            ImGui::PopID();
+        }
+    }
+
     ImGui::SeparatorText("Send an event (research)");
     ImGui::TextDisabled("Delivers an event to every live entity of a class, as a connection would. Use with care.");
     {
@@ -1379,7 +1602,7 @@ void draw(bool* open) {
                 lite.seq = src.seq, lite.t = src.t, lite.kind = src.kind, lite.manager = src.manager, lite.typeId = src.typeId;
                 lite.type = src.type, lite.blueprint = src.blueprint, lite.text = src.text, lite.eventId = src.eventId;
                 lite.valueKind = src.valueKind, lite.propHash = src.propHash, lite.writerType = src.writerType;
-                lite.fieldType = src.fieldType, lite.fieldOff = src.fieldOff;
+                lite.fieldType = src.fieldType, lite.fieldOff = src.fieldOff, lite.ptr = src.ptr;
                 memcpy(lite.value, src.value, sizeof(lite.value));
                 tail.push_back(std::move(lite));
             }
@@ -1443,6 +1666,10 @@ void draw(bool* open) {
                 ImGui::TextColored(ImVec4(1.f, 1.f, 0.5f, 1.f), "%s", line);
                 break;
             }
+            case kCall:
+                snprintf(line, sizeof(line), "%9.3f  call   %s::vf+0x%x", ev.t, ev.type ? ev.type->name.c_str() : "?", ev.fieldOff);
+                ImGui::TextColored(ImVec4(0.6f, 0.85f, 1.f, 1.f), "%s", line);
+                break;
             case kSent:
                 snprintf(line, sizeof(line), "%9.3f  SENT   %s -> %s", ev.t, eventName(ev.eventId).c_str(), ev.type ? ev.type->name.c_str() : "?");
                 ImGui::TextColored(ImVec4(1.f, 0.5f, 0.3f, 1.f), "%s", line);

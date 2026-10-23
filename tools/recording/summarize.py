@@ -45,6 +45,7 @@ def djb2(s):
 
 
 EVENT_NAMES = {}
+FN_NAMES = {}  # function VA -> annotated name (set in main)
 
 
 def load_event_names(path):
@@ -89,6 +90,10 @@ def label(ev):
         return f"field {ev.get('field', '?')} = {ev.get('value')} -> {ev.get('target', '?')}"
     if k == "sent":
         return f"SENT {event_label(ev)} -> {ev.get('target', '?')}"
+    if k == "call":
+        fn = int(ev.get("fn", "0"), 16)
+        named = FN_NAMES.get(fn)
+        return f"call {ev.get('class', '?')}::vf+{ev.get('slot', '?')}" + (f" ({named})" if named else f" (0x{fn:x})")
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":
@@ -127,6 +132,7 @@ def main():
         print("no events")
         return 1
     names = load_annotation_names()
+    FN_NAMES.update(names)
     span = events[-1]["t"] - events[0]["t"]
 
     print(f"{args.file}")

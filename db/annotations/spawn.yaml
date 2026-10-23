@@ -272,6 +272,98 @@ functions:
     confidence: hypothesis
     sources: [ghidra]
 
+  # Character spawners and replays (research 2026-10-22/23, docs/research/replay-ghosts.md; checked in Ghidra).
+  - name: ServerCharacterSpawnEntity_unspawn
+    va: 0x14338e4c0
+    signature: "void(void* spawner, void* character, bool destroy, void* a4)"
+    note: "Vtable +0x108 of both server character spawner classes. Releases a player made for the character, takes it out of the spawner's list (+0x148/+0x150) and destroys it (0x14338e5d0). Does nothing for a character not in the list."
+    confidence: confirmed
+    sources: [research]
+  - name: ServerCharacterSpawnEntity_removeSpawned
+    va: 0x14338e5d0
+    note: "unspawn's second step: out of the list (+0x148/+0x150) and destroyed (flag bit 23) or pooled at +0x250; an empty list unregisters the spawner's listener."
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_ctor
+    va: 0x14322d7d0
+    note: "The client side of a spawner (vtable ClientSpawnEntity 0x141b10de8). Its spawned characters are a vector at +0xb0/+0xb8, the last one's bus at +0xd0, listeners at +0x140/+0x148."
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_lastSpawned
+    va: 0x1432347b0
+    signature: "void*(void* spawner)"
+    note: "*(+0xb8 - 8), or 0 when +0xb0 == +0xb8."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_addSpawned
+    va: 0x143239bb0
+    signature: "bool(void* spawner, void* character)"
+    note: "Appends to +0xb0, sets +0xd0 to the last one's bus (+0x28), tells the listeners (0x1432348e0 with 1). Called by ClientCharacterSpawnEntity_onCharacterSpawned."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_removeSpawned
+    va: 0x143234e20
+    signature: "void(void* spawner, void* character)"
+    note: "Vtable +0x100. Finds it in +0xb0, tells the listeners (0x1432348e0 with 0), swaps the last one in, shortens the list, +0xd0 = the new last one's bus or 0."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_notifyListeners
+    va: 0x1432348e0
+    signature: "void(void* spawner, void* character, bool spawned)"
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_createFromNetwork
+    va: 0x143234ed0
+    note: "Creates a client character for a network ghost (0x143469110, the ghost factory)."
+    confidence: inferred
+    sources: [research]
+  - name: ClientCharacterSpawnEntity_create
+    va: 0x1432a67c0
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: "Creator of ClientCharacterSpawnEntity (0x170 bytes, vtable 0x141b2ac20); creator slot 0x141b2ad88 (MECMP hooks it)."
+    confidence: confirmed
+    sources: [research, mecmp]
+  - name: ClientCharacterSpawnEntity_onCharacterSpawned
+    va: 0x1432aa460
+    note: "Vtable +0xf8. Applies the spawn template's settings to the client character, sends it a message, then ClientSpawnEntity_addSpawned."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientCharacterSpawnEntity_lastCharacter
+    va: 0x1432a60e0
+    signature: "void*(void* spawner)"
+    note: "ClientSpawnEntity_lastSpawned when it is a ClientCharacterEntity. The map's echo and the Your Echo screen take their character with it."
+    confidence: confirmed
+    sources: [research]
+  - name: PamServerReplayEntity_onEvent
+    va: 0x14396d750
+    note: "Vtable +0x20. StartReplay (0x2734a476) -> PamServerReplayEntity_startReplay; StopReplay (0xd6a2182e) flags the entity for its updater, which unspawns."
+    confidence: confirmed
+    sources: [research]
+  - name: PamServerReplayEntity_startReplay
+    va: 0x14396e8b0
+    note: "Finds the linked CharacterSpawnReferenceObjectData entity (link 0xa695a747, by data in the bus); spawns (vtable +0xd0) only when its last spawned character is null."
+    confidence: confirmed
+    sources: [research]
+  - name: PamServerReplayEntity_update
+    va: 0x1439724d0
+    confidence: inferred
+    sources: [research]
+  - name: PamServerReplayEntity_stopReplay
+    va: 0x1439741d0
+    note: "The spawner lookup again, its last spawned character, then the spawner's unspawn (vtable +0x108)."
+    confidence: confirmed
+    sources: [research]
+  - name: PamClientReplayEntity_onEvent
+    va: 0x14394ab60
+    note: "Vtable +0x20. On CharacterSpawned (0xa29c98e6): the linked client spawner's last character's PamClientReplayPlayerComponent (PamClientReplayEntity_findPlayerComponent) gets the replay's recording and starts playing it."
+    confidence: confirmed
+    sources: [research]
+  - name: PamClientReplayEntity_findPlayerComponent
+    va: 0x14394b1d0
+    note: "Linked CharacterSpawnReferenceObjectData entity (link 0xa695a747) -> ClientCharacterSpawnEntity_lastCharacter -> getComponent(PamClientReplayPlayerComponent)."
+    confidence: confirmed
+    sources: [research]
+
 globals:
   - name: BlueprintInstantiationEnabled
     va: 0x1425476c0
