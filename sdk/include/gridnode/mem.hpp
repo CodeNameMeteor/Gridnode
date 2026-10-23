@@ -113,7 +113,10 @@ bool foreignCode(uintptr_t fn, std::string* module = nullptr);
 // Writes the running game's image as a PE file laid out as in memory (each section's file offset is its RVA), for
 // `gridnode.py fingerprint` and `verify-image`: the decrypted code as it runs. Pages that cannot be read are zeros.
 // `path`: the file written; `why`: what failed. Any thread; reads about SizeOfImage bytes (~115 MB).
-bool dumpImage(const std::wstring& path, std::string* why = nullptr);
+// `restore`: (address, value) pairs written into the copy, not the game: the game's own pointers in the slots hooks
+// changed, so the file shows the game as it is without them.
+bool dumpImage(const std::wstring& path, std::string* why = nullptr,
+               const std::vector<std::pair<uintptr_t, uint64_t>>& restore = {});
 
 // MemoryView over this process (for gn::reflect).
 class ProcessMemory final : public reflect::MemoryView {

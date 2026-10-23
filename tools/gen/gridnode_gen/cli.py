@@ -383,7 +383,7 @@ def _main(argv=None) -> int:
             except ValueError as e:
                 raise UserError(str(e))
             print(fingerprint_gen.report(mres, "MECMP fingerprint.cpp"), end="")
-            bad += sum(1 for r in mres if not r.ok)
+            bad += sum(1 for r in mres if not r.ok and r.required)
             if a.write:
                 n = fingerprint_gen.write_mecmp(a.mecmp, mres)
                 print(f"  {n} code entr{'y' if n == 1 else 'ies'} rewritten from the image" + (" (check the comments above them)" if n else ""))

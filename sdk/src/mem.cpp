@@ -92,7 +92,7 @@ bool foreignCode(uintptr_t fn, std::string* module) {
     return true;
 }
 
-bool dumpImage(const std::wstring& path, std::string* why) {
+bool dumpImage(const std::wstring& path, std::string* why, const std::vector<std::pair<uintptr_t, uint64_t>>& restore) {
     auto fail = [&](const char* w) {
         if (why) *why = w;
         return false;
@@ -109,6 +109,12 @@ bool dumpImage(const std::wstring& path, std::string* why) {
         const size_t n = (size - off) < 0x1000 ? size - off : 0x1000;
         if (!read(base + off, img.data() + off, n)) ++unreadable;
     }
+    size_t restored = 0;
+    for (const auto& [addr, value] : restore)
+        if (addr >= base && addr + 8 <= base + size) {
+            memcpy(img.data() + (addr - base), &value, 8);
+            ++restored;
+        }
     // Headers: the image base as loaded, and every section's file offset = its RVA (a memory-layout file).
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(img.data());
     auto* fileNt = reinterpret_cast<IMAGE_NT_HEADERS*>(img.data() + dos->e_lfanew);
@@ -125,8 +131,9 @@ bool dumpImage(const std::wstring& path, std::string* why) {
     const bool ok = fwrite(img.data(), 1, img.size(), f) == img.size();
     fclose(f);
     if (!ok) return fail("the file could not be written (disk full?)");
-    GN_LOG("image: %llu MB written to %ls (%llu unreadable pages left as zeros)", static_cast<unsigned long long>(size >> 20),
-           path.c_str(), static_cast<unsigned long long>(unreadable));
+    GN_LOG("image: %llu MB written to %ls (%llu unreadable pages left as zeros, %llu hooked slots restored)",
+           static_cast<unsigned long long>(size >> 20), path.c_str(), static_cast<unsigned long long>(unreadable),
+           static_cast<unsigned long long>(restored));
     return true;
 }
 

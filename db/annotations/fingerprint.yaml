@@ -51,3 +51,15 @@ fingerprint:
     - { at: ServerWriteAntGameStateEntity_onEvent, bytes: "57 48 83 EC 50 48 C7 44 24 20 FE FF FF FF", required: false }
     - { at: WriteBoolGameState_write, bytes: "48 89 5C 24 08 57 48 83 EC 20 41 8B 09 48 89 D7 4C 89 C3", required: false, note: "Optional: recording animation flags depends on it." }
     - { at: TypedValue_getValuePtr, bytes: "48 8B 01 48 85 C0 74 0E F6 40 1C 40 74 08 48 8B 00 C3", required: false }
+    - { at: ClientEntityCreationInfo_ctor, bytes: "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ClientEntityInitInfo_ctor, bytes: "31 C0 C6 41 24 01 66 C7 41 28 01 00 48 89 41 08", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ClientEntity_spawnIntoBus, bytes: "48 89 E0 57 48 83 EC 70 48 C7 40 B8 FE FF FF FF", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ClientStaticModelEntity_bounds, bytes: "48 89 5C 24 08 57 48 83 EC 60 F6 81 42 01 00 00", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ConsoleFieldBinding_getOrSet, bytes: "48 89 E0 55 41 54 41 55 41 56 41 57 48 8D A8 08", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: DataContainer_release, bytes: "53 48 83 EC 20 48 89 CB 83 C8 FF F0 0F C1 41 08", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: Entity_init, bytes: "44 8B 41 18 44 89 C0 C1 E8 03 A8 01 75 12 48 8B", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: RigidBody_setTransformNative, bytes: "48 89 5C 24 10 57 48 83 EC 20 8B 1A 48 8B 81 30", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: RigidBody_transformSource, bytes: "0F B7 12 48 8B 81 30 01 00 00 48 8B 0C D0 4C 89", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ServerEntityCreationInfo_ctor, bytes: "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: ServerEntityInitInfo_ctor, bytes: "48 8D 05 51 AC 7E FE 48 89 51 08 4C 89 41 10 48", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: entityCreator_spawnIntoBus, bytes: "48 89 E0 57 48 83 EC 70 48 C7 40 B8 FE FF FF FF", required: false, note: "From the game image (gridnode.py fingerprint --add)." }

@@ -47,16 +47,29 @@ def check_gridnode(db: Database, img: PeImage) -> list[Result]:
         got = img.read(fc.at + fc.skip, len(fc.data))
         out.append(Result(fc.what, fc.at + fc.skip, fc.data, got, fc.required, ok=got == fc.data))
     for fs in db.fp_slots:
-        got = img.q(fs.slot)
-        out.append(Result(fs.what, fs.slot, fs.fn.to_bytes(8, "little"), got.to_bytes(8, "little") if got is not None else None,
-                          kind="slot", ok=got == fs.fn,
-                          detail=f"slot {fs.slot:#x} holds {got:#x}, expected {fs.fn:#x}" if got is not None else "slot unreadable"))
+        out.append(_slot(img, fs.what, fs.slot, fs.fn))
     return out
+
+
+def _slot(img: PeImage, what: str, slot: int, fn: int) -> Result:
+    got = img.q(slot)
+    r = Result(what, slot, fn.to_bytes(8, "little"), got.to_bytes(8, "little") if got is not None else None, kind="slot",
+               ok=got == fn)
+    if got is None:
+        r.detail = "slot unreadable"
+    elif not r.ok and not (img.base <= got < img.base + img.size):
+        r.required = False  # a hook was in it when the dump was made, not a different build
+        r.detail = f"slot {slot:#x} holds {got:#x}: outside the game, hooked when dumped (expected {fn:#x})"
+    elif not r.ok:
+        r.detail = f"slot {slot:#x} holds {got:#x}, expected {fn:#x}"
+    return r
 
 
 def report(results: list[Result], label: str) -> str:
     bad = [r for r in results if not r.ok]
-    o = [f"{label}: {len(results)} checked, {len(bad)} differ"]
+    hooked = [r for r in bad if r.kind == "slot" and "hooked when dumped" in r.detail]
+    o = [f"{label}: {len(results)} checked, {len(bad) - len(hooked)} differ" +
+         (f", {len(hooked)} slot(s) hooked in the dump (not checked)" if hooked else "")]
     for r in bad:
         if r.kind == "slot":
             o.append(f"  slot {r.what}: {r.detail}")
@@ -176,10 +189,7 @@ def check_mecmp(mecmp_dir: str, img: PeImage) -> list[Result]:
         if None in (vt_v, off_v, fn_v):
             out.append(Result(what, 0, b"", None, kind="slot", detail=f"constant not found ({vt}, {off}, {fn})"))
             continue
-        got = img.q(vt_v + off_v)
-        out.append(Result(what, vt_v + off_v, fn_v.to_bytes(8, "little"), got.to_bytes(8, "little") if got is not None else None,
-                          kind="slot", ok=got == fn_v,
-                          detail=f"slot {vt_v + off_v:#x} holds {got:#x}, expected {fn_v:#x}" if got is not None else "unreadable"))
+        out.append(_slot(img, what, vt_v + off_v, fn_v))
     for m in _CODE.finditer(fp_text):
         what, fn, skip, body, n = m.groups()
         fn_v, skip_v = _value(fn, consts), _value(skip, consts)

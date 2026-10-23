@@ -16,6 +16,11 @@ def check(db: Database, img: PeImage) -> tuple[Problems, int]:
         nonlocal checked
         checked += 1
         got = img.q(addr)
+        if got is not None and got != expect and not (img.base <= got < img.base + img.size):
+            # A pointer outside the game: a hook was in the slot when the dump was made (a dump from an older
+            # GridNode, or another mod's hook). Not a different build.
+            p.warn(where, f"slot {addr:#x} holds {got:#x} (outside the game: hooked when dumped), expected {expect:#x}")
+            return
         if got != expect:
             p.error(where, f"slot {addr:#x} holds {got:#x}, expected {expect:#x}" if got is not None
                     else f"slot {addr:#x} is not in the image")

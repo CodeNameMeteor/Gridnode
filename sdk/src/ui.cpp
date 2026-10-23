@@ -454,7 +454,12 @@ void drawMain() {
                              t.wMinute, t.wSecond);
                     const std::wstring path = dir + name;
                     std::string why;
-                    const bool ok = mem::dumpImage(path, &why);
+                    // The game's own pointers in the slots GridNode hooked (the first hook's "previous"; a slot
+                    // another mod had hooked first keeps that mod's pointer, and the check reports it as such).
+                    std::vector<std::pair<uintptr_t, uint64_t>> restore;
+                    for (const auto& [slot, chain] : hooks().snapshot())
+                        if (!chain.empty()) restore.push_back({static_cast<uintptr_t>(slot), chain.front().previous});
+                    const bool ok = mem::dumpImage(path, &why, restore);
                     std::lock_guard<std::mutex> lock(textM);
                     char buf[600];
                     if (ok) snprintf(buf, sizeof(buf), "Written: %ls", path.c_str());
