@@ -49,6 +49,9 @@ GridNode's annotations merged in.
 | `docs [--reflected FILE] [--out DIR] [--build]` | this site; with a dump, the full reference (local) |
 | `hash NAME...` / `unhash HASH...` | Frostbite name hashes (Frosty shows them as signed ints) |
 | `verify-image FILE` | check the annotations against a memory dump of the game |
+| `fingerprint DUMP [--write] [--add NAME] [--mecmp DIR]` | fingerprint bytes from a dump of the game (see contributing) |
+| `annotations-diff OTHER [--base B] [--inbox FILE]` | compare two annotation sets (folders or `git:REF`) |
+| `ghidra-export` / `ghidra-import FILE [--who NAME]` / `ghidra-relay FILE [--who NAME]` | GridNodeSync files (see contributing) |
 
 ## These docs
 

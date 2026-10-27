@@ -32,6 +32,8 @@ markdown_extensions:
 
 not_in_nav: |
   PLAN.md
+  progress.md
+  handover.md
 
 nav:
   - Home: index.md
