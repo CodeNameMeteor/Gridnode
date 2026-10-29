@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover
 CONFIDENCE = ("confirmed", "inferred", "hypothesis")
 REALMS = ("client", "server", "any")
 HOOK_KINDS = ("vtable-slot", "creator-slot", "pointer")
-SECTIONS = ("defaults", "classes", "structs", "globals", "functions", "hooks", "code", "constants", "fingerprint")
+SECTIONS = ("defaults", "classes", "structs", "globals", "functions", "hooks", "code", "constants", "events", "fingerprint")
 
 
 @dataclass
@@ -117,6 +117,15 @@ class Constant:
 
 
 @dataclass
+class EventAnn:
+    """An entity event (or any name Frostbite keeps only as a djb2-xor hash), named by our research."""
+    name: str
+    hash: int
+    sent_to: list[str]   # classes seen receiving it (documentation; not checked against the dump)
+    meta: Meta
+
+
+@dataclass
 class FpType:
     name: str
     ti: int
@@ -148,6 +157,7 @@ class Database:
     hooks: dict[str, Hook] = field(default_factory=dict)
     code: dict[str, CodeSite] = field(default_factory=dict)
     constants: dict[str, Constant] = field(default_factory=dict)
+    events: dict[str, EventAnn] = field(default_factory=dict)
     fp_types: list[FpType] = field(default_factory=list)
     fp_slots: list[FpSlot] = field(default_factory=list)
     fp_code: list[FpCode] = field(default_factory=list)
@@ -420,6 +430,33 @@ def _load_file(doc: dict, d: dict, fn: str, db: Database, p: Problems):
             p.error(w, "value must be an integer or a string")
             continue
         db.constants[c["name"]] = Constant(c["name"], c["value"], _meta(c, d, fn, p, w))
+
+    for e in doc.get("events", []) or []:
+        w = f"{fn} event {e.get('name', '?') if isinstance(e, dict) else '?'}"
+        if not isinstance(e, dict):
+            p.error(w, "must be a mapping")
+            continue
+        _check_keys(e, {"name", "hash", "sent_to", "note", "confidence", "sources"}, p, w)
+        name = e.get("name")
+        if not isinstance(name, str) or not name or any(c.isspace() for c in name):
+            p.error(w, "name must be a non-empty string without spaces")
+            continue
+        h = djb2_xor(name)
+        if "hash" in e:
+            try:
+                stated = _int(e["hash"], "hash")
+            except ValueError as ex:
+                p.error(w, str(ex))
+                stated = h
+            if stated != h:
+                p.error(w, f"hash {stated:#010x} does not match djb2-xor({name!r}) = {h:#010x}")
+        if name in db.events:
+            p.error(w, f"event {name!r} is already in {db.events[name].meta.file}")
+            continue
+        sent_to = e.get("sent_to", []) or []
+        if isinstance(sent_to, str):
+            sent_to = [sent_to]
+        db.events[name] = EventAnn(name, h, [str(x) for x in sent_to], _meta(e, d, fn, p, w))
 
     fp = doc.get("fingerprint")
     if fp:

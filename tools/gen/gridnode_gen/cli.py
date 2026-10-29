@@ -308,7 +308,7 @@ def _main(argv=None) -> int:
         db, r, p = _load(a.annotations, _find(a.reflected, "dump"))
         n = len(db.classes) + len(db.structs) + len(db.globals) + len(db.functions) + len(db.hooks)
         print(f"{len(db.files)} files, {len(db.classes)} classes, {len(db.structs)} structs, {len(db.globals)} globals, "
-              f"{len(db.functions)} functions, {len(db.hooks)} hooks ({n} items): "
+              f"{len(db.functions)} functions, {len(db.hooks)} hooks, {len(db.events)} events ({n} items): "
               f"{len(p.errors)} errors, {len(p.warnings)} warnings" + (" (checked against the dump)" if r else ""))
         return 1 if p.errors or (a.strict and p.warnings) else 0
 

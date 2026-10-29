@@ -280,9 +280,13 @@ void onMessage(int manager, const uint8_t* msg, uint32_t category, uint32_t type
     push(std::move(ev));
 }
 
+void watchCreated(uintptr_t p);   // the watches (below) follow creations and destructions
+void watchDestroyed(uintptr_t p);
+
 // An entity is being destroyed (its deleting destructor, hooked in entities.cpp; before the original
 // runs, so its vtable still says what it is).
 void onDestroyedImpl(void* entity) {
+    watchDestroyed(reinterpret_cast<uintptr_t>(entity));
     if (!g_recording.load(std::memory_order_relaxed) || !g_wantDestroyed.load(std::memory_order_relaxed) || !entity) return;
     Event ev;
     ev.t = now();
@@ -295,6 +299,7 @@ void onDestroyedImpl(void* entity) {
 }
 
 void onCreated(void* entity, void* ci, void*) {
+    if (entity) watchCreated(reinterpret_cast<uintptr_t>(entity));
     if (!g_recording.load(std::memory_order_relaxed) || !g_wantCreated.load(std::memory_order_relaxed) || !entity) return;
     Event ev;
     ev.t = now();
@@ -384,7 +389,7 @@ uint32_t djb2(const std::string& s) {
 }
 
 // Event names from their hashes: every reflected type, field and enum value name, common event
-// words, and recordings\event-names.txt (one name per line, "#" comments, anything after a tab
+// words, the events and properties named in db/annotations (engine.hpp), and recordings\event-names.txt (one name per line, "#" comments, anything after a tab
 // ignored) if present: tools/events/build_names.py makes one from an EBX dump, the game's strings
 // and earlier recordings.
 const std::unordered_map<uint32_t, std::string>& eventNames() {
@@ -422,6 +427,9 @@ const std::unordered_map<uint32_t, std::string>& eventNames() {
             }
             fclose(f);
         }
+        // Named by our research (db/annotations, checked against their hashes): these win.
+        for (const e::hash::Name& n : e::hash::names)
+            if (n.name) m[n.hash] = n.name;
         return m;
     }();
     return names;
@@ -752,7 +760,9 @@ void hookAnim() {
 // ---- watched fields -----------------------------------------------------------------------------
 // Fields of live entities of a class, read every frame while recording (or less often: the menu's rate); each change is
 // recorded (kField) with the old value, so a state (an alert's level, a door's flag) lines up with
-// the events and messages around it. Instances are found among the tracked entities every 2 s.
+// the events and messages around it. Instances are added when they are created and dropped when they
+// are destroyed (the creator and destructor hooks); entities that existed before a watch was added
+// are found among the tracked entities (every 2 s, and when recording starts).
 // A list watch ('l') reads a vector of pointers at the offset (begin, end: eastl::vector) and records
 // what was added, removed, or moved, with each entry's type (kList).
 struct Watch {
@@ -767,53 +777,79 @@ std::mutex g_watchM;
 std::vector<Watch> g_watches;                                     // (g_watchM)
 std::unordered_map<uint64_t, double> g_watchLast;                 // (g_watchM) (entity ^ field index) -> last value
 std::unordered_map<uint64_t, std::vector<ListEntry>> g_listLast;  // (g_watchM) (entity ^ field index) -> last list
-std::vector<std::pair<uintptr_t, const Type*>> g_watchEntities;   // (g_watchM)
+// Live instances of the watched classes. `direct`: seen created, so its destruction is sure to reach
+// watchDestroyed (which waits for g_watchM): read with plain loads while g_watchM is held. Instances
+// found by the scan (they existed before) are read with safe reads instead.
+struct WatchedEnt {
+    const Type* type;
+    bool direct;
+};
+std::unordered_map<uintptr_t, WatchedEnt> g_watchEnts;            // (g_watchM)
+std::vector<const Type*> g_watchKinds;                            // (g_watchM) each watch's class (null: unknown)
+std::atomic<bool> g_haveWatches{false};                           // creations / destructions only look when set
 double g_watchFoundAt = -10.0, g_watchReadAt = -10.0;
 std::atomic<int> g_watchRate{0};       // readings a second; 0: every frame (the default: short-lived changes count)
-std::atomic<float> g_watchMs{0.f};     // how long the last reading took (shown in the menu)
+// How long readings take (watches are read only while recording): the last one, and over the
+// recording (reset by Clear) the count, total and worst. Shown in the menu and written in the
+// export's header. Written on the render thread only.
+std::atomic<float> g_watchMs{0.f};
+std::atomic<uint64_t> g_watchReadings{0};
+std::atomic<double> g_watchMsTotal{0.0};
+std::atomic<float> g_watchMsWorst{0.f};
 
-void addWatch(const std::string& cls, uint32_t off, char type, const std::string& label) {
-    std::lock_guard<std::mutex> lock(g_watchM);
-    for (const Watch& w : g_watches)
-        if (w.cls == cls && w.off == off) return;
-    g_watches.push_back({cls, off, type, label.empty() ? cls + "+" + std::to_string(off) : label});
+// Caller holds g_watchM, after g_watches changed.
+void watchesChanged() {
+    g_watchKinds.clear();
+    for (const Watch& w : g_watches) g_watchKinds.push_back(registry().find(w.cls));
+    g_watchEnts.clear();
+    g_haveWatches = !g_watches.empty();
     g_watchFoundAt = -10.0; // look for instances now
 }
 
-// Reads a vector of pointers (begin at +off, end at +off+8). False when it does not look like one,
-// or it changed while being read.
-bool readList(uintptr_t p, uint32_t off, std::vector<uintptr_t>& out, size_t& total) {
-    uintptr_t b = 0, e = 0, b2 = 0, e2 = 0;
-    if (!mem::read(p + off, b) || !mem::read(p + off + 8, e)) return false;
-    out.clear();
+bool watchedKind(const Type* ty) { // caller holds g_watchM
+    for (const Type* k : g_watchKinds)
+        if (k && registry().isKindOf(ty, k)) return true;
+    return false;
+}
+
+// An address starts or stops being an entity: what the watches remember about it goes (a new entity
+// there must not be compared with the old one's values). Caller holds g_watchM.
+void forgetWatched(uintptr_t p) {
+    for (size_t i = 0; i < g_watches.size(); ++i) {
+        const uint64_t key = (static_cast<uint64_t>(p) << 8) ^ i;
+        g_watchLast.erase(key);
+        g_listLast.erase(key);
+    }
+}
+
+// A watched value read from an entity: plain loads for one we saw created (alive while g_watchM is
+// held), safe reads otherwise.
+bool readEnt(uintptr_t addr, void* out, size_t size, bool direct) {
+    if (direct) {
+        memcpy(out, reinterpret_cast<const void*>(addr), size);
+        return true;
+    }
+    return mem::read(addr, out, size);
+}
+
+// A list's entries (begin, end at p + off). False when it does not look like a vector of pointers.
+// The buffer belongs to the game and can be freed at any time: always read safely.
+bool readListAt(uintptr_t p, uint32_t off, bool direct, uintptr_t (&be)[2], std::vector<uintptr_t>& ptrs, size_t& total) {
+    ptrs.clear();
     total = 0;
+    if (!readEnt(p + off, be, sizeof(be), direct)) return false;
+    const uintptr_t b = be[0], e = be[1];
     if (!b && !e) return true; // never allocated: empty
     if (e < b || (e - b) % 8 || (e - b) / 8 > 65536) return false;
     total = (e - b) / 8;
-    out.resize(std::min(total, kListMax));
-    if (!out.empty() && !mem::read(b, out.data(), out.size() * 8)) return false;
-    if (!mem::read(p + off, b2) || !mem::read(p + off + 8, e2) || b2 != b || e2 != e) return false; // moved: next time
-    return true;
+    ptrs.resize(std::min(total, kListMax));
+    return ptrs.empty() || mem::read(b, ptrs.data(), ptrs.size() * 8);
 }
 
-void pollList(uintptr_t p, const Type* ty, const Watch& w, uint64_t key, double t) {
-    std::vector<uintptr_t> ptrs;
-    size_t total = 0;
-    if (!readList(p, w.off, ptrs, total)) return;
-    std::vector<ListEntry> old;
-    bool first = false;
-    {
-        std::lock_guard<std::mutex> lock(g_watchM);
-        auto it = g_listLast.find(key);
-        first = it == g_listLast.end();
-        if (!first) old = it->second;
-    }
-    std::vector<uintptr_t> oldPtrs;
-    for (const ListEntry& le : old) oldPtrs.push_back(le.ptr);
-    if (!first && oldPtrs == ptrs) return;
-    // Entries: types known from the last reading are kept (a removed entry may be gone by now).
-    std::unordered_map<uintptr_t, const Type*> known;
-    for (const ListEntry& le : old) known[le.ptr] = le.type;
+std::vector<ListEntry> listEntries(const std::vector<uintptr_t>& ptrs, const std::vector<ListEntry>* old) {
+    std::unordered_map<uintptr_t, const Type*> known; // types from the last reading (a removed entry may be gone)
+    if (old)
+        for (const ListEntry& le : *old) known[le.ptr] = le.type;
     std::vector<ListEntry> now;
     for (size_t i = 0; i < ptrs.size(); ++i) {
         ListEntry le;
@@ -822,15 +858,86 @@ void pollList(uintptr_t p, const Type* ty, const Watch& w, uint64_t key, double 
         le.type = k != known.end() ? k->second : (ptrs[i] ? registry().typeOf(mem::ProcessMemory(), ptrs[i]) : nullptr);
         now.push_back(le);
     }
-    {
-        std::lock_guard<std::mutex> lock(g_watchM);
-        g_listLast[key] = now;
+    return now;
+}
+
+// From the creator hooks (any game thread), whether or not recording: a new entity of a watched class
+// is watched from now on. While recording, its values at creation are the baseline (not recorded), so
+// whatever happens before the next frame reads it (a spawner filled during a level load) shows as a
+// change rather than hiding in a "first" reading.
+void watchCreated(uintptr_t p) {
+    if (!g_haveWatches.load(std::memory_order_relaxed)) return;
+    const Type* ty = registry().typeOf(mem::ProcessMemory(), p);
+    if (!ty) return;
+    std::lock_guard<std::mutex> lock(g_watchM);
+    if (!watchedKind(ty)) return;
+    forgetWatched(p);
+    g_watchEnts[p] = {ty, true};
+    if (!g_recording.load(std::memory_order_relaxed) || g_watchKinds.size() != g_watches.size()) return;
+    for (size_t i = 0; i < g_watches.size(); ++i) {
+        const Watch& w = g_watches[i];
+        if (!g_watchKinds[i] || !registry().isKindOf(ty, g_watchKinds[i])) continue;
+        const uint64_t key = (static_cast<uint64_t>(p) << 8) ^ i;
+        if (w.type == 'l') {
+            uintptr_t be[2];
+            std::vector<uintptr_t> ptrs;
+            size_t total = 0;
+            if (readListAt(p, w.off, true, be, ptrs, total)) g_listLast[key] = listEntries(ptrs, nullptr);
+        } else {
+            g_watchLast[key] = w.type == 'b' ? *reinterpret_cast<const uint8_t*>(p + w.off)
+                             : w.type == 'f' ? *reinterpret_cast<const float*>(p + w.off)
+                                             : *reinterpret_cast<const int32_t*>(p + w.off);
+        }
     }
+}
+
+// From the destructor hooks (any game thread), before the entity goes. Waits while the render thread
+// reads the watches (g_watchM), so nothing reads it after this returns.
+void watchDestroyed(uintptr_t p) {
+    if (!g_haveWatches.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lock(g_watchM);
+    if (g_watchEnts.erase(p)) forgetWatched(p);
+}
+
+void addWatch(const std::string& cls, uint32_t off, char type, const std::string& label) {
+    hookDestructors(); // watches drop destroyed entities through it (once; usually done at startup)
+    std::lock_guard<std::mutex> lock(g_watchM);
+    for (const Watch& w : g_watches)
+        if (w.cls == cls && w.off == off) return;
+    g_watches.push_back({cls, off, type, label.empty() ? cls + "+" + std::to_string(off) : label});
+    watchesChanged();
+}
+
+// One list watch on one entity (caller holds g_watchM). Most lists are empty and unchanged: that
+// costs one 16-byte read. Only when the result differs from the last reading is begin / end read
+// again, to make sure the list was not being changed while it was read (if it was, the next frame
+// reads it again). A change becomes a kList line in `out` (pushed after g_watchM is released).
+void pollListLocked(uintptr_t p, const WatchedEnt& we, const Watch& w, uint64_t key, double t, std::vector<Event>& out) {
+    static thread_local std::vector<uintptr_t> ptrs;
+    uintptr_t be[2] = {};
+    size_t total = 0;
+    if (!readListAt(p, w.off, we.direct, be, ptrs, total)) return;
+    auto it = g_listLast.find(key);
+    const bool first = it == g_listLast.end();
+    std::vector<ListEntry> old;
+    if (!first) {
+        const std::vector<ListEntry>& last = it->second;
+        bool same = last.size() == ptrs.size();
+        for (size_t k = 0; same && k < ptrs.size(); ++k) same = last[k].ptr == ptrs[k];
+        if (same) return; // the usual case: nothing changed
+        old = last;
+    }
+    uintptr_t be2[2] = {};
+    if (!readEnt(p + w.off, be2, sizeof(be2), we.direct) || be2[0] != be[0] || be2[1] != be[1]) return; // moving
+    std::vector<uintptr_t> oldPtrs;
+    for (const ListEntry& le : old) oldPtrs.push_back(le.ptr);
+    std::vector<ListEntry> now = listEntries(ptrs, first ? nullptr : &old);
+    g_listLast[key] = now;
     Event ev;
     ev.t = t;
     ev.kind = kList;
     ev.thread = GetCurrentThreadId();
-    ev.ptr = p, ev.type = ty;
+    ev.ptr = p, ev.type = we.type;
     ev.text = w.label;
     ev.fieldType = 'l', ev.fieldOff = w.off;
     ev.value[0] = static_cast<float>(total);
@@ -866,89 +973,98 @@ void pollList(uintptr_t p, const Type* ty, const Watch& w, uint64_t key, double 
     }
     ev.reordered = !first && commonNew != commonOld; // the entries both readings share, in another order
     for (size_t i = 0; i < now.size() && i < kListExported; ++i) ev.list.push_back(now[i]);
-    push(std::move(ev));
+    out.push_back(std::move(ev));
 }
 
-// Render thread, every frame while recording. True when it read the watches this time.
+// Render thread, every frame while recording. True when it read the watches this time. The reading
+// holds g_watchM throughout: a watched entity cannot finish being destroyed meanwhile (its destructor
+// hook waits in watchDestroyed), which is what makes plain loads from it safe.
 bool pollWatchesImpl() {
-    std::vector<Watch> watches;
-    {
-        std::lock_guard<std::mutex> lock(g_watchM);
-        watches = g_watches;
-    }
-    if (watches.empty()) return false;
+    if (!g_haveWatches.load(std::memory_order_relaxed)) return false;
     const double t = now();
     if (t - g_watchFoundAt > 2.0 || t < g_watchFoundAt) {
+        // Instances that existed before the watch (new ones arrive through watchCreated), checked
+        // alive here, once; read with safe reads, since their creation was not seen.
         g_watchFoundAt = t;
         std::vector<const Type*> kinds;
-        for (const Watch& w : watches) kinds.push_back(registry().find(w.cls));
+        {
+            std::lock_guard<std::mutex> lock(g_watchM);
+            kinds = g_watchKinds;
+        }
         std::vector<std::pair<uintptr_t, const Type*>> found;
         for (const auto& [p, ty] : inspector::tracked()) {
             if (!ty) continue;
             for (const Type* k : kinds)
                 if (k && registry().isKindOf(ty, k)) {
-                    found.push_back({p, ty});
+                    if (inspector::alive(p, ty)) found.push_back({p, ty});
                     break;
                 }
         }
         std::lock_guard<std::mutex> lock(g_watchM);
-        g_watchEntities = std::move(found);
+        for (const auto& [p, ty] : found) g_watchEnts.emplace(p, WatchedEnt{ty, false});
     }
     const int rate = g_watchRate.load(std::memory_order_relaxed);
     if (rate > 0 && t - g_watchReadAt < 1.0 / rate && t >= g_watchReadAt) return false;
     g_watchReadAt = t;
-    std::vector<std::pair<uintptr_t, const Type*>> ents;
+    std::vector<Event> out;
     {
         std::lock_guard<std::mutex> lock(g_watchM);
-        ents = g_watchEntities;
-    }
-    std::vector<const Type*> kinds;
-    for (const Watch& w : watches) kinds.push_back(registry().find(w.cls));
-    for (const auto& [p, ty] : ents) {
-        if (!inspector::alive(p, ty)) continue;
-        for (size_t i = 0; i < watches.size(); ++i) {
-            const Watch& w = watches[i];
-            const Type* k = kinds[i];
-            if (!k || !registry().isKindOf(ty, k)) continue;
-            if (w.type == 'l') {
-                pollList(p, ty, w, (static_cast<uint64_t>(p) << 8) ^ i, t);
-                continue;
-            }
-            double v = 0;
-            if (w.type == 'b') v = mem::readOr<uint8_t>(p + w.off);
-            else if (w.type == 'f') v = mem::readOr<float>(p + w.off);
-            else v = mem::readOr<int32_t>(p + w.off);
-            const uint64_t key = (static_cast<uint64_t>(p) << 8) ^ i;
-            double old = 0;
-            bool first = false, changed = false;
-            {
-                std::lock_guard<std::mutex> lock(g_watchM);
+        if (g_watchKinds.size() != g_watches.size()) return false;
+        for (const auto& [p, we] : g_watchEnts) {
+            for (size_t i = 0; i < g_watches.size(); ++i) {
+                const Watch& w = g_watches[i];
+                const Type* k = g_watchKinds[i];
+                if (!k || !registry().isKindOf(we.type, k)) continue;
+                const uint64_t key = (static_cast<uint64_t>(p) << 8) ^ i;
+                if (w.type == 'l') {
+                    pollListLocked(p, we, w, key, t, out);
+                    continue;
+                }
+                double v = 0;
+                if (w.type == 'b') {
+                    uint8_t x = 0;
+                    if (!readEnt(p + w.off, &x, 1, we.direct)) continue;
+                    v = x;
+                } else if (w.type == 'f') {
+                    float x = 0;
+                    if (!readEnt(p + w.off, &x, 4, we.direct)) continue;
+                    v = x;
+                } else {
+                    int32_t x = 0;
+                    if (!readEnt(p + w.off, &x, 4, we.direct)) continue;
+                    v = x;
+                }
                 auto it = g_watchLast.find(key);
-                first = it == g_watchLast.end();
-                if (!first) old = it->second;
-                changed = first || old != v;
+                const bool first = it == g_watchLast.end();
+                const double old = first ? 0.0 : it->second;
+                if (!first && old == v) continue;
                 g_watchLast[key] = v;
+                Event ev;
+                ev.t = t;
+                ev.kind = kField;
+                ev.thread = GetCurrentThreadId();
+                ev.ptr = p, ev.type = we.type;
+                ev.text = w.label;
+                ev.fieldType = w.type, ev.fieldOff = w.off;
+                ev.value[0] = static_cast<float>(v);
+                ev.value[1] = static_cast<float>(old);
+                ev.value[2] = first ? 1.f : 0.f; // the first reading of this entity's field
+                out.push_back(std::move(ev));
             }
-            if (!changed) continue;
-            Event ev;
-            ev.t = t;
-            ev.kind = kField;
-            ev.thread = GetCurrentThreadId();
-            ev.ptr = p, ev.type = ty;
-            ev.text = w.label;
-            ev.fieldType = w.type, ev.fieldOff = w.off;
-            ev.value[0] = static_cast<float>(v);
-            ev.value[1] = static_cast<float>(old);
-            ev.value[2] = first ? 1.f : 0.f; // the first reading of this entity's field
-            push(std::move(ev));
         }
     }
+    for (Event& ev : out) push(std::move(ev));
     return true;
 }
 
 void pollWatches() {
     const double t0 = now();
-    if (pollWatchesImpl()) g_watchMs.store(static_cast<float>((now() - t0) * 1000.0), std::memory_order_relaxed);
+    if (!pollWatchesImpl()) return;
+    const float ms = static_cast<float>((now() - t0) * 1000.0);
+    g_watchMs.store(ms, std::memory_order_relaxed);
+    g_watchReadings.fetch_add(1, std::memory_order_relaxed);
+    g_watchMsTotal.store(g_watchMsTotal.load(std::memory_order_relaxed) + ms, std::memory_order_relaxed);
+    if (ms > g_watchMsWorst.load(std::memory_order_relaxed)) g_watchMsWorst.store(ms, std::memory_order_relaxed);
 }
 
 // ---- sending an event to entities (research: does the game act on it?) ---------------------------
@@ -1302,6 +1418,7 @@ void setRecording(bool on) {
     if (on && g_wantEvents.load()) hookEvents();
     if (on && g_wantAnim.load()) hookAnim();
     if (on && g_wantDestroyed.load()) hookDestructors(); // once; the inspector has usually done it already
+    if (on) g_watchFoundAt = -10.0;                      // watches: look for existing instances straight away
     if (on) {
         std::lock_guard<std::mutex> lock(g_antM);
         g_antLast.clear(); // each recording starts with the values as they are
@@ -1317,6 +1434,7 @@ void clearAll() {
         g_watchLast.clear(); // the next recording starts with the values as they are
         g_listLast.clear();
     }
+    g_watchReadings = 0, g_watchMsTotal = 0.0, g_watchMsWorst = 0.f;
     std::lock_guard<std::mutex> lock(g_m);
     g_events.clear();
     g_objs.clear();
@@ -1599,7 +1717,15 @@ void exportAll(const std::string& name) {
     CreateDirectoryW(g_dir.c_str(), nullptr);
     const std::wstring path = g_dir + std::wstring(file.begin(), file.end());
     g_lastExport = "recordings\\" + file + " (writing...)";
-    std::thread([events = std::move(events), objs = std::move(objs), dropped, level, path, file] {
+    // How long watch readings took over this recording (none: no watches, or none read).
+    std::string watchTiming;
+    if (const uint64_t n = g_watchReadings.load()) {
+        char b[160];
+        snprintf(b, sizeof(b), ",\"watch_readings\":{\"count\":%llu,\"average_ms\":%.4f,\"worst_ms\":%.4f,\"rate\":%d}",
+                 static_cast<unsigned long long>(n), g_watchMsTotal.load() / static_cast<double>(n), g_watchMsWorst.load(), g_watchRate.load());
+        watchTiming = b;
+    }
+    std::thread([events = std::move(events), objs = std::move(objs), dropped, level, path, file, watchTiming] {
         if (!g_ownersBuilt) buildOwners(); // for "callers" (once)
         FILE* f = _wfopen(path.c_str(), L"wb");
         if (!f) {
@@ -1609,7 +1735,7 @@ void exportAll(const std::string& name) {
         std::string head = "{\"kind\":\"header\",\"format\":\"gridnode-recording\",\"version\":1,\"gridnode\":\"" GRIDNODE_VERSION_STRING
                            "\",\"image_base\":\"0x140000000\",\"level\":" +
                            jsonStr(level) + ",\"events\":" + std::to_string(events.size()) + ",\"objects\":" + std::to_string(objs.size()) +
-                           ",\"dropped_oldest\":" + std::to_string(dropped) + "}\n";
+                           ",\"dropped_oldest\":" + std::to_string(dropped) + watchTiming + "}\n";
         fwrite(head.data(), 1, head.size(), f);
         for (const Event& ev : events) {
             const std::string line = toJson(ev);
@@ -1619,6 +1745,21 @@ void exportAll(const std::string& name) {
             const std::string line = objJson(id, o);
             fwrite(line.data(), 1, line.size(), f);
         }
+        // Then the start of the function holding each recorded frame (from the unwind table), so a
+        // reader can name frames by function (summarize.py: "0x143234f21 (Name+0x51)") without a dump.
+        std::vector<uint64_t> frames;
+        for (const Event& ev : events) frames.insert(frames.end(), ev.stack.begin(), ev.stack.end());
+        std::sort(frames.begin(), frames.end());
+        frames.erase(std::unique(frames.begin(), frames.end()), frames.end());
+        std::string fl = "{\"kind\":\"frames\",\"starts\":{";
+        bool firstFrame = true;
+        for (uint64_t fr : frames)
+            if (const uint64_t st = functionStart(fr)) {
+                fl += (firstFrame ? "" : ",") + hexAddr(fr) + ":" + hexAddr(st);
+                firstFrame = false;
+            }
+        fl += "}}\n";
+        fwrite(fl.data(), 1, fl.size(), f);
         fclose(f);
         GN_LOG("recorder: exported %llu events to recordings\\%s", static_cast<unsigned long long>(events.size()), file.c_str());
     }).detach();
@@ -1935,15 +2076,16 @@ void draw(bool* open) {
         {
             std::lock_guard<std::mutex> lock(g_watchM);
             ws = g_watches;
-            found = g_watchEntities.size();
+            found = g_watchEnts.size();
         }
         for (size_t i = 0; i < ws.size(); ++i) {
             ImGui::PushID(static_cast<int>(i));
             if (ImGui::SmallButton((ws[i].label + "  x").c_str())) {
                 std::lock_guard<std::mutex> lock(g_watchM);
                 if (i < g_watches.size()) g_watches.erase(g_watches.begin() + static_cast<long>(i));
-                g_watchLast.clear();
+                g_watchLast.clear(); // keys are by watch index, which just shifted
                 g_listLast.clear();
+                watchesChanged();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s +0x%x (%c)", ws[i].cls.c_str(), ws[i].off, ws[i].type);
             ImGui::PopID();
@@ -1958,7 +2100,11 @@ void draw(bool* open) {
                               "moment (a ghost that lives 0.1 s); fewer readings cost less with many entities watched.");
         if (!ws.empty()) {
             ImGui::SameLine();
-            ImGui::TextDisabled("last reading %.2f ms", g_watchMs.load());
+            if (const uint64_t n = g_watchReadings.load())
+                ImGui::TextDisabled("reading takes %.3f ms (average %.3f, worst %.3f over %llu)", g_watchMs.load(),
+                                    g_watchMsTotal.load() / static_cast<double>(n), g_watchMsWorst.load(), static_cast<unsigned long long>(n));
+            else
+                ImGui::TextDisabled("reading time: shown once recording (watches are read only then)");
         }
     }
 

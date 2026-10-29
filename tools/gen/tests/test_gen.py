@@ -157,6 +157,19 @@ class Errors(unittest.TestCase):
                 properties: [ { name: Visible, hash: 0x12345678 } ]
             """, "does not match djb2-xor")
 
+    def test_bad_event_hash(self):
+        self.assertError("""
+            events:
+              - { name: StartReplay, hash: 0x12345678 }
+            """, "does not match djb2-xor")
+
+    def test_duplicate_event(self):
+        self.assertError("""
+            events:
+              - { name: StartReplay }
+              - { name: StartReplay }
+            """, "already in")
+
     def test_wrong_vtable(self):
         self.assertError("""
             classes:
@@ -521,6 +534,28 @@ class RecordingObjects(unittest.TestCase):
             self.assertEqual(r.stdout.count("(points at it)"), 2)   # in the list, then removed from it
             r = subprocess.run([sys.executable, script, rec, "--ghidra", os.path.join(d, "g.json")], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class FrameNames(unittest.TestCase):
+    """summarize.py names each stack frame by its function, keeping the address first."""
+
+    def test_frames_line_and_annotated_events(self):
+        import json
+        evs = [{"kind": "header", "events": 2},
+               {"kind": "event", "t": 1.0, "event": "2734a476", "event_id": "2734a476", "target": "PamServerReplayEntity",
+                "stack": ["0x14314e759", "0x143999010"]},
+               {"kind": "marker", "t": 1.1, "name": "m"},
+               {"kind": "frames", "starts": {"0x14314e759": "0x14314e4a0", "0x143999010": "0x143999000"}}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            r = subprocess.run([sys.executable, script, rec, "--all"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("event StartReplay -> PamServerReplayEntity", r.stdout)   # named from db/annotations/events.yaml
+            self.assertIn("0x14314e759 (EntityBus_fireEvent+0x2b9)", r.stdout)     # annotated function + offset
+            self.assertIn("0x143999010 (FUN_143999000+0x10)", r.stdout)            # unnamed: Ghidra's FUN_ name
 
 
 class Fingerprints(unittest.TestCase):

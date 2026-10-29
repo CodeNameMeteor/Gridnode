@@ -59,10 +59,13 @@ only by code, its first writes in a session can be missed.
 ### Watching fields
 
 **Watch fields** records every change to a field of the live entities of a class (any subclass
-too): give the class, the offset and its type (byte, i32, f32), and a label. They are read every frame while recording (the *readings a second* slider reads them less often; the menu shows how long a reading takes); each change is a `field` line with the value and the old one (the
+too): give the class, the offset and its type (byte, i32, f32), and a label. They are read every frame while recording (the *readings a second* slider reads them less often; the menu shows how long a reading takes,
+and the export's header keeps the average and worst as `watch_readings`); each change is a `field` line with the value and the old one (the
 first reading of each entity is marked `first`). **Add the city alert manager's state** watches
 the KSEC alert's active flag, level, kills, cameras seeing and active hotspots
-(`docs/research/city-alert.md`). Watches last until the game closes.
+(`docs/research/city-alert.md`). Watches last until the game closes. An entity of a watched class is watched from the moment it is
+created (so a list it fills at once shows as additions) and dropped when it is destroyed; ones that
+existed before the watch are found within 2 s, and when recording starts.
 
 The **list** type watches a vector of pointers instead (begin at the offset, end 8 bytes after, as
 `eastl::vector` keeps them): each change is a `list` line with what was `added` and `removed` (with
@@ -122,8 +125,20 @@ python tools/recording/summarize.py recordings/20261020-201905-safehousetp.jsonl
 ```
 
 lists the most frequent events, and for each marker what was unusual around it (seen near the
-marker far more often than elsewhere) with the call stacks behind it as image addresses (0x14…),
-named where `db/annotations` knows the function. `--window 2` narrows the time around a marker,
+marker far more often than elsewhere) with the call stacks behind it. Each frame is its image address first (to paste into Ghidra's Go
+To), then the function it is in and how far into it:
+
+```
+0x143234f21 (ClientSpawnEntity_createFromNetwork+0x51)   an annotated function
+0x1431635a5 (TextureRefParameterEvent::vf+0x30 +0x25)    a reflected class's vtable function
+0x14347c5ab (FUN_14347c480+0x12b)                        not named yet (Ghidra's FUN_ name)
+```
+
+Function starts come from the recording itself (recordings since 2026-10-29 end with a `frames`
+line), else from a game dump: `--exe`, or by default the newest `dumps/*.exe` next to the recordings
+folder. Names come from `db/annotations`; `--ghidra-names EXPORT` adds your own Ghidra's names (a
+GridNodeSync export) where the annotations have none. Events and properties named in
+`db/annotations/events.yaml` are named even in older recordings. `--window 2` narrows the time around a marker,
 `--all` lists everything near it. Lines about an object carry its id (`#12`), and targets are named
 with their blueprint when the recording knows it.
 

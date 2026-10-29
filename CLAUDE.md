@@ -17,6 +17,8 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 - **Commit and push only when the user asks**, even if a hook says otherwise. Commits end with the
   attribution lines the session gives.
 - The user tests in game and sends logs and recordings. Say plainly what is untested.
+- After every addition, give the user an in-depth human test: numbered steps in game (or Ghidra),
+  what they should see at each step, and what to send back (recording name, log, numbers).
 - Docs and messages: plain, short, consistent with the existing docs.
 - The layout editor is paused on purpose (SDK and research work first).
 - After structural changes, update this file and `docs/progress.md`. Keep this file under 150 lines.
@@ -99,10 +101,12 @@ python tools/recording/summarize.py <file> --ghidra OUT --exe DUMP  # a GridNode
 ```
 
 Per marker it prints the "unusual" labels (seen near it at >= 2x their average rate; `xN.N` is the
-lift), a "closest" timeline, and call stacks as image VAs (`0x14...`) named from the annotations:
-those are what to open in Ghidra. Line kinds: `message`, `created`, `destroyed`, `event` / `sent`,
-`anim`, `field`, `list`, `call`, `marker`, `level`, and `object` lines (the object table) after the
-events. Hashed names show as hex; `recordings/event-names.txt` names them (game-derived: never commit).
+lift), a "closest" timeline, and call stacks. Frames print as `0x14... (Function+0xNN)`, the address
+first for Ghidra's Go To; `--ghidra-names EXPORT` adds the user's Ghidra names. Line kinds:
+`message`, `created`, `destroyed`, `event` / `sent`, `anim`, `field`, `list`, `call`, `marker`,
+`level`, then `object` lines (the object table) and one `frames` line (frame -> function start).
+Hashed names show as hex; `db/annotations/events.yaml` (ours) and `recordings/event-names.txt`
+(game-derived: never commit) name them.
 For raw lines, filter with a short `python -c` by `kind` and time range, never print the whole file.
 Record findings in `db/annotations/` and `docs/progress.md`.
 

@@ -28,18 +28,37 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def load_annotation_names():
-    """va -> name for every annotated function / global / code site (exact addresses)."""
+    """va -> name for every annotated function, virtual (Class::name), code site and hooked function,
+    and the annotated event names (into EVENT_NAMES). Uses the annotation loader (tools/gen)."""
+    sys.path.insert(0, str(ROOT / "tools" / "gen"))
+    try:
+        from gridnode_gen import annotations
+        db, _ = annotations.load(str(ROOT / "db" / "annotations"))
+    except Exception as e:  # no PyYAML, or broken annotations: fall back to plain names
+        print(f"(annotations not loaded: {e}; frames are named from the recording only)", file=sys.stderr)
+        return {}
     names = {}
-    pat = re.compile(r"name:\s*([A-Za-z0-9_]+).*?va:\s*(0x[0-9a-fA-F]+)", re.S)
-    for f in (ROOT / "db" / "annotations").glob("*.yaml"):
-        text = f.read_text(encoding="utf-8", errors="replace")
-        # inline maps: { name: X, va: 0x... }
-        for m in re.finditer(r"\{\s*name:\s*([A-Za-z0-9_]+)\s*,\s*va:\s*(0x[0-9a-fA-F]+)", text):
-            names[int(m.group(2), 16)] = m.group(1)
-        # block entries: "- name: X\n    va: 0x..."
-        for m in re.finditer(r"-\s*name:\s*([A-Za-z0-9_]+)\s*\n\s+va:\s*(0x[0-9a-fA-F]+)", text):
-            names[int(m.group(2), 16)] = m.group(1)
+    for f in db.functions.values():
+        names[f.va] = f.name
+    for c in db.classes.values():
+        for v in c.virtuals:
+            if v.va:
+                names.setdefault(v.va, f"{c.name}::{v.name}")
+        for pr in c.properties:
+            ANNOTATED_EVENTS[pr.hash] = pr.name
+    for cs in db.code.values():
+        names.setdefault(cs.va, cs.name)
+    for h in db.hooks.values():
+        names.setdefault(h.original, h.name)
+    for e in db.events.values():
+        ANNOTATED_EVENTS[e.hash] = e.name
     return names
+
+
+def load_ghidra_names(path):
+    """va -> name from a GridNodeSync export (your own Ghidra's names)."""
+    doc = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    return {int(f["va"]): f["name"] for f in doc.get("functions", [])}
 
 
 def djb2(s):
@@ -50,7 +69,11 @@ def djb2(s):
 
 
 EVENT_NAMES = {}
+ANNOTATED_EVENTS = {}  # hash -> name, from db/annotations (events and class properties): these win
 FN_NAMES = {}  # function VA -> annotated name (set in main)
+STARTS = {}    # frame VA -> start of its function (the recording's "frames" line, callers, or a dump)
+OWNERS = {}    # function start -> "Class::vf+0xNN" (a reflected class's vtable function; from callers)
+IMAGE = None   # a PeImage of the game (--exe, or a dump found in ../dumps), for frames the recording has no start for
 OBJECTS = {}   # object id -> the recording's "object" line (what a pointer was: type, blueprint, lifetime)
 
 
@@ -70,7 +93,7 @@ def load_event_names(path):
 def event_label(ev):
     name, eid = ev.get("event", "?"), ev.get("event_id")
     if eid and name == eid:
-        name = EVENT_NAMES.get(int(eid, 16), name)
+        name = ANNOTATED_EVENTS.get(int(eid, 16)) or EVENT_NAMES.get(int(eid, 16), name)
     return name
 
 
@@ -94,7 +117,7 @@ def label(ev):
         prop = ev.get("property")
         pid = ev.get("property_id")
         if pid and prop == pid:
-            prop = EVENT_NAMES.get(int(pid, 16), prop)
+            prop = ANNOTATED_EVENTS.get(int(pid, 16)) or EVENT_NAMES.get(int(pid, 16), prop)
         val = ev.get("value")
         if isinstance(val, list):
             val = "(" + " ".join(f"{v:.2f}" for v in val[:3]) + (" ..." if len(val) > 3 else "") + ")"
@@ -123,9 +146,31 @@ def label(ev):
     return k or "?"
 
 
+def function_start(va):
+    if va in STARTS:
+        return STARTS[va]
+    s = IMAGE.function_start(va) if IMAGE is not None else None
+    STARTS[va] = s
+    return s
+
+
 def frame_text(va, names):
+    """The address first (to paste into Ghidra), then the function it is in and the offset into it:
+    0x143234f21 (ClientSpawnEntity_createFromNetwork+0x51), (Class::vf+0x10 +0x3d) for a reflected
+    class's vtable function, or (FUN_143234ed0+0x51) when the function has no name yet."""
     n = names.get(va)
-    return f"0x{va:x}" + (f" ({n})" if n else "")
+    if n:
+        return f"0x{va:x} ({n})"
+    start = function_start(va)
+    if not start:
+        return f"0x{va:x}"
+    off = va - start
+    if names.get(start):
+        return f"0x{va:x} ({names[start]}+0x{off:x})"
+    if OWNERS.get(start):
+        owner, _, shared = OWNERS[start].partition(" (shared by ")
+        return f"0x{va:x} ({owner} +0x{off:x}" + (f", shared by {shared.rstrip(')')} classes)" if shared else ")")
+    return f"0x{va:x} (FUN_{start:x}+0x{off:x})"
 
 
 def _top(counter, n=6, width=110):
@@ -157,7 +202,7 @@ def to_ghidra(events, rec_name, img=None, depth=8, header=None):
     def start_of(va):
         if va in starts or va in no_start:
             return starts.get(va)
-        s = img.function_start(va) if img else None
+        s = STARTS.get(va) or (img.function_start(va) if img else None)
         if s is None:
             no_start.add(va)
         else:
@@ -218,7 +263,7 @@ def to_ghidra(events, rec_name, img=None, depth=8, header=None):
         "bookmarks": sorted(bookmarks, key=lambda b: b["va"]),
         "comments": sorted(comments, key=lambda c: c["va"]),
         "stats": {"frames": len(frame_hits), "functions": len(func_hits), "traced": len(traced),
-                  "frames_without_unwind_entry": len(no_start) if img else None},
+                  "frames_without_unwind_entry": len(no_start) if (img or STARTS) else None},
     }
 
 
@@ -271,8 +316,11 @@ def main():
     ap.add_argument("--ghidra", type=pathlib.Path, metavar="OUT",
                     help="write a GridNodeSync import (functions to create, bookmarks, comments) instead of the summary")
     ap.add_argument("--exe", type=pathlib.Path,
-                    help="with --ghidra: the game image (a dump, GridNode menu -> Game image) for function starts")
+                    help="the game image (a dump, GridNode menu -> Game image) for function starts; "
+                         "default: the newest dumps/*.exe next to the recordings folder")
     ap.add_argument("--depth", type=int, default=8, help="with --ghidra: frames per stack to bookmark (default 8)")
+    ap.add_argument("--ghidra-names", metavar="EXPORT",
+                    help="also name frames with your Ghidra's names (a GridNodeSync export)")
     ap.add_argument("--object", help="one object's story: an object id from the recording, or its address (0x...)")
     args = ap.parse_args()
     load_event_names(args.names or pathlib.Path(args.file).with_name("event-names.txt"))
@@ -288,28 +336,49 @@ def main():
                 header = ev
             elif ev.get("kind") == "object":
                 OBJECTS[ev["id"]] = ev
+            elif ev.get("kind") == "frames":
+                STARTS.update({int(k, 16): int(v, 16) for k, v in ev.get("starts", {}).items()})
             else:
                 events.append(ev)
     if not events:
         print("no events")
         return 1
     names = load_annotation_names()
+    if args.ghidra_names:
+        for va, n in load_ghidra_names(args.ghidra_names).items():
+            names.setdefault(va, n)   # annotations first, then your Ghidra's names
     FN_NAMES.update(names)
+    # Function starts the recording carries in "callers" (frames in reflected classes' vtable functions).
+    for e in events:
+        for c in e.get("callers", []):
+            if c.get("fn"):
+                STARTS.setdefault(int(c["at"], 16), int(c["fn"], 16))
+                OWNERS.setdefault(int(c["fn"], 16), c["in"])
+    global IMAGE
+    exe = args.exe
+    if exe is None:  # a dump next to the recordings folder (bin/dumps), newest first
+        dumps = sorted(pathlib.Path(args.file).resolve().parent.parent.glob("dumps/*.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        exe = dumps[0] if dumps else None
+    if exe is not None:
+        try:
+            IMAGE = _load_image(exe)
+        except (OSError, ValueError) as e:
+            print(f"(game image {exe} not used: {e})", file=sys.stderr)
     if args.object:
         return object_story(events, args.object)
     if args.ghidra:
         if args.marker:
             at = [e["t"] for e in events if e.get("kind") == "marker" and e.get("name") == args.marker]
             events = [e for e in events if any(abs(e["t"] - t) <= args.window for t in at)]
-        img = _load_image(args.exe) if args.exe else None
+        img = IMAGE
         doc = to_ghidra(events, pathlib.Path(args.file).name, img, args.depth, header)
         args.ghidra.parent.mkdir(parents=True, exist_ok=True)
         args.ghidra.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         st = doc["stats"]
         print(f"{args.ghidra}: {len(doc['createFunctions'])} function starts, {len(doc['bookmarks'])} bookmarks, "
               f"{len(doc['comments'])} function comments")
-        if img is None:
-            print("  no --exe: no function starts or per-function comments (bookmarks only)")
+        if img is None and not STARTS:
+            print("  no function starts (no --exe, no dump in ../dumps, an older recording): bookmarks only")
         elif st["frames_without_unwind_entry"]:
             print(f"  {st['frames_without_unwind_entry']} frames had no unwind entry (bookmarked only)")
         print("Import it in Ghidra with GridNodeSync (Import, or script arguments: import FILE).")
@@ -320,6 +389,10 @@ def main():
     if header:
         print(f"  level {header.get('level')}, GridNode {header.get('gridnode')}, "
               f"{header.get('events')} events, {header.get('dropped_oldest', 0)} dropped")
+        w = header.get("watch_readings")
+        if w:
+            rate = "every frame" if not w.get("rate") else f"{w['rate']} a second"
+            print(f"  watches read {w['count']} times ({rate}): {w['average_ms']:.3f} ms average, {w['worst_ms']:.3f} ms worst")
     print(f"  {span:.1f} s recorded\n")
 
     totals = collections.Counter(label(e) for e in events)
@@ -372,9 +445,6 @@ def main():
             if label(e) in keep and e.get("stack"):
                 frames = tuple(int(x, 16) for x in e["stack"][:6])
                 stacks[(label(e), frames)] += 1
-                # GridNode names frames inside a reflected class's vtable function ("callers").
-                for c in e.get("callers", []):
-                    names.setdefault(int(c["at"], 16), c["in"])
         if stacks:
             print("  call stacks (innermost first):")
             for (lab, frames), n in stacks.most_common(min(args.top, 12)):

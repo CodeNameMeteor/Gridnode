@@ -128,8 +128,19 @@ def emit(db: Database) -> str:
     for c in db.classes.values():
         for pr in c.properties:
             props.setdefault(pr.name, pr)
+    for e in db.events.values():
+        props.setdefault(e.name, e)
     for name in sorted(props):
-        w(f"inline constexpr uint32_t {name} = {props[name].hash:#010x};\n")
+        if name.isidentifier():
+            w(f"inline constexpr uint32_t {name} = {props[name].hash:#010x};\n")
+    # Every name above by its hash, for naming hashes at runtime (the Recorder names events with it).
+    w("struct Name { uint32_t hash; const char* name; };\n")
+    w("inline constexpr Name names[] = {\n")
+    for name in sorted(props):
+        w(f"    {{{props[name].hash:#010x}, {_cstr(name)}}},\n")
+    if not props:
+        w("    {0, nullptr},\n")
+    w("};\n")
     w("} // namespace hash\n\n")
 
     w("// ---- Constants ------------------------------------------------------------------------------\n")

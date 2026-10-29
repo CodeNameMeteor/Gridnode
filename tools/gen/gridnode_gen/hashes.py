@@ -49,6 +49,7 @@ def dictionary(reflected=None, db=None, image=None, word_files=(), min_len=2) ->
             names.update(m.name for m in c.members)
             names.update(p.name for p in c.properties)
         names.update(db.structs)
+        names.update(db.events)
     if image is not None:
         for s in re.findall(rb"[\x20-\x7e]{%d,64}" % max(min_len, 3), image):
             text = s.decode("ascii")

@@ -4,9 +4,9 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 [handover.md](handover.md).
 
 ## Current task
-2026-10-29: handover steps 1 to 4 done. Test build `gridnode-watch4.dll` deployed to
+2026-10-29: handover steps 1 to 4 done, then frame and event names. Test build `gridnode-watchlock8.dll` deployed to
 `D:\Dev\GridNode\bin\gridnode.dll`: destroyed lines, objects, list watches and the tracing fix are
-confirmed in game; the class picker and every-frame watches are not yet.
+confirmed in game, as are the class picker and the faster watches.
 **GridNodeSync confirmed in Ghidra 12.1.4** (2026-10-29, run through the MCP with script arguments):
 export (632 functions, 30 labels; backup in `bin/ghidra-test/my-names-before.json`), annotations import
 (45 structs, 124 names, 539 of the user's kept, 573 comments, 0 problems), a recording's import (515
@@ -14,6 +14,29 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Confirmed in game** (`20261029-171715-test-names-test`): the class picker (user), event names
+  written by the recorder, the `frames` line (all frames named with no dump), every-frame lists (server
+  add 2 ms after StartReplay, client 3 ms after CharacterSpawned). Watch timing is now kept per
+  recording (menu, header `watch_readings`); it read 0 before because watches only run while recording.
+  Every-frame list watches cost 2.1 ms a frame (3.7 worst) with ~1,100 spawners.
+- **Cheaper watches, picked up at creation** (2026-10-29, untested in game): one read per empty list
+  (begin and end together), entries only when present, the re-check only on a change; no liveness
+  check per reading (destroyed entities leave the watch set from the destructor hook); entities of
+  watched classes join at creation, so a level load no longer hides a spawner's first character. In game
+  (`watchfast-test`): 0.82 ms average (from 2.1), 3.7 worst; ~45 spawners filled during a reload
+  still showed as "first". Then (untested): the reading holds the watch lock and reads entities seen
+  created with plain loads (their destructor hook waits on the lock); scanned ones keep safe reads;
+  while recording, a created entity's values at creation are its baseline, so fills before the next
+  frame show as additions. **Confirmed** (`watchlock-test2`): 0.19 ms average, 3.0 ms worst (a reload
+  frame); every spawner filled during two reloads shows its characters as additions (no non-empty
+  first readings), no lines from destroyed spawners, no hitch at reloads. Reloads fill the 250,000-line
+  buffer: untick created / destroyed when recording across one.
+- **Frames named by function, events from the annotations** (2026-10-29): summaries print each frame
+  as `0x143234f21 (ClientSpawnEntity_createFromNetwork+0x51)` (address first, for Go To), `(Class::vf+0xNN
+  +0x..)` or `(FUN_<start>+0x..)`. Starts from the recording's new `frames` line, `callers`, or a dump
+  (`--exe`, default newest `../dumps/*.exe`); `--ghidra-names` adds the user's Ghidra names. New
+  `events:` annotation section (`events.yaml`, hashes checked): into `engine.hpp` (`hash::names[]`), which
+  the Recorder uses in game; `summarize.py` names them in older recordings. The in-game part is untested.
 - **Recordings into Ghidra** (2026-10-29): `summarize.py REC --ghidra OUT --exe DUMP` writes a GridNodeSync
   import: `createFunctions` (unwind-table starts, `PeImage.function_start`, chained entries followed),
   `bookmarks` (call before each return address, category "GridNode recording"), `comments` (plate block

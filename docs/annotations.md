@@ -28,6 +28,7 @@ functions: [...]
 hooks: [...]        # pointers GridNode may swap
 code: [...]         # addresses of instructions (load/store sites)
 constants: [...]
+events: [...]       # entity events named by our research (events.yaml)
 fingerprint: {...}  # the build check (fingerprint.yaml)
 ```
 
@@ -100,6 +101,20 @@ hooks:
 
 GridNode only ever swaps these pointers; code is never patched. Slots must be 8-byte aligned so
 the swap is atomic.
+
+### events
+
+Frostbite keeps event ids as djb2-xor hashes of their names. `events.yaml` lists the ones our
+research has named, each checked against its hash (`hash` may be left out; it is computed):
+
+```yaml
+events:
+  - { name: StartReplay, hash: 0x2734a476, sent_to: [PamServerReplayEntity], note: "Spawns the replay's ghost." }
+```
+
+`sent_to` documents which classes receive it. The names go into `engine.hpp` (`gn::engine::hash`,
+with a `names[]` table), so the Recorder names those events in game, and `summarize.py` names them
+in older recordings; they take precedence over `recordings/event-names.txt`.
 
 ### fingerprint
 
