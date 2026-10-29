@@ -121,6 +121,10 @@ The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\record
 - `D:\Dev\GridNode` (the user's checkout) is up to date since 2026-10-29. The other agent's wrong
   annotation edits are in its git stash and `D:\Dev\GridNode-local-backup-20261029`; never copy
   annotations from there without checking them in Ghidra.
+- Every upload (`device_commit_files`) needs a new staged file name: re-sending under the same name
+  can leave the old file in place. Check what landed (stage it back) before using it.
+- A script copied into `~/ghidra_scripts` needs a fresh timestamp (`Files.setLastModifiedTime`), or
+  Ghidra reruns the old compiled class.
 - Ghidra runs there with GhidraMCP (`mcp__remote-devices__ghidra-mcp__*`; scripts allowed, so
   GridNodeSync runs with arguments `import FILE` / `export FILE`). "Connection refused": ask the
   user to open Ghidra.

@@ -14,6 +14,13 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Class structs and vtable types in Ghidra** (2026-10-29, run on the user's Ghidra): `ghidra-export`
+  gives each class its vtable (annotated, else the dump's), depth and base classes' members (`--class
+  NAME` for more); GridNodeSync builds `<Class>_vtbl` (slots named and typed from what they point to),
+  types the vtables in the listing, puts `vtbl` at +0, and types `this` of the classes' virtuals (17
+  vtables, 266 functions; 52 now read `this->vtbl->...`). It found that the client spawner notes had
+  the vtable slots 0x20 off (onCharacterSpawned +0xd8, removeSpawned +0xe0; checked in the image and
+  traces); fixed, and `ClientSpawnEntity` / `ClientCharacterSpawnEntity` are annotated classes now.
 - **Confirmed in game** (`20261029-171715-test-names-test`): the class picker (user), event names
   written by the recorder, the `frames` line (all frames named with no dump), every-frame lists (server
   add 2 ms after StartReplay, client 3 ms after CharacterSpawned). Watch timing is now kept per

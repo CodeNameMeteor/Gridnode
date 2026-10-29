@@ -42,22 +42,57 @@ def _sig_text(sig) -> str:
     return f"{sig.returns}({params})"
 
 
-def to_ghidra(db: Database, reflected=None) -> dict:
-    structs = []
-    for c in db.classes.values():
-        size = c.size
-        if size is None and reflected is not None:
-            t = reflected.by_name.get(c.name)
-            size = t.get("size") if t else None
-        if not c.members and size is None:
+def _class_vtable(c, t) -> int | None:
+    """The class's vtable: the annotated one, else the dump's when it found exactly one."""
+    if c is not None and c.vtable:
+        return c.vtable
+    vts = (t or {}).get("vtables") or []
+    return int(vts[0], 16) if len(vts) == 1 else None
+
+
+def _class_entry(name: str, db: Database, reflected) -> dict | None:
+    """A class struct for GridNodeSync: its annotated members and those of its base classes (from the
+    dump's class chain), its size, and its vtable (GridNodeSync builds `<Class>_vtbl` from it)."""
+    c = db.classes.get(name)
+    t = reflected.by_name.get(name) if reflected is not None else None
+    if c is None and t is None:
+        return None
+    chain = [x["displayName"] for x in reflected.chain(t)] if t is not None else [name]
+    members, taken = [], set()
+    for owner in chain:  # the class first: its own annotation wins an offset
+        oc = db.classes.get(owner)
+        if oc is None:
             continue
-        structs.append({
-            "name": c.name, "kind": "class",
-            "size": size or (max((m.offset + 8 for m in c.members), default=8)),
-            "comment": _meta_comment(c.meta, f"realm {c.realm}"),
-            "members": [{"offset": m.offset, "name": m.name, "type": str(m.type), "comment": _meta_comment(m.meta)}
-                        for m in sorted(c.members, key=lambda m: m.offset)],
-        })
+        for m in sorted(oc.members, key=lambda m: m.offset):
+            if m.offset in taken:
+                continue
+            taken.add(m.offset)
+            extra = "" if owner == name else f"from {owner}"
+            members.append({"offset": m.offset, "name": m.name, "type": str(m.type), "comment": _meta_comment(m.meta, extra)})
+    size = (c.size if c is not None else None) or (t.get("size") if t is not None else None)
+    vtable = _class_vtable(c, t)
+    if not members and size is None and vtable is None:
+        return None
+    meta_text = _meta_comment(c.meta, f"realm {c.realm}") if c is not None else "GridNode [reflected]"
+    if len(chain) > 1:
+        meta_text += "\nBases: " + " <- ".join(chain[1:])
+    entry = {"name": name, "kind": "class",
+             "size": size or (max((m["offset"] + 8 for m in members), default=8)),
+             "comment": meta_text, "members": sorted(members, key=lambda m: m["offset"])}
+    if vtable:
+        entry["vtable"] = vtable
+        entry["depth"] = len(chain)  # bases first: a function several classes share gets the most basic one's `this`
+    return entry
+
+
+def to_ghidra(db: Database, reflected=None, classes=()) -> dict:
+    """`classes`: more classes (reflected names) to make structs and vtable types for, besides the
+    annotated ones; their base classes' annotated members are included."""
+    structs = []
+    for name in list(db.classes) + [n for n in classes if n not in db.classes]:
+        e = _class_entry(name, db, reflected)
+        if e is not None:
+            structs.append(e)
     for s in db.structs.values():
         structs.append({
             "name": s.name, "kind": "struct", "size": s.size, "comment": _meta_comment(s.meta),

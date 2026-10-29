@@ -30,6 +30,10 @@
 //
 // Without dialogs (headless, or run remotely): script arguments "import FILE" or "export FILE".
 //
+// Classes with a vtable (annotated, from the dump, or asked for with `ghidra-export --class NAME`) also
+// get <Class>_vtbl in /GridNode/vtables, named and typed from what each slot points to; the class struct
+// gets `vtbl` at +0, so decompiled calls read this->vtbl->name(...).
+//
 // Needs Ghidra 12 (CommentType); run on 12.1.4 (written against 12.0.3).
 //
 //@category GridNode
@@ -42,8 +46,10 @@ import java.io.Reader;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -51,6 +57,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.data.ArrayDataType;
@@ -62,6 +70,7 @@ import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.DoubleDataType;
+import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.data.FloatDataType;
 import ghidra.program.model.data.IntegerDataType;
 import ghidra.program.model.data.LongLongDataType;
@@ -75,6 +84,8 @@ import ghidra.program.model.data.UnsignedCharDataType;
 import ghidra.program.model.data.UnsignedIntegerDataType;
 import ghidra.program.model.data.UnsignedLongLongDataType;
 import ghidra.program.model.data.UnsignedShortDataType;
+import ghidra.program.model.data.Pointer;
+import ghidra.program.model.data.Undefined;
 import ghidra.program.model.data.VoidDataType;
 import ghidra.program.model.listing.BookmarkManager;
 import ghidra.program.model.listing.BookmarkType;
@@ -84,6 +95,10 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.listing.Parameter;
+import ghidra.program.model.pcode.HighFunctionDBUtil;
+import ghidra.program.model.mem.Memory;
+import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
@@ -96,10 +111,14 @@ public class GridNodeSync extends GhidraScript {
 	private static final String IN_FORMAT = "gridnode-ghidra";
 	private static final String OUT_FORMAT = "gridnode-ghidra-export";
 	private static final CategoryPath CATEGORY = new CategoryPath("/GridNode");
+	private static final CategoryPath VT_CATEGORY = new CategoryPath("/GridNode/vtables");
+	private static final CategoryPath VT_FUNCTIONS = new CategoryPath(VT_CATEGORY, "functions");
 	private static final String MARK = "GridNode [";
 
 	private DataTypeManager dtm;
-	private int named, kept, structs, comments, failed;
+	private int named, kept, structs, comments, failed, vtables, thisTyped;
+	private final Set<Address> thisSeen = new HashSet<>(); // functions whose `this` this import has decided
+	private DecompInterface decomp;                         // made on first use, disposed after the import
 
 	@Override
 	protected void run() throws Exception {
@@ -184,6 +203,28 @@ public class GridNodeSync extends GhidraScript {
 			JsonObject l = e.getAsJsonObject();
 			nameLabel(addr(l), str(l, "name"), str(l, "type"), str(l, "comment"));
 		}
+		// Vtable types, after the names above so slots are named from them: each class struct with a
+		// vtable gets <Class>_vtbl in /GridNode/vtables and a `vtbl` pointer at +0.
+		List<JsonObject> withVtable = new ArrayList<>();
+		for (JsonElement e : ss) {
+			JsonObject s = e.getAsJsonObject();
+			if (s.has("vtable") && !s.get("vtable").isJsonNull()) {
+				withVtable.add(s);
+			}
+		}
+		withVtable.sort((x, y) -> Integer.compare(x.has("depth") ? x.get("depth").getAsInt() : 0,
+			y.has("depth") ? y.get("depth").getAsInt() : 0)); // base classes first
+		try {
+			for (JsonObject s : withVtable) {
+				applyVtable(str(s, "name"), s.get("vtable").getAsLong());
+			}
+		}
+		finally {
+			if (decomp != null) {
+				decomp.dispose();
+				decomp = null;
+			}
+		}
 		// From recordings (summarize.py --ghidra): functions where Ghidra has none, comments, bookmarks.
 		int made = 0, marks = 0;
 		for (JsonElement e : array(doc, "createFunctions")) {
@@ -228,7 +269,166 @@ public class GridNodeSync extends GhidraScript {
 			marks++;
 		}
 		println(String.format("GridNodeSync import: %d structs, %d names set, %d kept (yours), %d comments, " +
-			"%d functions made, %d bookmarks, %d problems", structs, named, kept, comments, made, marks, failed));
+			"%d functions made, %d bookmarks, %d vtables (%d this types), %d problems", structs, named, kept, comments, made, marks,
+			vtables, thisTyped, failed));
+	}
+
+	// <Class>_vtbl: one pointer per slot, from the vtable's start until a slot no longer points at code
+	// (or the next class's vftable label). A slot is named after the function it points to when that
+	// has a name (yours, GridNode's, or Class::name for annotated virtuals), else vf_0xNN; it is typed
+	// with that function's prototype when one has been set (so calls through it keep their
+	// arguments), else void*. The vtable itself is typed with the struct, and the class struct gets
+	// `vtbl` at +0 unless something is annotated there.
+	private void applyVtable(String cls, long va) {
+		try {
+			Address a = toAddr(va);
+			Memory mem = currentProgram.getMemory();
+			StructureDataType vt = new StructureDataType(VT_CATEGORY, cls + "_vtbl", 0, dtm);
+			vt.setDescription("Vtable of " + cls + " at " + a + " (GridNodeSync)");
+			Set<String> used = new HashSet<>();
+			int n = 0;
+			for (; n < 1024; n++) {
+				Address slot = a.add(8L * n);
+				if (n > 0) {
+					Symbol sym = currentProgram.getSymbolTable().getPrimarySymbol(slot);
+					if (sym != null && sym.getName().endsWith("vftable")) {
+						break; // the next class's vtable starts here
+					}
+				}
+				Address target;
+				try {
+					target = toAddr(mem.getLong(slot));
+				}
+				catch (Exception ex) {
+					break;
+				}
+				MemoryBlock block = mem.getBlock(target);
+				if (block == null || !block.isExecute()) {
+					break;
+				}
+				Function f = getFunctionAt(target);
+				if (f != null && thisSeen.add(f.getEntryPoint())) {
+					typeThis(f, cls);
+				}
+				String field = slotName(f, n);
+				if (!used.add(field)) {
+					field = field + String.format("_0x%x", 8 * n);
+					used.add(field);
+				}
+				DataType ft;
+				if (f != null && f.getSignatureSource() != SourceType.DEFAULT) {
+					ft = new PointerDataType(
+						new FunctionDefinitionDataType(VT_FUNCTIONS, cls + "_" + field, f.getSignature(), dtm), 8, dtm);
+				}
+				else {
+					ft = new PointerDataType(VoidDataType.dataType, 8, dtm);
+				}
+				vt.add(ft, 8, field, String.format("+0x%x: %s%s", 8 * n, target, f == null ? "" : " " + f.getName(true)));
+			}
+			if (n == 0) {
+				failed++;
+				println("vtable " + cls + " at " + a + ": its first slot does not point at code");
+				return;
+			}
+			DataType resolved = dtm.addDataType(vt, DataTypeConflictHandler.REPLACE_HANDLER);
+			Structure cs = (Structure) dtm.getDataType(CATEGORY, cls);
+			if (cs != null) {
+				DataTypeComponent c0 = cs.getComponentContaining(0);
+				if (c0 == null || c0.getFieldName() == null || c0.getFieldName().equals("vtbl")) {
+					if (cs.getLength() < 8) {
+						cs.growStructure(8 - cs.getLength());
+					}
+					cs.replaceAtOffset(0, new PointerDataType(resolved, 8, dtm), 8, "vtbl", cls + "_vtbl");
+				}
+			}
+			clearListing(a, a.add(8L * n - 1));
+			createData(a, resolved);
+			vtables++;
+		}
+		catch (Exception ex) {
+			failed++;
+			println("vtable " + cls + ": " + ex.getMessage());
+		}
+	}
+
+	// The first parameter of a class's virtual function becomes a pointer to the class struct, so the
+	// decompiler shows this->member and this->vtbl->name(...). Never a prototype you set (USER_DEFINED /
+	// IMPORTED). Most functions have no stored parameters (the decompiler infers them each time), so the
+	// decompiler's own parameters are committed first (ANALYSIS: nothing added or dropped); a __thiscall
+	// function becomes __fastcall first (the same registers on x64), since its automatic `this` cannot be
+	// retyped. Only a generic type is replaced (undefined, an 8-byte integer, a pointer to nothing in
+	// particular). Tiny stubs are left alone. Classes are done base first, so a function several classes
+	// share gets the most basic one.
+	private void typeThis(Function f, String cls) {
+		try {
+			SourceType src = f.getSignatureSource();
+			if (src == SourceType.USER_DEFINED || src == SourceType.IMPORTED || f.getBody().getNumAddresses() < 16) {
+				return;
+			}
+			Structure cs = (Structure) dtm.getDataType(CATEGORY, cls);
+			if (cs == null) {
+				return;
+			}
+			if ("__thiscall".equals(f.getCallingConventionName())) {
+				f.setCallingConvention("__fastcall");
+			}
+			if (f.getParameterCount() < 1) {
+				if (decomp == null) {
+					decomp = new DecompInterface();
+					decomp.openProgram(currentProgram);
+				}
+				DecompileResults r = decomp.decompileFunction(f, 30, monitor);
+				if (r == null || !r.decompileCompleted() || r.getHighFunction() == null) {
+					return;
+				}
+				HighFunctionDBUtil.commitParamsToDatabase(r.getHighFunction(), true,
+					HighFunctionDBUtil.ReturnCommitOption.NO_COMMIT, SourceType.ANALYSIS);
+				if (f.getParameterCount() < 1) {
+					return;
+				}
+			}
+			Parameter p0 = f.getParameter(0);
+			if (p0.isAutoParameter()) {
+				return;
+			}
+			if (p0.getSource() == SourceType.USER_DEFINED || !genericThis(p0.getDataType())) {
+				return;
+			}
+			p0.setDataType(new PointerDataType(cs, 8, dtm), SourceType.ANALYSIS);
+			thisTyped++;
+		}
+		catch (Exception ex) {
+			println("this of " + f.getName() + ": " + ex.getMessage());
+		}
+	}
+
+	private static boolean genericThis(DataType dt) {
+		if (dt == null || Undefined.isUndefined(dt)) {
+			return true;
+		}
+		String n = dt.getName();
+		if (dt.getLength() == 8 && (n.equals("longlong") || n.equals("ulonglong") || n.equals("qword"))) {
+			return true;
+		}
+		if (dt instanceof Pointer) {
+			DataType to = ((Pointer) dt).getDataType();
+			if (to != null && to.getCategoryPath().isAncestorOrSelf(CATEGORY)) {
+				return true; // a class GridNode chose before (an import re-decides it, base classes first)
+			}
+			return to == null || Undefined.isUndefined(to) || to instanceof VoidDataType || to.getLength() == 8 &&
+				(to.getName().equals("longlong") || to.getName().equals("ulonglong") || Undefined.isUndefined(to));
+		}
+		return false;
+	}
+
+	// A tiny shared stub (emptyStub, returnFalse) is a base default that subclasses override: naming the
+	// slot after it would mislead, so those slots stay vf_0xNN (the field comment still names the target).
+	private String slotName(Function f, int n) {
+		if (f == null || f.getSymbol().getSource() == SourceType.DEFAULT || f.getBody().getNumAddresses() < 16) {
+			return String.format("vf_0x%x", 8 * n);
+		}
+		String name = f.getName().replaceAll("[^A-Za-z0-9_]", "_");
+		return name.isEmpty() || Character.isDigit(name.charAt(0)) ? "_" + name : name;
 	}
 
 	private void nameFunction(Address a, String name, String comment) {

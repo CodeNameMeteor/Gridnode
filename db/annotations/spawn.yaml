@@ -19,6 +19,7 @@ classes:
     vtable: 0x141b4e0c8
     virtuals:
       - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)", note: "Spawns at info->transform. Server game thread." }
+      - { offset: 0x108, name: unspawn, va: 0x14338e4c0, signature: "void(void* character, bool destroy, void* a4)", note: "ServerCharacterSpawnEntity_unspawn." }
       - { offset: 0x120, name: update, va: 0x143391d70, signature: "void(void* updateInfo)", confidence: inferred }
 
   - name: PamServerCharacterSpawnEntity
@@ -27,6 +28,27 @@ classes:
     note: Every character spawner in the city is one of these (993 created when the city loads).
     virtuals:
       - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)" }
+      - { offset: 0x108, name: unspawn, va: 0x14338e4c0, signature: "void(void* character, bool destroy, void* a4)" }
+
+  - name: ClientSpawnEntity
+    realm: client
+    vtable: 0x141b10de8
+    confidence: inferred
+    note: "The client side of a spawner (ClientSpawnEntity_ctor)."
+    members:
+      - { offset: 0xb0, name: spawnedBegin, type: "void**", confidence: confirmed, note: "vector<character*> of the characters this spawner has (last = newest). Watched in game 2026-10-29: changes with the server list." }
+      - { offset: 0xb8, name: spawnedEnd, type: "void**", confidence: confirmed }
+      - { offset: 0xd0, name: lastSpawnedBus, type: "void*", note: "The last character's bus (+0x28), or 0." }
+      - { offset: 0x140, name: listenersBegin, type: "void**" }
+      - { offset: 0x148, name: listenersEnd, type: "void**" }
+    virtuals:
+      - { offset: 0xd8, name: addSpawned, va: 0x143239bb0, signature: "bool(void* character)", note: "ClientCharacterSpawnEntity overrides it (onCharacterSpawned)." }
+      - { offset: 0xe0, name: removeSpawned, va: 0x143234e20, signature: "void(void* character)", confidence: confirmed }
+
+  - name: ClientCharacterSpawnEntity
+    realm: client
+    vtable: 0x141b2ac20
+    note: "0x170 bytes, created by ClientCharacterSpawnEntity_create; vtable +0xd8 is ClientCharacterSpawnEntity_onCharacterSpawned (ClientSpawnEntity_addSpawned in the base)."
 
 structs:
   - name: SpawnInfo
@@ -304,7 +326,7 @@ functions:
   - name: ClientSpawnEntity_removeSpawned
     va: 0x143234e20
     signature: "void(void* spawner, void* character)"
-    note: "Vtable +0x100. Finds it in +0xb0, tells the listeners (0x1432348e0 with 0), swaps the last one in, shortens the list, +0xd0 = the new last one's bus or 0."
+    note: "Vtable +0xe0 (both client spawner classes; checked in the image and in traces 2026-10-29). Finds it in +0xb0, tells the listeners (0x1432348e0 with 0), swaps the last one in, shortens the list, +0xd0 = the new last one's bus or 0."
     confidence: confirmed
     sources: [research]
   - name: ClientSpawnEntity_notifyListeners
@@ -325,7 +347,7 @@ functions:
     sources: [research, mecmp]
   - name: ClientCharacterSpawnEntity_onCharacterSpawned
     va: 0x1432aa460
-    note: "Vtable +0xf8. Applies the spawn template's settings to the client character, sends it a message, then ClientSpawnEntity_addSpawned."
+    note: "Vtable +0xd8 (overrides ClientSpawnEntity_addSpawned there; checked in the image and in traces 2026-10-29). Applies the spawn template's settings to the client character, sends it a message, then ClientSpawnEntity_addSpawned."
     confidence: confirmed
     sources: [research]
   - name: ClientCharacterSpawnEntity_lastCharacter

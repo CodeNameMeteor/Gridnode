@@ -81,6 +81,20 @@ after a relay if you prefer its names), and their comments go in a `GridNode [re
 relay from them replaces; your own text, GridNode's block and other friends' blocks stay. Exports now
 carry the comments you wrote (plate comments of functions, plate or end-of-line comments of labels).
 
+**Classes and vtables.** Every class with a vtable (annotated, or from your dump) also gets a
+`<Class>_vtbl` struct in `/GridNode/vtables`, built in Ghidra from what the vtable holds: each slot is
+named after the function it points to (or `vf_0xNN` when it has no name, or is a tiny shared stub), and
+typed with that function's prototype when one is set. The vtable is typed with it in the listing, and
+the class struct gets `vtbl` at +0 and the annotated members of its base classes too. The first
+parameter of each class's virtual functions becomes a pointer to the class, so the decompiler shows
+`this->spawnedBegin` and `(*this->vtbl->unspawn)(...)`. Your own prototypes are never changed; where a
+function has no stored parameters, the decompiler's own are committed first (ANALYSIS); a function
+several classes share gets the most basic class. More classes:
+
+```text
+python tools/gen/gridnode.py ghidra-export --class PamServerReplayEntity --class PamClientReplayEntity
+```
+
 **Without the dialogs.** GridNodeSync also takes script arguments, `import FILE` or `export FILE`,
 for a headless Ghidra or a run through the Ghidra MCP plugin (which needs `GHIDRA_MCP_ALLOW_SCRIPTS=1`).
 

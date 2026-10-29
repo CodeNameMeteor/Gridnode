@@ -311,6 +311,29 @@ class GhidraSync(unittest.TestCase):
         self.assertTrue(any("::" in n for n in names) or names)  # virtuals as Class::name when annotated
         self.assertTrue(all("GridNode [" in f["comment"] for f in doc["functions"]))
 
+    def test_class_structs_and_vtables(self):
+        """Class entries carry their vtable and depth, and the annotated members of their base classes;
+        extra classes come from the dump."""
+        from gridnode_gen import ghidra_sync
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(os.path.join(FIXTURE, "annotations")):
+                shutil.copy(os.path.join(FIXTURE, "annotations", fn), d)
+            with open(os.path.join(d, "zz-base.yaml"), "w") as f:
+                f.write("classes:\n  - name: Entity\n    members: [ { offset: 0x8, name: owner, type: \"void*\" } ]\n")
+            db, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
+        doc = ghidra_sync.to_ghidra(db, self.r, classes=["MyData"])
+        by = {s["name"]: s for s in doc["structs"]}
+        me = by["MyEntity"]
+        self.assertEqual(me["vtable"], 0x140020400)
+        self.assertEqual(me["depth"], 2)
+        owner = [m for m in me["members"] if m["name"] == "owner"]
+        self.assertEqual(len(owner), 1)
+        self.assertIn("from Entity", owner[0]["comment"])
+        self.assertIn("Bases: Entity", me["comment"])
+        md = by["MyData"]  # not annotated: from the dump
+        self.assertEqual((md["vtable"], md["depth"], md["size"]), (0x140020200, 3, 128))
+
     def test_round_trip(self):
         """What Ghidra exports comes back as annotations that load next to the existing ones,
         and what GridNode already knows is not repeated."""

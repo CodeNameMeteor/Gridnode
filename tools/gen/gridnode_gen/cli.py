@@ -141,7 +141,9 @@ def _main(argv=None) -> int:
 
     ge = sub.add_parser("ghidra-export", help="annotations as JSON for GridNodeSync.java (import into Ghidra)")
     ge.add_argument("--out", default=os.path.join(ROOT, "build", "gridnode-ghidra.json"))
-    ge.add_argument("--reflected", default=DEFAULT_DUMP, help="dump for class sizes (optional)")
+    ge.add_argument("--reflected", default=DEFAULT_DUMP, help="dump for class sizes, base classes and vtables (optional)")
+    ge.add_argument("--class", dest="classes", action="append", default=[], metavar="NAME",
+                    help="also a struct and vtable type for this class (repeat; needs the dump)")
     gi = sub.add_parser("ghidra-import", help="GridNodeSync.java's export -> annotations to review")
     gi.add_argument("file")
     gi.add_argument("--out", default=os.path.join(ROOT, "db", "ghidra-inbox.yaml"))
@@ -206,7 +208,11 @@ def _main(argv=None) -> int:
         db, r, p = _load(a.annotations, dump, quiet=True)
         if p.errors:
             return 1
-        doc = ghidra_sync.to_ghidra(db, r)
+        missing = [n for n in a.classes if n not in db.classes and (r is None or n not in r.by_name)]
+        if missing:
+            print(f"ghidra-export: unknown class(es) {', '.join(missing)}" + ("" if r else " (no dump: only annotated classes)"))
+            return 1
+        doc = ghidra_sync.to_ghidra(db, r, a.classes)
         _write(a.out, json.dumps(doc, indent=1) + "\n")
         print(f"ghidra-export: {len(doc['structs'])} structs, {len(doc['functions'])} functions, {len(doc['labels'])} labels "
               f"-> {a.out}\n  In Ghidra: Script Manager -> GridNode -> GridNodeSync, choose Import, pick this file.")

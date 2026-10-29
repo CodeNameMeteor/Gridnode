@@ -97,11 +97,11 @@ Each slot is recorded at most N times a second (the slider, 20 by default); the 
 counted (`skipped_before` on the next one). In the export:
 
 ```json
-{"kind":"call","class":"ClientCharacterSpawnEntity","slot":"0xf8","fn":"0x1432aa460","ptr":"0x1b4015800","from":"0x143234f51", ...}
+{"kind":"call","class":"ClientCharacterSpawnEntity","slot":"0xd8","fn":"0x1432aa460","ptr":"0x1b4015800","from":"0x143234f51", ...}
 ```
 
 `summarize.py` names the function when it is annotated
-(`call ClientCharacterSpawnEntity::vf+0xf8 (ClientCharacterSpawnEntity_onCharacterSpawned)`).
+(`call ClientCharacterSpawnEntity::vf+0xd8 (ClientCharacterSpawnEntity_onCharacterSpawned)`).
 
 How: each slot of the class's vtables is swapped (a pointer swap, as every hook) for a small thunk
 that saves the argument registers, records the call and jumps to the original, so any signature
