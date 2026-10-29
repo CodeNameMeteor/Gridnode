@@ -1,13 +1,16 @@
 # GridNode: notes for Claude
 
 GridNode is an open-source modding SDK for Mirror's Edge Catalyst (PC, Frostbite 3, codename
-Pamplona). Read [docs/progress.md](docs/progress.md) first (current state, next steps), then
-[docs/handover.md](docs/handover.md) for the longer picture and [docs/PLAN.md](docs/PLAN.md) for the plan.
+Pamplona). It loads mods from `mods/` and gives them reflection by name (~9,988 engine types), entity
+callbacks, ticks, hooks, a world API and an ImGui overlay, plus research tools (inspector, recorder,
+Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, next steps), then
+[docs/handover.md](docs/handover.md) and [docs/PLAN.md](docs/PLAN.md). Related project: `../mecmp`
+(a separate mod; do not edit it from here).
 
 ## Rules (from the user; keep them)
 
 - **Never patch game code.** Pointer swaps only: vtable slots, creator slots, game-owned function
-  pointers, data. Thunks of our own in our own memory are fine.
+  pointers, data (and the overlay's two DXGI swap-chain slots). Thunks in our own memory are fine.
 - Leave online services and Beat Revival alone. PC only, one game build (EA app exe, fixed addresses).
 - **Never commit game data or user output:** image dumps (`bin/dumps/*.exe`), the reflected dump
   (`db/reflected/`, `gridnode-reflected.json`), FBX game meshes, `event-names.txt`, logs, recordings.
@@ -16,29 +19,48 @@ Pamplona). Read [docs/progress.md](docs/progress.md) first (current state, next 
 - The user tests in game and sends logs and recordings. Say plainly what is untested.
 - Docs and messages: plain, short, consistent with the existing docs.
 - The layout editor is paused on purpose (SDK and research work first).
+- After structural changes, update this file and `docs/progress.md`. Keep this file under 150 lines.
 
-## Layout
+## Layout (read only what the task needs)
 
 | Path | What |
 |---|---|
-| `sdk/src/` | the runtime DLL (`recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, ...) |
-| `sdk/include/gridnode/` | public headers; `api.h` is the C ABI mods use |
-| `db/annotations/*.yaml` | our reversing findings (addresses, members, virtuals); `engine.hpp` is generated from them |
-| `tools/gen/` | `gridnode.py`: validate, generators, Ghidra export/import, fingerprints |
-| `tools/ghidra/GridNodeSync.java` | annotations and recordings into Ghidra, names back out |
-| `tools/recording/summarize.py` | reads recordings; `--object`, `--ghidra` |
+| `sdk/include/gridnode/` | public headers (`gridnode.hpp`, `api.h` = the C ABI mods use); `engine.hpp` is GENERATED |
+| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, ... |
+| `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
+| `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
+| `db/reflected/` | the user's own dump: git-ignored, huge |
+| `tools/gen/` | `gridnode.py`: validate, generators, `setup`, `docs`, Ghidra export/import, fingerprints |
+| `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` |
+| `tools/recording/summarize.py` | reads recordings (below) |
+| `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
+| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe` |
+| `bindings/rust/gridnode` | Rust bindings, generated from `api.h` |
+| `tests/` | host-side tests (reflect walker, runtime core, engine header, types, Rust harness) |
 | `docs/` | MkDocs site; `research/` holds engine findings |
+
+**Do not read or grep:** `db/reflected/`, `third_party/`, `build*/`, generated `engine.hpp`, dumps,
+recordings (`*.jsonl`, see below), `reviews/`. `docs/research/` only when the task is engine research.
+
+**Docs on demand:** writing a mod `docs/modding.md`; building `docs/building.md`; type knowledge
+`docs/annotations.md`, `docs/dump-format.md`; Ghidra and fingerprints `docs/contributing.md`;
+recordings `docs/recording.md`; custom maps `docs/custom-meshes.md`, `docs/layout-editor.md`,
+`docs/assets-assessment.md`.
 
 ## Build and test
 
-The container cross-compiles with MinGW; build folders live in `/tmp` and may be gone. If
+Windows (VS2022 x64, Python 3 + PyYAML): `cmake -S . -B build -A x64`, `cmake --build build --config
+Release`, `ctest --test-dir build -C Release`. First-time headers: `python tools/gen/gridnode.py
+setup --dump <gridnode-reflected.json>`.
+
+The cloud container cross-compiles with MinGW; build folders live in `/tmp` and may be gone. If
 `x86_64-w64-mingw32-g++-posix` is missing: `apt-get install -y g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix`.
 
 ```text
 cmake -S . -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
   -DCMAKE_BUILD_TYPE=Release -DGRIDNODE_BUILD_TESTS=OFF
-cmake --build /tmp/claude-0/bw                      # gridnode.dll (needs PyYAML)
+cmake --build /tmp/claude-0/bw                      # gridnode.dll
 cmake -S . -B /tmp/claude-0/hosttest -G Ninja && cmake --build /tmp/claude-0/hosttest && (cd /tmp/claude-0/hosttest && ctest)
 cd tools/gen && python3 -m unittest tests.test_gen  # Python tools
 python3 tools/gen/gridnode.py validate              # after any annotation change
@@ -47,18 +69,57 @@ python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as 
 
 Add `-DGRIDNODE_PLAYER_BUILD=ON` to check the player build (no recorder).
 
+## Conventions
+
+- Never hand-edit `engine.hpp`: edit `db/annotations/` (it is generated at build time).
+- A change to `api.h` means regenerating the Rust bindings (`gridnode.py rust`) and updating `docs/modding.md`.
+- The build check (`sdk/src/build.cpp`) keeps GridNode passive on an unexpected game exe.
+- C++17, 4-space indent, no tabs, K&R braces; `#pragma once`, then a short `//` comment on the
+  header's purpose, then includes (std first). Namespaces `gn::<module>`; functions and variables
+  `camelCase`; constants `kPascalCase`. Fixed-width ints, `std::string`, RAII; no raw `new`/`delete`;
+  no exceptions across the hook or injection boundary. File-local helpers in an anonymous namespace.
+- Comments say why (engine quirks, offsets, constraints), not what. Keep existing comments and docs.
+- Fix the root cause, keep diffs small, don't reformat code you aren't changing. Logic that does not
+  need the game gets a host-side test in `tests/` (or `tools/gen/tests/` for Python).
+- Rust: `rustfmt` defaults; unsafe FFI in `sys.rs`, the safe layer in `lib.rs`. Python: PEP 8, type
+  hints where cheap.
+
+## Reading recordings (*.jsonl)
+
+Made with the in-game Recorder (Insert menu, F8 record / pause, Home drops a marker), exported as
+`recordings/<time>-<name>.jsonl` next to gridnode.dll. They are large (tens of MB): **never read or
+grep one directly; run the summarizer first.** Full guide: `docs/recording.md`.
+
+```text
+python tools/recording/summarize.py <file>                        # most frequent, then each marker
+python tools/recording/summarize.py <file> --marker "name" --window 2
+python tools/recording/summarize.py <file> --all --top 50         # everything near the markers
+python tools/recording/summarize.py <file> --object 12            # one object (id or 0xADDRESS): what, when, every line
+python tools/recording/summarize.py <file> --ghidra OUT --exe DUMP  # a GridNodeSync import
+```
+
+Per marker it prints the "unusual" labels (seen near it at >= 2x their average rate; `xN.N` is the
+lift), a "closest" timeline, and call stacks as image VAs (`0x14...`) named from the annotations:
+those are what to open in Ghidra. Line kinds: `message`, `created`, `destroyed`, `event` / `sent`,
+`anim`, `field`, `list`, `call`, `marker`, `level`, and `object` lines (the object table) after the
+events. Hashed names show as hex; `recordings/event-names.txt` names them (game-derived: never commit).
+For raw lines, filter with a short `python -c` by `kind` and time range, never print the whole file.
+Record findings in `db/annotations/` and `docs/progress.md`.
+
 ## The user's PC
 
 Reached through the device bridge (`mcp__remote-devices__*`): list, stage and commit files.
 The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\recordings`.
 
 - Deploy a test build: copy it to `/mnt/user-data/outputs/gridnode-<what>N.dll`, commit it over
-  `bin\gridnode.dll` with force, then list the folder and check the size landed. If the game has the
-  DLL open, write it next to it under a new name and ask the user to swap it.
-- `D:\Dev\GridNode` (the user's checkout) is behind `main` with wrong uncommitted annotation edits
-  from another agent: never copy annotations from it without checking them in Ghidra.
-- Ghidra runs there with GhidraMCP (`mcp__remote-devices__ghidra-mcp__*`). Running scripts needs
-  `GHIDRA_MCP_ALLOW_SCRIPTS=1` on the user's side. "Connection refused": ask them to open Ghidra.
+  `bin\gridnode.dll` with force, then check what landed (by checksum: builds can share a size). If
+  the game has the DLL open, write it next to it under a new name and ask the user to swap it.
+- `D:\Dev\GridNode` (the user's checkout) is up to date since 2026-10-29. The other agent's wrong
+  annotation edits are in its git stash and `D:\Dev\GridNode-local-backup-20261029`; never copy
+  annotations from there without checking them in Ghidra.
+- Ghidra runs there with GhidraMCP (`mcp__remote-devices__ghidra-mcp__*`; scripts allowed, so
+  GridNodeSync runs with arguments `import FILE` / `export FILE`). "Connection refused": ask the
+  user to open Ghidra.
 
 ## Hard-won facts
 
