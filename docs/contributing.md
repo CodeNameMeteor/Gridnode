@@ -37,7 +37,7 @@ from the game: annotations hold our own findings only.
 ## Ghidra (GridNodeSync)
 
 `tools/ghidra/GridNodeSync.java` keeps Ghidra and the annotations in step, both ways. It needs
-Ghidra 12 (checked against 12.0.3): copy it into one of your script folders (Script Manager → Manage
+Ghidra 12 (run on 12.1.4): copy it into one of your script folders (Script Manager → Manage
 Script Directories).
 
 **Annotations into Ghidra.**
@@ -80,6 +80,13 @@ Import the relay file with GridNodeSync → *Import*. Their names go where you h
 after a relay if you prefer its names), and their comments go in a `GridNode [relay] (Alex's Ghidra)` block that a later
 relay from them replaces; your own text, GridNode's block and other friends' blocks stay. Exports now
 carry the comments you wrote (plate comments of functions, plate or end-of-line comments of labels).
+
+**Without the dialogs.** GridNodeSync also takes script arguments, `import FILE` or `export FILE`,
+for a headless Ghidra or a run through the Ghidra MCP plugin (which needs `GHIDRA_MCP_ALLOW_SCRIPTS=1`).
+
+**Recordings into Ghidra.** `summarize.py --ghidra` turns a recording into a file GridNodeSync imports
+the same way (see [Recording](recording.md#into-ghidra)): functions made where Ghidra has none, a
+bookmark at each call site, and a comment per function with what went through it.
 
 **Two sets of annotations.** To see how another copy differs from the repository (a fork, another
 checkout, what another tool wrote):

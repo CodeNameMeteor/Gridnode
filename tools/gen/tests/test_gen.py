@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -397,8 +398,9 @@ class OptionalSignature(unittest.TestCase):
             self.assertIn("Mystery = 0x140001000", emit_engine.emit(db))
 
 
-def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000):
-    """A minimal 64-bit PE: .text at base+0x1000 (code), .rdata at base+0x2000 (rdata)."""
+def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000, pdata=None):
+    """A minimal 64-bit PE: .text at base+0x1000 (code), .rdata at base+0x2000 (rdata).
+    pdata: (rva, size) of an exception directory (the unwind table) inside .rdata."""
     import struct
     d = bytearray(0x3000)
     d[0:2] = b"MZ"
@@ -411,6 +413,9 @@ def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000):
     struct.pack_into("<Q", d, opt + 24, base)
     struct.pack_into("<II", d, opt + 32, 0x1000, 0x1000)
     struct.pack_into("<I", d, opt + 56, 0x3000)
+    if pdata:
+        struct.pack_into("<I", d, opt + 108, 16)
+        struct.pack_into("<II", d, opt + 112 + 3 * 8, *pdata)
     sh = opt + 0xF0
     for i, (name, rva, ch) in enumerate(((b".text", 0x1000, 0x60000020), (b".rdata", 0x2000, 0x40000040))):
         h = sh + i * 40
@@ -421,6 +426,101 @@ def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000):
     d[0x2000:0x2000 + len(rdata)] = rdata
     with open(path, "wb") as f:
         f.write(d)
+
+
+def _unwind_pe(path):
+    """Unwind table: one function at 0x1000..0x1040, a second part of it at 0x1100..0x1120 (chained back
+    to the first), nothing at 0x1080."""
+    import struct
+    rdata = bytearray(0x400)
+    struct.pack_into("<III", rdata, 0x100, 0x1000, 0x1040, 0x2200)
+    struct.pack_into("<III", rdata, 0x10C, 0x1100, 0x1120, 0x2210)
+    rdata[0x200:0x204] = bytes([1, 0, 0, 0])                  # version 1, no flags
+    rdata[0x210:0x214] = bytes([1 | (0x4 << 3), 0, 0, 0])     # version 1, UNW_FLAG_CHAININFO, no codes
+    struct.pack_into("<III", rdata, 0x214, 0x1000, 0x1040, 0x2200)
+    _fake_pe(path, b"\x90" * 0x200, bytes(rdata), pdata=(0x2100, 24))
+
+
+class UnwindTable(unittest.TestCase):
+    def test_function_start(self):
+        from gridnode_gen import pe_image
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _unwind_pe(exe)
+            img = pe_image.PeImage(exe)
+            self.assertEqual(img.function_start(0x140001010), 0x140001000)
+            self.assertEqual(img.function_start(0x140001110), 0x140001000)   # through the chain
+            self.assertIsNone(img.function_start(0x140001080))
+            self.assertIsNone(img.function_start(0x140009000))
+
+    def test_recording_to_ghidra(self):
+        import json
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _unwind_pe(exe)
+            rec = os.path.join(d, "rec.jsonl")
+            evs = [{"kind": "header", "level": "Levels/Test", "events": 3},
+                   {"kind": "message", "t": 1.0, "type": "FooMessage", "stack": ["0x140001010", "0x140001110", "0x140001080"]},
+                   {"kind": "message", "t": 1.5, "type": "FooMessage", "stack": ["0x140001010"]},
+                   {"kind": "call", "t": 2.0, "class": "Thing", "slot": "0x20", "fn": "0x140001000", "skipped_before": 4,
+                    "stack": ["0x140001110"]}]
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            out = os.path.join(d, "g.json")
+            script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+            r = subprocess.run([sys.executable, script, rec, "--ghidra", out, "--exe", exe], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            doc = json.load(open(out))
+            self.assertEqual(doc["format"], "gridnode-ghidra")
+            self.assertEqual([c["va"] for c in doc["createFunctions"]], [0x140001000])
+            self.assertEqual(sorted(b["va"] for b in doc["bookmarks"]), [0x140001010, 0x140001080, 0x140001110])
+            self.assertTrue(all(b["afterCall"] for b in doc["bookmarks"]))
+            (c,) = doc["comments"]
+            self.assertEqual(c["va"], 0x140001000)
+            first, second = c["comment"].split("\n")[:2]
+            self.assertEqual(first, "GridNode [recording] (rec.jsonl)")
+            self.assertIn("In 3 recorded stacks", second)   # recursion through the chained part counts once
+            self.assertIn("2x  msg FooMessage", c["comment"])
+            self.assertIn("5x  call Thing::vf+0x20", c["comment"])   # traced, with skipped calls
+
+
+class RecordingObjects(unittest.TestCase):
+    """Recordings with destroyed entities, list watches and the object table (summarize.py)."""
+
+    def test_summarize_objects_and_lists(self):
+        import json
+        evs = [{"kind": "header", "level": "Levels/Test", "events": 6, "objects": 3},
+               {"kind": "created", "t": 0.5, "type": "PamServerCharacterEntity", "ptr": "0x1000", "blueprint": "Chars/Ghost", "obj": 2},
+               {"kind": "list", "t": 0.6, "field": "spawned (server)", "target": "ServerCharacterSpawnEntity", "ptr": "0x2000",
+                "obj": 1, "count": 1, "first": True, "items": [{"index": 0, "ptr": "0x1000", "type": "PamServerCharacterEntity", "obj": 2}]},
+               {"kind": "marker", "t": 1.0, "name": "despawn"},
+               {"kind": "event", "t": 1.1, "event": "StopReplay", "event_id": "d6a2182e", "target": "PamServerReplayEntity", "ptr": "0x3000", "obj": 3},
+               {"kind": "list", "t": 1.2, "field": "spawned (server)", "target": "ServerCharacterSpawnEntity", "ptr": "0x2000",
+                "obj": 1, "count": 0, "old_count": 1, "items": [],
+                "removed": [{"ptr": "0x1000", "type": "PamServerCharacterEntity", "obj": 2}]},
+               {"kind": "destroyed", "t": 1.25, "type": "PamServerCharacterEntity", "ptr": "0x1000", "obj": 2},
+               {"kind": "object", "id": 1, "ptr": "0x2000", "type": "ServerCharacterSpawnEntity", "created": None, "destroyed": None, "first_seen": 0.6},
+               {"kind": "object", "id": 2, "ptr": "0x1000", "type": "PamServerCharacterEntity", "blueprint": "Chars/Ghost",
+                "created": 0.5, "destroyed": 1.25, "first_seen": 0.5},
+               {"kind": "object", "id": 3, "ptr": "0x3000", "type": "PamServerReplayEntity", "created": None, "destroyed": None, "first_seen": 1.1}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            r = subprocess.run([sys.executable, script, rec, "--all"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("gone PamServerCharacterEntity [Chars/Ghost]", r.stdout)   # the blueprint from the object table
+            self.assertIn("list spawned (server) -> ServerCharacterSpawnEntity: -PamServerCharacterEntity", r.stdout)
+            self.assertIn("#2", r.stdout)
+            r = subprocess.run([sys.executable, script, rec, "--object", "0x1000"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("#2 PamServerCharacterEntity at 0x1000 [Chars/Ghost]", r.stdout)
+            self.assertIn("created 0.500 s, destroyed 1.250 s", r.stdout)
+            self.assertEqual(r.stdout.count("(points at it)"), 2)   # in the list, then removed from it
+            r = subprocess.run([sys.executable, script, rec, "--ghidra", os.path.join(d, "g.json")], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
 
 
 class Fingerprints(unittest.TestCase):

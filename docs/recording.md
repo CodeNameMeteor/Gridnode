@@ -15,11 +15,27 @@ Open the GridNode menu (Insert) and choose **Recorder**.
 | F8 | record / pause |
 | Home | drop a marker (named, with Faith's position) |
 
-Choose what to record (messages, entities created, entity events, call stacks), play, and press
+Choose what to record (messages, entities created and destroyed, entity events, call stacks), play, and press
 Home the moment the thing you are looking for happens. **Export** writes
 `recordings/<time>-<name>.jsonl` next to gridnode.dll: a header line, then one line per event.
 The **Ignore** lists leave out message types and event targets that are too frequent to be
 useful.
+
+### Objects: what a pointer was
+
+Every object a recorded line points at (the entity an event went to, a message's pointers, a list's
+entries) gets an entry in the recording's object table: its type, and for entities created while
+recording, their data, blueprint and creation time; when it was destroyed, if it was. An address the
+game reuses for a new object gets a new entry. Lines carry `"obj": N` (and `"obj"` on each pointer);
+the table follows the events as `object` lines:
+
+```json
+{"kind":"object","id":2,"ptr":"0x1b4015800","type":"PamServerCharacterEntity","blueprint":"...","created":12.4,"destroyed":20.1,"first_seen":12.4}
+```
+
+`created: null` means it existed before the recording started. With **destroyed** ticked (next to
+*Entities created*), each entity destroyed while recording is a `destroyed` line, with its call stack;
+it comes from the destructor hooks GridNode already has (vtable +0x38 of every entity class).
 
 ### Animation flags
 
@@ -43,11 +59,17 @@ only by code, its first writes in a session can be missed.
 ### Watching fields
 
 **Watch fields** records every change to a field of the live entities of a class (any subclass
-too): give the class, the offset and its type (byte, i32, f32), and a label. They are read ten
-times a second while recording; each change is a `field` line with the value and the old one (the
+too): give the class, the offset and its type (byte, i32, f32), and a label. They are read every frame while recording (the *readings a second* slider reads them less often; the menu shows how long a reading takes); each change is a `field` line with the value and the old one (the
 first reading of each entity is marked `first`). **Add the city alert manager's state** watches
 the KSEC alert's active flag, level, kills, cameras seeing and active hotspots
 (`docs/research/city-alert.md`). Watches last until the game closes.
+
+The **list** type watches a vector of pointers instead (begin at the offset, end 8 bytes after, as
+`eastl::vector` keeps them): each change is a `list` line with what was `added` and `removed` (with
+each entry's type and object id), `reordered` when the entries both readings share changed order, and
+the list as it is now (`items`, the first 64). The first reading of each entity is marked `first`.
+Up to 256 entries are read. **Add the spawners' lists** watches the characters each character spawner
+has spawned, on the server (+0x148) and the client (+0xb0) (`docs/research/replay-ghosts.md`).
 
 ### Sending an event
 
@@ -59,6 +81,11 @@ recording. It is a research tool: an event the class does not expect may do noth
 unexpected.
 
 ### Tracing a class's calls
+
+**Choosing a class.** Every field that takes a class (tracing, watching fields, sending an event) has
+a **...** button that lists classes to choose from: the ones **alive now** (with how many), the ones
+**in this recording** (with how many lines are about them), or **all classes**. Type part of a name to
+narrow it, hover a row to see its base classes, click or press Enter to pick.
 
 **Trace a class's calls**: type a class (`ClientCharacterSpawnEntity`, `PamClientReplayEntity`), tick
 **and subclasses** if wanted, and press **Trace**. While recording, every call to one of its virtual
@@ -75,7 +102,9 @@ counted (`skipped_before` on the next one). In the export:
 
 How: each slot of the class's vtables is swapped (a pointer swap, as every hook) for a small thunk
 that saves the argument registers, records the call and jumps to the original, so any signature
-passes through unchanged. A traced class stays hooked until the game exits; unticking it stops the
+passes through unchanged. Slot 0 (`getType`) is never traced: GridNode tells an object's class by
+that slot, so tracing it made the class's objects unknown to the inspector and the watches. A traced
+class stays hooked until the game exits; unticking it stops the
 recording. Avoid tracing very common base classes (`Entity`, with subclasses) while playing: every
 call then goes through the recorder.
 
@@ -95,7 +124,33 @@ python tools/recording/summarize.py recordings/20261020-201905-safehousetp.jsonl
 lists the most frequent events, and for each marker what was unusual around it (seen near the
 marker far more often than elsewhere) with the call stacks behind it as image addresses (0x14…),
 named where `db/annotations` knows the function. `--window 2` narrows the time around a marker,
-`--all` lists everything near it.
+`--all` lists everything near it. Lines about an object carry its id (`#12`), and targets are named
+with their blueprint when the recording knows it.
+
+```
+python tools/recording/summarize.py rec.jsonl --object 12          # one object: what it was, when made and destroyed, every line about it
+python tools/recording/summarize.py rec.jsonl --object 0x1b4015800 # every object that had this address
+```
+
+### Into Ghidra
+
+```
+python tools/recording/summarize.py rec.jsonl --ghidra build/rec-ghidra.json --exe bin/dumps/MirrorsEdgeCatalyst-<time>.exe
+```
+
+writes a file for GridNodeSync's *Import* (or `import FILE` as script arguments):
+
+- a function at the start of each recorded frame's function (from the executable's unwind table, so
+  `--exe` is a dump from GridNode menu → *Game image*), made only where Ghidra has no function around
+  that frame;
+- a bookmark (category *GridNode recording*) on the call before each return address in the innermost
+  frames (`--depth`, 8 by default), with what came through it;
+- a plate comment block `GridNode [recording] (<file>)` on each of those functions: in how many stacks
+  it was and for what, and, for traced functions, how often they were called. Importing the same
+  recording again replaces its block and bookmarks; other recordings' blocks stay.
+
+`--marker NAME` (with `--window`) keeps only the lines around that marker. Without `--exe` only the
+bookmarks are written.
 
 ## Event names
 

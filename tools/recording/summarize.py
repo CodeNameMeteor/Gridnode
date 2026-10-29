@@ -10,6 +10,11 @@ call stacks behind them as image VAs (0x14...), ready to open in Ghidra. Stack f
 an annotated function's start are named from db/annotations. Events recorded without a name are
 named from event-names.txt (next to the recording, or --names; tools/events/build_names.py makes
 it).
+
+    python tools/recording/summarize.py rec.jsonl --ghidra build/rec-ghidra.json --exe bin/dumps/game.exe
+
+writes a GridNodeSync import instead: functions to create where Ghidra has none around a frame,
+a bookmark at each call site with what came through it, and a comment per function with counts.
 """
 
 import argparse
@@ -46,6 +51,7 @@ def djb2(s):
 
 EVENT_NAMES = {}
 FN_NAMES = {}  # function VA -> annotated name (set in main)
+OBJECTS = {}   # object id -> the recording's "object" line (what a pointer was: type, blueprint, lifetime)
 
 
 def load_event_names(path):
@@ -68,6 +74,13 @@ def event_label(ev):
     return name
 
 
+def target(ev):
+    """The entity an event is about: its type, and the blueprint it came from when the recording knows it."""
+    o = OBJECTS.get(ev.get("obj"))
+    bp = (o or {}).get("blueprint") or ev.get("blueprint")
+    return ev.get("target", ev.get("type", "?")) + (f" [{bp}]" if bp else "")
+
+
 def label(ev):
     k = ev.get("kind")
     if k == "message":
@@ -76,7 +89,7 @@ def label(ev):
         bp = ev.get("blueprint")
         return "new " + ev.get("type", "?") + (f" [{bp}]" if bp else "")
     if k == "event":
-        return f"event {event_label(ev)} -> {ev.get('target', '?')}"
+        return f"event {event_label(ev)} -> {target(ev)}"
     if k == "anim":
         prop = ev.get("property")
         pid = ev.get("property_id")
@@ -94,6 +107,15 @@ def label(ev):
         fn = int(ev.get("fn", "0"), 16)
         named = FN_NAMES.get(fn)
         return f"call {ev.get('class', '?')}::vf+{ev.get('slot', '?')}" + (f" ({named})" if named else f" (0x{fn:x})")
+    if k == "destroyed":
+        return "gone " + target(ev)
+    if k == "list":
+        if ev.get("first"):
+            return f"list {ev.get('field', '?')} -> {target(ev)}: first reading"
+        parts = [f"+{a.get('type', '?')}" for a in ev.get("added", [])] + [f"-{r.get('type', '?')}" for r in ev.get("removed", [])]
+        if ev.get("reordered"):
+            parts.append("order changed")
+        return f"list {ev.get('field', '?')} -> {target(ev)}: " + " ".join(parts)
     if k == "marker":
         return "marker " + ev.get("name", "")
     if k == "level":
@@ -106,6 +128,138 @@ def frame_text(va, names):
     return f"0x{va:x}" + (f" ({n})" if n else "")
 
 
+def _top(counter, n=6, width=110):
+    lines = []
+    for lab, c in counter.most_common(n):
+        lines.append(f"{c:6d}x  {lab[:width]}")
+    if len(counter) > n:
+        lines.append(f"        ... and {len(counter) - n} more kinds")
+    return lines
+
+
+def to_ghidra(events, rec_name, img=None, depth=8, header=None):
+    """A GridNodeSync import (tools/ghidra/GridNodeSync.java) made from a recording:
+
+    - createFunctions: the start of the function around each stack frame, from the executable's
+      unwind table (needs `img`); GridNodeSync makes a function there when Ghidra has none
+      containing the frame (frames in code Ghidra never analysed).
+    - bookmarks: one per call site (the call before each return address, the innermost `depth`
+      frames), with what came through it (category "GridNode recording").
+    - comments: a plate comment block per function ("GridNode [recording] (<recording>)") with what
+      went through it and how often; a later import of the same recording replaces its block.
+    """
+    frame_hits = collections.defaultdict(collections.Counter)
+    func_hits = collections.defaultdict(collections.Counter)
+    traced = collections.defaultdict(collections.Counter)
+    starts = {}
+    no_start = set()
+
+    def start_of(va):
+        if va in starts or va in no_start:
+            return starts.get(va)
+        s = img.function_start(va) if img else None
+        if s is None:
+            no_start.add(va)
+        else:
+            starts[va] = s
+        return s
+
+    for ev in events:
+        lab = label(ev)
+        if ev.get("kind") == "call" and ev.get("fn"):
+            traced[int(ev["fn"], 16)][lab] += 1 + int(ev.get("skipped_before", 0) or 0)
+        stack = ev.get("stack") or []
+        seen_funcs = set()
+        for i, x in enumerate(stack):
+            va = int(x, 16)
+            if i < depth:
+                frame_hits[va][lab] += 1
+            s = start_of(va)
+            if s is not None and s not in seen_funcs:   # recursion counts once per stack
+                seen_funcs.add(s)
+                func_hits[s][lab] += 1
+
+    mark = f"GridNode [recording] ({rec_name})"
+    level = (header or {}).get("level")
+    where = f"Recorded in {level}." if level else ""
+    comments = []
+    for s, hits in func_hits.items():
+        total = sum(hits.values())
+        body = [mark, f"In {total} recorded stack{'s' if total != 1 else ''}. {where}".strip()] + _top(hits)
+        comments.append({"va": s, "kind": "plate", "comment": "\n".join(body)})
+    for fn, hits in traced.items():
+        if fn in func_hits:   # merge: the function both called (traced) and on stacks
+            c = next(c for c in comments if c["va"] == fn)
+            c["comment"] += "\nTraced calls:\n" + "\n".join(_top(hits, 3))
+        else:
+            total = sum(hits.values())
+            comments.append({"va": fn, "kind": "plate",
+                             "comment": "\n".join([mark, f"Traced: called {total} time{'s' if total != 1 else ''}. {where}".strip()]
+                                                  + _top(hits, 3))})
+    bookmarks = []
+    for va, hits in frame_hits.items():
+        top = hits.most_common(3)
+        text = "; ".join(f"{c}x {lab[:80]}" for lab, c in top)
+        if len(hits) > 3:
+            text += f"; +{len(hits) - 3} more"
+        bookmarks.append({"va": va, "afterCall": True, "category": "GridNode recording",
+                          "comment": f"{rec_name}: {text}"})
+    create = [{"va": s, "at": va} for va, s in starts.items()]
+    # One request per function start; `at` is a frame inside it, to check Ghidra has no function there.
+    seen, uniq = set(), []
+    for c in sorted(create, key=lambda c: (c["va"], c["at"])):
+        if c["va"] not in seen:
+            seen.add(c["va"])
+            uniq.append(c)
+    return {
+        "format": "gridnode-ghidra", "version": 1,
+        "structs": [], "functions": [], "labels": [],
+        "createFunctions": uniq,
+        "bookmarks": sorted(bookmarks, key=lambda b: b["va"]),
+        "comments": sorted(comments, key=lambda c: c["va"]),
+        "stats": {"frames": len(frame_hits), "functions": len(func_hits), "traced": len(traced),
+                  "frames_without_unwind_entry": len(no_start) if img else None},
+    }
+
+
+def _when(v):
+    return "before the recording" if v is None else f"{v:.3f} s"
+
+
+def object_story(events, which):
+    """Everything a recording says about one object (by id, or every object that had the address)."""
+    if which.lower().startswith("0x"):
+        ids = [i for i, o in OBJECTS.items() if int(o["ptr"], 16) == int(which, 16)]
+    else:
+        ids = [int(which)] if int(which) in OBJECTS else []
+    if not ids:
+        print(f"no object {which} in this recording (objects are listed in recordings made with GridNode 2026-10-29 or later)")
+        return 1
+    for i in ids:
+        o = OBJECTS[i]
+        print(f"#{i} {o.get('type')} at {o.get('ptr')}" + (f" [{o['blueprint']}]" if o.get("blueprint") else ""))
+        if o.get("data"):
+            print(f"  data {o['data']} at {o.get('data_ptr')}")
+        print(f"  created {_when(o.get('created'))}, destroyed {_when(o.get('destroyed'))}, first seen {o.get('first_seen', 0):.3f} s")
+        for e in events:
+            refs = [r for r in e.get("pointers", []) if r.get("obj") == i]
+            refs += [r for key in ("items", "added", "removed") for r in e.get(key, []) if r.get("obj") == i]
+            if e.get("obj") != i and not refs:
+                continue
+            how = ""
+            if e.get("obj") != i:
+                how = "  (points at it" + (f" at +{refs[0]['off']}" if "off" in refs[0] else "") + ")"
+            print(f"  {e['t']:9.3f}  {label(e)}{how}")
+        print()
+    return 0
+
+
+def _load_image(path):
+    sys.path.insert(0, str(ROOT / "tools" / "gen"))
+    from gridnode_gen.pe_image import PeImage
+    return PeImage(str(path))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file")
@@ -114,6 +268,12 @@ def main():
     ap.add_argument("--top", type=int, default=25, help="lines per list (default 25)")
     ap.add_argument("--all", action="store_true", help="list every event near the marker, not only the unusual ones")
     ap.add_argument("--names", type=pathlib.Path, help="event-names.txt (default: the one next to the recording)")
+    ap.add_argument("--ghidra", type=pathlib.Path, metavar="OUT",
+                    help="write a GridNodeSync import (functions to create, bookmarks, comments) instead of the summary")
+    ap.add_argument("--exe", type=pathlib.Path,
+                    help="with --ghidra: the game image (a dump, GridNode menu -> Game image) for function starts")
+    ap.add_argument("--depth", type=int, default=8, help="with --ghidra: frames per stack to bookmark (default 8)")
+    ap.add_argument("--object", help="one object's story: an object id from the recording, or its address (0x...)")
     args = ap.parse_args()
     load_event_names(args.names or pathlib.Path(args.file).with_name("event-names.txt"))
 
@@ -126,6 +286,8 @@ def main():
             ev = json.loads(line)
             if ev.get("kind") == "header":
                 header = ev
+            elif ev.get("kind") == "object":
+                OBJECTS[ev["id"]] = ev
             else:
                 events.append(ev)
     if not events:
@@ -133,6 +295,25 @@ def main():
         return 1
     names = load_annotation_names()
     FN_NAMES.update(names)
+    if args.object:
+        return object_story(events, args.object)
+    if args.ghidra:
+        if args.marker:
+            at = [e["t"] for e in events if e.get("kind") == "marker" and e.get("name") == args.marker]
+            events = [e for e in events if any(abs(e["t"] - t) <= args.window for t in at)]
+        img = _load_image(args.exe) if args.exe else None
+        doc = to_ghidra(events, pathlib.Path(args.file).name, img, args.depth, header)
+        args.ghidra.parent.mkdir(parents=True, exist_ok=True)
+        args.ghidra.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+        st = doc["stats"]
+        print(f"{args.ghidra}: {len(doc['createFunctions'])} function starts, {len(doc['bookmarks'])} bookmarks, "
+              f"{len(doc['comments'])} function comments")
+        if img is None:
+            print("  no --exe: no function starts or per-function comments (bookmarks only)")
+        elif st["frames_without_unwind_entry"]:
+            print(f"  {st['frames_without_unwind_entry']} frames had no unwind entry (bookmarked only)")
+        print("Import it in Ghidra with GridNodeSync (Import, or script arguments: import FILE).")
+        return 0
     span = events[-1]["t"] - events[0]["t"]
 
     print(f"{args.file}")
@@ -182,6 +363,8 @@ def main():
                     extra = "  " + json.dumps(e["fields"])[:160]
                 elif e.get("kind") == "message" and e.get("pointers"):
                     extra = "  -> " + ", ".join(p["type"] for p in e["pointers"][:4])
+                if e.get("obj"):
+                    extra = f"  #{e['obj']}" + extra
                 print(f"    {e['t'] - t0:+7.3f}  {label(e)}{extra}")
         # Call stacks behind them: the frames to open in Ghidra.
         stacks = collections.Counter()

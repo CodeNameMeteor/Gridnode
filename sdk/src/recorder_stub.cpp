@@ -6,4 +6,5 @@ void start(const std::wstring&) {}
 void onLevel(const std::string&) {}
 void draw(bool*) {}
 void frame() {}
+void onDestroyed(void*) {}
 } // namespace gn::host::recorder

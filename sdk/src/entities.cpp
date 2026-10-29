@@ -208,6 +208,7 @@ std::array<DtorSlot, kDtorPool> g_dtors;
 std::atomic<uint64_t> g_destroyedCount{0};
 
 template <size_t I> void* dtorDetour(void* self, uint64_t a2, uint64_t a3, uint64_t a4) {
+    recorder::onDestroyed(self);                            // while it can still say what it was
     inspector::markDead(reinterpret_cast<uintptr_t>(self)); // before the object goes
     g_destroyedCount.fetch_add(1, std::memory_order_relaxed);
     return reinterpret_cast<DtorFn>(g_dtors[I].original)(self, a2, a3, a4);

@@ -23,7 +23,14 @@
 // review) or `gridnode.py ghidra-relay THEIR-FILE --who NAME` (a file this script imports straight
 // into your Ghidra: their names where you have none of your own, their comments in a block of their own).
 //
-// Needs Ghidra 12 (CommentType); checked against 12.0.3.
+// Recordings (GridNode menu -> Recorder): `python tools/recording/summarize.py REC --ghidra OUT --exe DUMP`
+// writes a file this script imports the same way: functions made where Ghidra has none around a
+// recorded frame, a bookmark (category "GridNode recording") at each call site with what came through
+// it, and a "GridNode [recording] (REC)" comment block per function with counts.
+//
+// Without dialogs (headless, or run remotely): script arguments "import FILE" or "export FILE".
+//
+// Needs Ghidra 12 (CommentType); run on 12.1.4 (written against 12.0.3).
 //
 //@category GridNode
 //@author GridNode
@@ -69,11 +76,14 @@ import ghidra.program.model.data.UnsignedIntegerDataType;
 import ghidra.program.model.data.UnsignedLongLongDataType;
 import ghidra.program.model.data.UnsignedShortDataType;
 import ghidra.program.model.data.VoidDataType;
+import ghidra.program.model.listing.BookmarkManager;
+import ghidra.program.model.listing.BookmarkType;
 import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
+import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.symbol.Namespace;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
@@ -96,6 +106,21 @@ public class GridNodeSync extends GhidraScript {
 		dtm = currentProgram.getDataTypeManager();
 		String importChoice = "Import GridNode's annotations into Ghidra";
 		String exportChoice = "Export the names I gave in Ghidra, for GridNode";
+		// Script arguments (headless, or a remote run): "import FILE" or "export FILE". No dialogs then.
+		String[] args = getScriptArgs();
+		if (args != null && args.length >= 2) {
+			File f = new File(String.join(" ", Arrays.copyOfRange(args, 1, args.length)));
+			if (args[0].equalsIgnoreCase("import")) {
+				doImport(f);
+			}
+			else if (args[0].equalsIgnoreCase("export")) {
+				doExport(f);
+			}
+			else {
+				printerr("GridNodeSync arguments: import FILE | export FILE");
+			}
+			return;
+		}
 		String choice = askChoice("GridNodeSync", "What should GridNodeSync do?", Arrays.asList(importChoice, exportChoice),
 			importChoice);
 		if (choice.equals(importChoice)) {
@@ -118,7 +143,7 @@ public class GridNodeSync extends GhidraScript {
 			printerr("Not a GridNode export (gridnode.py ghidra-export): " + file);
 			return;
 		}
-		JsonArray ss = doc.getAsJsonArray("structs");
+		JsonArray ss = array(doc, "structs");
 		// Pass 1: every struct exists (members may point at each other); pass 2: members.
 		for (JsonElement e : ss) {
 			JsonObject s = e.getAsJsonObject();
@@ -151,16 +176,59 @@ public class GridNodeSync extends GhidraScript {
 			}
 			structs++;
 		}
-		for (JsonElement e : doc.getAsJsonArray("functions")) {
+		for (JsonElement e : array(doc, "functions")) {
 			JsonObject f = e.getAsJsonObject();
 			nameFunction(addr(f), str(f, "name"), str(f, "comment"));
 		}
-		for (JsonElement e : doc.getAsJsonArray("labels")) {
+		for (JsonElement e : array(doc, "labels")) {
 			JsonObject l = e.getAsJsonObject();
 			nameLabel(addr(l), str(l, "name"), str(l, "type"), str(l, "comment"));
 		}
-		println(String.format("GridNodeSync import: %d structs, %d names set, %d kept (yours), %d comments, %d problems",
-			structs, named, kept, comments, failed));
+		// From recordings (summarize.py --ghidra): functions where Ghidra has none, comments, bookmarks.
+		int made = 0, marks = 0;
+		for (JsonElement e : array(doc, "createFunctions")) {
+			JsonObject c = e.getAsJsonObject();
+			Address start = addr(c);
+			Address at = c.has("at") ? toAddr(c.get("at").getAsLong()) : start;
+			if (getFunctionContaining(at) != null || getFunctionAt(start) != null) {
+				continue;
+			}
+			try {
+				disassemble(start);
+				if (createFunction(start, null) != null) {
+					made++;
+				}
+				else {
+					failed++;
+					println("no function could be made at " + start + " (frame " + at + ")");
+				}
+			}
+			catch (Exception ex) {
+				failed++;
+				println("function at " + start + ": " + ex.getMessage());
+			}
+		}
+		for (JsonElement e : array(doc, "comments")) {
+			JsonObject c = e.getAsJsonObject();
+			setComment(addr(c), "eol".equals(str(c, "kind")) ? CommentType.EOL : CommentType.PLATE, str(c, "comment"));
+		}
+		BookmarkManager bm = currentProgram.getBookmarkManager();
+		for (JsonElement e : array(doc, "bookmarks")) {
+			JsonObject b = e.getAsJsonObject();
+			Address a = addr(b);
+			if (b.has("afterCall") && b.get("afterCall").getAsBoolean()) {
+				// A return address: mark the call instruction before it.
+				Instruction prev = getInstructionBefore(a);
+				if (prev != null && prev.getFlowType().isCall()) {
+					a = prev.getAddress();
+				}
+			}
+			// One bookmark per address and category: a re-import replaces it.
+			bm.setBookmark(a, BookmarkType.NOTE, str(b, "category"), str(b, "comment"));
+			marks++;
+		}
+		println(String.format("GridNodeSync import: %d structs, %d names set, %d kept (yours), %d comments, " +
+			"%d functions made, %d bookmarks, %d problems", structs, named, kept, comments, made, marks, failed));
 	}
 
 	private void nameFunction(Address a, String name, String comment) {
@@ -272,12 +340,16 @@ public class GridNodeSync extends GhidraScript {
 		return out;
 	}
 
-	// "GridNode [relay] (Alex's Ghidra)" -> "relay (Alex's Ghidra)"; any other GridNode block -> "gridnode".
+	// "GridNode [relay] (Alex's Ghidra)" -> "relay (Alex's Ghidra)"; "GridNode [recording] (rec.jsonl)" ->
+	// "recording (rec.jsonl)"; any other GridNode block (annotations) -> "gridnode".
 	private static String blockKey(String block) {
 		String first = block.split("\n", 2)[0];
-		if (first.startsWith(MARK + "relay]")) {
-			int close = first.indexOf(')');
-			return "relay " + (close >= 0 ? first.substring(MARK.length() + 6, close + 1).trim() : "");
+		for (String kind : new String[] { "relay", "recording" }) {
+			if (first.startsWith(MARK + kind + "]")) {
+				int close = first.indexOf(')');
+				int from = MARK.length() + kind.length() + 1;
+				return kind + " " + (close >= from ? first.substring(from, close + 1).trim() : "");
+			}
 		}
 		return "gridnode";
 	}
@@ -459,6 +531,11 @@ public class GridNodeSync extends GhidraScript {
 	// ---- helpers -------------------------------------------------------------------------------------
 	private Address addr(JsonObject o) {
 		return toAddr(o.get("va").getAsLong());
+	}
+
+	private static JsonArray array(JsonObject o, String key) {
+		JsonElement e = o.get(key);
+		return e != null && e.isJsonArray() ? e.getAsJsonArray() : new JsonArray();
 	}
 
 	private static String str(JsonObject o, String key) {

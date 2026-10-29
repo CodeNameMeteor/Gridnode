@@ -105,6 +105,7 @@ void start(const std::wstring& gridnodeDir);
 void onLevel(const std::string& level);
 void draw(bool* open);    // render thread
 void frame();             // render thread, every frame: its keys
+void onDestroyed(void* entity); // any game thread, from the entity destructor hooks (entities.cpp), before it goes
 } // namespace recorder
 
 // Settings and console (settings.cpp).

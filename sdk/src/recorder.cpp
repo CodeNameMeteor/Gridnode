@@ -29,6 +29,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/reflect/layout.hpp"
 #include "gridnode/version.hpp"
 #include "host.hpp"
 #include "imgui.h"
@@ -43,12 +44,21 @@ constexpr uint64_t kImageBase = 0x140000000ull;
 constexpr size_t kMaxEvents = 250000;
 constexpr int kStackFrames = 16;
 
-enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent, kAnim, kField, kSent, kCall };
+enum Kind : uint8_t { kMessage, kCreated, kMarker, kLevel, kEvent, kAnim, kField, kSent, kCall, kDestroyed, kList };
 
 struct Ref {           // a pointer found in a message, with what it pointed to then
     uint16_t off;
     uintptr_t ptr;
     const Type* type;
+    uint32_t obj = 0;  // its object in the recording's object table (1-based; 0: none)
+};
+
+struct ListEntry {     // an entry of a watched list (a vector of pointers)
+    uintptr_t ptr = 0;
+    const Type* type = nullptr;
+    uint32_t obj = 0;
+    uint16_t index = 0;
+    uint8_t what = 0;  // 0 in the list now, 1 added, 2 removed
 };
 
 struct Event {
@@ -87,10 +97,33 @@ struct Event {
     uint64_t callFn = 0;           // the function called (image VA)
     uint64_t callFrom = 0;         // its return address (image VA, or 0 when outside the game)
     uint32_t callSkipped = 0;      // calls of this slot not recorded since the previous one (rate limit)
+    // list: a watched list of an entity changed (ptr / type: the entity; text: its label; fieldOff: the
+    // vector's offset; value[0] / [1]: count now / before, value[2]: 1 for the first reading)
+    std::vector<ListEntry> list;
+    bool reordered = false;
     // marker / level / field label / sent event's class
     std::string text;
     std::vector<uint64_t> stack;   // image VAs of game frames, innermost first
+    uint32_t obj = 0;              // ptr's object in the object table (1-based; 0: none)
 };
+
+// ---- the object table -----------------------------------------------------------------------------
+// Every object a recorded event points at (the entity an event went to, a message's pointers, a
+// list's entries) gets one entry: its type, and, for entities created while recording, its data and
+// blueprint and when it was created; when it was destroyed. An address the game reuses for a new
+// object gets a new entry, so an export names each pointer by what it was at that moment. Exported
+// as "object" lines after the events; events carry "obj" ids into it.
+struct Obj {
+    uintptr_t ptr = 0;
+    const Type* type = nullptr;
+    uintptr_t data = 0;
+    const Type* dataType = nullptr;
+    std::string blueprint;
+    double created = NAN;          // NAN: before the recording (first seen in an event)
+    double destroyed = NAN;        // NAN: not destroyed while recording
+    double firstSeen = 0;
+};
+constexpr size_t kMaxObjs = 500000;
 
 std::mutex g_m;
 std::deque<Event> g_events;        // (g_m)
@@ -105,6 +138,9 @@ std::string g_lastExport;          // render thread
 std::unordered_map<uint32_t, bool> g_ignored; // message type ids not recorded (g_m)
 std::unordered_map<const Type*, bool> g_ignoredTargets; // entity classes whose events are not recorded (g_m)
 std::string g_level;               // (g_m)
+std::vector<Obj> g_objs;           // (g_m) id = index + 1
+std::unordered_map<uintptr_t, uint32_t> g_objAt; // (g_m) address -> the latest object there
+std::atomic<bool> g_wantDestroyed{true};
 
 double now() {
     LARGE_INTEGER c;
@@ -123,8 +159,52 @@ void captureStack(std::vector<uint64_t>& out) {
     }
 }
 
+// The object at `p` at time t (caller holds g_m): the latest one there if it is still the same (the
+// same type, not destroyed before t, or `gone` allows it), else a new entry. 0 when there is no type
+// to go by or the table is full.
+uint32_t objFor(uintptr_t p, const Type* type, double t, bool gone = false) {
+    if (!p) return 0;
+    if (auto it = g_objAt.find(p); it != g_objAt.end()) {
+        const Obj& o = g_objs[it->second - 1];
+        const bool sameType = !type || !o.type || o.type == type;
+        if (sameType && (gone || std::isnan(o.destroyed) || o.destroyed > t)) return it->second;
+    }
+    if (!type || g_objs.size() >= kMaxObjs) return 0;
+    Obj o;
+    o.ptr = p, o.type = type, o.firstSeen = t;
+    g_objs.push_back(std::move(o));
+    const uint32_t id = static_cast<uint32_t>(g_objs.size());
+    g_objAt[p] = id;
+    return id;
+}
+
+// Links an event's pointers to the object table (caller holds g_m).
+void linkObjects(Event& ev) {
+    if (ev.kind == kCreated && ev.ptr && g_objs.size() < kMaxObjs) {
+        Obj o;
+        o.ptr = ev.ptr, o.type = ev.type, o.data = ev.data, o.dataType = ev.dataType, o.blueprint = ev.blueprint;
+        o.created = o.firstSeen = ev.t;
+        g_objs.push_back(std::move(o));
+        ev.obj = static_cast<uint32_t>(g_objs.size());
+        g_objAt[ev.ptr] = ev.obj;
+    } else if (ev.kind == kDestroyed) {
+        ev.obj = objFor(ev.ptr, ev.type, ev.t);
+        if (ev.obj) {
+            Obj& o = g_objs[ev.obj - 1];
+            o.destroyed = ev.t;
+            if (!ev.type) ev.type = o.type;
+            if (ev.blueprint.empty()) ev.blueprint = o.blueprint;
+        }
+    } else if (ev.ptr && ev.type) {
+        ev.obj = objFor(ev.ptr, ev.type, ev.t);
+    }
+    for (Ref& r : ev.refs) r.obj = objFor(r.ptr, r.type, ev.t);
+    for (ListEntry& le : ev.list) le.obj = objFor(le.ptr, le.type, ev.t, le.what == 2);
+}
+
 void push(Event&& ev) {
     std::lock_guard<std::mutex> lock(g_m);
+    linkObjects(ev);
     ev.seq = ++g_seq;
     g_events.push_back(std::move(ev));
     while (g_events.size() > kMaxEvents) {
@@ -196,6 +276,20 @@ void onMessage(int manager, const uint8_t* msg, uint32_t category, uint32_t type
         if (const Type* pt = registry().typeOf(mem::ProcessMemory(), static_cast<uintptr_t>(q)))
             ev.refs.push_back({static_cast<uint16_t>(off), static_cast<uintptr_t>(q), pt});
     }
+    captureStack(ev.stack);
+    push(std::move(ev));
+}
+
+// An entity is being destroyed (its deleting destructor, hooked in entities.cpp; before the original
+// runs, so its vtable still says what it is).
+void onDestroyedImpl(void* entity) {
+    if (!g_recording.load(std::memory_order_relaxed) || !g_wantDestroyed.load(std::memory_order_relaxed) || !entity) return;
+    Event ev;
+    ev.t = now();
+    ev.kind = kDestroyed;
+    ev.thread = GetCurrentThreadId();
+    ev.ptr = reinterpret_cast<uintptr_t>(entity);
+    ev.type = registry().typeOf(mem::ProcessMemory(), ev.ptr);
     captureStack(ev.stack);
     push(std::move(ev));
 }
@@ -656,20 +750,27 @@ void hookAnim() {
 
 
 // ---- watched fields -----------------------------------------------------------------------------
-// Fields of live entities of a class, read ten times a second while recording; each change is
+// Fields of live entities of a class, read every frame while recording (or less often: the menu's rate); each change is
 // recorded (kField) with the old value, so a state (an alert's level, a door's flag) lines up with
 // the events and messages around it. Instances are found among the tracked entities every 2 s.
+// A list watch ('l') reads a vector of pointers at the offset (begin, end: eastl::vector) and records
+// what was added, removed, or moved, with each entry's type (kList).
 struct Watch {
     std::string cls;   // class name (subclasses too)
     uint32_t off = 0;
-    char type = 'i';   // 'b' byte / bool, 'i' i32, 'f' f32
+    char type = 'i';   // 'b' byte / bool, 'i' i32, 'f' f32, 'l' a list of pointers
     std::string label;
 };
+constexpr size_t kListMax = 256;        // entries read per list
+constexpr size_t kListExported = 64;    // entries of the whole list written per change
 std::mutex g_watchM;
 std::vector<Watch> g_watches;                                     // (g_watchM)
 std::unordered_map<uint64_t, double> g_watchLast;                 // (g_watchM) (entity ^ field index) -> last value
+std::unordered_map<uint64_t, std::vector<ListEntry>> g_listLast;  // (g_watchM) (entity ^ field index) -> last list
 std::vector<std::pair<uintptr_t, const Type*>> g_watchEntities;   // (g_watchM)
 double g_watchFoundAt = -10.0, g_watchReadAt = -10.0;
+std::atomic<int> g_watchRate{0};       // readings a second; 0: every frame (the default: short-lived changes count)
+std::atomic<float> g_watchMs{0.f};     // how long the last reading took (shown in the menu)
 
 void addWatch(const std::string& cls, uint32_t off, char type, const std::string& label) {
     std::lock_guard<std::mutex> lock(g_watchM);
@@ -679,14 +780,103 @@ void addWatch(const std::string& cls, uint32_t off, char type, const std::string
     g_watchFoundAt = -10.0; // look for instances now
 }
 
-// Render thread, every frame while recording.
-void pollWatches() {
+// Reads a vector of pointers (begin at +off, end at +off+8). False when it does not look like one,
+// or it changed while being read.
+bool readList(uintptr_t p, uint32_t off, std::vector<uintptr_t>& out, size_t& total) {
+    uintptr_t b = 0, e = 0, b2 = 0, e2 = 0;
+    if (!mem::read(p + off, b) || !mem::read(p + off + 8, e)) return false;
+    out.clear();
+    total = 0;
+    if (!b && !e) return true; // never allocated: empty
+    if (e < b || (e - b) % 8 || (e - b) / 8 > 65536) return false;
+    total = (e - b) / 8;
+    out.resize(std::min(total, kListMax));
+    if (!out.empty() && !mem::read(b, out.data(), out.size() * 8)) return false;
+    if (!mem::read(p + off, b2) || !mem::read(p + off + 8, e2) || b2 != b || e2 != e) return false; // moved: next time
+    return true;
+}
+
+void pollList(uintptr_t p, const Type* ty, const Watch& w, uint64_t key, double t) {
+    std::vector<uintptr_t> ptrs;
+    size_t total = 0;
+    if (!readList(p, w.off, ptrs, total)) return;
+    std::vector<ListEntry> old;
+    bool first = false;
+    {
+        std::lock_guard<std::mutex> lock(g_watchM);
+        auto it = g_listLast.find(key);
+        first = it == g_listLast.end();
+        if (!first) old = it->second;
+    }
+    std::vector<uintptr_t> oldPtrs;
+    for (const ListEntry& le : old) oldPtrs.push_back(le.ptr);
+    if (!first && oldPtrs == ptrs) return;
+    // Entries: types known from the last reading are kept (a removed entry may be gone by now).
+    std::unordered_map<uintptr_t, const Type*> known;
+    for (const ListEntry& le : old) known[le.ptr] = le.type;
+    std::vector<ListEntry> now;
+    for (size_t i = 0; i < ptrs.size(); ++i) {
+        ListEntry le;
+        le.ptr = ptrs[i], le.index = static_cast<uint16_t>(i);
+        auto k = known.find(ptrs[i]);
+        le.type = k != known.end() ? k->second : (ptrs[i] ? registry().typeOf(mem::ProcessMemory(), ptrs[i]) : nullptr);
+        now.push_back(le);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_watchM);
+        g_listLast[key] = now;
+    }
+    Event ev;
+    ev.t = t;
+    ev.kind = kList;
+    ev.thread = GetCurrentThreadId();
+    ev.ptr = p, ev.type = ty;
+    ev.text = w.label;
+    ev.fieldType = 'l', ev.fieldOff = w.off;
+    ev.value[0] = static_cast<float>(total);
+    ev.value[1] = static_cast<float>(old.size());
+    ev.value[2] = first ? 1.f : 0.f;
+    // Added and removed by pointer (a pointer twice in a list counts by how many times).
+    std::unordered_map<uintptr_t, int> count;
+    for (uintptr_t q : oldPtrs) ++count[q];
+    std::vector<uintptr_t> commonNew, commonOld;
+    for (const ListEntry& le : now) {
+        auto c = count.find(le.ptr);
+        if (c != count.end() && c->second > 0) {
+            --c->second;
+            commonNew.push_back(le.ptr);
+        } else if (!first) {
+            ListEntry a = le;
+            a.what = 1;
+            ev.list.push_back(a);
+        }
+    }
+    count.clear();
+    for (uintptr_t q : ptrs) ++count[q];
+    for (const ListEntry& le : old) {
+        auto c = count.find(le.ptr);
+        if (c != count.end() && c->second > 0) {
+            --c->second;
+            commonOld.push_back(le.ptr);
+        } else {
+            ListEntry r = le;
+            r.what = 2;
+            ev.list.push_back(r);
+        }
+    }
+    ev.reordered = !first && commonNew != commonOld; // the entries both readings share, in another order
+    for (size_t i = 0; i < now.size() && i < kListExported; ++i) ev.list.push_back(now[i]);
+    push(std::move(ev));
+}
+
+// Render thread, every frame while recording. True when it read the watches this time.
+bool pollWatchesImpl() {
     std::vector<Watch> watches;
     {
         std::lock_guard<std::mutex> lock(g_watchM);
         watches = g_watches;
     }
-    if (watches.empty()) return;
+    if (watches.empty()) return false;
     const double t = now();
     if (t - g_watchFoundAt > 2.0 || t < g_watchFoundAt) {
         g_watchFoundAt = t;
@@ -704,19 +894,26 @@ void pollWatches() {
         std::lock_guard<std::mutex> lock(g_watchM);
         g_watchEntities = std::move(found);
     }
-    if (t - g_watchReadAt < 0.1 && t >= g_watchReadAt) return;
+    const int rate = g_watchRate.load(std::memory_order_relaxed);
+    if (rate > 0 && t - g_watchReadAt < 1.0 / rate && t >= g_watchReadAt) return false;
     g_watchReadAt = t;
     std::vector<std::pair<uintptr_t, const Type*>> ents;
     {
         std::lock_guard<std::mutex> lock(g_watchM);
         ents = g_watchEntities;
     }
+    std::vector<const Type*> kinds;
+    for (const Watch& w : watches) kinds.push_back(registry().find(w.cls));
     for (const auto& [p, ty] : ents) {
         if (!inspector::alive(p, ty)) continue;
         for (size_t i = 0; i < watches.size(); ++i) {
             const Watch& w = watches[i];
-            const Type* k = registry().find(w.cls);
+            const Type* k = kinds[i];
             if (!k || !registry().isKindOf(ty, k)) continue;
+            if (w.type == 'l') {
+                pollList(p, ty, w, (static_cast<uint64_t>(p) << 8) ^ i, t);
+                continue;
+            }
             double v = 0;
             if (w.type == 'b') v = mem::readOr<uint8_t>(p + w.off);
             else if (w.type == 'f') v = mem::readOr<float>(p + w.off);
@@ -746,6 +943,12 @@ void pollWatches() {
             push(std::move(ev));
         }
     }
+    return true;
+}
+
+void pollWatches() {
+    const double t0 = now();
+    if (pollWatchesImpl()) g_watchMs.store(static_cast<float>((now() - t0) * 1000.0), std::memory_order_relaxed);
 }
 
 // ---- sending an event to entities (research: does the game act on it?) ---------------------------
@@ -986,6 +1189,10 @@ std::string traceClass(const std::string& name, bool sub) {
         for (uint32_t off = 0; off < 0x800; off += 8) {
             const uintptr_t fn = mem::readOr<uintptr_t>(vt + off);
             if (!isCode(fn)) break; // the end of the vtable
+            // getType stays the game's: GridNode tells an object's class by the function in this slot
+            // (Registry::typeOf), so a thunk there made traced objects unknown (dropped by the inspector,
+            // skipped by watches). It is called all the time and says nothing anyway.
+            if (off == 8u * gn::layout::kGetTypeSlot) continue;
             if (g_thunksUsed == kMaxTraceSlots) {
                 ++tc.failed;
                 continue;
@@ -1094,6 +1301,7 @@ void setRecording(bool on) {
     }
     if (on && g_wantEvents.load()) hookEvents();
     if (on && g_wantAnim.load()) hookAnim();
+    if (on && g_wantDestroyed.load()) hookDestructors(); // once; the inspector has usually done it already
     if (on) {
         std::lock_guard<std::mutex> lock(g_antM);
         g_antLast.clear(); // each recording starts with the values as they are
@@ -1107,9 +1315,12 @@ void clearAll() {
     {
         std::lock_guard<std::mutex> lock(g_watchM);
         g_watchLast.clear(); // the next recording starts with the values as they are
+        g_listLast.clear();
     }
     std::lock_guard<std::mutex> lock(g_m);
     g_events.clear();
+    g_objs.clear();
+    g_objAt.clear();
     g_dropped = 0;
     QueryPerformanceCounter(&g_t0);
 }
@@ -1205,7 +1416,8 @@ std::string toJson(const Event& ev) {
             for (size_t i = 0; i < ev.refs.size(); ++i) {
                 char b[48];
                 snprintf(b, sizeof(b), "{\"off\":%u,\"ptr\":", ev.refs[i].off);
-                o += (i ? "," : "") + std::string(b) + hexAddr(ev.refs[i].ptr) + ",\"type\":" + jsonStr(ev.refs[i].type->name) + "}";
+                o += (i ? "," : "") + std::string(b) + hexAddr(ev.refs[i].ptr) + ",\"type\":" + jsonStr(ev.refs[i].type->name) +
+                     (ev.refs[i].obj ? ",\"obj\":" + std::to_string(ev.refs[i].obj) : std::string()) + "}";
             }
             o += "]";
         }
@@ -1224,6 +1436,35 @@ std::string toJson(const Event& ev) {
         if (ev.dataType) o += ",\"data\":" + jsonStr(ev.dataType->name) + ",\"data_ptr\":" + hexAddr(ev.data);
         if (!ev.blueprint.empty()) o += ",\"blueprint\":" + jsonStr(ev.blueprint);
         break;
+    case kDestroyed:
+        o += ",\"kind\":\"destroyed\",\"type\":" + jsonStr(ev.type ? ev.type->name : "?") + ",\"ptr\":" + hexAddr(ev.ptr);
+        if (!ev.blueprint.empty()) o += ",\"blueprint\":" + jsonStr(ev.blueprint);
+        break;
+    case kList: {
+        char off[16];
+        snprintf(off, sizeof(off), "0x%x", ev.fieldOff);
+        o += ",\"kind\":\"list\",\"field\":" + jsonStr(ev.text) + ",\"offset\":\"" + off + "\",\"count\":" +
+             std::to_string(static_cast<long long>(ev.value[0]));
+        if (ev.value[2] != 0.f) o += ",\"first\":true";
+        else o += ",\"old_count\":" + std::to_string(static_cast<long long>(ev.value[1]));
+        if (ev.reordered) o += ",\"reordered\":true";
+        auto entry = [](const ListEntry& le, bool withIndex) {
+            std::string x = "{";
+            if (withIndex) x += "\"index\":" + std::to_string(le.index) + ",";
+            x += "\"ptr\":" + hexAddr(le.ptr) + ",\"type\":" + jsonStr(le.type ? le.type->name : "?");
+            if (le.obj) x += ",\"obj\":" + std::to_string(le.obj);
+            return x + "}";
+        };
+        const char* names[3] = {"items", "added", "removed"};
+        for (uint8_t what = 0; what < 3; ++what) {
+            std::string arr;
+            for (const ListEntry& le : ev.list)
+                if (le.what == what) arr += (arr.empty() ? "" : ",") + entry(le, what != 2);
+            if (!arr.empty() || what == 0) o += ",\"" + std::string(names[what]) + "\":[" + arr + "]";
+        }
+        o += ",\"target\":" + jsonStr(ev.type ? ev.type->name : "?") + ",\"ptr\":" + hexAddr(ev.ptr);
+        break;
+    }
     case kMarker: o += ",\"kind\":\"marker\",\"name\":" + jsonStr(ev.text); break;
     case kLevel: o += ",\"kind\":\"level\",\"level\":" + jsonStr(ev.text); break;
     case kAnim: {
@@ -1292,6 +1533,7 @@ std::string toJson(const Event& ev) {
         break;
     }
     }
+    if (ev.obj) o += ",\"obj\":" + std::to_string(ev.obj);
     if (ev.havePos) o += ",\"pos\":[" + num(ev.pos[0]) + "," + num(ev.pos[1]) + "," + num(ev.pos[2]) + "]";
     if (!ev.stack.empty()) {
         o += ",\"stack\":[";
@@ -1309,6 +1551,17 @@ std::string toJson(const Event& ev) {
     return o + "}\n";
 }
 
+std::string objJson(uint32_t id, const Obj& o) {
+    std::string x = "{\"kind\":\"object\",\"id\":" + std::to_string(id) + ",\"ptr\":" + hexAddr(o.ptr) + ",\"type\":" +
+                    jsonStr(o.type ? o.type->name : "?");
+    if (o.dataType) x += ",\"data\":" + jsonStr(o.dataType->name) + ",\"data_ptr\":" + hexAddr(o.data);
+    if (!o.blueprint.empty()) x += ",\"blueprint\":" + jsonStr(o.blueprint);
+    x += ",\"created\":" + (std::isnan(o.created) ? std::string("null") : num(o.created));
+    x += ",\"destroyed\":" + (std::isnan(o.destroyed) ? std::string("null") : num(o.destroyed));
+    x += ",\"first_seen\":" + num(o.firstSeen);
+    return x + "}\n";
+}
+
 bool validName(const std::string& n) {
     for (char c : n)
         if (!(isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_')) return false;
@@ -1320,11 +1573,23 @@ void exportAll(const std::string& name) {
     std::vector<Event> events;
     uint64_t dropped;
     std::string level;
+    std::vector<std::pair<uint32_t, Obj>> objs; // the ones the exported events point at
     {
         std::lock_guard<std::mutex> lock(g_m);
         events.assign(g_events.begin(), g_events.end());
         dropped = g_dropped;
         level = g_level;
+        std::vector<bool> used(g_objs.size() + 1, false);
+        auto use = [&](uint32_t id) {
+            if (id && id < used.size()) used[id] = true;
+        };
+        for (const Event& ev : g_events) {
+            use(ev.obj);
+            for (const Ref& r : ev.refs) use(r.obj);
+            for (const ListEntry& le : ev.list) use(le.obj);
+        }
+        for (uint32_t id = 1; id < used.size(); ++id)
+            if (used[id]) objs.push_back({id, g_objs[id - 1]});
     }
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -1334,7 +1599,7 @@ void exportAll(const std::string& name) {
     CreateDirectoryW(g_dir.c_str(), nullptr);
     const std::wstring path = g_dir + std::wstring(file.begin(), file.end());
     g_lastExport = "recordings\\" + file + " (writing...)";
-    std::thread([events = std::move(events), dropped, level, path, file] {
+    std::thread([events = std::move(events), objs = std::move(objs), dropped, level, path, file] {
         if (!g_ownersBuilt) buildOwners(); // for "callers" (once)
         FILE* f = _wfopen(path.c_str(), L"wb");
         if (!f) {
@@ -1343,17 +1608,151 @@ void exportAll(const std::string& name) {
         }
         std::string head = "{\"kind\":\"header\",\"format\":\"gridnode-recording\",\"version\":1,\"gridnode\":\"" GRIDNODE_VERSION_STRING
                            "\",\"image_base\":\"0x140000000\",\"level\":" +
-                           jsonStr(level) + ",\"events\":" + std::to_string(events.size()) + ",\"dropped_oldest\":" + std::to_string(dropped) +
-                           "}\n";
+                           jsonStr(level) + ",\"events\":" + std::to_string(events.size()) + ",\"objects\":" + std::to_string(objs.size()) +
+                           ",\"dropped_oldest\":" + std::to_string(dropped) + "}\n";
         fwrite(head.data(), 1, head.size(), f);
         for (const Event& ev : events) {
             const std::string line = toJson(ev);
+            fwrite(line.data(), 1, line.size(), f);
+        }
+        for (const auto& [id, o] : objs) { // after the events: every object they point at, by id
+            const std::string line = objJson(id, o);
             fwrite(line.data(), 1, line.size(), f);
         }
         fclose(f);
         GN_LOG("recorder: exported %llu events to recordings\\%s", static_cast<unsigned long long>(events.size()), file.c_str());
     }).detach();
     g_lastExport = "recordings\\" + file;
+}
+
+// ---- choosing a class ----------------------------------------------------------------------------
+// A class field with a "..." button that opens a searchable list, so nobody needs to know the names:
+// the classes alive right now (with how many), the classes this recording has lines about (with how
+// many), or every class. Hovering a row shows its base classes. Enter picks the first row shown.
+struct PickRow {
+    const Type* type;
+    int count;
+};
+struct Picker {
+    char search[64] = "";
+    int source = 0;          // 0 alive now, 1 in this recording, 2 every class
+    int builtSource = -1;
+    bool withVtable = true;
+    double builtAt = -10.0;
+    std::vector<PickRow> rows;
+};
+
+std::vector<PickRow> pickRows(int source) {
+    std::unordered_map<const Type*, int> n;
+    if (source == 0) {
+        for (const auto& [p, t] : inspector::tracked())
+            if (t) ++n[t];
+    } else if (source == 1) {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Event& ev : g_events) {
+            if (ev.type) ++n[ev.type];
+            for (const Ref& r : ev.refs)
+                if (r.type) ++n[r.type];
+        }
+    } else {
+        for (const Type& t : registry().data().types)
+            if (t.category == reflect::Category::Class && !t.name.empty()) n[&t] = 0;
+    }
+    std::vector<PickRow> rows;
+    rows.reserve(n.size());
+    for (const auto& [t, c] : n)
+        if (t->category == reflect::Category::Class) rows.push_back({t, c});
+    std::sort(rows.begin(), rows.end(), [](const PickRow& a, const PickRow& b) {
+        return a.count != b.count ? a.count > b.count : a.type->name < b.type->name;
+    });
+    return rows;
+}
+
+std::string baseChain(const Type* t) {
+    std::string o;
+    for (int i = 0; t && i < 16; ++i, t = registry().super(t)) o += (i ? "\n  <- " : "") + t->name;
+    return o;
+}
+
+bool containsNoCase(const std::string& hay, const char* needle) {
+    if (!*needle) return true;
+    const size_t n = strlen(needle);
+    for (size_t i = 0; i + n <= hay.size(); ++i) {
+        size_t j = 0;
+        while (j < n && tolower(static_cast<unsigned char>(hay[i + j])) == tolower(static_cast<unsigned char>(needle[j]))) ++j;
+        if (j == n) return true;
+    }
+    return false;
+}
+
+// The class field and its list. Returns true when a class was picked from the list (written to buf).
+bool classPicker(const char* id, char* buf, size_t size, const char* hint, float width, bool needVtable) {
+    static std::unordered_map<std::string, Picker> pickers; // render thread
+    Picker& pk = pickers[id];
+    bool picked = false;
+    ImGui::PushID(id);
+    ImGui::SetNextItemWidth(width);
+    ImGui::InputTextWithHint("##cls", hint, buf, size);
+    ImGui::SameLine(0, 2);
+    if (ImGui::Button("...")) {
+        pk.withVtable = needVtable;
+        pk.builtSource = -1;
+        ImGui::OpenPopup("pick");
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose a class from a list");
+    const float fs = ImGui::GetFontSize();
+    ImGui::SetNextWindowSize(ImVec2(fs * 28, fs * 26), ImGuiCond_Appearing);
+    if (ImGui::BeginPopup("pick")) {
+        int src = pk.source;
+        ImGui::RadioButton("Alive now", &src, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("In this recording", &src, 1);
+        ImGui::SameLine();
+        ImGui::RadioButton("All classes", &src, 2);
+        pk.source = src;
+        const double t = now();
+        if (pk.builtSource != src || (src == 0 && (t - pk.builtAt > 1.0 || t < pk.builtAt))) {
+            pk.rows = pickRows(src);
+            pk.builtSource = src;
+            pk.builtAt = t;
+        }
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(fs * 16);
+        const bool enter = ImGui::InputTextWithHint("##search", "search: part of a name", pk.search, sizeof(pk.search),
+                                                    ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        ImGui::Checkbox("with a vtable", &pk.withVtable);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Only classes GridNode knows a vtable for (needed to trace calls)");
+        std::vector<const PickRow*> shown;
+        for (const PickRow& r : pk.rows)
+            if ((!pk.withVtable || !r.type->vtables.empty()) && containsNoCase(r.type->name, pk.search)) shown.push_back(&r);
+        if (src == 1) ImGui::TextDisabled("%d classes (count: lines about them)", static_cast<int>(shown.size()));
+        else if (src == 0) ImGui::TextDisabled("%d classes (count: live entities)", static_cast<int>(shown.size()));
+        else ImGui::TextDisabled("%d classes", static_cast<int>(shown.size()));
+        auto choose = [&](const Type* ty) {
+            snprintf(buf, size, "%s", ty->name.c_str());
+            picked = true;
+            ImGui::CloseCurrentPopup();
+        };
+        if (enter && !shown.empty()) choose(shown.front()->type);
+        if (ImGui::BeginChild("rows", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+            ImGuiListClipper clip;
+            clip.Begin(static_cast<int>(shown.size()));
+            while (clip.Step())
+                for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
+                    const PickRow& r = *shown[static_cast<size_t>(i)];
+                    char label[200];
+                    if (src == 2) snprintf(label, sizeof(label), "%s##%d", r.type->name.c_str(), i);
+                    else snprintf(label, sizeof(label), "%-48s %7d##%d", r.type->name.c_str(), r.count, i);
+                    if (ImGui::Selectable(label)) choose(r.type);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", baseChain(r.type).c_str());
+                }
+        }
+        ImGui::EndChild();
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return picked;
 }
 
 // ---- keys -------------------------------------------------------------------------------------
@@ -1377,6 +1776,8 @@ void start(const std::wstring& gridnodeDir) {
     QueryPerformanceCounter(&g_t0);
     gn::host::onCreated("gridnode", "Entity", &onCreated, nullptr);
 }
+
+void onDestroyed(void* entity) { onDestroyedImpl(entity); }
 
 void onLevel(const std::string& level) {
     {
@@ -1442,6 +1843,12 @@ void draw(bool* open) {
     ImGui::SameLine();
     if (ImGui::Checkbox("Entities created", &c)) g_wantCreated = c;
     ImGui::SameLine();
+    bool d = g_wantDestroyed.load();
+    if (ImGui::Checkbox("destroyed", &d)) {
+        g_wantDestroyed = d;
+        if (d && rec) hookDestructors();
+    }
+    ImGui::SameLine();
     bool ev = g_wantEvents.load();
     if (ImGui::Checkbox("Entity events", &ev)) {
         g_wantEvents = ev;
@@ -1487,18 +1894,18 @@ void draw(bool* open) {
     if (!g_lastExport.empty()) ImGui::TextDisabled("Last export: %s", g_lastExport.c_str());
 
     ImGui::SeparatorText("Watch fields");
-    ImGui::TextDisabled("Fields of live entities of a class, recorded each time they change (read 10 times a second).");
+    ImGui::TextDisabled("Fields of live entities of a class, recorded each time they change.\n"
+                        "A list is a vector of pointers at the offset (begin, end): adds, removes and order changes.");
     {
         static char cls[64] = "", off[16] = "", label[48] = "";
         static int type = 1;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11);
-        ImGui::InputTextWithHint("##wcls", "class", cls, sizeof(cls));
+        classPicker("watch", cls, sizeof(cls), "class", ImGui::GetFontSize() * 11, false);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
         ImGui::InputTextWithHint("##woff", "+0x134", off, sizeof(off));
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
-        ImGui::Combo("##wtype", &type, "byte\0i32\0f32\0");
+        ImGui::Combo("##wtype", &type, "byte\0i32\0f32\0list\0");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
         ImGui::InputTextWithHint("##wlabel", "label", label, sizeof(label));
@@ -1509,7 +1916,7 @@ void draw(bool* open) {
         const unsigned long offset = strtoul(o, &end, 0);
         const bool ok = registry().find(cls) && end && end != o && *end == 0 && offset < 0x10000;
         ImGui::BeginDisabled(!ok);
-        if (ImGui::Button("Watch")) addWatch(cls, static_cast<uint32_t>(offset), "bif"[type], label);
+        if (ImGui::Button("Watch")) addWatch(cls, static_cast<uint32_t>(offset), "bifl"[type], label);
         ImGui::EndDisabled();
         if (ImGui::Button("Add the city alert manager's state")) { // docs/research/city-alert.md
             addWatch("PamServerCityAlertManager", 0x175, 'b', "alert active");
@@ -1517,6 +1924,11 @@ void draw(bool* open) {
             addWatch("PamServerCityAlertManager", 0x13c, 'i', "AI killed");
             addWatch("PamServerCityAlertManager", 0x130, 'i', "cameras seeing");
             addWatch("PamServerCityAlertManager", 0x140, 'i', "hotspots active");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add the spawners' lists")) { // docs/research/replay-ghosts.md; db/annotations/spawn.yaml
+            addWatch("ServerSpawnEntity", 0x148, 'l', "spawned (server)");
+            addWatch("ClientSpawnEntity", 0xb0, 'l', "spawned (client)");
         }
         std::vector<Watch> ws;
         size_t found;
@@ -1531,22 +1943,33 @@ void draw(bool* open) {
                 std::lock_guard<std::mutex> lock(g_watchM);
                 if (i < g_watches.size()) g_watches.erase(g_watches.begin() + static_cast<long>(i));
                 g_watchLast.clear();
+                g_listLast.clear();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s +0x%x (%c)", ws[i].cls.c_str(), ws[i].off, ws[i].type);
             ImGui::PopID();
             ImGui::SameLine();
         }
         if (!ws.empty()) ImGui::TextDisabled("(%d live)", static_cast<int>(found));
+        int rate = g_watchRate.load();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+        if (ImGui::SliderInt("readings a second", &rate, 0, 60, rate == 0 ? "every frame" : "%d")) g_watchRate = rate;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How often watched fields and lists are read. Every frame catches changes that last only a\n"
+                              "moment (a ghost that lives 0.1 s); fewer readings cost less with many entities watched.");
+        if (!ws.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("last reading %.2f ms", g_watchMs.load());
+        }
     }
 
     ImGui::SeparatorText("Trace a class's calls");
-    ImGui::TextDisabled("Records each call to the class's virtual functions: which object, which slot, who called (while recording).");
+    ImGui::TextDisabled("Records each call to the class's virtual functions: which object, which slot, who called (while recording).\n"
+                        "\"...\" lists classes to choose from: alive now, in this recording, or all.");
     {
         static char cls[64] = "";
         static bool sub = false;
         static std::string said;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
-        ImGui::InputTextWithHint("##tcls", "class, e.g. ClientCharacterSpawnEntity", cls, sizeof(cls));
+        classPicker("trace", cls, sizeof(cls), "class, e.g. ClientCharacterSpawnEntity", ImGui::GetFontSize() * 14, true);
         ImGui::SameLine();
         ImGui::Checkbox("and subclasses", &sub);
         ImGui::SameLine();
@@ -1602,8 +2025,7 @@ void draw(bool* open) {
     ImGui::TextDisabled("Delivers an event to every live entity of a class, as a connection would. Use with care.");
     {
         static char cls[64] = "PamServerCityAlertManager", evt[48] = "";
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 11);
-        ImGui::InputTextWithHint("##scls", "class", cls, sizeof(cls));
+        classPicker("send", cls, sizeof(cls), "class", ImGui::GetFontSize() * 11, false);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
         ImGui::InputTextWithHint("##sevt", "name or 0x6bb5e497", evt, sizeof(evt));
@@ -1677,7 +2099,11 @@ void draw(bool* open) {
                 lite.seq = src.seq, lite.t = src.t, lite.kind = src.kind, lite.manager = src.manager, lite.typeId = src.typeId;
                 lite.type = src.type, lite.blueprint = src.blueprint, lite.text = src.text, lite.eventId = src.eventId;
                 lite.valueKind = src.valueKind, lite.propHash = src.propHash, lite.writerType = src.writerType;
-                lite.fieldType = src.fieldType, lite.fieldOff = src.fieldOff, lite.ptr = src.ptr;
+                lite.fieldType = src.fieldType, lite.fieldOff = src.fieldOff, lite.ptr = src.ptr, lite.obj = src.obj;
+                lite.reordered = src.reordered;
+                if (src.kind == kList)
+                    for (const ListEntry& le : src.list)
+                        if (le.what != 0) lite.list.push_back(le);
                 memcpy(lite.value, src.value, sizeof(lite.value));
                 tail.push_back(std::move(lite));
             }
@@ -1749,6 +2175,22 @@ void draw(bool* open) {
                 snprintf(line, sizeof(line), "%9.3f  SENT   %s -> %s", ev.t, eventName(ev.eventId).c_str(), ev.type ? ev.type->name.c_str() : "?");
                 ImGui::TextColored(ImVec4(1.f, 0.5f, 0.3f, 1.f), "%s", line);
                 break;
+            case kDestroyed:
+                snprintf(line, sizeof(line), "%9.3f  gone   %s%s%s", ev.t, ev.type ? ev.type->name.c_str() : "?", ev.blueprint.empty() ? "" : "  ",
+                         ev.blueprint.c_str());
+                ImGui::TextDisabled("%s", line);
+                break;
+            case kList: {
+                std::string what;
+                for (const ListEntry& le : ev.list)
+                    if (what.size() < 120) what += std::string(le.what == 1 ? " +" : " -") + (le.type ? le.type->name : "?");
+                if (ev.reordered) what += " (order changed)";
+                if (ev.value[2] != 0.f) what = " (first reading)";
+                snprintf(line, sizeof(line), "%9.3f  list   %s: %lld entries%s  -> %s", ev.t, ev.text.c_str(), static_cast<long long>(ev.value[0]),
+                         what.c_str(), ev.type ? ev.type->name.c_str() : "?");
+                ImGui::TextColored(ImVec4(1.f, 1.f, 0.5f, 1.f), "%s", line);
+                break;
+            }
             case kLevel:
                 snprintf(line, sizeof(line), "%9.3f  level %s", ev.t, ev.text.c_str());
                 ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.f, 1.f), "%s", line);
