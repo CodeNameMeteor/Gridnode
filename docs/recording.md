@@ -14,6 +14,7 @@ Open the GridNode menu (Insert) and choose **Recorder**.
 |---|---|
 | F8 | record / pause |
 | Home | drop a marker (named, with Faith's position) |
+| End | save the last seconds (with **Keep only the last** on) |
 
 Choose what to record (messages, entities created and destroyed, entity events, call stacks), play, and press
 Home the moment the thing you are looking for happens. **Export** writes
@@ -21,6 +22,17 @@ Home the moment the thing you are looking for happens. **Export** writes
 The **Ignore** lists leave out message types and event targets that are too frequent to be
 useful. F8 only pauses: an export holds everything since the last **Clear**, so press Clear between
 recordings you want to keep apart.
+
+### After the fact
+
+- **Keep only the last N seconds** (5 to 120): the Recorder records all the time but keeps only that
+  window; older events drop off as new ones come. When something interesting happens, press **End**:
+  the window is exported as `recordings/<time>-last<N>s.jsonl`, with a `saved` marker at the moment
+  you pressed it, and recording goes on. No need to start before the thing, and a level load long
+  before it does not fill the file. The header has `rolling_seconds`.
+- **Start recording on this event**: type an event name (or `0x<hash>`) and arm it; the first time
+  any entity receives that event, recording starts with a marker `event <name>`. With the rolling
+  window on, use it instead to know when to press End.
 
 ### Objects: what a pointer was
 

@@ -621,7 +621,9 @@ std::string keyName(int vk) {
 
 std::vector<std::pair<int, std::string>> reservedKeys() {
     std::vector<std::pair<int, std::string>> r{{g_settings.menuKey, "the menu"}};
-    if (g_settings.recorder) r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"});
+    if (g_settings.recorder)
+        r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"}),
+            r.push_back({VK_END, "Recorder: save the last seconds"});
     if (g_settings.editor) r.push_back({VK_F7, "free camera (default)"});
     return r;
 }

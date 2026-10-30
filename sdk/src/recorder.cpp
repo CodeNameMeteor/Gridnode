@@ -129,6 +129,16 @@ std::mutex g_m;
 std::deque<Event> g_events;        // (g_m)
 uint64_t g_seq = 0;                // (g_m)
 uint64_t g_dropped = 0;            // (g_m) the oldest, beyond kMaxEvents
+// Rolling buffer: only the last g_rollSeconds are kept (older events drop off as new ones come), and
+// End saves them, so a recording can be made after the thing happened instead of started before it.
+std::atomic<bool> g_rolling{false};
+std::atomic<int> g_rollSeconds{30};
+uint64_t g_rolledOff = 0; // (g_m) events past the window, not counted as dropped
+// Start on an event: armed with an event's id; the first time it is delivered, the next frame starts
+// recording and drops a marker named after it.
+std::atomic<uint32_t> g_autoEventId{0};
+std::atomic<bool> g_autoStart{false};
+std::string g_autoEventName; // render thread
 std::atomic<bool> g_recording{false};
 std::atomic<bool> g_wantMessages{true}, g_wantCreated{true}, g_wantStacks{true}, g_wantEvents{true};
 std::atomic<bool> g_wantAnim{true}, g_wantAnimFloats{false};
@@ -211,6 +221,13 @@ void push(Event&& ev) {
     while (g_events.size() > kMaxEvents) {
         g_events.pop_front();
         ++g_dropped;
+    }
+    if (g_rolling.load(std::memory_order_relaxed)) {
+        const double oldest = g_events.back().t - g_rollSeconds.load(std::memory_order_relaxed);
+        while (!g_events.empty() && g_events.front().t < oldest) {
+            g_events.pop_front();
+            ++g_rolledOff;
+        }
     }
 }
 
@@ -328,6 +345,11 @@ uint32_t djb2(const std::string& s) { return events::hash(s); }
 std::string eventName(uint32_t id) { return events::name(id); }
 
 void onEvent(void* peer, void* event) {
+    if (const uint32_t armed = g_autoEventId.load(std::memory_order_relaxed); armed && event && !g_recording.load(std::memory_order_relaxed) &&
+        mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(event) + 8) == armed) {
+        g_autoEventId = 0;
+        g_autoStart = true; // started on the render thread, which owns the recording's controls
+    }
     if (!g_recording.load(std::memory_order_relaxed) || !g_wantEvents.load(std::memory_order_relaxed)) return;
     if (!peer || !event) return;
     const Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(peer));
@@ -1097,39 +1119,15 @@ void pollWatches() {
 }
 
 // ---- sending an event to entities (research: does the game act on it?) ---------------------------
-// What EntityBusPeer_sendEvent does for a connection's target: its onEvent (vtable +0x20) with an
-// EntityEvent {vtable 0x141a4a8b0, u32 id, u32 0} (as EntityBus_postEvent builds one), on the
-// entity's realm thread. Recorded (kSent) so the reaction can be seen in the recording.
-constexpr uint64_t kEntityEventVtable = 0x141a4a8b0, kOnEventSlot = 0x20;
+// Sent as the bus would (events::send in events.cpp, shared with mods' event_send). Recorded (kSent)
+// so the reaction can be seen in the recording.
 
 int sendEventToClass(const std::string& cls, uint32_t id) {
     const Type* k = registry().find(cls);
     if (!k) return -1;
-    int n = 0;
-    for (const auto& [p, ty] : inspector::tracked()) {
-        if (!ty || !registry().isKindOf(ty, k) || !inspector::alive(p, ty)) continue;
-        const uintptr_t vt = mem::readOr<uintptr_t>(p);
-        // The slot holds the game's onEvent, or events.cpp's wrapper of it once events are wrapped (it
-        // was required to be game code, which refused every entity after the first recording).
-        const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + kOnEventSlot) : 0;
-        if (!fn) continue;
-        const uintptr_t ent = p;
-        const Type* et = ty;
-        auto deliver = [ent, et, id] {
-            if (!inspector::alive(ent, et)) return;
-            const uintptr_t v = mem::readOr<uintptr_t>(ent);
-            const uintptr_t f = v ? mem::readOr<uintptr_t>(v + kOnEventSlot) : 0;
-            if (!f) return;
-            struct {
-                uintptr_t vtable;
-                uint32_t id;
-                uint32_t kind;
-            } event{mem::rva(kEntityEventVtable), id, 0};
-            reinterpret_cast<void (*)(uintptr_t, void*, void*, void*)>(f)(ent, &event, nullptr, nullptr);
-        };
-        if (mem::readOr<uint32_t>(p + 0x18) & 1) server().post(deliver); // flags bit 0: the server realm
-        else client().post(deliver);
-        if (g_recording.load()) {
+    const auto sent = events::sendToClass(k, id); // delivered on each entity's realm thread at its next tick
+    if (g_recording.load())
+        for (const auto& [p, ty] : sent) {
             Event ev;
             ev.t = now();
             ev.kind = kSent;
@@ -1138,10 +1136,8 @@ int sendEventToClass(const std::string& cls, uint32_t id) {
             ev.eventId = id;
             push(std::move(ev));
         }
-        ++n;
-    }
-    GN_LOG("recorder: event %s (%08x) sent to %d %s entities", eventName(id).c_str(), id, n, cls.c_str());
-    return n;
+    GN_LOG("recorder: event %s (%08x) sent to %llu %s entities", eventName(id).c_str(), id, static_cast<unsigned long long>(sent.size()), cls.c_str());
+    return static_cast<int>(sent.size());
 }
 
 // ---- tracing a class's virtual calls ------------------------------------------------------------
@@ -1471,6 +1467,7 @@ void clearAll() {
     g_objs.clear();
     g_objAt.clear();
     g_dropped = 0;
+    g_rolledOff = 0;
     QueryPerformanceCounter(&g_t0);
 }
 
@@ -1756,6 +1753,7 @@ void exportAll(const std::string& name) {
                  static_cast<unsigned long long>(n), g_watchMsTotal.load() / static_cast<double>(n), g_watchMsWorst.load(), g_watchRate.load());
         watchTiming = b;
     }
+    if (g_rolling.load()) watchTiming += ",\"rolling_seconds\":" + std::to_string(g_rollSeconds.load()); // only the window was kept
     std::thread([events = std::move(events), objs = std::move(objs), dropped, level, path, file, watchTiming] {
         if (!g_ownersBuilt) buildOwners(); // for "callers" (once)
         FILE* f = _wfopen(path.c_str(), L"wb");
@@ -1928,10 +1926,16 @@ bool classPicker(const char* id, char* buf, size_t size, const char* hint, float
 }
 
 // ---- keys -------------------------------------------------------------------------------------
-constexpr int kKeyRecord = VK_F8, kKeyMarker = VK_HOME;
-bool g_keyWas[2] = {};
+constexpr int kKeyRecord = VK_F8, kKeyMarker = VK_HOME, kKeySaveRolling = VK_END;
+bool g_keyWas[3] = {};
 char g_markerName[64] = "marker";
 int g_markerCount = 0;
+
+// Exports the rolling window as it is (recording goes on), with a marker where it was saved.
+void saveRolling() {
+    marker("saved");
+    exportAll("last" + std::to_string(g_rollSeconds.load()) + "s");
+}
 
 std::string nextMarkerName() {
     ++g_markerCount;
@@ -1967,15 +1971,21 @@ void onLevel(const std::string& level) {
 
 void frame() {
     const bool focused = ui::gameFocused() && !ImGui::GetIO().WantTextInput;
-    const int keys[2] = {kKeyRecord, kKeyMarker};
-    bool pressed[2] = {};
-    for (int i = 0; i < 2; ++i) {
+    const int keys[3] = {kKeyRecord, kKeyMarker, kKeySaveRolling};
+    bool pressed[3] = {};
+    for (int i = 0; i < 3; ++i) {
         const bool down = focused && (GetAsyncKeyState(keys[i]) & 0x8000) != 0;
         pressed[i] = down && !g_keyWas[i];
         g_keyWas[i] = down;
     }
     if (pressed[0]) setRecording(!g_recording.load());
     if (pressed[1] && g_recording.load()) marker(nextMarkerName());
+    if (pressed[2] && g_rolling.load()) saveRolling();
+    if (g_autoStart.exchange(false)) {
+        setRecording(true);
+        marker("event " + g_autoEventName);
+        GN_LOG("recorder: started by the event %s", g_autoEventName.c_str());
+    }
     if (g_recording.load()) pollWatches();
     if (g_recording.load() && g_wantMovement.load()) pollMovement(), hookPredict();
     else g_moveRead = false; // the next recording (or switching it on) starts with a first reading
@@ -2011,7 +2021,8 @@ void draw(bool* open) {
     if (rec) ImGui::TextColored(ImVec4(1.f, 0.35f, 0.3f, 1.f), "recording");
     else ImGui::TextDisabled(count ? "paused" : "not recording");
     ImGui::SameLine();
-    ImGui::TextDisabled("%llu events over %.1f s%s", static_cast<unsigned long long>(count), span, dropped ? " (oldest dropped)" : "");
+    ImGui::TextDisabled("%llu events over %.1f s%s%s", static_cast<unsigned long long>(count), span, dropped ? " (oldest dropped)" : "",
+                        g_rolling.load() ? " (rolling)" : "");
 
     bool m = g_wantMessages.load(), c = g_wantCreated.load(), s = g_wantStacks.load();
     if (ImGui::Checkbox("Messages", &m)) g_wantMessages = m;
@@ -2064,6 +2075,44 @@ void draw(bool* open) {
     if (ImGui::Button("Drop marker (Home)")) marker(nextMarkerName());
     ImGui::EndDisabled();
     ImGui::TextDisabled("Press Home in game right when the thing happens (got the KSEC, the door opened).");
+
+    ImGui::SeparatorText("After the fact");
+    bool roll = g_rolling.load();
+    if (ImGui::Checkbox("Keep only the last", &roll)) {
+        g_rolling = roll;
+        if (roll && !rec) setRecording(true); // it records all the time; End saves
+    }
+    ImGui::SameLine();
+    int secs = g_rollSeconds.load();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    if (ImGui::SliderInt("seconds (End saves them)", &secs, 5, 120)) g_rollSeconds = secs;
+    ImGui::BeginDisabled(!roll || !count);
+    if (ImGui::Button("Save the last seconds (End)")) saveRolling();
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Records all the time but keeps only that window: when something interesting happens,\n"
+                        "press End and the seconds before it are exported (as <time>-last<N>s), with a \"saved\" marker.");
+    static char autoEvent[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##autoevent", "event name or 0x<hash>", autoEvent, sizeof(autoEvent));
+    ImGui::SameLine();
+    const bool armed = g_autoEventId.load() != 0;
+    if (armed) {
+        if (ImGui::Button("Disarm")) g_autoEventId = 0;
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.3f, 1.f), "waiting for %s", g_autoEventName.c_str());
+    } else {
+        ImGui::BeginDisabled(rec || !autoEvent[0]);
+        if (ImGui::Button("Start recording on this event")) {
+            const std::string n = autoEvent;
+            char* end = nullptr;
+            const unsigned long v = n.size() > 2 && n[0] == '0' && (n[1] == 'x' || n[1] == 'X') ? strtoul(n.c_str() + 2, &end, 16) : 0;
+            g_autoEventName = n;
+            hookEvents(); // the event is seen through the same wrappers, so they go in now
+            g_autoEventId = end && *end == 0 ? static_cast<uint32_t>(v) : djb2(n);
+            GN_LOG("recorder: armed: recording starts on the event %s (%08x)", n.c_str(), g_autoEventId.load());
+        }
+        ImGui::EndDisabled();
+    }
 
     ImGui::SeparatorText("Export");
     static char name[48] = "";

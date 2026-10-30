@@ -14,6 +14,14 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Recorder: after the fact, and on an event; mods send events (API 12)** (2026-10-30, untested in
+  game). "Keep only the last N seconds" records all the time and keeps a window; End exports it
+  (`<time>-last<N>s`, a `saved` marker, `rolling_seconds` in the header). "Start recording on this
+  event" arms an event id; the first delivery starts recording with a marker. `event_send` /
+  `event_send_class` (`gn::sendEvent`, `gn::sendEventToClass`; Rust `send_event`,
+  `send_event_to_class`): the Recorder's "send" moved to `events.cpp` (`events::send`), shared.
+  Next: entity properties need research first (record `PropertyValue_set`, 0x142a464e0), then
+  spawning.
 - **The 425 `hypothesis` functions read in the decompiler** (2026-10-30, in the user's Ghidra). Every
   one now has a signature from the decompiler (414; the rest had one): integers used as addresses
   become `void*`, named types Ghidra already had stay (`SettingsManager*`, `Message*`...), a

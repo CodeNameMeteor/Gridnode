@@ -311,6 +311,8 @@ const gn_api* api() {
         a.view_get = apiViewGet;
         a.on_event = apiOnEvent;
         a.event_name = eventName;
+        a.event_send = [](const char* mod, void* entity, const char* event) { return eventSend(mod ? mod : "?", entity, event); };
+        a.event_send_class = [](const char* mod, const char* cls, const char* event) { return eventSendClass(mod ? mod : "?", cls, event); };
         return a;
     }();
     return &table;

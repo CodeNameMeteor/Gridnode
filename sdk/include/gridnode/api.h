@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 11 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities */
+#define GN_API_VERSION 12 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -489,6 +489,18 @@ typedef struct gn_api {
      * recordings/event-names.txt; GN_ERR_NOT_FOUND (out "") for an unnamed id. Any thread. */
     int (*on_event)(const char* mod, const char* event, const char* class_name, gn_event_fn fn, void* user);
     int (*event_name)(uint32_t id, char* out, size_t size);
+
+    /* ==== GN_API_VERSION 12 =================================================================== */
+
+    /* ---- sending events --------------------------------------------------------------------------
+     * Delivers an event to an entity as its bus would (its onEvent, with the event's id), on the
+     * entity's realm thread at its next tick: the game acts on it as on one its own logic sent
+     * ("StartReplay" to a PamServerReplayEntity spawns its ghost). event: a name or "0x<hash>".
+     * event_send: one entity; GN_ERR_NOT_FOUND when it is not a live entity GridNode has seen.
+     * event_send_class: every live entity of the class and its subclasses; how many, or -GN_ERR_*.
+     * on_event listeners (and the Recorder) see it like any other. Any thread. */
+    int (*event_send)(const char* mod, void* entity, const char* event);
+    int (*event_send_class)(const char* mod, const char* class_name, const char* event);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

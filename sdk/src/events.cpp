@@ -181,6 +181,46 @@ const std::unordered_map<uint32_t, std::string>& names() {
     return table;
 }
 
+uint32_t idOf(const char* event) {
+    if (!event || !*event) return 0;
+    // A name, or its hash as hex ("0x2734a476") for events nobody has named yet.
+    char* end = nullptr;
+    const unsigned long v = (event[0] == '0' && (event[1] == 'x' || event[1] == 'X')) ? strtoul(event + 2, &end, 16) : 0;
+    return end && *end == 0 && end != event + 2 ? static_cast<uint32_t>(v) : hash(event);
+}
+
+// What EntityBusPeer_sendEvent does for a connection's target: its onEvent (vtable +0x20) with an
+// EntityEvent {vtable 0x141a4a8b0, u32 id, u32 0} (as EntityBus_postEvent builds one), on the
+// entity's realm thread (flags +0x18 bit 0: the server realm), at its next tick. The slot holds the
+// game's onEvent, or our wrapper of it once events are wrapped.
+bool send(uintptr_t entity, const reflect::Type* type, uint32_t id) {
+    constexpr uint64_t kEntityEventVtable = 0x141a4a8b0;
+    const uintptr_t vt = mem::readOr<uintptr_t>(entity);
+    if (!vt || !mem::readOr<uintptr_t>(vt + kOnEventSlot)) return false;
+    auto deliver = [entity, type, id] {
+        if (!inspector::alive(entity, type)) return; // gone since
+        const uintptr_t v = mem::readOr<uintptr_t>(entity);
+        const uintptr_t f = v ? mem::readOr<uintptr_t>(v + kOnEventSlot) : 0;
+        if (!f) return;
+        struct {
+            uintptr_t vtable;
+            uint32_t id;
+            uint32_t kind;
+        } event{mem::rva(kEntityEventVtable), id, 0};
+        reinterpret_cast<void (*)(uintptr_t, void*, void*, void*)>(f)(entity, &event, nullptr, nullptr);
+    };
+    if (mem::readOr<uint32_t>(entity + 0x18) & 1) server().post(deliver);
+    else client().post(deliver);
+    return true;
+}
+
+std::vector<std::pair<uintptr_t, const reflect::Type*>> sendToClass(const reflect::Type* cls, uint32_t id) {
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> sent;
+    for (const auto& [p, ty] : inspector::tracked())
+        if (ty && registry().isKindOf(ty, cls) && inspector::alive(p, ty) && send(p, ty, id)) sent.push_back({p, ty});
+    return sent;
+}
+
 std::string name(uint32_t id) {
     const auto& m = names();
     const auto it = m.find(id);
@@ -198,12 +238,7 @@ int onEvent(const std::string& mod, const char* event, const char* className, gn
     if (!fn) return GN_ERR_ARGUMENT;
     events::Listener l;
     l.mod = mod, l.fn = fn, l.user = user;
-    if (event && *event) {
-        // A name, or its hash as hex ("0x2734a476") for events nobody has named yet.
-        char* end = nullptr;
-        const unsigned long v = (event[0] == '0' && (event[1] == 'x' || event[1] == 'X')) ? strtoul(event + 2, &end, 16) : 0;
-        l.id = end && *end == 0 && end != event + 2 ? static_cast<uint32_t>(v) : events::hash(event);
-    }
+    l.id = events::idOf(event);
     if (className && *className) {
         l.cls = registry().find(className);
         if (!l.cls) return GN_ERR_NOT_FOUND;
@@ -236,6 +271,28 @@ void forgetEvents(const CodeRange& r) {
     // The old list is kept (g_lists): a game thread may still be walking it.
     events::g_listeners.store(next->empty() ? nullptr : next.get(), std::memory_order_release);
     events::g_lists.push_back(std::move(next));
+}
+
+int eventSend(const std::string& mod, void* entity, const char* event) {
+    const uint32_t id = events::idOf(event);
+    if (!entity || !id) return GN_ERR_ARGUMENT;
+    const auto p = reinterpret_cast<uintptr_t>(entity);
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), p);
+    const reflect::Type* peer = registry().find("EntityBusPeer");
+    if (!t || !peer || !registry().isKindOf(t, peer) || !inspector::alive(p, t)) return GN_ERR_NOT_FOUND;
+    if (!events::send(p, t, id)) return GN_ERR_UNAVAILABLE;
+    GN_LOG("[%s] event %s sent to %s %p", mod.c_str(), events::name(id).c_str(), t->name.c_str(), entity);
+    return GN_OK;
+}
+
+int eventSendClass(const std::string& mod, const char* className, const char* event) {
+    const uint32_t id = events::idOf(event);
+    if (!className || !id) return -GN_ERR_ARGUMENT;
+    const reflect::Type* cls = registry().find(className);
+    if (!cls) return -GN_ERR_NOT_FOUND;
+    const size_t n = events::sendToClass(cls, id).size();
+    GN_LOG("[%s] event %s sent to %llu %s entities", mod.c_str(), events::name(id).c_str(), static_cast<unsigned long long>(n), className);
+    return static_cast<int>(n);
 }
 
 } // namespace gn::host

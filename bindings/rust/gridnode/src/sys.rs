@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 11;
+pub const GN_API_VERSION: u32 = 12;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -257,6 +257,8 @@ pub struct gn_api {
     pub view_get: Option<unsafe extern "C" fn(out: *mut gn_view) -> c_int>,
     pub on_event: Option<unsafe extern "C" fn(mod_: *const c_char, event: *const c_char, class_name: *const c_char, fn_: gn_event_fn, user: *mut c_void) -> c_int>,
     pub event_name: Option<unsafe extern "C" fn(id: u32, out: *mut c_char, size: usize) -> c_int>,
+    pub event_send: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, event: *const c_char) -> c_int>,
+    pub event_send_class: Option<unsafe extern "C" fn(mod_: *const c_char, class_name: *const c_char, event: *const c_char) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -275,4 +277,4 @@ const _: () = assert!(core::mem::size_of::<gn_view>() == 60);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 600);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 616);

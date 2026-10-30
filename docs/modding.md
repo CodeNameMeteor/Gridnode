@@ -212,7 +212,7 @@ gn::Landing l;
 if (gn::landingPrediction(l) && l.age_ms < 100 && l.ticks_to_hit < 1.66f) gn::jump(); // on the landing tick
 ```
 
-## Events between entities (API 11)
+## Events between entities (API 11, sending API 12)
 
 Entities talk through events on their buses: level logic fires `OnTriggered`, a replay entity gets
 `StartReplay`, a part of the level gets `StreamIn`. `gn::onEvent(event, className, fn)` calls
@@ -238,7 +238,14 @@ gn::onEvent("StreamIn", nullptr, [](void* entity, gn::Type type, uint32_t id) {
 });
 ```
 
-In Rust: `gridnode::on_event`, `event_hash` (`const fn`) and `event_name`.
+Sending: `gn::sendEvent(entity, "StartReplay")` delivers an event to one entity as its bus would,
+on its realm's thread at the next tick, so the game acts on it as on its own logic's (a
+`PamServerReplayEntity` spawns its ghost); `gn::sendEventToClass("PamServerReplayEntity",
+"StartReplay")` sends it to every live entity of the class and gives how many. Listeners and the
+Recorder see these like any other event.
+
+In Rust: `gridnode::on_event`, `event_hash` (`const fn`), `event_name`, `send_event` and
+`send_event_to_class`.
 
 ## Movement events, settings and hotkeys (API 9)
 

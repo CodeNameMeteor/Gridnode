@@ -352,6 +352,18 @@ pub fn on_event<F: FnMut(*mut c_void, Type, u32) + Send + 'static>(event: &str, 
     unsafe { (api().on_event.unwrap())(name(), e.as_ptr(), c.as_ptr(), Some(event_tramp::<F>), keep(f)) == 0 }
 }
 
+/// Sends an event to an entity as its bus would (at its realm's next tick). A name or "0x<hash>".
+pub fn send_event(entity: *mut c_void, event: &str) -> bool {
+    let e = cstr(event);
+    unsafe { (api().event_send.unwrap())(name(), entity, e.as_ptr()) == 0 }
+}
+/// Sends an event to every live entity of the class (and subclasses); how many, or None.
+pub fn send_event_to_class(class: &str, event: &str) -> Option<u32> {
+    let (c, e) = (cstr(class), cstr(event));
+    let n = unsafe { (api().event_send_class.unwrap())(name(), c.as_ptr(), e.as_ptr()) };
+    (n >= 0).then_some(n as u32)
+}
+
 // ---- the view (API 10) ----------------------------------------------------------------------------
 pub use crate::sys::gn_view as View;
 /// The camera as drawn this frame, with the screen size; None with no camera. Render thread.

@@ -284,6 +284,10 @@ inline std::string eventName(uint32_t id) {
     std::snprintf(buf, sizeof(buf), "%08x", id);
     return buf;
 }
+// Sends an event to an entity as its bus would, at its realm's next tick: sendEvent(replay,
+// "StartReplay"). A name or "0x<hash>". sendEventToClass: to every live entity of the class; how many.
+inline bool sendEvent(void* entity, const char* event) { return api().event_send(modName(), entity, event) == GN_OK; }
+inline int sendEventToClass(const char* className, const char* event) { return api().event_send_class(modName(), className, event); }
 // fn(void* entity, gn::Type type, uint32_t eventId) for every event an entity receives, before it
 // handles it, on the thread that delivers it. event: a name or "0x<hash>", null for all; className:
 // an entity class (and its subclasses), null for all. Filter by name where you can: there are many.

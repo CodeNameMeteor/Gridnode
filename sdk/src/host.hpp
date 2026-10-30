@@ -153,7 +153,14 @@ void setTap(Tap tap);                        // the Recorder; called for every e
 bool ensureHooked(const char* who);          // wraps them (once); false when it could not
 uint32_t hash(const std::string& name);      // an event id from its name (djb2-xor)
 std::string name(uint32_t id);               // its name, or the id as hex
+uint32_t idOf(const char* event);            // a name or "0x<hash>"; 0 for none
+// Delivers the event to the entity's onEvent on its realm thread at the next tick (as the bus does);
+// false when it has none. sendToClass: to every live entity of the class (and subclasses).
+bool send(uintptr_t entity, const reflect::Type* type, uint32_t id);
+std::vector<std::pair<uintptr_t, const reflect::Type*>> sendToClass(const reflect::Type* cls, uint32_t id);
 } // namespace events
+int eventSend(const std::string& mod, void* entity, const char* event);
+int eventSendClass(const std::string& mod, const char* className, const char* event); // how many, or -GN_ERR_*
 int onEvent(const std::string& mod, const char* event, const char* className, gn_event_fn fn, void* user);
 int eventName(uint32_t id, char* out, size_t size);
 
