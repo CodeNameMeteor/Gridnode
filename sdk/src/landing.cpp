@@ -55,8 +55,9 @@ uint64_t g_faithAt = 0;              // (g_faithM) GetTickCount64 of the last se
 std::atomic<uintptr_t> g_faithState{0}; // read by the wrappers on the animation threads
 
 // Found again when Faith changes (a respawn, a new level), and while not found at most once a second.
-// Her +0xd0 leads to her animation: it is the entity itself, or (as seen in game) an object inside it.
-// Failing both, the entity on her bus. When none fits, the evidence goes to the log.
+// Her +0xd0 leads to her animation: it is the entity itself, or (as seen in game) an object inside it,
+// found by walking back to the entity's type, or among the tracked entities. Failing those, the
+// entity on her bus. When none fits, the evidence goes to the log.
 uintptr_t findFaithState(uintptr_t c) {
     const reflect::Type* animType = registry().find("ClientAntAnimatableEntity");
     if (!animType) return 0;
@@ -64,6 +65,16 @@ uintptr_t findFaithState(uintptr_t c) {
     if (const reflect::Type* t = direct ? registry().typeOf(mem::ProcessMemory(), direct) : nullptr; t && registry().isKindOf(t, animType)) {
         GN_LOG("landing: Faith's animated entity is her +0x%x (%s)", kCharacterAnimatable, t->name.c_str());
         return stateOfEntity(direct);
+    }
+    // +0xd0 points into the entity (0x30 in, 2026-10-30): walk back to the object it is part of, by its
+    // type. Needs no list of created entities, so it also works when GridNode was injected after the
+    // level loaded (then nothing is tracked: a friend's log, 2026-10-30).
+    for (uint32_t back = 8; direct && back <= 0x100; back += 8) {
+        const uintptr_t p = direct - back;
+        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), p);
+        if (!t || !registry().isKindOf(t, animType)) continue;
+        GN_LOG("landing: Faith's animated entity is the %s her +0x%x points into (+0x%x)", t->name.c_str(), kCharacterAnimatable, back);
+        return stateOfEntity(p);
     }
     const uintptr_t bus = mem::readOr<uintptr_t>(c + kEntityBus);
     uintptr_t below = 0, belowBus = 0, onBus = 0;

@@ -14,6 +14,11 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Landing prediction when GridNode loads late** (2026-10-30, untested). A friend's log: auto-bhop fell
+  back to the height method because Faith's animated entity was not found ("0
+  ClientAntAnimatableEntity tracked": GridNode came in after the level loaded, so no creations were
+  seen). Her +0xd0 is now walked back to the entity by its type (up to 0x100 bytes), which needs no
+  tracked list.
 - **Recorder: after the fact, and on an event; mods send events (API 12)** (2026-10-30, untested in
   game). "Keep only the last N seconds" records all the time and keeps a window; End exports it
   (`<time>-last<N>s`, a `saved` marker, `rolling_seconds` in the header). "Start recording on this
