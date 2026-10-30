@@ -55,7 +55,12 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   1.7 and only with the hit below her. With the slider at 1.66 (user, 2026-10-30): chains without
   end, 92 hits in 93 presses, the miss pressed at 1.68. Default now 1.66. Arming one hop (F) turns
   auto off. The HUD speed is measured from her position: `gn_movement.speed` (body motion +0x438)
-  read 0.00 most of the time; what that field is needs a look.
+  read 0.00 most of the time; what that field is needs a look. The trainer's HUD can also show the
+  game's landing prediction (a bar to the landing, green in the bhop window, red for a soft landing).
+  Mag rope swings bhop the same way (`speed-2`): state 25 lasts through the swing jump until the
+  landing, a landing with jump held goes 25 -> 0 -> 25, without it 0 -> 1; the prediction runs there
+  (1.55 and 1.10 on the tick before). Auto-bhop now takes wall runs (8) and swings (25), each a
+  checkbox; a hit is the press's state again. Untested in game.
 - **Bhops** (2026-10-30, two recordings and the trainer's log): a successful bhop lands with
   `FootPlantLandSoft` and `FootPlantWall` at once (still in the wall state) and its jump fires no
   `Jump` event (not a ground jump); a vertical-speed-like ANT value goes from -8.8 straight to +4.9.
@@ -207,7 +212,10 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
-3. What `gn_movement.speed` (body motion +0x438) is: it reads 0.00 most of the time.
+3. What `gn_movement.speed` (body motion +0x438) is: it reads 0.00 most of the time. The `speed`
+   recording had no speed in it, so the movement watch now records "speed (measured)" (from her
+   position) and "speed (game)", and scores every float near her movement against the measured speed
+   (`speed probe:` lines in the log, every 100 samples). First try (`speed-2`) logged nothing: it only took 10-100 ms steps and her position moves every frame; now measured over 0.1 s. "speed (game)" read 0 for all 30 s. The user's old trainer read speed at [[[0x1423e29b8] + 0x2378] + 0x10] + 0x438; +0x2378 is past the end of that 0x2180-byte object (a Cheat Engine path into the next allocation), so the probe logs that path and ours side by side, and the recording gets "speed (old trainer)".
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
 
 ## Decisions and gotchas

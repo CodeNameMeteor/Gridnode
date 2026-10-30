@@ -43,6 +43,9 @@ std::atomic<float> g_px{0}, g_py{0}, g_pz{0}, g_speed{0}, g_lastGroundY{0}, g_ti
 // Her horizontal speed from her position each client tick. gn::movement's speed (the physics body's
 // +0x438) read 0.00 most of the time in game, so the HUD measures it; the save keeps the game's value.
 std::atomic<float> g_hSpeed{0};
+// The game's landing prediction on the HUD (off by default: the first read wraps the prediction).
+std::atomic<bool> g_landHud{false}, g_landShow{false}, g_landSoft{false};
+std::atomic<float> g_landTicks{0.f};
 std::atomic<int> g_state{0};
 std::atomic<bool> g_loading{false};
 
@@ -145,7 +148,9 @@ void noclipClient(const gn::Movement& m, bool keys) {
 
 // ---- bunny hop -------------------------------------------------------------------------------------------
 // The wall run jump window (recorded 2026-10-30, docs/recording.md "Faith's movement"): state 8 is
-// the wall run, and it lasts through the jump off the wall until she lands. The tick she lands on
+// the wall run, and it lasts through the jump off the wall until she lands. The mag rope swing (25)
+// works the same way (speed-2: 25, a landing through state 0 with jump held, then 25 again), and the
+// prediction runs there too (1.55 and 1.10 on the tick before its landings). The tick she lands on
 // decides: with jump held then she stays in the wall-run state and leaves the ground again (the
 // bhop, speed kept); without it she is grounded (state 1) in that same tick. The client ticks at
 // 30 a second, and the press has to come on the last tick before the landing: in the logs every hit
@@ -169,6 +174,9 @@ void noclipClient(const gn::Movement& m, bool keys) {
 // it is not available. A predicted soft landing is skipped: bhops only happen on landings where
 // Faith can jump, and a soft landing grounds her whatever the input (tested 2026-10-30).
 std::atomic<bool> g_bhopArmed{false}, g_bhopAuto{false};
+std::atomic<bool> g_bhopWall{true}, g_bhopSwing{true}; // which air states bhop: wall run (8), mag rope swing (25)
+int g_bhopState = 0; // (client tick) the state the last press was made in
+bool bhopState(int s) { return (s == 8 && g_bhopWall) || (s == 25 && g_bhopSwing); }
 std::atomic<float> g_bhopContact{0.15f}; // ray height (m) at which a landing registers, when there is no last landing
 std::atomic<float> g_bhopBiasMs{0.f};    // look this much further ahead (+) or less (-) than one tick
 std::atomic<bool> g_bhopUsePrediction{true};
@@ -200,17 +208,17 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
     }
     g_wasInAir = inAir;
 
-    // How the last press went. A hit is airborne in the wall-run state again within a few ticks of
+    // How the last press went. A hit is airborne in the press's state again within a few ticks of
     // the landing (sometimes through state 0 for two ticks); grounded (1), a plain jump (2) or a hard
     // landing (24) is a miss.
     if (g_watchHop > 0) {
         --g_watchHop;
-        if (!inAir || m.state != 8) g_watchLanded = true;
-        if (g_watchLanded && inAir && m.state == 8) {
+        if (!inAir || m.state != g_bhopState) g_watchLanded = true;
+        if (g_watchLanded && inAir && m.state == g_bhopState) {
             g_bhopHits.fetch_add(1);
             gn::log("bhop: hit");
             g_watchHop = 0;
-        } else if (g_watchLanded && m.state != 8 && m.state != 0) {
+        } else if (g_watchLanded && m.state != g_bhopState && m.state != 0) {
             gn::log("bhop: missed (state %d at the landing)", m.state);
             g_watchHop = 0;
         } else if (g_watchHop == 0) {
@@ -219,7 +227,7 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
     }
     if (!g_bhopArmed && !g_bhopAuto) return;
     if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
-    if (m.state != 8 || !inAir) return;
+    if (!bhopState(m.state) || !inAir) return;
     // The game's prediction, when it is fresh (it is made every tick while she is in the air).
     gn::Landing lp{};
     if (g_bhopUsePrediction && gn::landingPrediction(lp) && lp.age_ms < 100) {
@@ -236,9 +244,9 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
         g_bhops.fetch_add(1);
         g_bhopArmed = false;
         g_watchHop = 60;
-        g_watchLanded = false;
-        gn::log("bhop: jump pressed by the game's prediction: %.2f/60 s to the hit at %.2f (she is at %.2f)", lp.ticks_to_hit,
-                lp.hit_height, y);
+        g_watchLanded = false, g_bhopState = m.state;
+        gn::log("bhop: jump pressed by the game's prediction: %.2f/60 s to the hit at %.2f (she is at %.2f, state %d)", lp.ticks_to_hit,
+                lp.hit_height, y, m.state);
         return;
     }
     if (vy < 1.5f) return; // a wall run itself barely falls
@@ -255,7 +263,7 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
     g_bhops.fetch_add(1);
     g_bhopArmed = false;
     g_watchHop = 60;
-    g_watchLanded = false;
+    g_watchLanded = false, g_bhopState = m.state;
     gn::log("bhop: jump pressed %.3f m above the %s, falling %.1f m/s; next tick %+.3f m (tick %.1f ms)", y - target,
             chain ? "last landing" : "ray's contact height", vy, next - target, dt * 1000.f);
 }
@@ -366,6 +374,14 @@ void clientTick(float dt) {
         noclipClient(m, keys);
         g_havePrevY = false;
         return;
+    }
+    if (g_landHud) {
+        gn::Landing lp{};
+        const bool fresh = m.on_ground != 0 && gn::landingPrediction(lp) && lp.age_ms < 100 && lp.ticks_to_hit > 0.f;
+        g_landTicks = lp.ticks_to_hit, g_landSoft = lp.soft_landing != 0;
+        g_landShow = fresh && lp.hit_height < p.y; // as auto-bhop: a hit above her feet is not a landing
+    } else {
+        g_landShow = false;
     }
     bhopCheck(m, p.y, dt);
 
@@ -493,7 +509,12 @@ void trainerTab() {
     if (ImGui::Checkbox("Infinite wall runs", &v)) g_infRuns = v;
     v = g_fastLoads;
     if (ImGui::Checkbox("Fast loads", &v)) g_fastLoads = v;
-    ImGui::SeparatorText("Bunny hop (wall run jump window)");
+    ImGui::SeparatorText("Bunny hop (wall run / swing jump window)");
+    v = g_bhopWall;
+    if (ImGui::Checkbox("Wall runs", &v)) g_bhopWall = v;
+    ImGui::SameLine();
+    v = g_bhopSwing;
+    if (ImGui::Checkbox("Mag rope swings", &v)) g_bhopSwing = v;
     if (ImGui::Button(g_bhopArmed ? "Armed..." : "Arm  [F]")) bhopArm();
     ImGui::SameLine();
     v = g_bhopAuto;
@@ -538,6 +559,32 @@ void trainerTab() {
     ImGui::SameLine();
     v = g_cheatList;
     if (ImGui::Checkbox("Active cheats", &v)) g_cheatList = v;
+    v = g_landHud;
+    if (ImGui::Checkbox("Landing prediction", &v)) g_landHud = v;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("In the air: the game's predicted time to the landing and a bar that runs down to it. Green\n"
+                          "is the tick auto-bhop presses on (below \"Press below\"), red a soft landing (no bhop).");
+}
+
+// A bar of the predicted time to the landing (12/60 s full), with a tick at the press threshold.
+void landingHud() {
+    if (!g_landShow) {
+        ImGui::TextDisabled("Landing: -");
+        return;
+    }
+    const float t = g_landTicks, below = g_bhopPredictBelow;
+    const bool soft = g_landSoft, window = t <= below;
+    ImGui::Text("Landing in %.2f/60 s%s", t, soft ? "   soft (no bhop)" : window ? "   bhop window" : "");
+    constexpr float kFull = 12.f;
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetFontSize() * 12, h = ImGui::GetFontSize() * 0.5f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = soft ? IM_COL32(220, 60, 60, 255) : window ? IM_COL32(60, 210, 90, 255) : IM_COL32(200, 200, 200, 200);
+    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 120));
+    dl->AddRectFilled(a, ImVec2(a.x + w * std::min(t / kFull, 1.f), a.y + h), col);
+    const float mx = a.x + w * std::min(below / kFull, 1.f);
+    dl->AddLine(ImVec2(mx, a.y - 2.f), ImVec2(mx, a.y + h + 2.f), IM_COL32(255, 255, 255, 255), 2.f);
+    ImGui::Dummy(ImVec2(w, h));
 }
 
 void window() {
@@ -575,6 +622,7 @@ void hud() {
         if (ImGui::Begin("##mec_hud", nullptr, f)) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
             ImGui::Text("Speed %.2f m/s   State %d", g_hSpeed.load(), g_state.load());
+            if (g_landHud) landingHud();
         }
         ImGui::End();
     }

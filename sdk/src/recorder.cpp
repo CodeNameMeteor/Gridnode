@@ -1169,6 +1169,9 @@ constexpr MoveField kMoveFields[] = {
     {"movement state", 0x90, 'i'}, {"in air", 0x17, 'b'}, {"wall count", 0x18, 'i'},
     {"wall climbs", 0x38, 'i'},    {"wall runs", 0x3c, 'i'}, {"jump held", 0, 'b'},
     {"jump held by mods", 0, 'b'}, // gn::jump (a trainer's auto-bhop), which "jump held" does not see
+    {"speed (measured)", 0, 'f'},  // from her position; a line when it moves by 0.1 m/s or more
+    {"speed (game)", 0x438, 'f'},  // gn_movement.speed (body motion +0x438), under suspicion
+    {"speed (old trainer)", 0x438, 'f'}, // [[[0x1423e29b8] + 0x2378] + 0x10] + 0x438, the user's old speedometer
 };
 std::array<double, std::size(kMoveFields)> g_moveLast{};
 bool g_moveRead = false; // g_moveLast holds a reading of this recording (render thread)
@@ -1178,12 +1181,12 @@ void pollMovement() {
     if (movementGet(&m) != GN_OK) return;
     const int jump = jumpHeld();
     const double v[] = {double(m.state), double(m.on_ground), double(m.wall_count), double(m.wall_climbs), double(m.wall_runs),
-                        double(jump < 0 ? 0 : jump), double(jumpHeldByMods())};
+                        double(jump < 0 ? 0 : jump), double(jumpHeldByMods()), double(speedProbeSample()), double(m.speed), double(oldTrainerSpeed())};
     static const Type* faithType = registry().find("PamClientCharacterEntity");
     const uintptr_t faith = reinterpret_cast<uintptr_t>(localClientCharacter());
     const double t = now();
     for (size_t i = 0; i < std::size(kMoveFields); ++i) {
-        if (g_moveRead && g_moveLast[i] == v[i]) continue;
+        if (g_moveRead && (kMoveFields[i].type == 'f' ? std::fabs(g_moveLast[i] - v[i]) < 0.1 : g_moveLast[i] == v[i])) continue;
         Event ev;
         ev.t = t;
         ev.kind = kField;

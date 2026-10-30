@@ -76,6 +76,8 @@ int movementGet(gn_movement* out);
 int jumpHeld();       // the player's jump action: 1 held, 0 not, -1 unavailable
 int landingPrediction(gn_landing* out); // landing.cpp
 int jumpHeldByMods(); // GridNode holds jump for a mod (gn::jump): 1 or 0
+float oldTrainerSpeed();  // research: the user's old trainer's speed path (-1 none)
+float speedProbeSample(); // research: her measured horizontal speed (m/s, -1 none); scores speed candidates
 int movementSet(const gn_movement* in, uint32_t fields);
 uint32_t tuningCount();
 int tuningAt(uint32_t index, gn_tuning* out);
