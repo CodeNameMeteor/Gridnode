@@ -146,367 +146,440 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: DebugRenderShader_initParamIds
     va: 0x142988e40
-    note: "Named in Ghidra as DebugRenderShader_initParamIds. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as DebugRenderShader_initParamIds; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: registerDx11ShaderDatabaseTypeInfo
     va: 0x142989240
-    note: "Named in Ghidra as registerDx11ShaderDatabaseTypeInfo. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as registerDx11ShaderDatabaseTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetManager_findCachedByNameHash
     va: 0x142abbef0
-    note: "Named in Ghidra as MeshSetManager_findCachedByNameHash. Signature not known yet."
+    signature: "u64(i64, u32, u64, u64)"
+    note: "Named in Ghidra as MeshSetManager_findCachedByNameHash; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetManager_insertCached
     va: 0x142abc060
-    note: "Named in Ghidra as MeshSetManager_insertCached. Signature not known yet."
+    signature: "void(u64, void*, u64, u32)"
+    note: "Named in Ghidra as MeshSetManager_insertCached; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ResourceFactoryNullD_ctor
     va: 0x14352bd60
-    note: "Named in Ghidra as ResourceFactoryNullD_ctor. Signature not known yet."
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ResourceFactoryNullD_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshLod_chunkIndexDataSource
     va: 0x14352cc40
-    note: "Named in Ghidra as MeshLod_chunkIndexDataSource. Signature not known yet."
+    signature: "void*(void* self, u64, u64, u64)"
+    note: "Named in Ghidra as MeshLod_chunkIndexDataSource; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: TextureSubsystem_ctor
     va: 0x14352ceb0
-    note: "Named in Ghidra as TextureSubsystem_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, u64, u64)"
+    note: "Named in Ghidra as TextureSubsystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ResourceFactoryNullC_deletingDtor
     va: 0x14352d9e0
-    note: "Named in Ghidra as ResourceFactoryNullC_deletingDtor. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullC_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: TextureSubsystem_deletingDtor
     va: 0x14352da30
-    note: "Named in Ghidra as TextureSubsystem_deletingDtor. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as TextureSubsystem_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_allocSectionRecords_A
     va: 0x143539940
-    note: "Named in Ghidra as MeshSet_allocSectionRecords_A. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as MeshSet_allocSectionRecords_A; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_allocSectionRecords_B
     va: 0x1435399e0
-    note: "Named in Ghidra as MeshSet_allocSectionRecords_B. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as MeshSet_allocSectionRecords_B; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_freeSectionRecords
     va: 0x143539bc0
-    note: "Named in Ghidra as MeshSet_freeSectionRecords. Signature not known yet."
+    signature: "void(u64, i64, u32)"
+    note: "Named in Ghidra as MeshSet_freeSectionRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetManager_ctor
     va: 0x14353b490
-    note: "Named in Ghidra as MeshSetManager_ctor. Signature not known yet."
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as MeshSetManager_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_construct
     va: 0x14353b770
-    note: "Named in Ghidra as MeshSet_construct. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as MeshSet_construct; checked in the decompiler (2026-10-30): uses MeshSet:: members."
+    confidence: inferred
     sources: [ghidra]
   - name: MeshSetSystem_init
     va: 0x14353d930
-    note: "Named in Ghidra as MeshSetSystem_init. Signature not known yet."
+    signature: "void(u64, u64, u64, u64)"
+    note: "Named in Ghidra as MeshSetSystem_init; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_deserializeFromRes
     va: 0x1435404c0
-    note: "Named in Ghidra as MeshSet_deserializeFromRes. Signature not known yet."
+    signature: "void(void* self, u64, void*, u32, i64, u64, u32)"
+    note: "Named in Ghidra as MeshSet_deserializeFromRes; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSet_releaseAll
     va: 0x1435428f0
-    note: "Named in Ghidra as MeshSet_releaseAll. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as MeshSet_releaseAll; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshLod_initMorphDeclarations
     va: 0x14354adf0
-    note: "Named in Ghidra as MeshLod_initMorphDeclarations. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64, i64)"
+    note: "Named in Ghidra as MeshLod_initMorphDeclarations; checked in the decompiler (2026-10-30): its strings ('Mesh/Standard/MorphDeclaration')."
+    confidence: inferred
     sources: [ghidra]
   - name: MeshSetSection_initShadersFromDeclaration
     va: 0x14354b140
-    note: "Named in Ghidra as MeshSetSection_initShadersFromDeclaration. Signature not known yet."
+    signature: "void(i64, u64, void*)"
+    note: "Named in Ghidra as MeshSetSection_initShadersFromDeclaration; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetFactory_finishLoad
     va: 0x14354b800
-    note: "Named in Ghidra as MeshSetFactory_finishLoad. Signature not known yet."
+    signature: "void(u64, void*, void*, u64, void*)"
+    note: "Named in Ghidra as MeshSetFactory_finishLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshLod_createGpuBuffers
     va: 0x14354fe00
-    note: "Named in Ghidra as MeshLod_createGpuBuffers. Signature not known yet."
+    signature: "void(void* self, u64, i64, void*)"
+    note: "Named in Ghidra as MeshLod_createGpuBuffers; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetFactory_prepareLoad
     va: 0x143551870
-    note: "Named in Ghidra as MeshSetFactory_prepareLoad. Signature not known yet."
+    signature: "i32(u64, void*, void*)"
+    note: "Named in Ghidra as MeshSetFactory_prepareLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshSetFactory_allocBuffersFromResMeta
     va: 0x143554c80
-    note: "Named in Ghidra as MeshSetFactory_allocBuffersFromResMeta. Signature not known yet."
+    signature: "void(void* self, void*, u64, void*, void*)"
+    note: "Named in Ghidra as MeshSetFactory_allocBuffersFromResMeta; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: MeshLod_destroy
     va: 0x143554e50
-    note: "Named in Ghidra as MeshLod_destroy. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as MeshLod_destroy; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: RenderSystem_ctor
     va: 0x143567280
-    note: "Named in Ghidra as RenderSystem_ctor. Signature not known yet."
+    signature: "void*(void* self, u64)"
+    note: "Named in Ghidra as RenderSystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: DebugRenderer_render
     va: 0x14356e440
-    note: "Named in Ghidra as DebugRenderer_render. Signature not known yet."
+    signature: "void(void* self, void*, u64, u64, u64, u64)"
+    note: "Named in Ghidra as DebugRenderer_render; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: DebugRenderer_drawBatches2
     va: 0x14356e530
-    note: "Named in Ghidra as DebugRenderer_drawBatches2. Signature not known yet."
+    signature: "void(u64, void*, u64, i64, u32, void*, i64)"
+    note: "Named in Ghidra as DebugRenderer_drawBatches2; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: DebugRenderer_drawPrimitiveBatches
     va: 0x143571ca0
-    note: "Named in Ghidra as DebugRenderer_drawPrimitiveBatches. Signature not known yet."
+    signature: "void(u64, void*, i64, void*, void*, u8)"
+    note: "Named in Ghidra as DebugRenderer_drawPrimitiveBatches; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: GraphicsSystem_initResourceFactories
     va: 0x143574140
-    note: "Named in Ghidra as GraphicsSystem_initResourceFactories. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as GraphicsSystem_initResourceFactories; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: enqueueShaderCreateJob
     va: 0x143580550
-    note: "Named in Ghidra as enqueueShaderCreateJob. Signature not known yet."
+    signature: "void(void*, u64, u64, i32, u64, i32)"
+    note: "Named in Ghidra as enqueueShaderCreateJob; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: enqueueShaderCreateJobVS
     va: 0x143580780
-    note: "Named in Ghidra as enqueueShaderCreateJobVS. Signature not known yet."
+    signature: "void(void*, u64, u64, i32, u64, i32)"
+    note: "Named in Ghidra as enqueueShaderCreateJobVS; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: GraphicsPlatform_ctor
     va: 0x1435883e0
-    note: "Named in Ghidra as GraphicsPlatform_ctor. Signature not known yet."
+    signature: "void*(void* self, u64)"
+    note: "Named in Ghidra as GraphicsPlatform_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ResourceFactoryNull_deletingDtor_shared
     va: 0x14358be30
-    note: "Named in Ghidra as ResourceFactoryNull_deletingDtor_shared. Signature not known yet."
+    signature: "u64(u64, u32)"
+    note: "Named in Ghidra as ResourceFactoryNull_deletingDtor_shared; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createDomainShaderJob
     va: 0x143592580
-    note: "Named in Ghidra as createDomainShaderJob. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as createDomainShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateDomainShader(permutation->data, per')."
+    confidence: inferred
     sources: [ghidra]
   - name: GraphicsPlatform_create
     va: 0x143592650
-    note: "Named in Ghidra as GraphicsPlatform_create. Signature not known yet."
+    signature: "u64(u64, u64, u64, u64)"
+    note: "Named in Ghidra as GraphicsPlatform_create; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createGeometryShaderJob
     va: 0x143592a90
-    note: "Named in Ghidra as createGeometryShaderJob. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as createGeometryShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateGeometryShader(permutation->data, p')."
+    confidence: inferred
     sources: [ghidra]
   - name: createHullShaderJob
     va: 0x143592b10
-    note: "Named in Ghidra as createHullShaderJob. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as createHullShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateHullShader(permutation->data, permu')."
+    confidence: inferred
     sources: [ghidra]
   - name: createRootSignatureTableSet1
     va: 0x143593500
-    note: "Named in Ghidra as createRootSignatureTableSet1. Signature not known yet."
+    signature: "void(u64, u64, void*)"
+    note: "Named in Ghidra as createRootSignatureTableSet1; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createPixelShaderJob
     va: 0x143593a00
-    note: "Named in Ghidra as createPixelShaderJob. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as createPixelShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreatePixelShader(permutation->data, perm')."
+    confidence: inferred
     sources: [ghidra]
   - name: createShaderPermutationsD3D11
     va: 0x143594220
-    note: "Named in Ghidra as createShaderPermutationsD3D11. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as createShaderPermutationsD3D11; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createVertexShaderJob
     va: 0x143594b00
-    note: "Named in Ghidra as createVertexShaderJob. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as createVertexShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateVertexShader(permutation->data, per')."
+    confidence: inferred
     sources: [ghidra]
   - name: fb_Dx11ShaderDatabase_Dx11ShaderDatabase_load
     va: 0x14359a260
-    note: "Named in Ghidra as fb::Dx11ShaderDatabase::Dx11ShaderDatabase_load. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(Dx11ShaderDatabase* self, u64, u8)"
+    note: "Named in Ghidra as fb::Dx11ShaderDatabase::Dx11ShaderDatabase_load; checked in the decompiler (2026-10-30): uses Dx11ShaderDatabase:: members."
+    confidence: inferred
     sources: [ghidra]
   - name: loadDomainShaderTable
     va: 0x14359a4c0
-    note: "Named in Ghidra as loadDomainShaderTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadDomainShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderStateTable
     va: 0x14359a790
-    note: "Named in Ghidra as loadShaderStateTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderStateTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadGeometryShaderTable
     va: 0x14359a930
-    note: "Named in Ghidra as loadGeometryShaderTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadGeometryShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadHullShaderTable
     va: 0x14359ab70
-    note: "Named in Ghidra as loadHullShaderTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadHullShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadPixelShaderTable
     va: 0x14359ae40
-    note: "Named in Ghidra as loadPixelShaderTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadPixelShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderBlobTableU32
     va: 0x14359b110
-    note: "Named in Ghidra as loadShaderBlobTableU32. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderBlobTableU32; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderPermutationIndexTable
     va: 0x14359b300
-    note: "Named in Ghidra as loadShaderPermutationIndexTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderPermutationIndexTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ShaderDatabaseSource_createForCurrentRenderPath
     va: 0x1435ce8d0
-    note: "Named in Ghidra as ShaderDatabaseSource_createForCurrentRenderPath. Signature not known yet."
+    signature: "void*(void* self, u64, u64, u64, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_createForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: lookupTripleBlob
     va: 0x1435ce980
-    note: "Named in Ghidra as lookupTripleBlob. Signature not known yet."
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupTripleBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderTripleBlobTable
     va: 0x1435ce9d0
-    note: "Named in Ghidra as loadShaderTripleBlobTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderTripleBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: lookupU16KeyedBlob
     va: 0x1435ceac0
-    note: "Named in Ghidra as lookupU16KeyedBlob. Signature not known yet."
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupU16KeyedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderU16KeyedTable
     va: 0x1435ceaf0
-    note: "Named in Ghidra as loadShaderU16KeyedTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderU16KeyedTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderReflectionTable
     va: 0x1435ceca0
-    note: "Named in Ghidra as loadShaderReflectionTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderReflectionTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: lookupIndexedBlob
     va: 0x1435ceff0
-    note: "Named in Ghidra as lookupIndexedBlob. Signature not known yet."
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupIndexedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadShaderIndexedBlobTable
     va: 0x1435cf030
-    note: "Named in Ghidra as loadShaderIndexedBlobTable. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderIndexedBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ShaderDatabaseSource_readSectionBytes
     va: 0x1435d1470
-    note: "Named in Ghidra as ShaderDatabaseSource_readSectionBytes. Signature not known yet."
+    signature: "void(void* self, void*, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_readSectionBytes; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ShaderDatabaseSource_loadForCurrentRenderPath
     va: 0x1435d1530
-    note: "Named in Ghidra as ShaderDatabaseSource_loadForCurrentRenderPath. Signature not known yet."
+    signature: "void(u64, u64, u64, u64, u64, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_loadForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: findShaderDatabaseSectionForRenderPath
     va: 0x1435d35b0
-    note: "Named in Ghidra as findShaderDatabaseSectionForRenderPath. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(u64, i32, u64)"
+    note: "Named in Ghidra as findShaderDatabaseSectionForRenderPath; checked in the decompiler (2026-10-30): its strings ('Wanted shader path ;  wasn't found in shader solution database ')."
+    confidence: inferred
     sources: [ghidra]
   - name: Dx11Renderer_ctor
     va: 0x1435dec80
-    note: "Named in Ghidra as Dx11Renderer_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, i64)"
+    note: "Named in Ghidra as Dx11Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Dx12Renderer_ctor
     va: 0x1435e0310
-    note: "Named in Ghidra as Dx12Renderer_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, i64)"
+    note: "Named in Ghidra as Dx12Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ResourceFactoryNullA_deletingDtor
     va: 0x1435e5b40
-    note: "Named in Ghidra as ResourceFactoryNullA_deletingDtor. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullA_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ResourceFactoryNullB_deletingDtor
     va: 0x1435e5ca0
-    note: "Named in Ghidra as ResourceFactoryNullB_deletingDtor. Signature not known yet."
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullB_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createRootSignatureSimple
     va: 0x1435eebc0
-    note: "Named in Ghidra as createRootSignatureSimple. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Named in Ghidra as createRootSignatureSimple; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
+    confidence: inferred
     sources: [ghidra]
   - name: createRootSignatureTableSet2
     va: 0x1435efaa0
-    note: "Named in Ghidra as createRootSignatureTableSet2. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Named in Ghidra as createRootSignatureTableSet2; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
+    confidence: inferred
     sources: [ghidra]
   - name: createDx11RenderDevice
     va: 0x1435f7200
-    note: "Named in Ghidra as createDx11RenderDevice. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(u64)"
+    note: "Named in Ghidra as createDx11RenderDevice; checked in the decompiler (2026-10-30): its strings ('RenderDevice')."
+    confidence: inferred
     sources: [ghidra]
   - name: createDx12RenderDevice
     va: 0x1435f7500
-    note: "Named in Ghidra as createDx12RenderDevice. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(u64)"
+    note: "Named in Ghidra as createDx12RenderDevice; checked in the decompiler (2026-10-30): its strings ('d3d12.dll; RenderDevice')."
+    confidence: inferred
     sources: [ghidra]
   - name: renderDeviceInit_D3D12
     va: 0x14360c670
-    note: "Named in Ghidra as renderDeviceInit_D3D12. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, u32, i64, u32)"
+    note: "Named in Ghidra as renderDeviceInit_D3D12; checked in the decompiler (2026-10-30): its strings ('m_dxgiFactory->QueryInterface(__uuidof(IDXGIFactory4), (void**)&dxgiFa; dxgiFact')."
+    confidence: inferred
     sources: [ghidra]
   - name: d3d12CheckHr
     va: 0x143632cf0
-    note: "Named in Ghidra as d3d12CheckHr. Signature not known yet."
+    signature: "void(i32, u64)"
+    note: "Named in Ghidra as d3d12CheckHr; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: registerEnlightenSubsystem
     va: 0x1436e43e0
-    note: "Named in Ghidra as registerEnlightenSubsystem. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as registerEnlightenSubsystem; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: shaderRenderPathName
     va: 0x1446e3760
-    note: "Named in Ghidra as shaderRenderPathName. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(u32)"
+    note: "Named in Ghidra as shaderRenderPathName; checked in the decompiler (2026-10-30): its strings ('ShaderRenderPath_Dx10; ShaderRenderPath_Dx10Plus')."
+    confidence: inferred
     sources: [ghidra]
   - name: registerShaderDatabaseAssetTypeInfo
     va: 0x1446e6710
-    note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   # Checked in Ghidra, 2026-10-21 (the user's research).

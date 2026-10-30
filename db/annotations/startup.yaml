@@ -6,12 +6,14 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: initPatchUrls
     va: 0x142a238c0
-    note: "Named in Ghidra as initPatchUrls. Signature not known yet."
+    signature: "void(void* patchConfig)"
+    note: "Named in Ghidra as initPatchUrls; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: getHardwareIdFromWMI
     va: 0x142a25850
-    note: "Named in Ghidra as getHardwareIdFromWMI. Signature not known yet."
+    signature: "void(i64 outBuf, u32 outBufSize)"
+    note: "Named in Ghidra as getHardwareIdFromWMI; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: engine_registerSubsystemModules
@@ -28,166 +30,199 @@ functions:
     sources: [ghidra]
   - name: createMainWindow
     va: 0x142a268b0
-    note: "Named in Ghidra as createMainWindow. Signature not known yet."
+    signature: "void(u64, i8, i8, i32)"
+    note: "Named in Ghidra as createMainWindow; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: gameLoopThreadEntry
     va: 0x142a29220
-    note: "Named in Ghidra as gameLoopThreadEntry. Signature not known yet."
+    signature: "void(i64)"
+    note: "Named in Ghidra as gameLoopThreadEntry; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: registerEngineSubsystems
     va: 0x142a292a0
-    note: "Named in Ghidra as registerEngineSubsystems. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as registerEngineSubsystems; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createGameInstance
     va: 0x142a29820
-    note: "Named in Ghidra as createGameInstance. Signature not known yet."
+    signature: "u8(void*)"
+    note: "Named in Ghidra as createGameInstance; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: initGameApplication
     va: 0x142a29900
-    note: "Named in Ghidra as initGameApplication. Signature not known yet."
+    signature: "void(void* app, void* onReadyCallback)"
+    note: "Named in Ghidra as initGameApplication; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: postInitGameApplication
     va: 0x142a29fb0
-    note: "Named in Ghidra as postInitGameApplication. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as postInitGameApplication; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: logSystemInfoReport
     va: 0x142a2a440
-    note: "Named in Ghidra as logSystemInfoReport. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as logSystemInfoReport; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: initScriptsAndSystemSettings
     va: 0x142a2be60
-    note: "Named in Ghidra as initScriptsAndSystemSettings. Signature not known yet."
+    signature: "void(void* app)"
+    note: "Named in Ghidra as initScriptsAndSystemSettings; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: updateGameFrame
     va: 0x142a2d470
-    note: "Named in Ghidra as updateGameFrame. Signature not known yet."
+    signature: "void(void* app)"
+    note: "Named in Ghidra as updateGameFrame; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: winMainEntry
     va: 0x142a2fab0
-    note: "Named in Ghidra as winMainEntry. Signature not known yet."
+    signature: "void(u64, u64, void* cmdLine)"
+    note: "Named in Ghidra as winMainEntry; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: shutdownGameApplication
     va: 0x142a30f10
-    note: "Named in Ghidra as shutdownGameApplication. Signature not known yet."
+    signature: "void(void* app)"
+    note: "Named in Ghidra as shutdownGameApplication; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: gameFrameStep
     va: 0x142a315a0
-    note: "Named in Ghidra as gameFrameStep. Signature not known yet."
+    signature: "u64(i64)"
+    note: "Named in Ghidra as gameFrameStep; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: logMemoryStatsPeriodic
     va: 0x142a31870
-    note: "Named in Ghidra as logMemoryStatsPeriodic. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as logMemoryStatsPeriodic; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: createNamedThread
     va: 0x142a4c1e0
-    note: "Named in Ghidra as createNamedThread. Signature not known yet."
+    signature: "void*(void*, u64, u32, void*, u8, u32)"
+    note: "Named in Ghidra as createNamedThread; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: waitForThreadTimeout
     va: 0x142a63710
-    note: "Named in Ghidra as waitForThreadTimeout. Signature not known yet."
+    signature: "u64(void*, u32, u8)"
+    note: "Named in Ghidra as waitForThreadTimeout; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: resolveGameDataDir_fromDataPathArg
     va: 0x142aaafa0
-    note: "Named in Ghidra as resolveGameDataDir_fromDataPathArg. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Named in Ghidra as resolveGameDataDir_fromDataPathArg; checked in the decompiler (2026-10-30): its strings ('C:\\Program Files\\EA Games\\Mirrors Edge Catalyst\\; dataPath')."
+    confidence: inferred
     sources: [ghidra]
   - name: cmdLineHasFlag
     va: 0x142aab410
-    note: "Named in Ghidra as cmdLineHasFlag. Signature not known yet."
+    signature: "void*(u64, void*, void*)"
+    note: "Named in Ghidra as cmdLineHasFlag; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: getServiceRegistry
     va: 0x142aab530
-    note: "Named in Ghidra as getServiceRegistry. Signature not known yet."
+    signature: "void*()"
+    note: "Named in Ghidra as getServiceRegistry; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ensureOneTimeInit
     va: 0x142ab3280
-    note: "Named in Ghidra as ensureOneTimeInit. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as ensureOneTimeInit; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LuaContext_getMain
     va: 0x142ae9c10
-    note: "Named in Ghidra as LuaContext_getMain. Signature not known yet."
+    signature: "i64(u64, u64, u64, u64)"
+    note: "Named in Ghidra as LuaContext_getMain; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LuaContext_runFile
     va: 0x142aeac30
-    note: "Named in Ghidra as LuaContext_runFile. Signature not known yet."
+    signature: "void(u64, u64, i8, i64, i64)"
+    note: "Named in Ghidra as LuaContext_runFile; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LuaContext_executeString
     va: 0x142aeada0
-    note: "Named in Ghidra as LuaContext_executeString. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Named in Ghidra as LuaContext_executeString; checked in the decompiler (2026-10-30): its strings ('LuaContext_executeString')."
+    confidence: inferred
     sources: [ghidra]
   - name: LuaContext_executeBuffer
     va: 0x142aed1c0
-    note: "Named in Ghidra as LuaContext_executeBuffer. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, i64, u32, i64, u64, i8)"
+    note: "Named in Ghidra as LuaContext_executeBuffer; checked in the decompiler (2026-10-30): its strings ('<unknown>; executeString loadbuffer error: ')."
+    confidence: inferred
     sources: [ghidra]
   - name: Client_ctorInitGameContext
     va: 0x143194840
-    note: "Named in Ghidra as Client_ctorInitGameContext. Signature not known yet."
+    signature: "void(void* self, void*)"
+    note: "Named in Ghidra as Client_ctorInitGameContext; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: HardwareProfile_ctorAndExportToLua
     va: 0x143195fb0
-    note: "Named in Ghidra as HardwareProfile_ctorAndExportToLua. Signature not known yet."
+    signature: "void(MessageListener*, u32, u32, u32)"
+    note: "Named in Ghidra as HardwareProfile_ctorAndExportToLua; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Client_onGameStartMessage
     va: 0x14319c350
-    note: "Named in Ghidra as Client_onGameStartMessage. Signature not known yet."
+    signature: "void(void* self, void*, u64, u64)"
+    note: "Named in Ghidra as Client_onGameStartMessage; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: applySubsystemEnableCommands
     va: 0x14319da70
-    note: "Named in Ghidra as applySubsystemEnableCommands. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as applySubsystemEnableCommands; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Client_onMessage
     va: 0x14319df30
-    note: "Named in Ghidra as Client_onMessage. Signature not known yet."
+    signature: "void(i64, ClientStaticModelGroupEntity*, u64, u64)"
+    note: "Named in Ghidra as Client_onMessage; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: HardwareProfile_onMessage
     va: 0x14319e420
-    note: "Named in Ghidra as HardwareProfile_onMessage. Signature not known yet."
+    signature: "void(u64, void*)"
+    note: "Named in Ghidra as HardwareProfile_onMessage; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Client_requestState
     va: 0x14319eae0
-    note: "Named in Ghidra as Client_requestState. Signature not known yet."
+    signature: "void(void* self, i32)"
+    note: "Named in Ghidra as Client_requestState; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: gameState_onLoadRegister
     va: 0x1431a0b80
-    note: "Named in Ghidra as gameState_onLoadRegister. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as gameState_onLoadRegister; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: logGameStateTransitionTelemetry
     va: 0x1431a8990
-    note: "Named in Ghidra as logGameStateTransitionTelemetry. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(u64, void*, u64, u64)"
+    note: "Named in Ghidra as logGameStateTransitionTelemetry; checked in the decompiler (2026-10-30): its strings ('EnteredIngame; Game state')."
+    confidence: inferred
     sources: [ghidra]
   - name: Localize_format
     va: 0x1436a8d40
-    note: "Named in Ghidra as Localize_format. Signature not known yet."
+    signature: "u8(void* self, u32, u64, u64)"
+    note: "Named in Ghidra as Localize_format; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]

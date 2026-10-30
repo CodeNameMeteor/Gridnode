@@ -34,257 +34,308 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: resourceGroup_resolveIdsForLevel
     va: 0x142aba6e0
-    note: "Named in Ghidra as resourceGroup_resolveIdsForLevel. Signature not known yet."
+    signature: "u64(u64, u16, u64, u32, u64, u32, u32)"
+    note: "Named in Ghidra as resourceGroup_resolveIdsForLevel; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ServerLevel_baseCtor
     va: 0x143114e40
-    note: "Named in Ghidra as ServerLevel_baseCtor. Signature not known yet."
+    signature: "void*(void* self, void*, void*)"
+    note: "Named in Ghidra as ServerLevel_baseCtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LevelSetup_setInclusionOption
     va: 0x143135ea0
-    note: "Named in Ghidra as LevelSetup_setInclusionOption. Signature not known yet."
+    signature: "void(i64, i64, i64)"
+    note: "Named in Ghidra as LevelSetup_setInclusionOption; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LevelSetup_parseInclusionOptions
     va: 0x1431360a0
-    note: "Named in Ghidra as LevelSetup_parseInclusionOptions. Signature not known yet."
+    signature: "void(u64, u64)"
+    note: "Named in Ghidra as LevelSetup_parseInclusionOptions; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: EntityBus_getLevel
     va: 0x14314c5e0
-    note: "Named in Ghidra as EntityBus_getLevel. Signature not known yet."
+    signature: "u64(void* self)"
+    note: "Named in Ghidra as EntityBus_getLevel; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelContext_setLevelData
     va: 0x143176000
-    note: "Named in Ghidra as levelContext_setLevelData. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as levelContext_setLevelData; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: clientConnection_onLevelLoadedState
     va: 0x143232110
-    note: "Named in Ghidra as clientConnection_onLevelLoadedState. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as clientConnection_onLevelLoadedState; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: clientConnection_beginLoadLevel
     va: 0x143232170
-    note: "Named in Ghidra as clientConnection_beginLoadLevel. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as clientConnection_beginLoadLevel; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: clientConnection_onLevelLinkedState
     va: 0x1432322c0
-    note: "Named in Ghidra as clientConnection_onLevelLinkedState. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as clientConnection_onLevelLinkedState; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientConnection_initStateMachine
     va: 0x143233800
-    note: "Named in Ghidra as ClientConnection_initStateMachine. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as ClientConnection_initStateMachine; checked in the decompiler (2026-10-30): its strings ('ClientConnection - start; IdleState')."
+    confidence: inferred
     sources: [ghidra]
   - name: levelDefinition_findByName
     va: 0x1432e0030
-    note: "Named in Ghidra as levelDefinition_findByName. Signature not known yet."
+    signature: "i64(u64)"
+    note: "Named in Ghidra as levelDefinition_findByName; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelList_getTable
     va: 0x1432e06a0
-    note: "Named in Ghidra as levelList_getTable. Signature not known yet."
+    signature: "void*()"
+    note: "Named in Ghidra as levelList_getTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoader_reset
     va: 0x1432e7d10
-    note: "Named in Ghidra as levelLoader_reset. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelLoader_reset; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoader_startGroupLoad
     va: 0x1432e8dc0
-    note: "Named in Ghidra as levelLoader_startGroupLoad. Signature not known yet."
+    signature: "void(void*, i64, void*, i8)"
+    note: "Named in Ghidra as levelLoader_startGroupLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelList_buildFromReportingAsset
     va: 0x1432e90b0
-    note: "Named in Ghidra as levelList_buildFromReportingAsset. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Named in Ghidra as levelList_buildFromReportingAsset; checked in the decompiler (2026-10-30): its strings ('LevelListReport')."
+    confidence: inferred
     sources: [ghidra]
   - name: levelLoader_pollLevelDataEntry
     va: 0x1432eaac0
-    note: "Named in Ghidra as levelLoader_pollLevelDataEntry. Signature not known yet."
+    signature: "u64(void*, void*, void*)"
+    note: "Named in Ghidra as levelLoader_pollLevelDataEntry; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoader_drainPendingSubWorlds
     va: 0x1432eaba0
-    note: "Named in Ghidra as levelLoader_drainPendingSubWorlds. Signature not known yet."
+    signature: "bool(u64, void*, u64, u64)"
+    note: "Named in Ghidra as levelLoader_drainPendingSubWorlds; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: SubLevelManager_ctor
     va: 0x1432ed860
-    note: "Named in Ghidra as SubLevelManager_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, i32, u64)"
+    note: "Named in Ghidra as SubLevelManager_ctor; checked in the decompiler (2026-10-30): its strings ('SubLevelManager')."
+    confidence: inferred
     sources: [ghidra]
   - name: levelLoad_stopAndUnregisterGroups
     va: 0x1432efd20
-    note: "Named in Ghidra as levelLoad_stopAndUnregisterGroups. Signature not known yet."
+    signature: "u64(void*, u64, i8)"
+    note: "Named in Ghidra as levelLoad_stopAndUnregisterGroups; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: gameSettings_collectLevelGroups
     va: 0x1432f27d0
-    note: "Named in Ghidra as gameSettings_collectLevelGroups. Signature not known yet."
+    signature: "u64(i64, i64)"
+    note: "Named in Ghidra as gameSettings_collectLevelGroups; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: gameInit_registerGroupsAndAtlases
     va: 0x1432f4f80
-    note: "Named in Ghidra as gameInit_registerGroupsAndAtlases. Signature not known yet."
+    signature: "void(void*, u64, i8)"
+    note: "Named in Ghidra as gameInit_registerGroupsAndAtlases; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: getGroupU32FromTable
     va: 0x14330b4f0
-    note: "Named in Ghidra as getGroupU32FromTable. Signature not known yet."
+    signature: "u32(i64, u32)"
+    note: "Named in Ghidra as getGroupU32FromTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Server_ctor
     va: 0x14333a650
-    note: "Named in Ghidra as Server_ctor. Signature not known yet."
+    signature: "void*(void* self, void*)"
+    note: "Named in Ghidra as Server_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelScope_ctor
     va: 0x14333afb0
-    note: "Named in Ghidra as levelScope_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, u16, u8, u64, u64)"
+    note: "Named in Ghidra as levelScope_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_finishSetup
     va: 0x14333da20
-    note: "Named in Ghidra as levelLoad_finishSetup. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelLoad_finishSetup; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_setupWorldObjects
     va: 0x14333f2e0
-    note: "Named in Ghidra as levelLoad_setupWorldObjects. Signature not known yet."
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as levelLoad_setupWorldObjects; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_unloadContext
     va: 0x143342790
-    note: "Named in Ghidra as levelLoad_unloadContext. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelLoad_unloadContext; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_applySyncedSettings
     va: 0x143344050
-    note: "Named in Ghidra as levelLoad_applySyncedSettings. Signature not known yet."
+    signature: "u8(void*, void*, u64)"
+    note: "Named in Ghidra as levelLoad_applySyncedSettings; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_initWorldAndRegister
     va: 0x143344140
-    note: "Named in Ghidra as levelLoad_initWorldAndRegister. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelLoad_initWorldAndRegister; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_frame
     va: 0x1433446f0
-    note: "Named in Ghidra as levelLoad_frame. Signature not known yet."
+    signature: "u8(u64, u64)"
+    note: "Named in Ghidra as levelLoad_frame; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_updateUnloadState
     va: 0x143344d90
-    note: "Named in Ghidra as levelLoad_updateUnloadState. Signature not known yet."
+    signature: "void(void*, i64)"
+    note: "Named in Ghidra as levelLoad_updateUnloadState; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorld_tickFrame
     va: 0x143345090
-    note: "Named in Ghidra as levelWorld_tickFrame. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as levelWorld_tickFrame; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_stateMachine
     va: 0x143345610
-    note: "Named in Ghidra as levelLoad_stateMachine. Signature not known yet."
+    signature: "void*(void*, void*)"
+    note: "Named in Ghidra as levelLoad_stateMachine; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_tick
     va: 0x143345dc0
-    note: "Named in Ghidra as levelLoad_tick. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelLoad_tick; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorldLoader_ctor
     va: 0x1433b4a30
-    note: "Named in Ghidra as levelWorldLoader_ctor. Signature not known yet."
+    signature: "MessageListener*(MessageListener*, void*, i32)"
+    note: "Named in Ghidra as levelWorldLoader_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorld_ctor
     va: 0x1433b4ce0
-    note: "Named in Ghidra as levelWorld_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, u64, u64, u32)"
+    note: "Named in Ghidra as levelWorld_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorldLoader_freeContent
     va: 0x1433b5930
-    note: "Named in Ghidra as levelWorldLoader_freeContent. Signature not known yet."
+    signature: "void(MessageListener*)"
+    note: "Named in Ghidra as levelWorldLoader_freeContent; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorldLoader_setupBookmarks
     va: 0x1433b68b0
-    note: "Named in Ghidra as levelWorldLoader_setupBookmarks. Signature not known yet."
+    signature: "u64(void*)"
+    note: "Named in Ghidra as levelWorldLoader_setupBookmarks; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorldLoader_release
     va: 0x1433b6d60
-    note: "Named in Ghidra as levelWorldLoader_release. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelWorldLoader_release; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelWorld_isReady
     va: 0x1433b88e0
-    note: "Named in Ghidra as levelWorld_isReady. Signature not known yet."
+    signature: "u64(void*)"
+    note: "Named in Ghidra as levelWorld_isReady; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelSave_writeHeaderAndChecksum
     va: 0x1433b9660
-    note: "Named in Ghidra as levelSave_writeHeaderAndChecksum. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(u64, void*, void*, u64)"
+    note: "Named in Ghidra as levelSave_writeHeaderAndChecksum; checked in the decompiler (2026-10-30): its strings ('Level; Difficulty')."
+    confidence: inferred
     sources: [ghidra]
   - name: levelWorldLoader_tickAgentsAndClientData
     va: 0x1433bdb90
-    note: "Named in Ghidra as levelWorldLoader_tickAgentsAndClientData. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as levelWorldLoader_tickAgentsAndClientData; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: SaveGameManager_requestLoad
     va: 0x1433bf400
-    note: "Named in Ghidra as SaveGameManager_requestLoad. Signature not known yet."
+    signature: "void*(void* self, i64, u64, u8)"
+    note: "Named in Ghidra as SaveGameManager_requestLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: PamGame_returnToFrontEnd
     va: 0x1438fbf00
-    note: "Named in Ghidra as PamGame_returnToFrontEnd. Signature not known yet."
+    signature: "void(void* self, void*)"
+    note: "Named in Ghidra as PamGame_returnToFrontEnd; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: PamGame_startFrontEndWithOption
     va: 0x1439fb670
-    note: "Named in Ghidra as PamGame_startFrontEndWithOption. Signature not known yet."
+    signature: "void(u64, i64, u64, u64)"
+    note: "Named in Ghidra as PamGame_startFrontEndWithOption; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelType_ctor
     va: 0x143b0e670
-    note: "Named in Ghidra as levelType_ctor. Signature not known yet."
+    signature: "void*(void* self, u64, u16)"
+    note: "Named in Ghidra as levelType_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelStateMachine_handleMessage
     va: 0x143b109e0
-    note: "Named in Ghidra as levelStateMachine_handleMessage. Signature not known yet."
+    signature: "u64(PamUISystem*, u64, u64, u64)"
+    note: "Named in Ghidra as levelStateMachine_handleMessage; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: UIPauseController_request
     va: 0x143b16210
-    note: "Named in Ghidra as UIPauseController_request. Signature not known yet."
+    signature: "void(void* self, i8, i8)"
+    note: "Named in Ghidra as UIPauseController_request; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: TimeOfDayClockEntity_ctor
     va: 0x143bc3be0
-    note: "Named in Ghidra as TimeOfDayClockEntity_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as TimeOfDayClockEntity_ctor; checked in the decompiler (2026-10-30): sets the TimeOfDayClockEntity vtable; its strings ('TimeOfDayClockUpdater')."
+    confidence: inferred
     sources: [ghidra]
   - name: LevelSetup_ctor
     va: 0x144658230
-    note: "Named in Ghidra as LevelSetup_ctor. Signature not known yet."
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as LevelSetup_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: LevelSetup_assign
     va: 0x144658a90
-    note: "Named in Ghidra as LevelSetup_assign. Signature not known yet."
+    signature: "void*(void* self, void*)"
+    note: "Named in Ghidra as LevelSetup_assign; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
 

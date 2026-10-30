@@ -84,43 +84,51 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: ServerCharacterHealthComponent_registerForUpdate
     va: 0x14336c390
-    note: "Named in Ghidra as ServerCharacterHealthComponent_registerForUpdate. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(i64, u32)"
+    note: "Named in Ghidra as ServerCharacterHealthComponent_registerForUpdate; checked in the decompiler (2026-10-30): its strings ('ServerCharacterHealthComponent')."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterEntity_applyCustomizeData
     va: 0x14336c860
-    note: "Named in Ghidra as ServerCharacterEntity_applyCustomizeData. Signature not known yet."
+    signature: "void(i64, void*)"
+    note: "Named in Ghidra as ServerCharacterEntity_applyCustomizeData; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ServerTeleportEntity_clampTargetAboveGround
     va: 0x143381370
-    note: "Named in Ghidra as ServerTeleportEntity_clampTargetAboveGround. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, void*)"
+    note: "Named in Ghidra as ServerTeleportEntity_clampTargetAboveGround; checked in the decompiler (2026-10-30): its strings ('ServerTeleportEntity_checkSpawningBelowGround')."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerTeleportEntity_getTargetTransform
     va: 0x143387070
-    note: "Named in Ghidra as ServerTeleportEntity_getTargetTransform. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(void* self, void*)"
+    note: "Named in Ghidra as ServerTeleportEntity_getTargetTransform; checked in the decompiler (2026-10-30): resolves the target entity's transform (Entity_resolveTransform)."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerTeleportEntity_teleportCharacter
     va: 0x143391600
-    note: "Named in Ghidra as ServerTeleportEntity_teleportCharacter. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, ServerCharacterEntity*)"
+    note: "Named in Ghidra as ServerTeleportEntity_teleportCharacter; checked in the decompiler (2026-10-30): gets the target, clamps it above ground, clears physics there, then ServerCharacterEntity_teleport."
+    confidence: inferred
     sources: [ghidra]
   - name: PamServerHealthComponent_ctor
     va: 0x14391e410
-    note: "Named in Ghidra as PamServerHealthComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, void*, u64)"
+    note: "Named in Ghidra as PamServerHealthComponent_ctor; checked in the decompiler (2026-10-30): sets the PamServerHealthComponent vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: PamServerHumanHealthComponent_ctor
     va: 0x14391e530
-    note: "Named in Ghidra as PamServerHumanHealthComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, void*, u64)"
+    note: "Named in Ghidra as PamServerHumanHealthComponent_ctor; checked in the decompiler (2026-10-30): sets the PamServerHumanHealthComponent vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: HealthComponent_connectIsImmortal
     va: 0x14474f280
-    note: "Named in Ghidra as HealthComponent_connectIsImmortal. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(i64, void*, u64)"
+    note: "Named in Ghidra as HealthComponent_connectIsImmortal; checked in the decompiler (2026-10-30): binds the property IsImmortal (hash 0xa1b7b692, checked) as a bool at +0x88."
+    confidence: inferred
     sources: [ghidra]
 
 constants:

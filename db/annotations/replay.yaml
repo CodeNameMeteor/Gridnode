@@ -89,13 +89,15 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: PamClientReplayPlayerComponent_ctor
     va: 0x143944860
-    note: "Named in Ghidra as PamClientReplayPlayerComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, void*, u64)"
+    note: "Named in Ghidra as PamClientReplayPlayerComponent_ctor; checked in the decompiler (2026-10-30): sets the PamClientReplayPlayerComponent vtable; its strings ('PamClientReplayPlayerComponent')."
+    confidence: inferred
     sources: [ghidra]
   - name: PamClientReplayPlayerComponent_update
     va: 0x1439501a0
-    note: "Named in Ghidra as PamClientReplayPlayerComponent_update. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, void*)"
+    note: "Named in Ghidra as PamClientReplayPlayerComponent_update; checked in the decompiler (2026-10-30): calls ReplayPlayback_Tick."
+    confidence: inferred
     sources: [ghidra]
   # Recording and playback, from the user's Ghidra (2026-10-29); read in the decompiler, and the ring
   # agrees with ReplayRecorder's members (+0x68 stride, +0x70 capacity, +0x78 base, +0x88 head).

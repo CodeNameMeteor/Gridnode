@@ -166,37 +166,44 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: spawnSingleEntityFromSublevelData
     va: 0x142ca6260
-    note: "Named in Ghidra as spawnSingleEntityFromSublevelData. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as spawnSingleEntityFromSublevelData; checked in the decompiler (2026-10-30): builds a ServerEntityCreationInfo from the data at +0x28 +0x90 and spawns it (entityCreator_spawnIntoBus)."
+    confidence: inferred
     sources: [ghidra]
   - name: entityBus_createForLayerOrBlueprint
     va: 0x143146140
-    note: "Named in Ghidra as entityBus_createForLayerOrBlueprint. Signature not known yet."
-    confidence: hypothesis
+    signature: "i64(void*, i64, u64, void*, void*)"
+    note: "Named in Ghidra as entityBus_createForLayerOrBlueprint; checked in the decompiler (2026-10-30): checks the data against TI_LayerData and allocates the bus."
+    confidence: inferred
     sources: [ghidra]
   - name: EntityCreator_ctor
     va: 0x14315fed0
-    note: "Named in Ghidra as EntityCreator_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, i32, u64, i8, u32)"
+    note: "Named in Ghidra as EntityCreator_ctor; checked in the decompiler (2026-10-30): 1,091 callers (one per creator class) and sets the creator vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: EntityCreators_bindRealm
     va: 0x143161af0
-    note: "Named in Ghidra as EntityCreators_bindRealm. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(i32)"
+    note: "Named in Ghidra as EntityCreators_bindRealm; checked in the decompiler (2026-10-30): walks the realm's creator list and binds each creator (the user's note)."
+    confidence: inferred
     sources: [ghidra]
   - name: fb_EntityCreationInfo_baseCtor
     va: 0x1432db740
-    note: "Named in Ghidra as fb_EntityCreationInfo_baseCtor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, u64, u64, u32)"
+    note: "Named in Ghidra as fb_EntityCreationInfo_baseCtor; checked in the decompiler (2026-10-30): fills an identity transform and the realm defaults."
+    confidence: inferred
     sources: [ghidra]
   - name: levelLoad_spawnFromRecords
     va: 0x14333f9b0
-    note: "Named in Ghidra as levelLoad_spawnFromRecords. Signature not known yet."
+    signature: "void(void*, void*, u64)"
+    note: "Named in Ghidra as levelLoad_spawnFromRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_collectSpawnRecords
     va: 0x143343580
-    note: "Named in Ghidra as levelLoad_collectSpawnRecords. Signature not known yet."
+    signature: "void(void*, i64, u64)"
+    note: "Named in Ghidra as levelLoad_collectSpawnRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: entityCreator_spawnIntoBus
@@ -210,88 +217,105 @@ functions:
     sources: [ghidra]
   - name: fb_Blueprint_instantiateImpl
     va: 0x14335e400
-    note: "Named in Ghidra as fb_Blueprint_instantiateImpl. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(u64, void*, u64, void*, u64)"
+    note: "Named in Ghidra as fb_Blueprint_instantiateImpl; checked in the decompiler (2026-10-30): creates the bus and instantiates the contents; in 354 recorded creation stacks."
+    confidence: inferred
     sources: [ghidra]
   - name: entityCreator_spawnWithLinearTransform
     va: 0x14335eb70
-    note: "Named in Ghidra as entityCreator_spawnWithLinearTransform. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, void*, u64, void*, void*, void*, i64)"
+    note: "Named in Ghidra as entityCreator_spawnWithLinearTransform; checked in the decompiler (2026-10-30): creates the bus and spawns; in 129 recorded creation stacks."
+    confidence: inferred
     sources: [ghidra]
   - name: blueprint_instantiateContents
     va: 0x143361260
-    note: "Named in Ghidra as blueprint_instantiateContents. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void*, void*, void*, i64, i64, i64)"
+    note: "Named in Ghidra as blueprint_instantiateContents; checked in the decompiler (2026-10-30): in 359 recorded creation stacks, under fb_Blueprint_instantiateImpl."
+    confidence: inferred
     sources: [ghidra]
   - name: spawnEntityFromRecord_LinearTransform
     va: 0x143363a40
-    note: "Named in Ghidra as spawnEntityFromRecord_LinearTransform. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, i64, void*)"
+    note: "Named in Ghidra as spawnEntityFromRecord_LinearTransform; checked in the decompiler (2026-10-30): calls entityCreator_spawnWithLinearTransform; in recorded static model spawns."
+    confidence: inferred
     sources: [ghidra]
   - name: entityLoader_resolveBlueprintThenSpawn
     va: 0x143366660
-    note: "Named in Ghidra as entityLoader_resolveBlueprintThenSpawn. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as entityLoader_resolveBlueprintThenSpawn; checked in the decompiler (2026-10-30): calls spawnEntityFromRecord_LinearTransform; in recorded static model spawns."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_ctor
     va: 0x14337c600
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_ctor; checked in the decompiler (2026-10-30): sets the ServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_dtor
     va: 0x14337d620
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_dtor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_dtor; checked in the decompiler (2026-10-30): sets the ServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_belowMaxCount
     va: 0x1433804a0
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_belowMaxCount. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(void* self, u64)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_belowMaxCount; checked in the decompiler (2026-10-30): compares the spawned count (+0xf4) with an Int32 property (its value at +0x270; below 0 means no limit)."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_clearSpawnArea
     va: 0x143381b10
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_clearSpawnArea. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_clearSpawnArea; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevelRecord_spawnWithTableTransform
     va: 0x1433a61a0
-    note: "Named in Ghidra as sublevelRecord_spawnWithTableTransform. Signature not known yet."
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as sublevelRecord_spawnWithTableTransform; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevelHierarchy_spawnBangerGroupEntry
     va: 0x1433e71d0
-    note: "Named in Ghidra as sublevelHierarchy_spawnBangerGroupEntry. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, void*, u64, u64, LinearTransform*)"
+    note: "Named in Ghidra as sublevelHierarchy_spawnBangerGroupEntry; checked in the decompiler (2026-10-30): builds a ServerEntityCreationInfo and calls fb_Blueprint_instantiate."
+    confidence: inferred
     sources: [ghidra]
   - name: sublevel_spawnGroupIntoNewBus
     va: 0x1433e72b0
-    note: "Named in Ghidra as sublevel_spawnGroupIntoNewBus. Signature not known yet."
+    signature: "void(void*, u32, u32, u32, u64, u32)"
+    note: "Named in Ghidra as sublevel_spawnGroupIntoNewBus; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevel_spawnGroupDefaultBus
     va: 0x1433e73d0
-    note: "Named in Ghidra as sublevel_spawnGroupDefaultBus. Signature not known yet."
+    signature: "void(void*, u32, u64, u64, u32, u64, u64, u64)"
+    note: "Named in Ghidra as sublevel_spawnGroupDefaultBus; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelSublevel_spawnEntityGroup
     va: 0x1433e7480
-    note: "Named in Ghidra as levelSublevel_spawnEntityGroup. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(u64, void*, u32, u32, i8, LinearTransform*, void*, i32, void*, void*, i64)"
+    note: "Named in Ghidra as levelSublevel_spawnEntityGroup; checked in the decompiler (2026-10-30): spawns each entry (entityCreator_spawnIntoBus) and inits it (Entity_init)."
+    confidence: inferred
     sources: [ghidra]
   - name: sublevelRecord_spawnNextInChain
     va: 0x1438fe430
-    note: "Named in Ghidra as sublevelRecord_spawnNextInChain. Signature not known yet."
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as sublevelRecord_spawnNextInChain; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: PamServerCharacterSpawnEntity_ctor
     va: 0x143953860
-    note: "Named in Ghidra as PamServerCharacterSpawnEntity_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as PamServerCharacterSpawnEntity_ctor; checked in the decompiler (2026-10-30): sets the PamServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: PamServerCustomizeProjectionCharacterEntity_factory
     va: 0x143a7b5a0
-    note: "Named in Ghidra as PamServerCustomizeProjectionCharacterEntity_factory. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(i64)"
+    note: "Named in Ghidra as PamServerCustomizeProjectionCharacterEntity_factory; checked in the decompiler (2026-10-30): checks TI_PamServerCustomizeProjectionCharacterEntity."
+    confidence: inferred
     sources: [ghidra]
 
   # Character spawners and replays (research 2026-10-22/23, docs/research/replay-ghosts.md; checked in Ghidra).

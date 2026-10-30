@@ -42,13 +42,15 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: CameraSettingsBlend_setTarget
     va: 0x1431f5b80
-    note: "Named in Ghidra as CameraSettingsBlend_setTarget. Signature not known yet."
+    signature: "void(void* self, void*)"
+    note: "Named in Ghidra as CameraSettingsBlend_setTarget; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientCameraViewManagers_postSimUpdateAll
     va: 0x14327c200
-    note: "Named in Ghidra as ClientCameraViewManagers_postSimUpdateAll. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, f32, u32, u32)"
+    note: "Named in Ghidra as ClientCameraViewManagers_postSimUpdateAll; checked in the decompiler (2026-10-30): calls ClientCameraViewManager_postSimUpdate for each manager."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientCameraViewManager_frameUpdate
     va: 0x14327ba00
@@ -58,6 +60,7 @@ functions:
     sources: [ghidra]
   - name: ClientCameraViewManager_postSimUpdate
     va: 0x14327c2a0
-    note: "Named in Ghidra as ClientCameraViewManager_postSimUpdate. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u32, u32, u32)"
+    note: "Named in Ghidra as ClientCameraViewManager_postSimUpdate; checked in the decompiler (2026-10-30): its strings ('ClientCameraViewManager::postSimUpdate sequence')."
+    confidence: inferred
     sources: [ghidra]

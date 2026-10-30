@@ -119,72 +119,86 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: InputManMouse_getLevelImpl
     va: 0x1431afaa0
-    note: "Named in Ghidra as InputManMouse_getLevelImpl. Signature not known yet."
+    signature: "u64(void* self, void*)"
+    note: "Named in Ghidra as InputManMouse_getLevelImpl; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManMouse_getLevelInternal
     va: 0x1431b0350
-    note: "Named in Ghidra as InputManMouse_getLevelInternal. Signature not known yet."
+    signature: "f32(void* self, u32, f32, u8, i8)"
+    note: "Named in Ghidra as InputManMouse_getLevelInternal; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManMouse_getLevelJoySim
     va: 0x1431b0600
-    note: "Named in Ghidra as InputManMouse_getLevelJoySim. Signature not known yet."
+    signature: "u64(void* self, u32)"
+    note: "Named in Ghidra as InputManMouse_getLevelJoySim; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientPlayerInput_initDevicesAndBindings
     va: 0x1431b94a0
-    note: "Named in Ghidra as ClientPlayerInput_initDevicesAndBindings. Signature not known yet."
+    signature: "void(MessageListener*)"
+    note: "Named in Ghidra as ClientPlayerInput_initDevicesAndBindings; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputMappings_evalDigitalAction
     va: 0x1431b9c90
-    note: "Named in Ghidra as InputMappings_evalDigitalAction. Signature not known yet."
+    signature: "void(i64, i64, u32, void*, void*, i8, i8)"
+    note: "Named in Ghidra as InputMappings_evalDigitalAction; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientPlayerInput_evalActionByConcept
     va: 0x1431ba230
-    note: "Named in Ghidra as ClientPlayerInput_evalActionByConcept. Signature not known yet."
+    signature: "u64(void* self, u32, u8)"
+    note: "Named in Ghidra as ClientPlayerInput_evalActionByConcept; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: mouseImpl_processExcessInput
     va: 0x1431bb850
-    note: "Named in Ghidra as mouseImpl_processExcessInput. Signature not known yet."
+    signature: "void(i8, void*, void*, void*)"
+    note: "Named in Ghidra as mouseImpl_processExcessInput; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManager_updateAllDevices
     va: 0x1431be660
-    note: "Named in Ghidra as InputManager_updateAllDevices. Signature not known yet."
+    signature: "void(f32)"
+    note: "Named in Ghidra as InputManager_updateAllDevices; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: EntryInputState_ctor
     va: 0x1432f8aa0
-    note: "Named in Ghidra as EntryInputState_ctor. Signature not known yet."
+    signature: "i64(void* self)"
+    note: "Named in Ghidra as EntryInputState_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: EntryInputActionRegistry_set
     va: 0x1432fd340
-    note: "Named in Ghidra as EntryInputActionRegistry_set. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as EntryInputActionRegistry_set; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadVertexShaderTableAndInputLayouts
     va: 0x14359b800
-    note: "Named in Ghidra as loadVertexShaderTableAndInputLayouts. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadVertexShaderTableAndInputLayouts; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputDevices_ctor
     va: 0x1437b7ba0
-    note: "Named in Ghidra as InputDevices_ctor. Signature not known yet."
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as InputDevices_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: XInput_loadFunctions
     va: 0x1437ba6c0
-    note: "Named in Ghidra as XInput_loadFunctions. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as XInput_loadFunctions; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputDevice_pollPad
     va: 0x1437bbdd0
-    note: "Named in Ghidra as InputDevice_pollPad. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as InputDevice_pollPad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
 

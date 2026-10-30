@@ -127,6 +127,7 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: SettingsManager_registerSettings
     va: 0x142ab0820
-    note: "Named in Ghidra as SettingsManager_registerSettings. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(SettingsManager*, void*, void*, u8, void*, void*, u8)"
+    note: "Named in Ghidra as SettingsManager_registerSettings; checked in the decompiler (2026-10-30): forwards every argument to SettingsManager_registerSettingsImpl."
+    confidence: inferred
     sources: [ghidra]

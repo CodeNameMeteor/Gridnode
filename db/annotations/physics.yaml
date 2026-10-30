@@ -91,12 +91,14 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: PhysicsQuery_raycastNamed
     va: 0x1432e6730
-    note: "Named in Ghidra as PhysicsQuery_raycastNamed. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64, i32, void*, void*, void*, u32, i64)"
+    note: "Named in Ghidra as PhysicsQuery_raycastNamed; checked in the decompiler (2026-10-30): called with a query name (ServerTeleportEntity_checkSpawningBelowGround) and from / to points."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerTeleportEntity_clearPhysicsAtTarget
     va: 0x143381560
-    note: "Named in Ghidra as ServerTeleportEntity_clearPhysicsAtTarget. Signature not known yet."
+    signature: "void(u64, void*, i64, i64)"
+    note: "Named in Ghidra as ServerTeleportEntity_clearPhysicsAtTarget; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Physics_castRay
@@ -110,23 +112,27 @@ functions:
     sources: [ghidra, research]
   - name: PhysicsHolder_getPhysics
     va: 0x1434ee940
-    note: "Named in Ghidra as PhysicsHolder_getPhysics. Signature not known yet."
+    signature: "u64(void* self)"
+    note: "Named in Ghidra as PhysicsHolder_getPhysics; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Physics_castRayCollectHits
     va: 0x14351a1a0
-    note: "Named in Ghidra as Physics_castRayCollectHits. Signature not known yet."
+    signature: "void(i64, void*, void*, u32)"
+    note: "Named in Ghidra as Physics_castRayCollectHits; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ServerRaycastEntity_update
     va: 0x143a204b0
-    note: "Named in Ghidra as ServerRaycastEntity_update. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64, void*, void*)"
+    note: "Named in Ghidra as ServerRaycastEntity_update; checked in the decompiler (2026-10-30): builds the query (RaycastEntity_buildQuery), casts it (Raycast_query) and posts the result event."
+    confidence: inferred
     sources: [ghidra]
   - name: RaycastEntity_buildQuery
     va: 0x143a22330
-    note: "Named in Ghidra as RaycastEntity_buildQuery. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(void* self, void*)"
+    note: "Named in Ghidra as RaycastEntity_buildQuery; checked in the decompiler (2026-10-30): fills the query from the entity's from / to properties."
+    confidence: inferred
     sources: [ghidra]
   - name: PhysicsOwner_objectOfHit
     va: 0x1434ee750

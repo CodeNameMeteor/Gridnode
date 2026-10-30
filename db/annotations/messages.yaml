@@ -77,31 +77,37 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: Message_dtor
     va: 0x142d4e9a0
-    note: "Named in Ghidra as Message_dtor. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as Message_dtor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: messageDispatchByTypeId
     va: 0x14345c650
-    note: "Named in Ghidra as messageDispatchByTypeId. Signature not known yet."
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as messageDispatchByTypeId; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientStartSingleplayerMessage_ctor
     va: 0x14465aa10
-    note: "Named in Ghidra as ClientStartSingleplayerMessage_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "Message*(Message*)"
+    note: "Named in Ghidra as ClientStartSingleplayerMessage_ctor; checked in the decompiler (2026-10-30): Message_ctor, then the message's LevelSetup."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientCharacterLocalPlayerSetMessage_ctor
     va: 0x14465c540
-    note: "Named in Ghidra as ClientCharacterLocalPlayerSetMessage_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "Message*(Message*)"
+    note: "Named in Ghidra as ClientCharacterLocalPlayerSetMessage_ctor; checked in the decompiler (2026-10-30): sets the ClientCharacterLocalPlayerSetMessage vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientPlayerLocalSetMessage_ctor
     va: 0x14465cd80
-    note: "Named in Ghidra as ClientPlayerLocalSetMessage_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "Message*(Message*)"
+    note: "Named in Ghidra as ClientPlayerLocalSetMessage_ctor; checked in the decompiler (2026-10-30): sets the ClientPlayerLocalSetMessage vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: CharacterToComponentsOnTeleportedMessage_ctor
     va: 0x1446a0cd0
-    note: "Named in Ghidra as CharacterToComponentsOnTeleportedMessage_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "Message*(Message*)"
+    note: "Named in Ghidra as CharacterToComponentsOnTeleportedMessage_ctor; checked in the decompiler (2026-10-30): sets the CharacterToComponentsOnTeleportedMessage vtable."
+    confidence: inferred
     sources: [ghidra]

@@ -14,6 +14,23 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **The 425 `hypothesis` functions read in the decompiler** (2026-10-30, in the user's Ghidra). Every
+  one now has a signature from the decompiler (414; the rest had one): integers used as addresses
+  become `void*`, named types Ghidra already had stay (`SettingsManager*`, `Message*`...), a
+  `Class_method`'s first pointer is `self`. 90 are now `inferred`, each note saying what showed it:
+  the ctor sets that class's vtable, the function checks `TI_<Class>`, its strings name it (two words
+  of the name, or the class), or (spawn, physics, entity, players, camera, replay: read one by one)
+  what it calls and does. 335 stay `hypothesis` ("the name is not checked yet"), mostly resources
+  (96), render (58), levels (46), reflection (32), startup (31). Imported with GridNodeSync: 684
+  prototypes, none of the user's own prototypes or names changed (exports before and after compared,
+  `bin/ghidra-test/my-names-*-hyp.json`).
+- **Reloading mods while the game runs** (2026-10-30, confirmed in game by the user: manual reload, "when changed", hello and world-draw). A mod exporting
+  `gn_mod_unload` (`GN_MOD_UNLOAD()`, Rust `gn_mod_unload!`) is loaded from a copy in
+  `mods\.loaded\` and can be reloaded from the menu (Mods: Reload, or "when changed"). Unloading
+  calls it, then each part of GridNode drops the callbacks whose code is in the mod's image (ticks at
+  the next tick: `Dispatcher::removeListeners`; hooks: `HookTable::remove`, which re-links a chain
+  around a hook in the middle; both host-tested), waits for frames and ticks, frees it, loads the new
+  copy. `hello` and `world-draw` are reloadable.
 - **API 11: events between entities for mods** (2026-10-30, confirmed in game: 1354 vtables wrapped, 0 failed; `hello` got StreamIn / StreamOut; the Recorder's `events-1` has 9,984 named event lines with stacks through the shared wrappers; "send" reached 1 PamServerCityAlertManager). `on_event(mod, event,
   class, fn)`: a name or "0x<hash>", a class (with subclasses), either open. The onEvent wrappers
   moved from the Recorder to `events.cpp`, shared: the Recorder is a tap on them (so the player build
@@ -237,7 +254,8 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   magrope trigger volumes sized by their transform (`Target` drawn as a point, meaning unconfirmed).
 
 ## Next steps
-1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
+1. The 335 `hypothesis` functions left (all have signatures now): read them one by one, area by area
+   (resources, render, levels, reflection, startup first).
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
 3. Check `gn_movement.speed`, now the length of her velocity at movement ground +0xd0 (x, z at

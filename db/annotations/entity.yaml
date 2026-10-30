@@ -125,43 +125,51 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: entityObject_initWithParentTransform
     va: 0x1431411d0
-    note: "Named in Ghidra as entityObject_initWithParentTransform. Signature not known yet."
+    signature: "i64(void*, u64, void*, void*, u32, i32, void*)"
+    note: "Named in Ghidra as entityObject_initWithParentTransform; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: findObjectVariationInParentChain
     va: 0x14314bf90
-    note: "Named in Ghidra as findObjectVariationInParentChain. Signature not known yet."
+    signature: "i64(void*)"
+    note: "Named in Ghidra as findObjectVariationInParentChain; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_Component_ctor
     va: 0x14315f9e0
-    note: "Named in Ghidra as fb_Component_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, void*, void*, u64)"
+    note: "Named in Ghidra as fb_Component_ctor; checked in the decompiler (2026-10-30): sets the Component vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: Entity_sendMessageToComponents
     va: 0x14316bec0
-    note: "Named in Ghidra as Entity_sendMessageToComponents. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as Entity_sendMessageToComponents; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Updater_ctor
     va: 0x143170780
-    note: "Named in Ghidra as Updater_ctor. Signature not known yet."
+    signature: "void*(void* self, i32, u64, u32)"
+    note: "Named in Ghidra as Updater_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_UpdateManager_runPass
     va: 0x143176840
-    note: "Named in Ghidra as fb_UpdateManager_runPass. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as fb_UpdateManager_runPass; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientGameComponent_ctor
     va: 0x1431c0490
-    note: "Named in Ghidra as ClientGameComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ClientGameComponent_ctor; checked in the decompiler (2026-10-30): sets the ClientGameComponent vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: GameComponent_ctor
     va: 0x1432db630
-    note: "Named in Ghidra as GameComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as GameComponent_ctor; checked in the decompiler (2026-10-30): sets the GameComponent vtable."
+    confidence: inferred
     sources: [ghidra]
   # The user's research, checked in Ghidra 2026-10-21; signatures corrected.
   - name: EntityBus_postEvent
@@ -178,7 +186,8 @@ functions:
     sources: [ghidra, user]
   - name: EntityBus_getPropertyContext
     va: 0x143149080
-    note: "The user's name. It calls one of two functions by the bus's realm bit (+0x34 bit 27) and returns its second argument unchanged; what it does is not clear yet."
+    signature: "u64(void* self, u64)"
+    note: "The user's name. It calls one of two functions by the bus's realm bit (+0x34 bit 27) and returns its second argument unchanged; what it does is not clear yet; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra, user]
   - name: PropertyValue_set
