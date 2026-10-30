@@ -29,7 +29,8 @@ bool set(Entries& entries, const std::string& key, const std::string& value);
 
 } // namespace gn::config
 
-namespace gn::movement {
+// (Not gn::movement: that is mod.hpp's reading of her movement.)
+namespace gn::moveevents {
 
 // GN_MOVE_EVENT_* in gridnode/api.h.
 constexpr int32_t kEventState = 1, kEventLanded = 2, kEventAirborne = 3;
@@ -48,4 +49,4 @@ struct Event {
 // What changed from `was` to `now`, in order: the landing or take-off first, then the state.
 std::vector<Event> diff(const Sample& was, const Sample& now);
 
-} // namespace gn::movement
+} // namespace gn::moveevents

@@ -312,6 +312,32 @@ pub fn hotkey<F: FnMut() + Send + 'static>(id: &str, label: &str, default_vk: i3
     let (i, l) = (cstr(id), cstr(label));
     unsafe { (api().hotkey_add.unwrap())(name(), i.as_ptr(), l.as_ptr(), default_vk, Some(hotkey_tramp::<F>), keep(f)) == 0 }
 }
+// ---- events between entities (API 11) -------------------------------------------------------------
+/// An event's id from its name, as the engine hashes it (djb2-xor).
+pub const fn event_hash(name: &str) -> u32 {
+    let b = name.as_bytes();
+    let (mut h, mut i) = (5381u32, 0);
+    while i < b.len() {
+        h = h.wrapping_mul(33) ^ b[i] as u32;
+        i += 1;
+    }
+    h
+}
+/// An id's name, or None for an unnamed one.
+pub fn event_name(id: u32) -> Option<String> {
+    let mut buf = [0 as c_char; 128];
+    (unsafe { (api().event_name.unwrap())(id, buf.as_mut_ptr(), buf.len()) } == 0).then(|| unsafe { string(buf.as_ptr()) })
+}
+unsafe extern "C" fn event_tramp<F: FnMut(*mut c_void, Type, u32)>(e: *mut c_void, t: *const crate::sys::gn_type, id: u32, user: *mut c_void) {
+    guard("an event callback", (), || (*(user as *mut F))(e, Type(t), id))
+}
+/// `f(entity, type, event_id)` for every event an entity receives (before it handles it), on the thread
+/// that delivers it. `event`: a name or "0x<hash>", "" for all; `class`: an entity class, "" for all.
+pub fn on_event<F: FnMut(*mut c_void, Type, u32) + Send + 'static>(event: &str, class: &str, f: F) -> bool {
+    let (e, c) = (cstr(event), cstr(class));
+    unsafe { (api().on_event.unwrap())(name(), e.as_ptr(), c.as_ptr(), Some(event_tramp::<F>), keep(f)) == 0 }
+}
+
 // ---- the view (API 10) ----------------------------------------------------------------------------
 pub use crate::sys::gn_view as View;
 /// The camera as drawn this frame, with the screen size; None with no camera. Render thread.

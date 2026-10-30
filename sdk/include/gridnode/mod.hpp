@@ -270,6 +270,30 @@ using Landing = gn_landing;
 // landing); false until she has been in the air.
 inline bool landingPrediction(Landing& out) { return api().landing_prediction(&out) == GN_OK; }
 
+// ---- events between entities (API 11) ------------------------------------------------------------
+// An event's id from its name, as the engine hashes it (djb2-xor): eventHash("StartReplay").
+constexpr uint32_t eventHash(const char* name) {
+    uint32_t h = 5381;
+    for (; *name; ++name) h = (h * 33) ^ static_cast<unsigned char>(*name);
+    return h;
+}
+// An id's name, or the id as hex for an unnamed one.
+inline std::string eventName(uint32_t id) {
+    char buf[128];
+    if (api().event_name(id, buf, sizeof(buf)) == GN_OK) return buf;
+    std::snprintf(buf, sizeof(buf), "%08x", id);
+    return buf;
+}
+// fn(void* entity, gn::Type type, uint32_t eventId) for every event an entity receives, before it
+// handles it, on the thread that delivers it. event: a name or "0x<hash>", null for all; className:
+// an entity class (and its subclasses), null for all. Filter by name where you can: there are many.
+template <class F> bool onEvent(const char* event, const char* className, F f) {
+    using Fn = std::function<void(void*, Type, uint32_t)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    return api().on_event(modName(), event, className,
+                          [](void* e, const gn_type* t, uint32_t id, void* u) { (*static_cast<Fn*>(u))(e, Type(t), id); }, p) == GN_OK;
+}
+
 // ---- movement events, settings, hotkeys (API 9) ------------------------------------------------
 using MovementEvent = gn_movement_event;
 // fn(const MovementEvent& e, const Movement& now) for every landing, take-off and movement state

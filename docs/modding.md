@@ -194,6 +194,34 @@ gn::Landing l;
 if (gn::landingPrediction(l) && l.age_ms < 100 && l.ticks_to_hit < 1.66f) gn::jump(); // on the landing tick
 ```
 
+## Events between entities (API 11)
+
+Entities talk through events on their buses: level logic fires `OnTriggered`, a replay entity gets
+`StartReplay`, a part of the level gets `StreamIn`. `gn::onEvent(event, className, fn)` calls
+`fn(void* entity, gn::Type type, uint32_t eventId)` for every event an entity receives that matches,
+before the entity handles it, on the thread that delivers it (usually the entity's realm thread):
+
+- `event`: a name (`"StreamIn"`) or a hash as hex (`"0x2734a476"`) for one nobody has named yet;
+  `nullptr` for every event. Ids are the djb2-xor hash of the name: `gn::eventHash("StartReplay")`
+  (`constexpr`).
+- `className`: an entity class (`"PamServerReplayEntity"`), subclasses included; `nullptr` for every
+  class. An unknown class is refused.
+- `gn::eventName(id)` names an id (from the engine's type, field and enum names, our
+  `db/annotations/events.yaml` and `recordings/event-names.txt`), or gives it as hex.
+
+The first listener wraps onEvent in every entity class (pointer swaps, shared with the Recorder).
+Every event of every entity is a lot: filter by name where you can, and keep the callback short.
+To find which events a thing sends, record it with the Recorder (events are on by default) and read
+the `event` lines with `summarize.py`.
+
+```cpp
+gn::onEvent("StreamIn", nullptr, [](void* entity, gn::Type type, uint32_t id) {
+    gn::log("%s -> %s", gn::eventName(id).c_str(), type.name());
+});
+```
+
+In Rust: `gridnode::on_event`, `event_hash` (`const fn`) and `event_name`.
+
 ## Movement events, settings and hotkeys (API 9)
 
 - **Movement events.** `gn::onMovement(fn)` calls `fn(const gn::MovementEvent& e, const

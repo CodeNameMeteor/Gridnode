@@ -123,6 +123,19 @@ void frame(bool menuOpen); // render thread, every frame: the free camera
 bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
 } // namespace layouts
 
+// Events between entities (events.cpp): onEvent (vtable +0x20) wrapped in every entity class, for the
+// Recorder (its tap) and mods (on_event).
+namespace events {
+using Tap = void (*)(void* peer, void* event);
+void start(const std::wstring& gridnodeDir); // where recordings\event-names.txt is
+void setTap(Tap tap);                        // the Recorder; called for every event while set
+bool ensureHooked(const char* who);          // wraps them (once); false when it could not
+uint32_t hash(const std::string& name);      // an event id from its name (djb2-xor)
+std::string name(uint32_t id);               // its name, or the id as hex
+} // namespace events
+int onEvent(const std::string& mod, const char* event, const char* className, gn_event_fn fn, void* user);
+int eventName(uint32_t id, char* out, size_t size);
+
 // Recorder (recorder.cpp): messages, entity creations and markers with call stacks, exported as
 // JSON lines for research (M8).
 namespace recorder {

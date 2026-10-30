@@ -6,8 +6,10 @@
 //   - ticks: run code on the client and server game threads
 //   - engine addresses: call a game function from gridnode/engine.hpp
 //   - messages: be told when the engine sends a message
+//   - events: be told when an entity receives an event (here, parts of the level streaming in and out)
 // Everything it does is read-only. Output goes to gridnode.log, prefixed [hello].
 
+#include <atomic>
 #include <cmath>
 
 #include "gridnode/engine.hpp"
@@ -87,6 +89,15 @@ GN_MOD("hello") {
         gn::read(static_cast<const char*>(m) + 0x30, character); // the message's member after the header
         gn::log("message: %s, character %p (%s)", info.type_name, character, gn::Type::of(character).name());
     });
+
+    // Events between entities: a part of the level loading or unloading (StreamIn / StreamOut, sent to
+    // sub-levels and blueprints), the first 40.
+    static_assert(gn::eventHash("StreamIn") == 0xd27bc17e, "the engine's event hash");
+    for (const char* name : {"StreamIn", "StreamOut"})
+        gn::onEvent(name, nullptr, [](void* entity, gn::Type type, uint32_t id) {
+            static std::atomic<int> n{0};
+            if (n.fetch_add(1) < 40) gn::log("event: %s -> %s %p", gn::eventName(id).c_str(), type ? type.name() : "?", entity);
+        });
 
     // Every ~5 s on the server thread: how many server ticks ran.
     gn::onServerTick([](float dt) {

@@ -87,7 +87,7 @@ bool set(Entries& entries, const std::string& key, const std::string& value) {
 
 } // namespace gn::config
 
-namespace gn::movement {
+namespace gn::moveevents {
 
 std::vector<Event> diff(const Sample& was, const Sample& now) {
     std::vector<Event> out;
@@ -96,4 +96,4 @@ std::vector<Event> diff(const Sample& was, const Sample& now) {
     return out;
 }
 
-} // namespace gn::movement
+} // namespace gn::moveevents

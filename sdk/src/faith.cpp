@@ -714,7 +714,7 @@ struct MoveListener {
 };
 std::mutex g_moveM;
 std::vector<MoveListener> g_moveListeners; // (g_moveM)
-movement::Sample g_moveWas;                // client thread
+moveevents::Sample g_moveWas;                // client thread
 bool g_moveHave = false;                   // client thread
 } // namespace
 
@@ -737,12 +737,12 @@ void movementEventsClientTick() {
         g_moveHave = false; // no Faith (loading, a menu): the next reading starts again
         return;
     }
-    const movement::Sample now{m.state, m.on_ground != 0};
-    const movement::Sample was = g_moveWas;
+    const moveevents::Sample now{m.state, m.on_ground != 0};
+    const moveevents::Sample was = g_moveWas;
     const bool had = g_moveHave;
     g_moveWas = now, g_moveHave = true;
     if (!had) return;
-    for (const movement::Event& e : movement::diff(was, now)) {
+    for (const moveevents::Event& e : moveevents::diff(was, now)) {
         const gn_movement_event ev{e.kind, e.state, e.oldState, now.inAir ? 1 : 0};
         for (const MoveListener& l : listeners) {
             try {

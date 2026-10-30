@@ -14,6 +14,14 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 11: events between entities for mods** (2026-10-30, confirmed in game: 1354 vtables wrapped, 0 failed; `hello` got StreamIn / StreamOut; the Recorder's `events-1` has 9,984 named event lines with stacks through the shared wrappers; "send" reached 1 PamServerCityAlertManager). `on_event(mod, event,
+  class, fn)`: a name or "0x<hash>", a class (with subclasses), either open. The onEvent wrappers
+  moved from the Recorder to `events.cpp`, shared: the Recorder is a tap on them (so the player build
+  has events too), and the event name table moved with them (`event_name`). Recorder fix:
+  "send event to class" refused every entity once events were wrapped (it required the slot to hold
+  game code). `hello` logs the first 40 StreamIn / StreamOut events. Rust: `on_event`, `event_hash`,
+  `event_name`. The movement events' portable namespace is now `gn::moveevents` (it clashed with
+  `gn::movement` in mod.hpp).
 - **API 10: drawing in the world for mods** (2026-10-30, untested in game). `view_get` gives the camera
   as drawn (the layout editor's `viewBasis` and FOV, the free camera while it flies) and the screen
   size; `gridnode/projection.hpp` the editor's projection math (host-tested); `gn::ui::line3d`,
@@ -242,6 +250,14 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
    the speed (the trainer's position load) did not keep it with +0x1bc; it now scales her velocity
    and writes the old trainer's field too (untested).
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
+Later (user, 2026-10-30): the trainer spawning volumes such as triggers. Leads found in Ghidra, not
+looked into: `HavokVisualDebugger` and `HavokCaptureToFile` are reflected settings fields in two
+settings classes (one also has `SavePoint`, `DisableCutscenes`, `ShowTriggerDebugText`); the Havok
+Visual Debugger is Havok 2013.3's (path in the exe), which streams to Havok's own viewer app over the
+network rather than drawing in game. Also present: `PhysicsDebugSettings`, `DebugRenderSettings`,
+`EnableDebugRendering`, `DebugRenderer`, `hkpTriggerVolume`, `WithinPlayerTriggerVolumeCondition`.
+`ShowTriggerDebugText` and the debug-render settings may show triggers in game, if retail kept the
+renderer: try them in the console first. Our own `gn::ui::box3d` can draw trigger boxes either way.
 
 ## Decisions and gotchas
 - Never patch game code: pointer swaps only. Leave online services and Beat Revival alone. PC only.

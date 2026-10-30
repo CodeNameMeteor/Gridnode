@@ -12,6 +12,7 @@
 #include "gridnode/config.hpp"
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
+#include "gridnode/mod.hpp"
 #include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
 
@@ -223,7 +224,7 @@ void testConfig() {
 }
 
 void testMovementEvents() {
-    using namespace movement;
+    using namespace moveevents;
     // A bhop's landing tick: in the air in state 8 -> on the ground in state 0: landed, then the state.
     std::vector<Event> ev = diff({8, true}, {0, false});
     CHECK(ev.size() == 2);
@@ -260,6 +261,14 @@ void testProjection() {
     CHECK(!projection::segmentToScreen(v, back1, back2, a, b));
 }
 
+void testEventHash() {
+    // Ids named in db/annotations/events.yaml (checked against the game there).
+    CHECK(gn::eventHash("StartReplay") == 0x2734a476u);
+    CHECK(gn::eventHash("StopReplay") == 0xd6a2182eu);
+    CHECK(gn::eventHash("PlayerTriggeredSafeHouse") == 0x18c33d9au);
+    static_assert(gn::eventHash("StreamOut") == 0x21f3f677u, "usable at compile time");
+}
+
 } // namespace
 
 int main() {
@@ -269,6 +278,7 @@ int main() {
     testConfig();
     testMovementEvents();
     testProjection();
+    testEventHash();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

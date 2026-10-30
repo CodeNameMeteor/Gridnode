@@ -176,6 +176,9 @@ size_t apiLevelName(char* out, size_t size) {
     return n.size();
 }
 int apiOnLevel(const char* mod, gn_level_fn fn, void* user) { return onLevel(mod ? mod : "?", fn, user); }
+int apiOnEvent(const char* mod, const char* event, const char* cls, gn_event_fn fn, void* user) {
+    return onEvent(mod ? mod : "?", event, cls, fn, user);
+}
 int apiViewGet(gn_view* out) { return out && layouts::view(*out) ? GN_OK : out ? GN_ERR_UNAVAILABLE : GN_ERR_ARGUMENT; }
 int apiOnMovement(const char* mod, gn_movement_fn fn, void* user) { return onMovement(mod ? mod : "?", fn, user); }
 int apiOnUi(const char* mod, gn_ui_fn fn, void* user) { return ui::onUi(mod ? mod : "?", fn, user); }
@@ -306,6 +309,8 @@ const gn_api* api() {
         a.hotkey_set = hotkeySet;
         a.on_movement = apiOnMovement;
         a.view_get = apiViewGet;
+        a.on_event = apiOnEvent;
+        a.event_name = eventName;
         return a;
     }();
     return &table;

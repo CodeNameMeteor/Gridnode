@@ -321,131 +321,14 @@ void onCreated(void* entity, void* ci, void*) {
 }
 
 // ---- events between entities ------------------------------------------------------------------
-// An entity receives an event through its vtable +0x20 (EntityBusPeer onEvent), called by
-// EntityBusPeer_sendEvent after EntityBus_fireEvent followed the bus's event connections. The event
-// is an EntityEvent {vtable, +8 id, +0xc kind}; ids are djb2-xor hashes of the event names. GridNode
-// wraps that slot in every entity vtable (a pointer swap per vtable, through the hook table, as for
-// creators), the first time events are recorded; the wrappers do nothing while not recording.
-using OnEventFn = void (*)(void* peer, void* event, void* a3, void* a4);
-constexpr size_t kEventPool = 4096;
-constexpr uint64_t kOnEventSlot = 0x20;
-std::array<uint64_t, kEventPool> g_eventOrig{};
-
-void onEvent(void* peer, void* event);
-
-template <size_t I> void eventDetour(void* peer, void* event, void* a3, void* a4) {
-    if (g_recording.load(std::memory_order_relaxed) && g_wantEvents.load(std::memory_order_relaxed)) {
-        try {
-            onEvent(peer, event);
-        } catch (...) { // recording never breaks the game's event
-        }
-    }
-    reinterpret_cast<OnEventFn>(g_eventOrig[I])(peer, event, a3, a4);
-}
-template <size_t... I> constexpr std::array<OnEventFn, sizeof...(I)> makeEventDetours(std::index_sequence<I...>) {
-    return {&eventDetour<I>...};
-}
-const std::array<OnEventFn, kEventPool> g_eventDetours = makeEventDetours(std::make_index_sequence<kEventPool>{});
-std::atomic<bool> g_eventsHooked{false};
-
-// Wraps onEvent in every vtable of an EntityBusPeer class (checked: its slot 0 says so, slot +0x20
-// is game code). Once.
-void hookEvents() {
-    if (g_eventsHooked.exchange(true)) return;
-    const Type* peer = registry().find("EntityBusPeer");
-    if (!peer) {
-        GN_LOG("recorder: no EntityBusPeer type; events between entities are not recorded");
-        return;
-    }
-    std::vector<uint64_t> vtables;
-    for (const Type& t : registry().data().types) {
-        if (t.category != reflect::Category::Class || !registry().isKindOf(&t, peer)) continue;
-        for (uint64_t va : t.vtables) {
-            const uintptr_t vt = static_cast<uintptr_t>(va - kImageBase) + mem::moduleBase();
-            uintptr_t fake = vt; // an "object" whose vtable is vt: its type must be an EntityBusPeer
-            const Type* vtType = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(&fake));
-            if (!vtType || !registry().isKindOf(vtType, peer)) continue;
-            if (!mem::inImage(mem::readOr<uintptr_t>(vt + kOnEventSlot))) continue;
-            vtables.push_back(vt);
-        }
-    }
-    std::sort(vtables.begin(), vtables.end());
-    vtables.erase(std::unique(vtables.begin(), vtables.end()), vtables.end());
-    size_t used = 0, failed = 0;
-    for (uintptr_t vt : vtables) {
-        if (used == kEventPool) break;
-        std::string why;
-        const auto r = hooks().install("recorder", vt + kOnEventSlot, 0, reinterpret_cast<uint64_t>(g_eventDetours[used]), &g_eventOrig[used], &why);
-        if (r == hook::Result::Ok) ++used;
-        else if (failed++ < 5) GN_LOG("recorder: onEvent of vtable 0x%llx: %s", static_cast<unsigned long long>(mem::va(vt)), why.c_str());
-    }
-    GN_LOG("recorder: events between entities: onEvent wrapped in %llu entity vtables (%llu failed, %llu found)",
-           static_cast<unsigned long long>(used), static_cast<unsigned long long>(failed), static_cast<unsigned long long>(vtables.size()));
-}
-
-uint32_t djb2(const std::string& s) {
-    uint32_t h = 5381;
-    for (unsigned char c : s) h = (h * 33) ^ c;
-    return h;
-}
-
-// Event names from their hashes: every reflected type, field and enum value name, common event
-// words, the events and properties named in db/annotations (engine.hpp), and recordings\event-names.txt (one name per line, "#" comments, anything after a tab
-// ignored) if present: tools/events/build_names.py makes one from an EBX dump, the game's strings
-// and earlier recordings.
-const std::unordered_map<uint32_t, std::string>& eventNames() {
-    static const std::unordered_map<uint32_t, std::string> names = [] {
-        std::unordered_map<uint32_t, std::string> m;
-        auto add = [&](const std::string& n) {
-            if (!n.empty()) m.emplace(djb2(n), n);
-        };
-        for (const Type& t : registry().data().types) {
-            add(t.name);
-            for (const reflect::Field& f : t.fields) add(f.name);
-            for (const reflect::EnumValue& v : t.values) add(v.name);
-        }
-        static const char* const kCommon[] = {
-            "In", "Out", "Start", "Stop", "Enable", "Disable", "Enabled", "Disabled", "Reset", "Trigger", "Triggered", "OnTrigger",
-            "OnTriggered", "OnStart", "OnStop", "OnEnter", "OnExit", "OnEnable", "OnDisable", "OnFinished", "OnCompleted", "Finished",
-            "Completed", "Activate", "Deactivate", "Activated", "Deactivated", "Show", "Hide", "Open", "Close", "Opened", "Closed",
-            "Spawn", "Unspawn", "OnSpawn", "OnUnspawn", "OnSpawned", "OnUnspawned", "OnKilled", "OnDestroyed", "OnPlay", "Play",
-            "Pause", "Resume", "OnTrue", "OnFalse", "True", "False", "Set", "Clear", "Toggle", "Next", "Previous", "Begin", "End",
-            "OnBegin", "OnEnd", "Load", "Unload", "OnLoaded", "OnUnloaded", "Loaded", "Unloaded", "Success", "Failure", "OnSuccess",
-            "OnFailure", "Cancel", "OnCancel", "Confirm", "OnConfirm", "Select", "OnSelect", "Pickup", "OnPickup", "Collected",
-            "OnCollected", "Teleport", "OnTeleport", "Respawn", "OnRespawn", "Checkpoint", "OnCheckpoint", "Save", "OnSave"};
-        for (const char* n : kCommon) add(n);
-        FILE* f = _wfopen((g_dir + L"event-names.txt").c_str(), L"rb");
-        if (f) {
-            char line[256];
-            while (fgets(line, sizeof(line), f)) {
-                std::string n = line;
-                if (n.empty() || n[0] == '#') continue;              // a comment
-                if (const size_t tab = n.find('\t'); tab != std::string::npos) n.resize(tab); // "name<TAB># note"
-                while (!n.empty() && (n.back() == '\n' || n.back() == '\r' || n.back() == ' ')) n.pop_back();
-                // Generated names are checked against their hashes; a name the file gives is taken
-                // over any built-in one with the same hash.
-                if (!n.empty()) m[djb2(n)] = n;
-            }
-            fclose(f);
-        }
-        // Named by our research (db/annotations, checked against their hashes): these win.
-        for (const e::hash::Name& n : e::hash::names)
-            if (n.name) m[n.hash] = n.name;
-        return m;
-    }();
-    return names;
-}
-
-std::string eventName(uint32_t id) {
-    const auto& m = eventNames();
-    const auto it = m.find(id);
-    if (it != m.end()) return it->second;
-    char b[16];
-    snprintf(b, sizeof(b), "%08x", id);
-    return b;
-}
+// The wrappers on every entity's onEvent are events.cpp's (shared with mods); the Recorder is their
+// tap while it runs (set at start, does nothing unless recording events).
+void hookEvents() { events::ensureHooked("recorder"); }
+uint32_t djb2(const std::string& s) { return events::hash(s); }
+std::string eventName(uint32_t id) { return events::name(id); }
 
 void onEvent(void* peer, void* event) {
+    if (!g_recording.load(std::memory_order_relaxed) || !g_wantEvents.load(std::memory_order_relaxed)) return;
     if (!peer || !event) return;
     const Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(peer));
     {
@@ -1217,7 +1100,7 @@ void pollWatches() {
 // What EntityBusPeer_sendEvent does for a connection's target: its onEvent (vtable +0x20) with an
 // EntityEvent {vtable 0x141a4a8b0, u32 id, u32 0} (as EntityBus_postEvent builds one), on the
 // entity's realm thread. Recorded (kSent) so the reaction can be seen in the recording.
-constexpr uint64_t kEntityEventVtable = 0x141a4a8b0;
+constexpr uint64_t kEntityEventVtable = 0x141a4a8b0, kOnEventSlot = 0x20;
 
 int sendEventToClass(const std::string& cls, uint32_t id) {
     const Type* k = registry().find(cls);
@@ -1226,15 +1109,17 @@ int sendEventToClass(const std::string& cls, uint32_t id) {
     for (const auto& [p, ty] : inspector::tracked()) {
         if (!ty || !registry().isKindOf(ty, k) || !inspector::alive(p, ty)) continue;
         const uintptr_t vt = mem::readOr<uintptr_t>(p);
+        // The slot holds the game's onEvent, or events.cpp's wrapper of it once events are wrapped (it
+        // was required to be game code, which refused every entity after the first recording).
         const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + kOnEventSlot) : 0;
-        if (!mem::inImage(fn)) continue;
+        if (!fn) continue;
         const uintptr_t ent = p;
         const Type* et = ty;
         auto deliver = [ent, et, id] {
             if (!inspector::alive(ent, et)) return;
             const uintptr_t v = mem::readOr<uintptr_t>(ent);
             const uintptr_t f = v ? mem::readOr<uintptr_t>(v + kOnEventSlot) : 0;
-            if (!mem::inImage(f)) return;
+            if (!f) return;
             struct {
                 uintptr_t vtable;
                 uint32_t id;
@@ -2062,6 +1947,7 @@ void start(const std::wstring& gridnodeDir) {
     QueryPerformanceFrequency(&g_freq);
     QueryPerformanceCounter(&g_t0);
     gn::host::onCreated("gridnode", "Entity", &onCreated, nullptr);
+    events::setTap(&onEvent);
 }
 
 void onDestroyed(void* entity) { onDestroyedImpl(entity); }

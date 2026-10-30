@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 10 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world */
+#define GN_API_VERSION 11 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -188,6 +188,11 @@ typedef struct gn_view {
     float width;       /* the screen, pixels (the overlay's display size) */
     float height;
 } gn_view;
+
+/* An event an entity received (on_event), before it handles it: the entity, its type (null if unknown)
+ * and the event's id (the djb2-xor hash of its name; gn::eventHash in mod.hpp). On the thread that
+ * delivered it, usually the entity's realm thread (server or client); keep it short. */
+typedef void (*gn_event_fn)(void* entity, const gn_type* type, uint32_t event_id, void* user);
 
 /* A mod's hotkey went down (hotkey_add). Client thread. */
 typedef void (*gn_hotkey_fn)(void* user);
@@ -459,6 +464,21 @@ typedef struct gn_api {
      * the screen size, for drawing at world positions. Render thread (a UI callback);
      * GN_ERR_UNAVAILABLE with no camera (loading, menus) or no overlay. */
     int (*view_get)(gn_view* out);
+
+    /* ==== GN_API_VERSION 11 =================================================================== */
+
+    /* ---- events between entities -----------------------------------------------------------------
+     * Entities talk through events on their buses ("StartReplay", "OnTriggered", "StreamIn"...): logic
+     * fires one, the bus delivers it to each connected entity's onEvent. on_event calls fn for every
+     * event delivered that matches: event, a name or its hash as hex ("0x2734a476"), null or "" for
+     * every event; class_name, an entity class ("PamServerReplayEntity"; subclasses too), null or ""
+     * for every class. GN_ERR_NOT_FOUND for an unknown class. The first call wraps onEvent in every
+     * entity class (pointer swaps, shared with the Recorder). Every event of every entity is a lot:
+     * filter by name where you can. Any thread.
+     * event_name: an id's name, from the engine's type, field and enum names, our annotations and
+     * recordings/event-names.txt; GN_ERR_NOT_FOUND (out "") for an unnamed id. Any thread. */
+    int (*on_event)(const char* mod, const char* event, const char* class_name, gn_event_fn fn, void* user);
+    int (*event_name)(uint32_t id, char* out, size_t size);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
