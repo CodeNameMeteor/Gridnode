@@ -334,6 +334,25 @@ class GhidraSync(unittest.TestCase):
         md = by["MyData"]  # not annotated: from the dump
         self.assertEqual((md["vtable"], md["depth"], md["size"]), (0x140020200, 3, 128))
 
+    def test_shared_functions_merge(self):
+        """A function at one address gets one entry: the annotated name first, else the base class's
+        virtual; every comment is kept; sibling classes with no known common base get no prototype."""
+        from gridnode_gen import ghidra_sync
+        v = lambda cls, va, c: {"name": f"{cls}::f", "va": va, "signature": "", "comment": c,
+                                "proto": {"returns": "void", "params": [], "this": cls}}
+        plain = {"name": "Spawner_f", "va": 0x10, "signature": "", "comment": "plain",
+                 "proto": {"returns": "void", "params": [{"type": "Spawner*", "name": "s"}]}}
+        out = {f["va"]: f for f in ghidra_sync._merge_shared(
+            [v("PamSpawner", 0x10, "pam"), plain,
+             v("PamSpawner", 0x20, "pam"), v("Spawner", 0x20, "base"),
+             v("ServerThing", 0x30, "s"), v("ClientThing", 0x30, "c")], None)}
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[0x10]["name"], "Spawner_f")
+        self.assertIn("pam", out[0x10]["comment"])
+        self.assertIn("Also: PamSpawner::f", out[0x10]["comment"])
+        self.assertEqual((out[0x20]["name"], out[0x20]["proto"]["this"]), ("Spawner::f", "Spawner"))
+        self.assertNotIn("proto", out[0x30])
+
     def test_round_trip(self):
         """What Ghidra exports comes back as annotations that load next to the existing ones,
         and what GridNode already knows is not repeated."""
@@ -363,6 +382,19 @@ class GhidraSync(unittest.TestCase):
                 f.write(text)
             _, p = annotations.load(d)
             self.assertEqual(p.errors, [])
+
+    def test_import_skips_gridnodes_own_members(self):
+        """`vtbl` at +0 and base members GridNodeSync copied into a subclass are not findings."""
+        from gridnode_gen import ghidra_sync
+        export = {"format": "gridnode-ghidra-export", "version": 1, "functions": [], "labels": [],
+                  "structs": [{"name": "MyEntity", "members": [
+                      {"offset": 0, "name": "vtbl", "type": "MyEntity_vtbl *"},
+                      {"offset": 0x8, "name": "owner", "type": "MyEntity *"},     # another class's annotated member
+                      {"offset": 0x60, "name": "speed", "type": "float"}]}]}     # a real finding
+        text, counts = ghidra_sync.from_ghidra(export, self.db)
+        self.assertEqual(counts["members"], 1)
+        self.assertIn("speed", text)
+        self.assertNotIn("vtbl", text)
 
     def test_friend_import_and_relay(self):
         """A friend's export: their name in sources and notes, their comment carried; relayed, it
@@ -557,6 +589,31 @@ class RecordingObjects(unittest.TestCase):
             self.assertEqual(r.stdout.count("(points at it)"), 2)   # in the list, then removed from it
             r = subprocess.run([sys.executable, script, rec, "--ghidra", os.path.join(d, "g.json")], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class RecordingClasses(unittest.TestCase):
+    def test_traced_classes_get_structs(self):
+        """--ghidra adds class structs and vtables for the classes a recording traced or watched."""
+        import json
+        evs = [{"kind": "header", "events": 3},
+               {"kind": "call", "t": 1.0, "class": "ServerCharacterSpawnEntity", "slot": "0xd0", "fn": "0x143390830"},
+               {"kind": "list", "t": 1.1, "field": "spawned (client)", "target": "ClientSpawnEntity", "count": 0, "first": True, "items": []},
+               {"kind": "created", "t": 1.2, "type": "PamClientCharacterEntity", "ptr": "0x1000"}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            for mode, want in (("traced", {"ServerCharacterSpawnEntity", "ClientSpawnEntity"}),
+                               ("all", {"ServerCharacterSpawnEntity", "ClientSpawnEntity", "PamClientCharacterEntity"})):
+                out = os.path.join(d, f"g-{mode}.json")
+                r = subprocess.run([sys.executable, script, rec, "--ghidra", out, "--classes", mode,
+                                    "--reflected", os.path.join(d, "none.json")], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                doc = json.load(open(out))
+                self.assertEqual({s["name"] for s in doc["structs"]}, want)
+                by = {s["name"]: s for s in doc["structs"]}
+                self.assertEqual(by["ServerCharacterSpawnEntity"]["vtable"], 0x141b4e0c8)   # from the annotations
 
 
 class FrameNames(unittest.TestCase):

@@ -26,6 +26,17 @@ functions:
     signature: "void*(void** arenaMember, u64 size, u64 align)"
     note: Allocates from the arena held in *arenaMember. Used to give a replay component its pose buffer.
     sources: [mecmp]
+  - name: Arena_allocAligned
+    va: 0x142a77780
+    signature: "void*(void* arena, u64 size, u64 align)"
+    note: "Allocates from an arena, dispatching on its kind (+0x8; 1-11 are built-in allocators, others through vtable +0x8). 517 callers, the replay keyframe ring among them (align 16). Named in the user's Ghidra; checked 2026-10-29."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Heap_FreeChunk
+    va: 0x142c7be80
+    note: "Named in the user's Ghidra (2026-10-29); 4 callers, all near it. Not checked."
+    confidence: hypothesis
+    sources: [ghidra]
   - name: RbTree_increment
     va: 0x142a34820
     signature: "void*(void* node)"

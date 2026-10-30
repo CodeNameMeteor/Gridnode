@@ -164,6 +164,13 @@ writes a file for GridNodeSync's *Import* (or `import FILE` as script arguments)
   it was and for what, and, for traced functions, how often they were called. Importing the same
   recording again replaces its block and bookmarks; other recordings' blocks stay.
 
+It also carries a struct and vtable type for each class the recording traced (calls, list and
+field watches, events sent to it), with the annotated members of the class and its bases, so their
+functions read `this->...` after the import. `--classes all` adds every class seen in the recording
+(created, destroyed, events, animations, messages; many more structs), `--classes none` leaves them
+out. Sizes, bases and vtables come from the dump (`--reflected`, default `gridnode-reflected.json`
+next to the `recordings` folder, else `db/reflected/`); without it only annotated classes get one.
+
 `--marker NAME` (with `--window`) keeps only the lines around that marker. Without `--exe` only the
 bookmarks are written.
 

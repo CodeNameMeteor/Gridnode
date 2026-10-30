@@ -14,6 +14,23 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Ghidra inbox sorted** (2026-10-29, checked in the user's Ghidra): all 111 new names are in the
+  annotations. 110 `ant_define*` functions (checked: each passes its own type's name; notes list the
+  fields) in `ant.yaml`, `inferred`; 26 replay functions (playback, keyframe ring, recorder setup,
+  the server entity that loads a downloaded replay into a ghost) in `replay.yaml`, read in the
+  decompiler and consistent with `ReplayRecorder`'s members; engine start/stop and the arena allocator.
+  Of the 34 names that differ, GridNode's are kept (the meaning matches); the two that read
+  differently note the other name (`ServerGameWorld` is the same global as `g_physicsQueryManager`).
+  `ghidra-import` no longer lists GridNodeSync's own `vtbl` and copied base members as findings.
+- **More prototypes** (2026-10-29): signatures from the decompiler for the 28 checked functions that
+  had none; 268 prototypes now go into Ghidra (from 115). The 421 `hypothesis` functions still have none.
+- **Prototypes and recording classes in Ghidra** (2026-10-29, run on the user's Ghidra; untested by the
+  user): `ghidra-export` gives each function with a known signature its prototype (115 applied, 1 of
+  the user's kept); entries that share an address are merged into one (5 did: they swapped names and
+  comments on every import). `summarize.py --ghidra` adds structs and vtable types for the classes a
+  recording traced (`--classes traced|all|none`, `--reflected`); a later import never moves `this` to
+  a subclass. Comment blocks keep a fixed order, so a second import changes nothing (0 comments).
+  Spawner signatures in `spawn.yaml` now take the spawner class instead of `void*`.
 - **Class structs and vtable types in Ghidra** (2026-10-29, run on the user's Ghidra): `ghidra-export`
   gives each class its vtable (annotated, else the dump's), depth and base classes' members (`--class
   NAME` for more); GridNodeSync builds `<Class>_vtbl` (slots named and typed from what they point to),
@@ -102,10 +119,10 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   magrope trigger volumes sized by their transform (`Target` drawn as a point, meaning unconfirmed).
 
 ## Next steps
-1. Sort `ghidra-import`'s inbox from the user's Ghidra (111 functions, 34 names differ).
+1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
-3. Runtime class structs and vtable types in Ghidra (spawners, replay entities, characters).
+3. Identify the class of the `ProjectionSpawner_*` functions (replay.yaml; a server entity, message listener at +0x30).
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
 
 ## Decisions and gotchas

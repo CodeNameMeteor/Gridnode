@@ -16,8 +16,15 @@ functions:
     sources: [ghidra]
   - name: engine_registerSubsystemModules
     va: 0x142a26780
-    note: "Named in Ghidra as engine_registerSubsystemModules. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Starts the subsystem modules (ant_initPamplonaSubsystem among them); engine_shutdownSubsystemModules is its reverse."
+    confidence: inferred
+    sources: [ghidra]
+  - name: engine_shutdownSubsystemModules
+    va: 0x142a26840
+    signature: "void()"
+    note: "Shuts the subsystem modules down (calls ant_shutdownPamplonaSubsystem and 14 others). Named in the user's Ghidra, 2026-10-29."
+    confidence: inferred
     sources: [ghidra]
   - name: createMainWindow
     va: 0x142a268b0

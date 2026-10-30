@@ -42,6 +42,18 @@ def _sig_text(sig) -> str:
     return f"{sig.returns}({params})"
 
 
+def _proto(sig, this: str | None = None) -> dict | None:
+    """A prototype for GridNodeSync to apply: return type, parameters (GridNode's type language), and
+    for a virtual the class whose pointer is the hidden first parameter."""
+    if sig is None:
+        return None
+    out = {"returns": str(sig.returns),
+           "params": [{"type": str(p.type), "name": p.name or ""} for p in sig.params]}
+    if this:
+        out["this"] = this
+    return out
+
+
 def _class_vtable(c, t) -> int | None:
     """The class's vtable: the annotated one, else the dump's when it found exactly one."""
     if c is not None and c.vtable:
@@ -100,8 +112,13 @@ def to_ghidra(db: Database, reflected=None, classes=()) -> dict:
                         for m in sorted(s.members, key=lambda m: m.offset)],
         })
 
-    functions = [{"name": f.name, "va": f.va, "signature": _sig_text(f.signature),
-                  "comment": _meta_comment(f.meta, _sig_text(f.signature))} for f in db.functions.values()]
+    functions = []
+    for f in db.functions.values():
+        e = {"name": f.name, "va": f.va, "signature": _sig_text(f.signature),
+             "comment": _meta_comment(f.meta, _sig_text(f.signature))}
+        if f.signature is not None:
+            e["proto"] = _proto(f.signature)
+        functions.append(e)
     labels = []
     for c in db.classes.values():
         if c.vtable:
@@ -110,6 +127,7 @@ def to_ghidra(db: Database, reflected=None, classes=()) -> dict:
         for v in c.virtuals:
             if v.va:
                 functions.append({"name": f"{c.name}::{v.name}", "va": v.va, "signature": _sig_text(v.signature),
+                                  "proto": _proto(v.signature, this=c.name),
                                   "comment": _meta_comment(v.meta, f"{c.name} vtable +{v.offset:#x}: {_sig_text(v.signature)}")})
     for g in db.globals.values():
         labels.append({"name": g.name, "va": g.va, "type": str(g.type), "comment": _meta_comment(g.meta)})
@@ -118,10 +136,62 @@ def to_ghidra(db: Database, reflected=None, classes=()) -> dict:
     for h in db.hooks.values():
         labels.append({"name": f"{h.name}_slot", "va": h.slot, "type": "void*",
                        "comment": _meta_comment(h.meta, f"GridNode hook ({h.kind}); holds {h.original:#x} in this build")})
-    functions.sort(key=lambda f: f["va"])
+    functions = _merge_shared(functions, reflected)
     labels.sort(key=lambda x: x["va"])
     structs.sort(key=lambda s: s["name"])
     return {"format": FORMAT_IN, "version": VERSION, "structs": structs, "functions": functions, "labels": labels}
+
+
+def _bases(cls: str, reflected) -> list[str]:
+    """The class's bases from the dump. Without one, the game's naming: Pam classes derive from the
+    Frostbite class their name ends with (PamServerCharacterSpawnEntity <- ServerCharacterSpawnEntity)."""
+    t = reflected.by_name.get(cls) if reflected is not None else None
+    if t is not None:
+        return [x["displayName"] for x in reflected.chain(t)][1:]
+    return [cls[3:]] if cls.startswith("Pam") and len(cls) > 3 else []
+
+
+def _merge_shared(functions: list[dict], reflected) -> list[dict]:
+    """One entry per address. Classes share code (a subclass's vtable slot often holds its base's
+    function, and an annotated function can also be a virtual): one function in Ghidra gets one
+    name, one prototype and one comment, or each import would swap them back and forth. The name is
+    the annotated function's, else the virtual of the class the others derive from; the comment
+    keeps every entry's text."""
+    by_va: dict[int, list[dict]] = {}
+    for f in functions:
+        by_va.setdefault(f["va"], []).append(f)
+    out = []
+    for va in sorted(by_va):
+        group = by_va[va]
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        plain = [f for f in group if "this" not in (f.get("proto") or {})]
+        if plain:
+            main = plain[0]
+        else:
+            classes = [f["proto"]["this"] for f in group]
+            base = next((c for c in classes if all(o == c or c in _bases(o, reflected) for o in classes)), None)
+            main = dict(next((f for f in group if f["proto"]["this"] == base), group[0]))
+            if base is None:
+                # Sibling classes: `this` is their closest common base, if the dump names one; else
+                # no prototype, and Ghidra's vtable pass decides.
+                common = next((c for c in _bases(classes[0], reflected)
+                               if all(c in _bases(o, reflected) for o in classes[1:])), None)
+                if common is None:
+                    main.pop("proto", None)
+                else:
+                    main["proto"] = dict(main["proto"], this=common)
+        main = dict(main)
+        seen, parts = set(), []
+        for f in [main] + [f for f in group if f["name"] != main["name"]]:
+            if f["comment"] and f["comment"] not in seen:
+                seen.add(f["comment"])
+                parts.append(f["comment"])
+        others = [f["name"] for f in group if f["name"] != main["name"]]
+        main["comment"] = "\n".join(parts) + ("\nAlso: " + ", ".join(others) if others else "")
+        out.append(main)
+    return out
 
 
 # ---- Ghidra -> annotations -------------------------------------------------------------------------
@@ -278,11 +348,16 @@ def from_ghidra(doc: dict, db: Database, who: str | None = None) -> tuple[str, d
         if who:
             entry["sources"] = src
         globs.append(entry)
+    # GridNodeSync itself puts `vtbl` at +0 and copies the base classes' annotated members into each
+    # class struct: those are GridNode's, not findings.
+    annotated = {(m.offset, m.name) for c in list(db.classes.values()) + list(db.structs.values()) for m in c.members}
     for s in doc.get("structs", []):
         ann = db.classes.get(s["name"]) or db.structs.get(s["name"])
         have = {m.offset for m in ann.members} if ann else set()
         for m in s.get("members", []):
             if m["offset"] in have or re.match(r"^(field|padding|undefined)_?(0x)?[0-9a-f]*$", m["name"], re.I):
+                continue
+            if (m["offset"] == 0 and m["name"] == "vtbl") or (int(m["offset"]), m["name"]) in annotated:
                 continue
             members.setdefault(s["name"], []).append(
                 {"offset": int(m["offset"]), "name": _ident(m["name"]), "type": ghidra_type(m.get("type", "u8"), known_types)})

@@ -299,6 +299,45 @@ def object_story(events, which):
     return 0
 
 
+def recording_classes(events, mode="traced"):
+    """The classes a recording is about. "traced": the ones traced, watched or sent events to (what you
+    chose to look at); "all": also every class created, destroyed, sent an event or pointed at."""
+    names = set()
+    for e in events:
+        k = e.get("kind")
+        if k == "call":
+            names.add(e.get("class"))
+        elif k in ("list", "field", "sent"):
+            names.add(e.get("target"))
+        elif mode == "all":
+            if k in ("created", "destroyed"):
+                names.add(e.get("type"))
+            elif k in ("event", "anim"):
+                names.add(e.get("target"))
+            for r in e.get("pointers", []):
+                names.add(r.get("type"))
+    return sorted(n for n in names if n and n != "?")
+
+
+def class_structs(names, reflected_path):
+    """GridNodeSync struct entries (members, size, vtable, depth) for these classes, as ghidra-export
+    makes them; needs the reflected dump for sizes, bases and vtables."""
+    sys.path.insert(0, str(ROOT / "tools" / "gen"))
+    from gridnode_gen import annotations, ghidra_sync, reflected
+    db, _ = annotations.load(str(ROOT / "db" / "annotations"))
+    r = None
+    if reflected_path and pathlib.Path(reflected_path).exists():
+        r = reflected.Reflected.load(str(reflected_path))
+    elif reflected_path:
+        print(f"  (reflected dump {reflected_path} not found: annotated classes only)", file=sys.stderr)
+    out = []
+    for n in names:
+        e = ghidra_sync._class_entry(n, db, r)
+        if e is not None:
+            out.append(e)
+    return out
+
+
 def _load_image(path):
     sys.path.insert(0, str(ROOT / "tools" / "gen"))
     from gridnode_gen.pe_image import PeImage
@@ -319,6 +358,12 @@ def main():
                     help="the game image (a dump, GridNode menu -> Game image) for function starts; "
                          "default: the newest dumps/*.exe next to the recordings folder")
     ap.add_argument("--depth", type=int, default=8, help="with --ghidra: frames per stack to bookmark (default 8)")
+    ap.add_argument("--classes", choices=("traced", "all", "none"), default="traced",
+                    help="with --ghidra: class structs and vtable types for the recording's classes: the ones traced, "
+                         "watched or sent events to (default), every class it mentions, or none")
+    ap.add_argument("--reflected", type=pathlib.Path,
+                    help="with --ghidra: your reflected dump (default: gridnode-reflected.json next to the recordings "
+                         "folder, else db/reflected/)")
     ap.add_argument("--ghidra-names", metavar="EXPORT",
                     help="also name frames with your Ghidra's names (a GridNodeSync export)")
     ap.add_argument("--object", help="one object's story: an object id from the recording, or its address (0x...)")
@@ -372,6 +417,18 @@ def main():
             events = [e for e in events if any(abs(e["t"] - t) <= args.window for t in at)]
         img = IMAGE
         doc = to_ghidra(events, pathlib.Path(args.file).name, img, args.depth, header)
+        if args.classes != "none":
+            ref = args.reflected
+            if ref is None:
+                for cand in (pathlib.Path(args.file).resolve().parent.parent / "gridnode-reflected.json",
+                             ROOT / "db" / "reflected" / "gridnode-reflected.json"):
+                    if cand.exists():
+                        ref = cand
+                        break
+            names = recording_classes(events, args.classes)
+            doc["structs"] = class_structs(names, ref)
+            print(f"  {len(doc['structs'])} class structs ({sum('vtable' in s for s in doc['structs'])} with a vtable) for "
+                  f"{len(names)} classes" + ("" if ref else " (no reflected dump found: annotated classes only)"))
         args.ghidra.parent.mkdir(parents=True, exist_ok=True)
         args.ghidra.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         st = doc["stats"]

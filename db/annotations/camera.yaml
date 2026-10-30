@@ -52,6 +52,7 @@ functions:
     sources: [ghidra]
   - name: ClientCameraViewManager_frameUpdate
     va: 0x14327ba00
+    signature: "void(ClientCameraViewManager* manager, u32 a2, u32 a3, u32 a4, u32 a5)"
     note: "Per frame (from ClientCameraViewManagers_frameUpdateAll 0x14327b940): calls the active camera's vtable +0x68 (its own update, e.g. FPSCamera writes +0x10/+0x50), then copies camera +0x10..+0x9f into manager +0x90..+0x11f and on to +0x120. Writes made in postSimUpdate's listeners are overwritten here."
     confidence: inferred
     sources: [ghidra]

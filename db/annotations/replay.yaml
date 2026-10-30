@@ -80,3 +80,161 @@ functions:
     note: "Named in Ghidra as PamClientReplayPlayerComponent_update. Signature not known yet."
     confidence: hypothesis
     sources: [ghidra]
+  # Recording and playback, from the user's Ghidra (2026-10-29); read in the decompiler, and the ring
+  # agrees with ReplayRecorder's members (+0x68 stride, +0x70 capacity, +0x78 base, +0x88 head).
+  - name: ReplayKeyframeRing_Free
+    va: 0x1439458d0
+    signature: "void(void* ring)"
+    note: "Frees the buffer (+0x10) through poolFree and clears the ring."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplaySetup_Build
+    va: 0x143948610
+    signature: "void(void* arena, void* a2, void* a3, void* a4, u32 a5, void* setup)"
+    note: "Builds the bone setup a recording or playback uses; called from ReplayRecorder_InitSetupAndRing."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayKeyframeRing_Alloc
+    va: 0x143949780
+    signature: "void(void* ring, u32 bones, u32 frames, void* arena)"
+    note: "Stride (+0x0) = 0x10 + bones * 0x20, frames (+0x8), buffer (+0x10) from Arena_allocAligned(arena, stride * frames, 16), arena (+0x18). The recorder asks for 0x1c2 frames (450, ~15 s)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PamClientReplayRecordingComponent_init
+    va: 0x14394cd80
+    signature: "void(PamClientReplayRecordingComponent* component)"
+    note: "Finds the component's ClientAntAnimatableEntity (+0x50), takes the local player's ReplayRecorder (+0x48) and sets it up (ReplayRecorder_InitSetupAndRing)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PamClientReplayRecordingComponent_updateAll
+    va: 0x14394dac0
+    signature: "void(void* updater, void* updateInfo)"
+    note: "The recording counterpart of ClientReplayUpdater_updateAll: for each component in its list (+0x28/+0x30, 16-byte entries with a tick counter) calls ReplayRecorder_SampleAndStream every N ticks."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_DecodeKeyframe
+    va: 0x14394e390
+    signature: "void(void* decoder, void* a2, void* a3, const void* fromFrame, const void* toFrame)"
+    note: "Decodes keyframes into the pose; called by ReplayPlayback_LoadRecording, _Start and _Tick."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_ReadRecordingHeader
+    va: 0x14394e560
+    signature: "bool(void* a1, void* playback, u32* a3)"
+    note: "Reads a recording's header; called by ReplayPlayback_LoadRecording."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ClientReplayEntity_StartEchoReplay
+    va: 0x14394ff00
+    signature: "bool(void* replayEntity)"
+    note: "Finds the client replay player component, loads the entity's recording (+0x50: data +0x20, size +0x18) into its playback (+0x38) and starts it; with no recording it calls 0x14394d940 instead. No direct callers (reached through a table)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayKeyframe_Write
+    va: 0x143951450
+    note: "Writes one keyframe; called by ReplayRecorder_SampleAndStream and _SerializeRange."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplaySetup_WriteHeader
+    va: 0x1439516b0
+    signature: "void(void* stream, u32* header)"
+    note: "Writes the recording header; called by ReplayRecorder_SampleAndStream, _SerializeRange and _FinishStream."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayRecorder_InitSetupAndRing
+    va: 0x14396f140
+    signature: "void(ReplayRecorder* recorder, void* component, void* animatable, void* a4)"
+    note: "Once (+0x18): builds the setup (ReplaySetup_Build into +0xd8) and allocates the keyframe ring at +0x68 (ReplayKeyframeRing_Alloc, 450 frames), then sets recording (+0x20)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayRecorder_SerializeRange
+    va: 0x143970820
+    note: "Writes a range of the ring as a recording (header and keyframes)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_Stop
+    va: 0x143970cc0
+    signature: "void(void* playback)"
+    note: "If playing (+0x8): releases the decoder (+0x30, vtable +0xb8), clears the state and frees the ring (+0x48)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_Start
+    va: 0x1439720e0
+    signature: "void(void* playback)"
+    note: "Decodes the first two keyframes and sets the state (+0x8) to 1 (playing), then calls its vtable +0x10. The playback is inline in the replay player components (client +0x38, server +0x30)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_Tick
+    va: 0x1439729f0
+    signature: "void(void* playback, f32 a2, f32 a3)"
+    note: "Advances the playback; stops at the end. Called from PamClientReplayPlayerComponent_update."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_Restart
+    va: 0x143972e20
+    signature: "void(void* playback)"
+    note: "Stop if playing, then start."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayPlayback_LoadRecording
+    va: 0x143973740
+    signature: "void(void* playback, const void* data, u32 size, u32 a4)"
+    note: "Reads the header, allocates the keyframe ring and decodes. Callers pass 0 as a4."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayRecorder_Resume
+    va: 0x143973af0
+    signature: "void(ReplayRecorder* recorder)"
+    note: "Resets the ring state (0x14394f1c0 on +0x68) and sets recording (+0x20)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayRecorder_FinishStream
+    va: 0x143973b70
+    signature: "void(ReplayRecorder* recorder, u32* a2, u32* a3)"
+    note: "Finishes a streamed recording (writes the header and frees the stream)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ReplayRecorder_SampleAndStream
+    va: 0x143974390
+    signature: "void(ReplayRecorder* recorder, const void* updateInfo, void* a3)"
+    note: "Samples the pose into the ring and streams keyframes (ReplayKeyframe_Write); called by PamClientReplayRecordingComponent_updateAll."
+    confidence: inferred
+    sources: [ghidra]
+  - name: CreateSharedHighlight_WriteRecording
+    va: 0x143a51110
+    signature: "void(void* self)"
+    note: "Writes a recording for a shared highlight (time trial) from the recorder's range."
+    confidence: inferred
+    sources: [ghidra]
+  # The server entity that loads a downloaded replay into a ghost; its class is not identified yet
+  # ("ProjectionSpawner" is the Ghidra name). RequestReplay is called from PamServerChallengeMarkerEntity_onMessage.
+  - name: ProjectionSpawner_GetOrSpawnGhostCharacter
+    va: 0x143a84d00
+    signature: "void*(void* self, bool spawn)"
+    note: "Finds its CharacterSpawnReferenceObjectData spawner and returns ServerSpawnEntity_getLastSpawnedCharacter; with none and spawn set, spawns one (spawner vtable +0xd0, SpawnInfo without a transform)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ProjectionSpawner_OnReplayDownloaded
+    va: 0x143a8a910
+    signature: "void(void* listener, Message* message)"
+    note: "Message listener (self - 0x30): on 0x8c4a0d15 copies the downloaded recording (size +0x50 -> self +0x50) and calls ProjectionSpawner_LoadReplayIntoGhost."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ProjectionSpawner_StartGhostPlayback
+    va: 0x143a8b370
+    signature: "void(void* self, void* replayPlayerComponent)"
+    note: "Starts (or restarts) the server replay player component's playback (+0x30) under a lock."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ProjectionSpawner_LoadReplayIntoGhost
+    va: 0x143a8e240
+    signature: "void(void* self)"
+    note: "Gets or spawns the ghost, finds its PamServerReplayPlayerComponent (vtable +0x108), loads the recording (self +0x88, size +0x80) and starts it if self +0x50 is set; then fires event 0x1774f0c2."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ProjectionSpawner_RequestReplay
+    va: 0x143a8f0b0
+    signature: "void(void* self, const u8** replayName)"
+    note: "Loads the cached recording if it has one, else stores the replay name (+0x48) and sends a message through the server MessageManager to download it."
+    confidence: inferred
+    sources: [ghidra]

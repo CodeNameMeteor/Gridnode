@@ -10,7 +10,7 @@ globals:
   - name: ServerGameWorld
     va: 0x1425469e0
     type: "ServerGameWorld*"
-    note: The server world. Changes on every level load; null between levels.
+    note: "The server world. Changes on every level load; null between levels. Written by levelLoad_setupWorldObjects; 131 functions read it, many for physics queries, hence g_physicsQueryManager in the user's Ghidra (checked 2026-10-29: the same global)."
   - name: SubLevelManagerA
     va: 0x1424a9f58
     type: "void*"

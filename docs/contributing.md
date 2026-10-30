@@ -52,6 +52,14 @@ and struct becomes a struct in `/GridNode` with its members; functions, virtual 
 GridNode's confidence, source and note as a comment. Names you gave yourself are never changed, and
 your own comments are kept above GridNode's.
 
+Functions with a known signature also get it as their prototype (a virtual's first parameter is
+`self`, a pointer to its class), so the decompiler shows `spawner->listenersBegin` instead of
+`*(param_1 + 0xe8)`. A prototype you set yourself is kept. Where several entries share one function
+(an annotated function that is also a virtual, or a base class's function in a subclass's vtable)
+the function gets one name and prototype: the annotated function's, else the base class's (from your
+dump, or `PamX` deriving from `X`), else none for sibling classes with no known common base; the
+comment keeps every entry's text (`Also: ...`). Importing the same file again changes nothing.
+
 **Your Ghidra names into annotations.**
 
 Run GridNodeSync → *Export* and save the file, then:
@@ -89,7 +97,8 @@ the class struct gets `vtbl` at +0 and the annotated members of its base classes
 parameter of each class's virtual functions becomes a pointer to the class, so the decompiler shows
 `this->spawnedBegin` and `(*this->vtbl->unspawn)(...)`. Your own prototypes are never changed; where a
 function has no stored parameters, the decompiler's own are committed first (ANALYSIS); a function
-several classes share gets the most basic class. More classes:
+several classes share gets the most basic class, and a later import (a narrow recording, say) never
+moves `this` from a class to one of its subclasses. More classes:
 
 ```text
 python tools/gen/gridnode.py ghidra-export --class PamServerReplayEntity --class PamClientReplayEntity

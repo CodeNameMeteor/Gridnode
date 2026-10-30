@@ -30,6 +30,8 @@
 //
 // Without dialogs (headless, or run remotely): script arguments "import FILE" or "export FILE".
 //
+// Annotated signatures become prototypes (ANALYSIS; never over one you set).
+//
 // Classes with a vtable (annotated, from the dump, or asked for with `ghidra-export --class NAME`) also
 // get <Class>_vtbl in /GridNode/vtables, named and typed from what each slot points to; the class struct
 // gets `vtbl` at +0, so decompiled calls read this->vtbl->name(...).
@@ -57,6 +59,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
+import ghidra.app.cmd.function.FunctionRenameOption;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
@@ -71,6 +75,8 @@ import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.DoubleDataType;
 import ghidra.program.model.data.FunctionDefinitionDataType;
+import ghidra.program.model.data.ParameterDefinition;
+import ghidra.program.model.data.ParameterDefinitionImpl;
 import ghidra.program.model.data.FloatDataType;
 import ghidra.program.model.data.IntegerDataType;
 import ghidra.program.model.data.LongLongDataType;
@@ -116,7 +122,7 @@ public class GridNodeSync extends GhidraScript {
 	private static final String MARK = "GridNode [";
 
 	private DataTypeManager dtm;
-	private int named, kept, structs, comments, failed, vtables, thisTyped;
+	private int named, kept, structs, comments, failed, vtables, thisTyped, protos, protosKept;
 	private final Set<Address> thisSeen = new HashSet<>(); // functions whose `this` this import has decided
 	private DecompInterface decomp;                         // made on first use, disposed after the import
 
@@ -198,6 +204,9 @@ public class GridNodeSync extends GhidraScript {
 		for (JsonElement e : array(doc, "functions")) {
 			JsonObject f = e.getAsJsonObject();
 			nameFunction(addr(f), str(f, "name"), str(f, "comment"));
+			if (f.has("proto") && f.get("proto").isJsonObject()) {
+				applyPrototype(addr(f), f.getAsJsonObject("proto"));
+			}
 		}
 		for (JsonElement e : array(doc, "labels")) {
 			JsonObject l = e.getAsJsonObject();
@@ -269,8 +278,8 @@ public class GridNodeSync extends GhidraScript {
 			marks++;
 		}
 		println(String.format("GridNodeSync import: %d structs, %d names set, %d kept (yours), %d comments, " +
-			"%d functions made, %d bookmarks, %d vtables (%d this types), %d problems", structs, named, kept, comments, made, marks,
-			vtables, thisTyped, failed));
+			"%d functions made, %d bookmarks, %d prototypes (%d kept: yours), %d vtables (%d this types), %d problems", structs,
+			named, kept, comments, made, marks, protos, protosKept, vtables, thisTyped, failed));
 	}
 
 	// <Class>_vtbl: one pointer per slot, from the vtable's start until a slot no longer points at code
@@ -351,6 +360,62 @@ public class GridNodeSync extends GhidraScript {
 		}
 	}
 
+	// An annotated signature as the function's prototype (ANALYSIS), so calls to it decompile with its
+	// parameter names and types. Never over a prototype you set (USER_DEFINED / IMPORTED). A virtual's
+	// class comes first, as `self` (a pointer to its /GridNode struct); the vtable pass then leaves it.
+	private void applyPrototype(Address a, JsonObject proto) {
+		Function f = getFunctionAt(a);
+		if (f == null) {
+			return;
+		}
+		SourceType src = f.getSignatureSource();
+		if (src == SourceType.USER_DEFINED || src == SourceType.IMPORTED) {
+			protosKept++;
+			return;
+		}
+		try {
+			FunctionDefinitionDataType fd = new FunctionDefinitionDataType(f.getName(), dtm);
+			fd.setReturnType(resolve(str(proto, "returns")));
+			List<ParameterDefinition> ps = new ArrayList<>();
+			Set<String> names = new HashSet<>();
+			String cls = str(proto, "this");
+			if (!cls.isEmpty()) {
+				DataType cs = dtm.getDataType(CATEGORY, cls);
+				ps.add(new ParameterDefinitionImpl("self",
+					new PointerDataType(cs != null ? cs : VoidDataType.dataType, 8, dtm), "this (" + cls + ")"));
+				names.add("self");
+			}
+			int i = 0;
+			for (JsonElement pe : array(proto, "params")) {
+				JsonObject p = pe.getAsJsonObject();
+				String n = str(p, "name");
+				if (n.isEmpty() || n.equals("this") || !names.add(n)) {
+					n = "a" + i;
+					names.add(n);
+				}
+				ps.add(new ParameterDefinitionImpl(n, resolve(str(p, "type")), null));
+				i++;
+			}
+			fd.setArguments(ps.toArray(new ParameterDefinition[0]));
+			ApplyFunctionSignatureCmd cmd = new ApplyFunctionSignatureCmd(a, fd, SourceType.ANALYSIS, false,
+				FunctionRenameOption.NO_CHANGE);
+			if (cmd.applyTo(currentProgram, monitor)) {
+				protos++;
+				if (!cls.isEmpty()) {
+					thisSeen.add(a); // annotated: the vtable pass keeps this class as `this`
+				}
+			}
+			else {
+				failed++;
+				println("prototype of " + f.getName() + ": " + cmd.getStatusMsg());
+			}
+		}
+		catch (Exception ex) {
+			failed++;
+			println("prototype of " + f.getName() + ": " + ex.getMessage());
+		}
+	}
+
 	// The first parameter of a class's virtual function becomes a pointer to the class struct, so the
 	// decompiler shows this->member and this->vtbl->name(...). Never a prototype you set (USER_DEFINED /
 	// IMPORTED). Most functions have no stored parameters (the decompiler infers them each time), so the
@@ -394,12 +459,43 @@ public class GridNodeSync extends GhidraScript {
 			if (p0.getSource() == SourceType.USER_DEFINED || !genericThis(p0.getDataType())) {
 				return;
 			}
+			// A class GridNode chose before is only replaced by a more basic one (an import that knows
+			// fewer classes, such as a recording's, must not push a shared function down to a subclass).
+			String earlier = gridNodeClass(p0.getDataType());
+			if (earlier != null && !earlier.equals(cls) && !basesOf(earlier).contains(cls)) {
+				return;
+			}
 			p0.setDataType(new PointerDataType(cs, 8, dtm), SourceType.ANALYSIS);
 			thisTyped++;
 		}
 		catch (Exception ex) {
 			println("this of " + f.getName() + ": " + ex.getMessage());
 		}
+	}
+
+	// The /GridNode class a pointer points to, or null.
+	private static String gridNodeClass(DataType dt) {
+		if (dt instanceof Pointer) {
+			DataType to = ((Pointer) dt).getDataType();
+			if (to instanceof Structure && to.getCategoryPath().equals(CATEGORY)) {
+				return to.getName();
+			}
+		}
+		return null;
+	}
+
+	// A class struct's base classes, from its description ("Bases: A <- B <- C", written by ghidra-export).
+	private List<String> basesOf(String cls) {
+		List<String> out = new ArrayList<>();
+		DataType dt = dtm.getDataType(CATEGORY, cls);
+		String d = dt != null ? dt.getDescription() : null;
+		int at = d != null ? d.indexOf("Bases: ") : -1;
+		if (at >= 0) {
+			for (String b : d.substring(at + 7).split("\n", 2)[0].split(" <- ")) {
+				out.add(b.trim());
+			}
+		}
+		return out;
 	}
 
 	private static boolean genericThis(DataType dt) {
@@ -503,13 +599,27 @@ public class GridNodeSync extends GhidraScript {
 		}
 		String old = cu.getComment(kind);
 		String key = blockKey(comment);
-		StringBuilder kept = new StringBuilder(ownText(old));
+		// Your text first, then one block per source in a fixed order (GridNode's, then relays and
+		// recordings by name), so importing again in any order leaves the comment as it was.
+		List<String> all = new ArrayList<>();
 		for (String block : blocks(old)) {
 			if (!blockKey(block).equals(key)) {
-				kept.append(kept.length() > 0 ? "\n" : "").append(block);
+				all.add(block);
 			}
 		}
-		String text = kept.length() > 0 ? kept + "\n" + comment : comment;
+		all.add(comment.trim());
+		all.sort((x, y) -> {
+			String kx = blockKey(x), ky = blockKey(y);
+			if (kx.equals(ky)) {
+				return 0;
+			}
+			return kx.equals("gridnode") ? -1 : ky.equals("gridnode") ? 1 : kx.compareTo(ky);
+		});
+		StringBuilder kept = new StringBuilder(ownText(old));
+		for (String block : all) {
+			kept.append(kept.length() > 0 ? "\n" : "").append(block);
+		}
+		String text = kept.toString();
 		if (!text.equals(old)) {
 			cu.setComment(kind, text);
 			comments++;
