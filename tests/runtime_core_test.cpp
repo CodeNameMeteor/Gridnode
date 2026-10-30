@@ -12,6 +12,7 @@
 #include "gridnode/config.hpp"
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
+#include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
 
 using namespace gn;
@@ -238,6 +239,27 @@ void testMovementEvents() {
     CHECK(ev.size() == 1 && ev[0].kind == kEventState && ev[0].oldState == 2);
 }
 
+void testProjection() {
+    // At the origin looking along +z, 90 degrees high, a 200 x 100 screen.
+    gn_view v{};
+    v.forward[2] = 1.f, v.right[0] = 1.f, v.up[1] = 1.f;
+    v.fov_y = 90.f, v.width = 200.f, v.height = 100.f;
+    auto approx = [](float a, float b) { return a > b - 0.01f && a < b + 0.01f; };
+    float s[2] = {};
+    const float ahead[3] = {0.f, 0.f, 10.f}, right[3] = {10.f, 0.f, 10.f}, up[3] = {0.f, 10.f, 10.f}, behind[3] = {0.f, 0.f, -1.f};
+    CHECK(projection::toScreen(v, ahead, s) && approx(s[0], 100.f) && approx(s[1], 50.f));
+    CHECK(projection::toScreen(v, right, s) && approx(s[0], 150.f) && approx(s[1], 50.f)); // half the width (aspect 2)
+    CHECK(projection::toScreen(v, up, s) && approx(s[0], 100.f) && approx(s[1], 0.f));     // the top edge, y down
+    CHECK(!projection::toScreen(v, behind, s));
+    CHECK(approx(projection::depth(v, ahead), 10.f) && projection::depth(v, behind) < 0.f);
+    // A segment through the camera is cut at the near plane; one wholly behind is not drawn.
+    float a[2] = {}, b[2] = {};
+    const float from[3] = {1.f, 0.f, -5.f}, to[3] = {1.f, 0.f, 5.f}, back1[3] = {0.f, 0.f, -2.f}, back2[3] = {1.f, 1.f, -3.f};
+    CHECK(projection::segmentToScreen(v, from, to, a, b));
+    CHECK(approx(b[0], 110.f) && a[0] > 200.f); // the cut end is just in front of the camera: far off to the right
+    CHECK(!projection::segmentToScreen(v, back1, back2, a, b));
+}
+
 } // namespace
 
 int main() {
@@ -246,6 +268,7 @@ int main() {
     testDispatcher();
     testConfig();
     testMovementEvents();
+    testProjection();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

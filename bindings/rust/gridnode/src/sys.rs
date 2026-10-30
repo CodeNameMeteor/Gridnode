@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 9;
+pub const GN_API_VERSION: u32 = 10;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -137,6 +137,18 @@ pub struct gn_movement_event {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_view {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub fov_y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_hotkey_info {
     pub vk: i32,
     pub default_vk: i32,
@@ -241,6 +253,7 @@ pub struct gn_api {
     pub hotkey_rebind: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char) -> c_int>,
     pub hotkey_set: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, vk: c_int) -> c_int>,
     pub on_movement: Option<unsafe extern "C" fn(mod_: *const c_char, fn_: gn_movement_fn, user: *mut c_void) -> c_int>,
+    pub view_get: Option<unsafe extern "C" fn(out: *mut gn_view) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -255,7 +268,8 @@ const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_landing>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_movement_event>() == 16);
+const _: () = assert!(core::mem::size_of::<gn_view>() == 60);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 576);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 584);

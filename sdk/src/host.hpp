@@ -120,6 +120,7 @@ void serverTick();
 void clientTick();
 void draw(bool* open); // render thread
 void frame(bool menuOpen); // render thread, every frame: the free camera
+bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
 } // namespace layouts
 
 // Recorder (recorder.cpp): messages, entity creations and markers with call stacks, exported as

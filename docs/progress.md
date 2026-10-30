@@ -14,6 +14,12 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 10: drawing in the world for mods** (2026-10-30, untested in game). `view_get` gives the camera
+  as drawn (the layout editor's `viewBasis` and FOV, the free camera while it flies) and the screen
+  size; `gridnode/projection.hpp` the editor's projection math (host-tested); `gn::ui::line3d`,
+  `box3d`, `marker`, `text3d`, `toScreen` draw with it on the background draw list. New example
+  `examples/world-draw`: a box around Faith, the entities near her labelled with their types and
+  distance (options kept in `mods/world-draw.ini`). Rust: `view()`, `to_screen()`.
 - **API 9: mod settings, hotkeys, movement events** (2026-10-30, untested in game).
   `config_get` / `config_set`: per-mod `key=value` files in the mods folder (`config.cpp`, written a
   second after the last change and at exit; parsing in `config_core.cpp`, host-tested).

@@ -28,7 +28,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | Path | What |
 |---|---|
 | `sdk/include/gridnode/` | public headers (`gridnode.hpp`, `api.h` = the C ABI mods use); `engine.hpp` is GENERATED |
-| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, ... |
+| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `config.cpp`, `hotkeys.cpp`, ... |
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
@@ -36,7 +36,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
-| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe` |
+| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw` |
 | `bindings/rust/gridnode` | Rust bindings, generated from `api.h` |
 | `tests/` | host-side tests (reflect walker, runtime core, engine header, types, Rust harness) |
 | `docs/` | MkDocs site; `research/` holds engine findings |

@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 9 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events */
+#define GN_API_VERSION 10 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -176,6 +176,18 @@ typedef struct gn_movement_event {
     int32_t in_air;    /* 1 in the air now, 0 on the ground */
 } gn_movement_event;
 typedef void (*gn_movement_fn)(const gn_movement_event* e, const gn_movement* now, void* user);
+
+/* The camera as drawn this frame (view_get), to put world points on the screen: gridnode/projection.hpp
+ * does the math, gn::ui::line3d and friends (gridnode/ui.hpp) draw with it. Frostbite is y up. */
+typedef struct gn_view {
+    float position[3]; /* the camera, world space */
+    float forward[3];  /* the way it looks (unit) */
+    float right[3];    /* unit */
+    float up[3];       /* unit */
+    float fov_y;       /* vertical field of view, degrees */
+    float width;       /* the screen, pixels (the overlay's display size) */
+    float height;
+} gn_view;
 
 /* A mod's hotkey went down (hotkey_add). Client thread. */
 typedef void (*gn_hotkey_fn)(void* user);
@@ -439,6 +451,14 @@ typedef struct gn_api {
      * fn for every change in Faith's movement (gn_movement_event), on the client thread, on the tick it
      * happens; `now` is her movement on that tick. Read only while some mod listens. */
     int (*on_movement)(const char* mod, gn_movement_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 10 =================================================================== */
+
+    /* ---- the view --------------------------------------------------------------------------------
+     * The camera as the game draws this frame (the layout editor's free camera while it flies), with
+     * the screen size, for drawing at world positions. Render thread (a UI callback);
+     * GN_ERR_UNAVAILABLE with no camera (loading, menus) or no overlay. */
+    int (*view_get)(gn_view* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -201,6 +201,11 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_link_libraries(mec_trainer PRIVATE gn_imgui)
   set_target_properties(mec_trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                                RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(world_draw SHARED examples/world-draw/world_draw.cpp)
+  target_include_directories(world_draw PRIVATE sdk/include)
+  target_link_libraries(world_draw PRIVATE gn_imgui)
+  set_target_properties(world_draw PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                              RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
   add_library(trainer SHARED examples/trainer/trainer.cpp)
   target_include_directories(trainer PRIVATE sdk/include)
   target_link_libraries(trainer PRIVATE gn_imgui)

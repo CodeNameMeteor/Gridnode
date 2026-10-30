@@ -279,6 +279,31 @@ inspector=1      ; the inspector (tracks every entity the game creates)
 
 MECMP also opens its menu with INSERT: if you run both, give GridNode another `menu_key`.
 
+### Drawing in the world (API 10)
+
+`gn::ui::view(v)` gives the camera as the game draws this frame (position, forward, right, up,
+vertical field of view, screen size; the layout editor's free camera while it flies), and false while
+there is none (loading, menus). With it, in a draw callback:
+
+- `gn::ui::line3d(v, a, b, colour)`, `box3d(v, min, max, colour)` (world space, or in a transform's
+  frame with `&transform`), `marker(v, p, colour)` and `text3d(v, p, "text", colour)` draw at world
+  positions, behind every window. Lines are cut where they pass behind the camera; points behind it
+  are not drawn.
+- `gn::ui::toScreen(v, p, screen)` for anything else (false behind the camera); the math is in
+  `gridnode/projection.hpp`, the same the layout editor draws with.
+
+```cpp
+gn::ui::onDraw([](bool) {
+    gn::ui::View v;
+    gn::Vec3 at;
+    if (gn::ui::view(v) && gn::positionOf(gn::localClientCharacter(), at))
+        gn::ui::text3d(v, {at.x, at.y + 2.f, at.z}, "Faith", IM_COL32(255, 255, 255, 255));
+});
+```
+
+Read the game on its threads and draw what you read: `examples/world-draw` boxes Faith and labels the
+entities near her with their types. In Rust: `gridnode::view()` and `gridnode::to_screen`.
+
 ### Inspector
 
 GridNode menu → **Inspector**:

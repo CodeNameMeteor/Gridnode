@@ -312,6 +312,26 @@ pub fn hotkey<F: FnMut() + Send + 'static>(id: &str, label: &str, default_vk: i3
     let (i, l) = (cstr(id), cstr(label));
     unsafe { (api().hotkey_add.unwrap())(name(), i.as_ptr(), l.as_ptr(), default_vk, Some(hotkey_tramp::<F>), keep(f)) == 0 }
 }
+// ---- the view (API 10) ----------------------------------------------------------------------------
+pub use crate::sys::gn_view as View;
+/// The camera as drawn this frame, with the screen size; None with no camera. Render thread.
+pub fn view() -> Option<View> {
+    let mut v: View = unsafe { core::mem::zeroed() };
+    (unsafe { (api().view_get.unwrap())(&mut v) } == 0).then_some(v)
+}
+/// A world point on the screen (pixels, y down), or None when it is behind the camera.
+pub fn to_screen(v: &View, p: [f32; 3]) -> Option<[f32; 2]> {
+    let q = [p[0] - v.position[0], p[1] - v.position[1], p[2] - v.position[2]];
+    let dot = |a: &[f32; 3]| q[0] * a[0] + q[1] * a[1] + q[2] * a[2];
+    let z = dot(&v.forward);
+    if z < 0.05 || v.height < 1.0 {
+        return None;
+    }
+    let th = (v.fov_y * core::f32::consts::PI / 360.0).tan();
+    let (x, y) = (dot(&v.right) / (z * th * v.width / v.height), dot(&v.up) / (z * th));
+    Some([(x + 1.0) * 0.5 * v.width, (1.0 - y) * 0.5 * v.height])
+}
+
 pub use crate::sys::gn_hotkey_info as HotkeyInfo;
 /// The hotkey as it is now (its key and name, the default, whether it waits for a key, clashes).
 pub fn hotkey_info(id: &str) -> Option<HotkeyInfo> {

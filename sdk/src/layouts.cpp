@@ -5969,4 +5969,16 @@ void frame(bool menuOpen) {
     }
 }
 
+bool view(gn_view& out) {
+    out = gn_view{};
+    if (!ImGui::GetCurrentContext()) return false;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f || !viewBasis(out.position, out.forward, out.right, out.up)) return false;
+    const uintptr_t mgr = firstViewManager();
+    const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
+    out.fov_y = fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f; // as the editor's picking: 70 when unreadable
+    out.width = io.DisplaySize.x, out.height = io.DisplaySize.y;
+    return true;
+}
+
 } // namespace gn::host::layouts
