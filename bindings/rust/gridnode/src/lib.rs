@@ -55,6 +55,20 @@ macro_rules! gn_mod {
     };
 }
 
+/// Optional: makes the mod reloadable while the game runs (GridNode's menu, Mods: Reload, or when its
+/// DLL changes). The closure runs before GridNode takes out the mod's callbacks and hooks and frees
+/// it: stop the mod's own threads; return true to go ahead, false to stay loaded.
+#[macro_export]
+macro_rules! gn_mod_unload {
+    ($unload:expr) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn gn_mod_unload() -> core::ffi::c_int {
+            let f: fn() -> bool = $unload;
+            if f() { 0 } else { 1 }
+        }
+    };
+}
+
 /// The API table (panics if called before the mod was loaded).
 pub fn api() -> &'static sys::gn_api {
     API.get().expect("gridnode: the mod is not loaded yet").0

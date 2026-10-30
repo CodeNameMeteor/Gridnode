@@ -412,10 +412,21 @@ void drawMain() {
             const std::vector<ModInfo> mods = modList();
             if (mods.empty()) ImGui::TextDisabled("No mods loaded.");
             for (const ModInfo& m : mods) {
+                ImGui::PushID(m.file.c_str());
                 ImGui::BulletText("%s", m.file.c_str());
                 ImGui::SameLine();
                 if (m.loaded) ImGui::TextDisabled("loaded");
-                else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "failed (%d)", m.result);
+                else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), m.result ? "failed (%d)" : "unloaded", m.result);
+                if (m.reloadable) {
+                    // A mod that exports gn_mod_unload: rebuilt while the game runs, then reloaded.
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reload")) modReload(m.file);
+                    ImGui::SameLine();
+                    bool autoReload = m.autoReload;
+                    if (ImGui::Checkbox("when changed", &autoReload)) modAutoReload(m.file, autoReload);
+                    if (!m.status.empty()) ImGui::TextDisabled("    %s", m.status.c_str());
+                }
+                ImGui::PopID();
             }
         }
         if (g_settings.devInfo && ImGui::CollapsingHeader("World")) {
@@ -509,6 +520,8 @@ void callMods(bool open) {
     }
 }
 
+std::atomic<uint64_t> g_frames{0}; // frames drawn (a mod being unloaded waits for a few)
+
 HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags) {
     if (flags & DXGI_PRESENT_TEST) return g_origPresent(sc, sync, flags);
     if (!g_ready && !g_swapChain) g_ready = init(sc);
@@ -555,6 +568,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
             }
         }
         callMods(open);
+        g_frames.fetch_add(1, std::memory_order_relaxed);
         g_typing = ImGui::GetIO().WantTextInput;
         ImGui::Render();
         // The backend restores most pipeline state, but not the render targets: put the game's back.
@@ -738,5 +752,12 @@ bool install(const Settings& s) {
     GN_LOG("ui: Present hooked; the overlay starts with the next frame");
     return true;
 }
+
+void forgetUi(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_uiM);
+    g_ui.erase(std::remove_if(g_ui.begin(), g_ui.end(), [&](const UiListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }), g_ui.end());
+}
+
+uint64_t frameCount() { return g_frames.load(std::memory_order_relaxed); }
 
 } // namespace gn::host::ui

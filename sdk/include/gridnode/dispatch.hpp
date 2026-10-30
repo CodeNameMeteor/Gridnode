@@ -20,6 +20,10 @@ public:
 
     void addListener(std::string owner, Tick fn);
     void post(Task fn);
+    // Takes out the listeners `which` picks (a mod being unloaded) at the start of the next tick:
+    // the listeners belong to the tick thread. removing() is true until that tick has run.
+    void removeListeners(std::function<bool(const Tick&)> which);
+    bool removing() const;
     // Called on the realm's thread once per tick: queued tasks first, then listeners.
     // A listener that throws is reported and removed; a task that throws is reported.
     void dispatch(float dt);
@@ -38,6 +42,7 @@ private:
     std::vector<Listener> listeners_;
     std::vector<Listener> added_;
     std::vector<Task> tasks_;
+    std::vector<std::function<bool(const Tick&)>> removals_;
     ErrorSink errors_;
     std::atomic<uint64_t> ticks_{0}; // written on the tick thread, read by the UI
 };

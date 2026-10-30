@@ -163,5 +163,12 @@ void frame(bool menuOpen) {
     }
 }
 
+void forget(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_m);
+    g_rebinding = -1; // indexes change
+    g_keys.erase(std::remove_if(g_keys.begin(), g_keys.end(), [&](const Hotkey& k) { return r.has(reinterpret_cast<void*>(k.fn)); }),
+                 g_keys.end());
+}
+
 } // namespace hotkeys
 } // namespace gn::host

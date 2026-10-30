@@ -254,6 +254,7 @@ void run(HMODULE self) {
         Sleep(100);
         host::pollLevel();
         host::configFlush(false);
+        host::pollMods();
         if (i % 10) continue;
         host::refreshCreators();
         const size_t n = host::boundCreatorCount();

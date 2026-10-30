@@ -568,4 +568,11 @@ int entitySetTransform(void* entity, const gn_transform* to) {
     return GN_OK;
 }
 
+void forgetLevel(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_levelM);
+    g_levelListeners.erase(std::remove_if(g_levelListeners.begin(), g_levelListeners.end(),
+                                          [&](const LevelListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                           g_levelListeners.end());
+}
+
 } // namespace gn::host

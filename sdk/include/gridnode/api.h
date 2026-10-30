@@ -6,7 +6,17 @@
  *
  * GridNode calls it on its own thread once the build check has passed and the engine's types
  * are known. Return 0 on success. Keep `api`: it stays valid for the life of the process.
- * Mods are never unloaded.
+ *
+ * A mod that also exports
+ *
+ *     GN_MOD_EXPORT int gn_mod_unload(void);
+ *
+ * can be reloaded while the game runs (the GridNode menu's Mods list, or when its DLL changes): it
+ * is loaded from a copy in mods/.loaded/, so the DLL can be rebuilt meanwhile. gn_mod_unload runs on
+ * GridNode's thread before the mod is unloaded: stop the mod's own threads, undo what GridNode cannot
+ * see, return 0 (anything else: it stays loaded). GridNode then takes out every callback and hook
+ * whose code is in the mod, waits for the game's threads to leave it, frees it, and loads it again.
+ * Other mods are never unloaded.
  *
  * The API is a table of function pointers, so a mod can be built with any compiler (MSVC,
  * MinGW, clang) and needs no import library. C++ mods should use gridnode/mod.hpp, which wraps

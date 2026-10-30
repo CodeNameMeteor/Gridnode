@@ -316,4 +316,17 @@ const gn_api* api() {
     return &table;
 }
 
+void forgetTicks(const CodeRange& r) {
+    auto mine = [r](const thread::Dispatcher::Tick& t) {
+        const CallTick* c = t.target<CallTick>();
+        return c && r.has(reinterpret_cast<void*>(c->fn));
+    };
+    server().removeListeners(mine);
+    client().removeListeners(mine);
+}
+
+size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused) {
+    return hooks().remove([&](const hook::Entry& e) { return r.has(reinterpret_cast<void*>(e.detour)); }, refused);
+}
+
 } // namespace gn::host

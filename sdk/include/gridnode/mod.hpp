@@ -433,3 +433,12 @@ private:
         return gn_mod_main() ? 0 : 1;                                                             \
     }                                                                                             \
     static bool gn_mod_main()
+
+// Optional: makes the mod reloadable while the game runs (GridNode's menu, Mods: Reload, or when its
+// DLL changes). The body runs before GridNode takes out the mod's callbacks and hooks and frees it:
+// stop the mod's own threads and undo what GridNode cannot see (memory it wrote, objects it made).
+// Return true to go ahead, false to stay loaded. Mods without it are never unloaded.
+#define GN_MOD_UNLOAD()                                                                           \
+    static bool gn_mod_unload_main();                                                             \
+    extern "C" GN_MOD_EXPORT int gn_mod_unload() { return gn_mod_unload_main() ? 0 : 1; }          \
+    static bool gn_mod_unload_main()

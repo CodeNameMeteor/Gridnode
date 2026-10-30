@@ -48,8 +48,28 @@ struct ModInfo {
     std::string file;
     bool loaded = false;
     int result = 0;
+    bool reloadable = false;  // exports gn_mod_unload: loaded from a copy, can be reloaded
+    bool autoReload = false;  // reloaded when its file changes
+    std::string status;       // the last reload, for the menu
 };
 std::vector<ModInfo> modList();
+void modReload(const std::string& file);             // any thread: done on GridNode's thread
+void modAutoReload(const std::string& file, bool on);
+void pollMods();                                     // GridNode's thread: reloads asked for or due
+
+// A loaded module's code, to take out everything a mod registered when it is unloaded: each part of
+// GridNode drops the callbacks (and hooks) whose function is in it.
+struct CodeRange {
+    uintptr_t begin = 0, end = 0;
+    bool has(const void* p) const { return reinterpret_cast<uintptr_t>(p) >= begin && reinterpret_cast<uintptr_t>(p) < end; }
+};
+void forgetTicks(const CodeRange& r);    // at the next tick of each realm (server().removing())
+size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
+void forgetCreated(const CodeRange& r);
+void forgetLevel(const CodeRange& r);
+void forgetMessages(const CodeRange& r);
+void forgetMovement(const CodeRange& r);
+void forgetEvents(const CodeRange& r);
 
 // World (world.cpp): characters, transforms, teleport, components, levels.
 void worldStart();      // after the registry is built: tracks server characters
@@ -104,6 +124,7 @@ int hotkeyRebind(const char* mod, const char* id);
 int hotkeySet(const char* mod, const char* id, int vk);
 namespace hotkeys {
 void frame(bool menuOpen); // render thread, every frame
+void forget(const CodeRange& r);
 } // namespace hotkeys
 
 // Assets (assets.cpp).
@@ -202,6 +223,8 @@ struct Settings {
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);
+void forgetUi(const CodeRange& r);
+uint64_t frameCount(); // frames drawn so far
 void* context();
 void allocators(void** alloc, void** free, void** user);
 int check(const char* mod, const char* version, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx);

@@ -265,4 +265,11 @@ void messageTap(MessageRecorder rec) {
 
 bool messagesAvailable() { return available(); }
 
+void forgetMessages(const CodeRange& r) {
+    std::unique_lock<std::shared_mutex> lock(g_subM);
+    for (auto& [category, subs] : g_subs)
+        subs.erase(std::remove_if(subs.begin(), subs.end(), [&](const Sub& s) { return r.has(reinterpret_cast<void*>(s.fn)); }), subs.end());
+    // The categories stay registered with the managers: GridNode's listener then finds nobody.
+}
+
 } // namespace gn::host

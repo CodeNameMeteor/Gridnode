@@ -112,3 +112,7 @@ GN_MOD("hello") {
     });
     return true;
 }
+
+// Reloadable (GridNode menu, Mods: Reload, or when the DLL changes): nothing of its own to stop;
+// GridNode takes out its callbacks.
+GN_MOD_UNLOAD() { return true; }

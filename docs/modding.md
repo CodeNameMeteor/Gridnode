@@ -40,6 +40,24 @@ Build it for Windows (`cargo build --release --target x86_64-pc-windows-msvc`, o
 `x86_64-pc-windows-gnu`) and put the DLL in `mods/`. `examples/hello-rust` is a complete mod; CI
 builds it (artifact `hello-rust-x64-msvc`). The overlay (Dear ImGui) is C++ only for now.
 
+## Reloading a mod while the game runs
+
+A mod that also defines `GN_MOD_UNLOAD() { ...; return true; }` (C: export `int gn_mod_unload(void)`
+returning 0; Rust: `gridnode::gn_mod_unload!(|| true)`) can be rebuilt and reloaded without
+restarting the game. GridNode loads it from a copy in `mods/.loaded/`, so its DLL in `mods/` can be
+overwritten by a build at any time. The GridNode menu's Mods list then shows **Reload** and **when
+changed** (reload half a second after the DLL changes).
+
+Unloading: GridNode calls `gn_mod_unload` on its own thread; the mod stops its own threads and undoes
+what GridNode cannot see (memory it wrote, objects it made), or returns false to stay loaded. GridNode
+then takes out every callback whose function is in the mod (ticks, on_created, levels, UI, messages,
+movement, events, hotkeys) and its hooks (a hook with another mod's hook on top of it cannot be taken
+out: the mod then stays loaded), waits until the game's threads have left its code (a few frames and
+ticks, at most 3 s), frees it and loads the new copy, which runs `GN_MOD` again. Settings
+(`gn::config`) are kept. Anything the mod keeps in its own globals starts fresh.
+
+Mods without `GN_MOD_UNLOAD` are never unloaded (their DLL stays locked while the game runs).
+
 ## Threads
 
 The game updates its server and client worlds on two separate threads, even in single player.

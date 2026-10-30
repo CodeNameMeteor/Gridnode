@@ -226,4 +226,16 @@ int eventName(uint32_t id, char* out, size_t size) {
     return it != m.end() ? GN_OK : GN_ERR_NOT_FOUND;
 }
 
+void forgetEvents(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(events::g_addM);
+    const events::Listeners* old = events::g_listeners.load();
+    if (!old) return;
+    auto next = std::make_unique<events::Listeners>();
+    for (const events::Listener& l : *old)
+        if (!r.has(reinterpret_cast<void*>(l.fn))) next->push_back(l);
+    // The old list is kept (g_lists): a game thread may still be walking it.
+    events::g_listeners.store(next->empty() ? nullptr : next.get(), std::memory_order_release);
+    events::g_lists.push_back(std::move(next));
+}
+
 } // namespace gn::host

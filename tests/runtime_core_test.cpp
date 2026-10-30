@@ -158,6 +158,37 @@ void testHookTable() {
     CHECK(t.install("e", 0x1004, 0, 0xD6, &orig3, &why) == hook::Result::Argument); // misaligned
     CHECK(t.install("e", 0x2000, 0, 0xD6, &orig3, &why) == hook::Result::Slot);     // unreadable
     CHECK(t.count() == 3);
+
+    // Taking hooks out (a mod unloaded). Top of the chain: the slot gets back what it held.
+    std::map<uint64_t, uint64_t> m2{{0x3000, 0xA0}};
+    hook::HookTable r({[&](uint64_t s, uint64_t& v) {
+                           auto it = m2.find(s);
+                           if (it == m2.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           m2[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; },
+                       [](uint64_t fn) { return fn >= 0xF00 && fn < 0xF10; }});
+    uint64_t o1 = 0, o2 = 0, o3 = 0;
+    CHECK(r.install("gridnode", 0x3000, 0xA0, 0xD1, &o1) == hook::Result::Ok);
+    CHECK(r.install("mod", 0x3000, 0, 0xD2, &o2) == hook::Result::Ok && o2 == 0xD1);
+    CHECK(r.install("gridnode", 0x3000, 0, 0xD3, &o3) == hook::Result::Ok && o3 == 0xD2);
+    // In the middle: the hook above it now calls what it called.
+    std::vector<std::string> refused;
+    CHECK(r.remove([](const hook::Entry& e) { return e.owner == "mod"; }, &refused) == 1 && refused.empty());
+    CHECK(o3 == 0xD1 && m2[0x3000] == 0xD3 && r.count() == 2);
+    // On top: the slot gets the hook below back.
+    CHECK(r.remove([](const hook::Entry& e) { return e.detour == 0xD3; }) == 1 && m2[0x3000] == 0xD1 && r.count() == 1);
+    // Another mod's hook on top of ours: ours stays (its original is not ours to change).
+    m2[0x3000] = 0xF01;
+    CHECK(r.remove([](const hook::Entry&) { return true; }, &refused) == 0 && refused.size() == 1 && r.count() == 1);
+    // The last one out: the slot is the game's again.
+    m2[0x3000] = 0xD1;
+    CHECK(r.remove([](const hook::Entry&) { return true; }) == 1 && m2[0x3000] == 0xA0 && r.count() == 0);
 }
 
 void testDispatcher() {
@@ -194,6 +225,27 @@ void testDispatcher() {
     done = true;
     tick.join();
     CHECK(ran == 1000);
+
+    // Listeners taken out (a mod unloaded): at the next tick, the others stay.
+    thread::Dispatcher r;
+    struct Tagged {
+        int tag;
+        int* calls;
+        void operator()(float) const { ++calls[tag]; }
+    };
+    int calls[2] = {};
+    r.addListener("a", Tagged{0, calls});
+    r.addListener("b", Tagged{1, calls});
+    r.dispatch(0.f);
+    r.removeListeners([](const thread::Dispatcher::Tick& t) { const Tagged* g = t.target<Tagged>(); return g && g->tag == 1; });
+    CHECK(r.removing());
+    r.dispatch(0.f);
+    CHECK(!r.removing() && calls[0] == 2 && calls[1] == 1 && r.listenerCount() == 1);
+    // One not yet handed to the tick thread goes at once.
+    r.addListener("c", Tagged{1, calls});
+    r.removeListeners([](const thread::Dispatcher::Tick& t) { return t.target<Tagged>() != nullptr && t.target<Tagged>()->tag == 1; });
+    r.dispatch(0.f);
+    CHECK(calls[1] == 1 && calls[0] == 3);
 }
 
 void testConfig() {

@@ -258,4 +258,17 @@ size_t boundCreatorCount() {
     return n;
 }
 
+void forgetCreated(const CodeRange& r) {
+    std::unique_lock<std::shared_mutex> lock(g_lock);
+    for (SlotState& s : g_slots)
+        s.listeners.erase(std::remove_if(s.listeners.begin(), s.listeners.end(),
+                                         [&](const Listener* l) { return r.has(reinterpret_cast<void*>(l->fn)); }),
+                          s.listeners.end());
+    // Kept, not freed: a creator wrapper may still be logging one of them (its owner) on a game thread.
+    static std::vector<std::unique_ptr<Listener>> gone;
+    for (auto& l : g_listeners)
+        if (r.has(reinterpret_cast<void*>(l->fn))) gone.push_back(std::move(l));
+    g_listeners.erase(std::remove(g_listeners.begin(), g_listeners.end(), nullptr), g_listeners.end());
+}
+
 } // namespace gn::host

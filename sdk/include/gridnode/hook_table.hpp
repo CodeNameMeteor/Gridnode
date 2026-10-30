@@ -25,7 +25,8 @@ struct SlotAccess {
 struct Entry {
     std::string owner;
     uint64_t detour = 0;
-    uint64_t previous = 0; // what the slot held before this hook (the "original" it calls)
+    uint64_t previous = 0;      // what the slot held before this hook (the "original" it calls)
+    uint64_t* original = nullptr; // where the hook keeps it (rewritten when the hook below it goes)
 };
 
 enum class Result { Ok = 0, Argument = 1, Slot = 3 };
@@ -41,6 +42,12 @@ public:
     // another mod's hook (isForeignHook): then GridNode goes on top and calls that hook.
     Result install(const std::string& owner, uint64_t slot, uint64_t expected, uint64_t detour, uint64_t* original,
                    std::string* why = nullptr);
+
+    // Takes out every hook `which` picks (a mod being unloaded): the slot, or the hook above it in
+    // the chain, then calls what the removed hook called. A hook with another mod's hook directly
+    // above it cannot be taken out (that hook's original is not ours to change): it stays, and is
+    // listed in `refused`. Returns how many were taken out.
+    size_t remove(const std::function<bool(const Entry&)>& which, std::vector<std::string>* refused = nullptr);
 
     std::vector<std::pair<uint64_t, std::vector<Entry>>> snapshot() const;
     size_t count() const;

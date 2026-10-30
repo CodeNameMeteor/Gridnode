@@ -755,4 +755,11 @@ void movementEventsClientTick() {
     }
 }
 
+void forgetMovement(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_moveM);
+    g_moveListeners.erase(std::remove_if(g_moveListeners.begin(), g_moveListeners.end(),
+                                         [&](const MoveListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                          g_moveListeners.end());
+}
+
 } // namespace gn::host
