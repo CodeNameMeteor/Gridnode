@@ -26,6 +26,23 @@ classes:
       - { offset: 0x200, name: expectedBones, type: u32 }
       - { offset: 0x2e6, name: skipRoot, type: u8 }
 
+  - name: PamServerProjectionSpawnerEntity
+    realm: server
+    vtable: 0x141c7e920
+    size: 0x90
+    confidence: inferred
+    sources: [ghidra]
+    members:
+      - { offset: 0x30, name: downloadListener, type: "void*", note: "Message listener (inline); its vtable +0xb8 is _onReplayDownloaded." }
+      - { offset: 0x48, name: replayName, type: "void*", note: "The name of the replay asked for (an engine string, inline)." }
+      - { offset: 0x50, name: startWhenLoaded, type: u8 }
+      - { offset: 0x51, name: requested, type: u8 }
+      - { offset: 0x52, name: waitingForDownload, type: u8 }
+      - { offset: 0x53, name: restart, type: u8, note: "The next start restarts the playback." }
+      - { offset: 0x58, name: lock, type: "void*" }
+      - { offset: 0x80, name: recordingSize, type: u32 }
+      - { offset: 0x88, name: recording, type: "u8*", note: "The downloaded recording, from the entity's arena." }
+
   - name: PamClientReplayRecordingComponent
     realm: client
     members:
@@ -206,35 +223,38 @@ functions:
     note: "Writes a recording for a shared highlight (time trial) from the recorder's range."
     confidence: inferred
     sources: [ghidra]
-  # The server entity that loads a downloaded replay into a ghost; its class is not identified yet
-  # ("ProjectionSpawner" is the Ghidra name). RequestReplay is called from PamServerChallengeMarkerEntity_onMessage.
-  - name: ProjectionSpawner_GetOrSpawnGhostCharacter
+  # PamServerProjectionSpawnerEntity (0x90 bytes): loads a downloaded replay into a ghost character.
+  # Named ProjectionSpawner_* in the user's Ghidra; class found 2026-10-29 (its vtable 0x141c7e920 holds
+  # the download listener, and every offset used fits its size). The challenge and replay markers in
+  # the world (PamServerChallengeMarkerEntity_onMessage, PamServerReplayMarkerEntity vtable +0x1b8) ask
+  # it for a replay.
+  - name: PamServerProjectionSpawnerEntity_getOrSpawnGhost
     va: 0x143a84d00
-    signature: "void*(void* self, bool spawn)"
-    note: "Finds its CharacterSpawnReferenceObjectData spawner and returns ServerSpawnEntity_getLastSpawnedCharacter; with none and spawn set, spawns one (spawner vtable +0xd0, SpawnInfo without a transform)."
+    signature: "void*(PamServerProjectionSpawnerEntity* self, bool spawn)"
+    note: "Finds its linked CharacterSpawnReferenceObjectData spawner (link 0xa695a747) and returns ServerSpawnEntity_getLastSpawnedCharacter; with none and spawn set, spawns one (spawner vtable +0xd0, SpawnInfo without a transform)."
     confidence: inferred
     sources: [ghidra]
-  - name: ProjectionSpawner_OnReplayDownloaded
+  - name: PamServerProjectionSpawnerEntity_onReplayDownloaded
     va: 0x143a8a910
     signature: "void(void* listener, Message* message)"
-    note: "Message listener (self - 0x30): on 0x8c4a0d15 copies the downloaded recording (size +0x50 -> self +0x50) and calls ProjectionSpawner_LoadReplayIntoGhost."
+    note: "Message listener (the entity's +0x30, vtable +0xb8 of 0x141c7e920): on 0x8c4a0d15 for this entity, copies the downloaded recording (its size into +0x80, the bytes into +0x88) and calls _loadReplayIntoGhost; on 0x3051e83c sends a follow-up message."
     confidence: inferred
     sources: [ghidra]
-  - name: ProjectionSpawner_StartGhostPlayback
+  - name: PamServerProjectionSpawnerEntity_startGhostPlayback
     va: 0x143a8b370
-    signature: "void(void* self, void* replayPlayerComponent)"
-    note: "Starts (or restarts) the server replay player component's playback (+0x30) under a lock."
+    signature: "void(PamServerProjectionSpawnerEntity* self, void* replayPlayerComponent)"
+    note: "Under the lock at +0x58: starts the server replay player component's playback (+0x30), or restarts it when +0x53 is set."
     confidence: inferred
     sources: [ghidra]
-  - name: ProjectionSpawner_LoadReplayIntoGhost
+  - name: PamServerProjectionSpawnerEntity_loadReplayIntoGhost
     va: 0x143a8e240
-    signature: "void(void* self)"
-    note: "Gets or spawns the ghost, finds its PamServerReplayPlayerComponent (vtable +0x108), loads the recording (self +0x88, size +0x80) and starts it if self +0x50 is set; then fires event 0x1774f0c2."
+    signature: "void(PamServerProjectionSpawnerEntity* self)"
+    note: "Gets or spawns the ghost, finds its PamServerReplayPlayerComponent (vtable +0x108), loads the recording (+0x88, size +0x80) and starts it if +0x50 is set; then fires event 0x1774f0c2 on its bus."
     confidence: inferred
     sources: [ghidra]
-  - name: ProjectionSpawner_RequestReplay
+  - name: PamServerProjectionSpawnerEntity_requestReplay
     va: 0x143a8f0b0
-    signature: "void(void* self, const u8** replayName)"
-    note: "Loads the cached recording if it has one, else stores the replay name (+0x48) and sends a message through the server MessageManager to download it."
+    signature: "void(PamServerProjectionSpawnerEntity* self, const u8** replayName)"
+    note: "Loads the cached recording if it has one for that name; else frees it, stores the name (+0x48), sets +0x52 (waiting) and sends a message through the server MessageManager to download it, then sets +0x51."
     confidence: inferred
     sources: [ghidra]

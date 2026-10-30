@@ -15,6 +15,11 @@ it).
 
 writes a GridNodeSync import instead: functions to create where Ghidra has none around a frame,
 a bookmark at each call site with what came through it, and a comment per function with counts.
+
+    python tools/recording/summarize.py with-ghost.jsonl --diff without-ghost.jsonl
+
+compares two recordings of the same thing done two ways: what happens only (or far more often) in
+the first, with its call stacks, and what only happens in the second.
 """
 
 import argparse
@@ -144,6 +149,51 @@ def label(ev):
     if k == "level":
         return "level " + ev.get("level", "")
     return k or "?"
+
+
+def diff_label(ev, values=False):
+    """label() without the values that differ from run to run (animation and field values, list
+    contents), so two recordings of the same thing line up."""
+    if values:
+        return label(ev)
+    k = ev.get("kind")
+    if k == "anim":
+        prop = ev.get("property")
+        pid = ev.get("property_id")
+        if pid and prop == pid:
+            prop = ANNOTATED_EVENTS.get(int(pid, 16)) or EVENT_NAMES.get(int(pid, 16), prop)
+        return f"anim {prop or '(game code)'} -> {ev.get('target', '?')}"
+    if k == "field":
+        return f"field {ev.get('field', '?')} -> {ev.get('target', '?')}"
+    if k == "list":
+        return f"list {ev.get('field', '?')} -> {target(ev)}: " + ("first reading" if ev.get("first") else "changed")
+    if k == "marker":
+        return "marker"
+    return label(ev)
+
+
+def compare(a, a_span, b, b_span, min_lift=2.0):
+    """Label counts of two recordings (or windows of them) -> (only in A, more in A, only in B, more in B).
+    Rates are per second, so recordings of different lengths compare. "More" also needs at least 3
+    lines beyond what the other's rate predicts (4 against 2 is not a pattern)."""
+    a_span, b_span = max(a_span, 1e-3), max(b_span, 1e-3)
+    only_a, more_a, only_b, more_b = [], [], [], []
+    for lab in set(a) | set(b):
+        na, nb = a.get(lab, 0), b.get(lab, 0)
+        ra, rb = na / a_span, nb / b_span
+        if nb == 0:
+            only_a.append((na, lab))
+        elif na == 0:
+            only_b.append((nb, lab))
+        elif ra >= min_lift * rb and na - rb * a_span >= 3:
+            more_a.append((ra / rb, na, nb, lab))
+        elif rb >= min_lift * ra and nb - ra * b_span >= 3:
+            more_b.append((rb / ra, nb, na, lab))
+    only_a.sort(key=lambda x: (-x[0], x[1]))
+    only_b.sort(key=lambda x: (-x[0], x[1]))
+    more_a.sort(key=lambda x: (-x[0], -x[1], x[3]))
+    more_b.sort(key=lambda x: (-x[0], -x[1], x[3]))
+    return only_a, more_a, only_b, more_b
 
 
 def function_start(va):
@@ -344,6 +394,165 @@ def _load_image(path):
     return PeImage(str(path))
 
 
+def read_recording(path):
+    """-> (header, events, objects by id, function starts by frame)."""
+    header, events, objects, starts = None, [], {}, {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            ev = json.loads(line)
+            if ev.get("kind") == "header":
+                header = ev
+            elif ev.get("kind") == "object":
+                objects[ev["id"]] = ev
+            elif ev.get("kind") == "frames":
+                starts.update({int(k, 16): int(v, 16) for k, v in ev.get("starts", {}).items()})
+            else:
+                events.append(ev)
+    return header, events, objects, starts
+
+
+def _scope(events, marker, window):
+    """The events to compare and the seconds they cover: around each marker named `marker` (all
+    markers when it is "*"), or the whole recording."""
+    if not events:
+        return [], 0.0
+    if marker:
+        at = [e["t"] for e in events if e.get("kind") == "marker" and (marker == "*" or e.get("name") == marker)]
+        if not at:
+            return None, 0.0
+        near = [e for e in events if e.get("kind") != "marker" and any(abs(e["t"] - t) <= window for t in at)]
+        span, end = 0.0, None  # windows of close markers overlap: count the time they cover once
+        for t in sorted(at):
+            lo, hi = t - window, t + window
+            span += hi - max(lo, end) if end is not None and lo < end else hi - lo
+            end = hi if end is None else max(end, hi)
+        return near, span
+    return [e for e in events if e.get("kind") != "marker"], events[-1]["t"] - events[0]["t"]
+
+
+def _folded(frames, names):
+    """One line for frames most stacks share: '(3 shared: EntityBus_fireEvent, FUN_14314e900, ...)'."""
+    def short(va):
+        m = re.search(r"\((\S+?)(\+0x[0-9a-f]+)?[ )]", frame_text(va, names))
+        return m.group(1) if m else f"0x{va:x}"
+    more = ", ..." if len(frames) > 3 else ""
+    return f"          ({len(frames)} shared: {', '.join(short(v) for v in frames[:3])}{more})"
+
+
+def diff(args, a_events, names):
+    """--diff: what A has that B does not (and the other way round)."""
+    _, b_events, b_objects, b_starts = read_recording(args.diff)
+    for va, s in b_starts.items():
+        STARTS.setdefault(va, s)
+    a_mark = args.marker
+    b_mark = args.diff_marker or args.marker
+    a_scope, a_span = _scope(a_events, a_mark, args.window)
+    b_scope, b_span = _scope(b_events, b_mark, args.window)
+    for which, sc, mk, f in (("A", a_scope, a_mark, args.file), ("B", b_scope, b_mark, args.diff)):
+        if sc is None:
+            print(f"{which} ({f}) has no marker named {mk!r}")
+            return 1
+    if args.kinds:
+        kinds = {k.strip() for k in args.kinds.split(",")} | ({"message"} if "msg" in args.kinds else set())
+        a_scope = [e for e in a_scope if e.get("kind") in kinds]
+        b_scope = [e for e in b_scope if e.get("kind") in kinds]
+    shared = 0  # recordings exported one after another without Clear start with the same lines
+    for x, y in zip(a_events, b_events):
+        if x != y:
+            break
+        shared += 1
+    if shared >= 50:
+        def own(evs):
+            return [e.get("name") for e in evs[shared:] if e.get("kind") == "marker"]
+        print(f"Note: both recordings start with the same {shared} lines (exported without Clear in between?), "
+              "so their first markers are the same moment. Compare each one's own marker (--marker / --diff-marker):")
+        for which, evs in (("A", a_events), ("B", b_events)):
+            if shared >= len(evs):
+                print(f"  {which} is all in the other one (it is the start of it)")
+            else:
+                print(f"  {which}'s own markers: {', '.join(own(evs)) or '(none)'}")
+        print()
+    a_labels = [diff_label(e, args.values) for e in a_scope]
+    saved = dict(OBJECTS)   # labels name blueprints from each recording's own object table
+    OBJECTS.clear()
+    OBJECTS.update(b_objects)
+    b_labels = [diff_label(e, args.values) for e in b_scope]
+    OBJECTS.clear()
+    OBJECTS.update(saved)
+    ca, cb = collections.Counter(a_labels), collections.Counter(b_labels)
+    only_a, more_a, only_b, more_b = compare(ca, a_span, cb, b_span, args.min_lift)
+
+    def where(mk):
+        return f"within {args.window:g} s of " + ("every marker" if mk == "*" else f"marker {mk!r}") if mk else "whole recording"
+    print(f"A: {args.file}\n   {len(a_scope)} events, {a_span:.1f} s ({where(a_mark)})")
+    print(f"B: {args.diff}\n   {len(b_scope)} events, {b_span:.1f} s ({where(b_mark)})")
+    print("Counts are lines in each; rates are per second, so different lengths compare.\n")
+    n = args.top
+    print(f"Only in A ({len(only_a)} kinds):")
+    for c, lab in only_a[:n]:
+        print(f"  {c:6d}  {lab}")
+    print(f"\nMore in A (x = rate in A / rate in B; {len(more_a)} kinds):")
+    for lift, c, cbn, lab in more_a[:n]:
+        print(f"  {c:6d} vs {cbn:<6d} x{lift:6.1f}  {lab}")
+    print(f"\nOnly in B ({len(only_b)} kinds):")
+    for c, lab in only_b[:n]:
+        print(f"  {c:6d}  {lab}")
+    print(f"\nMore in B ({len(more_b)} kinds):")
+    for lift, c, can, lab in more_b[:n]:
+        print(f"  {c:6d} vs {can:<6d} x{lift:6.1f}  {lab}")
+
+    # When A's own lines first appear (from the marker, or the start), and the stacks behind them.
+    keep = [lab for _, lab in only_a[:n]] + [x[3] for x in more_a[:n]]
+    if not keep:
+        return 0
+    t0 = None
+    if a_mark and a_mark != "*":
+        t0 = next(e["t"] for e in a_events if e.get("kind") == "marker" and e.get("name") == a_mark)
+    elif a_events:
+        t0 = a_events[0]["t"]
+    first = {}
+    # Frames most of A's stacks go through (event dispatch, the update passes) say nothing about one
+    # line: fold them and show the frames that differ.
+    seen_in = collections.Counter()
+    with_stack = [e for e in a_scope if e.get("stack")]
+    for e in with_stack:
+        seen_in.update(set(e["stack"]))
+    common = {int(x, 16) for x, c in seen_in.items() if c >= max(5, len(with_stack) / 5)}
+    stacks = collections.Counter()
+    for e, lab in zip(a_scope, a_labels):
+        if lab in keep:
+            first.setdefault(lab, e["t"])
+            if e.get("stack"):
+                stacks[(lab, tuple(int(x, 16) for x in e["stack"]))] += 1
+    print(f"\nA's lines in the order they first appear (seconds from {'the marker' if a_mark and a_mark != '*' else 'the start'}):")
+    for lab in sorted(first, key=first.get):
+        print(f"  {first[lab] - t0:+9.3f}  {lab}")
+    if stacks:
+        print("\nCall stacks behind them in A (innermost first; the lines only A has first):")
+        only = {lab for _, lab in only_a}
+        ordered = sorted(stacks.items(), key=lambda kv: (kv[0][0] not in only, -kv[1], kv[0][0]))
+        for (lab, frames), c in ordered[:min(n, 12)]:
+            print(f"  {c:4d}x  {lab}")
+            shown, folded = 0, []
+            for va in frames:
+                if va in common:
+                    folded.append(va)
+                    continue
+                if folded:
+                    print(_folded(folded, names))
+                    folded = []
+                print(f"          {frame_text(va, names)}")
+                shown += 1
+                if shown == 6:
+                    break
+            if folded and shown < 6:
+                print(_folded(folded, names))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file")
@@ -367,24 +576,21 @@ def main():
     ap.add_argument("--ghidra-names", metavar="EXPORT",
                     help="also name frames with your Ghidra's names (a GridNodeSync export)")
     ap.add_argument("--object", help="one object's story: an object id from the recording, or its address (0x...)")
+    ap.add_argument("--diff", metavar="B", help="compare with recording B: what happens only (or far more) in this one")
+    ap.add_argument("--diff-marker", metavar="NAME",
+                    help="with --diff: B's marker, when it is named differently from --marker (\"*\": every marker)")
+    ap.add_argument("--min-lift", type=float, default=2.0, help="with --diff: how many times more often counts as more (default 2)")
+    ap.add_argument("--kinds", metavar="LIST",
+                    help="with --diff: only these line kinds, e.g. event,sent,call (message, created, destroyed, event, "
+                         "sent, anim, field, list, call)")
+    ap.add_argument("--values", action="store_true",
+                    help="with --diff: keep animation and field values and list contents in the labels")
     args = ap.parse_args()
     load_event_names(args.names or pathlib.Path(args.file).with_name("event-names.txt"))
 
-    header, events = None, []
-    with open(args.file, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            ev = json.loads(line)
-            if ev.get("kind") == "header":
-                header = ev
-            elif ev.get("kind") == "object":
-                OBJECTS[ev["id"]] = ev
-            elif ev.get("kind") == "frames":
-                STARTS.update({int(k, 16): int(v, 16) for k, v in ev.get("starts", {}).items()})
-            else:
-                events.append(ev)
+    header, events, objects, starts = read_recording(args.file)
+    OBJECTS.update(objects)
+    STARTS.update(starts)
     if not events:
         print("no events")
         return 1
@@ -411,6 +617,8 @@ def main():
             print(f"(game image {exe} not used: {e})", file=sys.stderr)
     if args.object:
         return object_story(events, args.object)
+    if args.diff:
+        return diff(args, events, names)
     if args.ghidra:
         if args.marker:
             at = [e["t"] for e in events if e.get("kind") == "marker" and e.get("name") == args.marker]

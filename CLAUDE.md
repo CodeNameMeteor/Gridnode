@@ -97,6 +97,7 @@ python tools/recording/summarize.py <file>                        # most frequen
 python tools/recording/summarize.py <file> --marker "name" --window 2
 python tools/recording/summarize.py <file> --all --top 50         # everything near the markers
 python tools/recording/summarize.py <file> --object 12            # one object (id or 0xADDRESS): what, when, every line
+python tools/recording/summarize.py A --diff B --marker m --kinds event,sent  # what A has that B does not
 python tools/recording/summarize.py <file> --ghidra OUT --exe DUMP  # a GridNodeSync import
 ```
 

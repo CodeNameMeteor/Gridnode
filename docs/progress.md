@@ -14,6 +14,16 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Recording diff** (2026-10-30): `summarize.py A --diff B` lists what happens only (or far more,
+  per second) in A, only in B, A's lines in order from the marker, and their stacks; `--marker` /
+  `--diff-marker` / `"*"`, `--kinds`, `--values`, `--min-lift`. Tried on the door recordings: kick vs
+  slow open shows `DoorKick` on the door's bus, the `Kick` sound and a voice-over trigger, in order.
+  Old recordings exported without Clear share their start (slow-door holds all of kick-door); the
+  diff says so. Untested by the user.
+- **PamServerProjectionSpawnerEntity** (2026-10-30): the `ProjectionSpawner_*` functions are this class
+  (0x90 bytes, vtable 0x141c7e920 holds the download listener); annotated with its members (replay
+  name, flags, lock, recording and size) in `replay.yaml`. The challenge and replay markers ask it for
+  a replay.
 - **Ghidra inbox sorted** (2026-10-29, checked in the user's Ghidra): all 111 new names are in the
   annotations. 110 `ant_define*` functions (checked: each passes its own type's name; notes list the
   fields) in `ant.yaml`, `inferred`; 26 replay functions (playback, keyframe ring, recorder setup,
@@ -122,7 +132,7 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
-3. Identify the class of the `ProjectionSpawner_*` functions (replay.yaml; a server entity, message listener at +0x30).
+3. In game: a recording diff of something new (see the human test of 2026-10-30).
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
 
 ## Decisions and gotchas

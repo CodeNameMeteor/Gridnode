@@ -616,6 +616,66 @@ class RecordingClasses(unittest.TestCase):
                 self.assertEqual(by["ServerCharacterSpawnEntity"]["vtable"], 0x141b4e0c8)   # from the annotations
 
 
+class RecordingDiff(unittest.TestCase):
+    """summarize.py --diff: what one recording has that another does not."""
+
+    def test_compare_rates(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools", "recording"))
+        import summarize
+        a = {"spawn": 3, "tick": 100, "boost": 40, "rare": 1}
+        b = {"tick": 50, "boost": 5, "rare": 1, "idle": 4}
+        only_a, more_a, only_b, more_b = summarize.compare(a, 10.0, b, 5.0)
+        self.assertEqual(only_a, [(3, "spawn")])
+        self.assertEqual([x[3] for x in more_a], ["boost"])   # 4/s vs 1/s; tick is 10/s in both
+        self.assertEqual(only_b, [(4, "idle")])
+        self.assertEqual(more_b, [])                           # rare: once each, not a pattern
+        self.assertEqual(summarize.compare({"x": 4}, 1.0, {"x": 2}, 1.0)[1], [])   # 4 against 2: not a pattern
+        marks = [{"kind": "marker", "t": t, "name": "m"} for t in (1.0, 1.5, 5.0)]
+        self.assertAlmostEqual(summarize._scope(marks, "*", 1.0)[1], 4.5)   # 0-2.5 and 4-6: overlap counted once
+
+    def test_diff_around_markers(self):
+        """Values do not split labels; each side is cut to its own marker's window."""
+        import json
+        def rec(path, evs):
+            with open(path, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in [{"kind": "header"}] + evs))
+        a = [{"kind": "anim", "t": 0.5, "property": "Speed", "value": 1.0, "target": "Faith"},
+             {"kind": "marker", "t": 10.0, "name": "go"},
+             {"kind": "event", "t": 10.2, "event": "StartReplay", "target": "PamServerReplayEntity",
+              "stack": ["0x14396d7a0"]},
+             {"kind": "anim", "t": 10.3, "property": "Speed", "value": 7.5, "target": "Faith"},
+             {"kind": "anim", "t": 30.0, "property": "Far", "value": 1, "target": "Faith"}]
+        b = [{"kind": "marker", "t": 5.0, "name": "nothing"},
+             {"kind": "anim", "t": 5.1, "property": "Speed", "value": 2.0, "target": "Faith"}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            ra, rb = os.path.join(d, "a.jsonl"), os.path.join(d, "b.jsonl")
+            rec(ra, a)
+            rec(rb, b)
+            r = subprocess.run([sys.executable, script, ra, "--diff", rb, "--marker", "go", "--diff-marker", "nothing",
+                                "--window", "1"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            only_a = r.stdout.split("Only in A")[1].split("More in A")[0]
+            self.assertIn("event StartReplay -> PamServerReplayEntity", only_a)
+            self.assertNotIn("Speed", only_a)        # in both: the value is left out
+            self.assertNotIn("Far", r.stdout)        # outside the window
+            self.assertIn("+0.200  event StartReplay", r.stdout)
+            self.assertIn("0x14396d7a0", r.stdout)   # the stack behind it
+            # Exported without Clear: the second recording starts with the first one.
+            first = [{"kind": "anim", "t": i * 0.01, "property": "P", "value": i, "target": "Faith"} for i in range(60)]
+            rec(ra, first + [{"kind": "marker", "t": 1.0, "name": "marker 1"}])
+            rec(rb, first + [{"kind": "marker", "t": 1.0, "name": "marker 1"},
+                             {"kind": "marker", "t": 9.0, "name": "marker 2"}])
+            r = subprocess.run([sys.executable, script, rb, "--diff", ra, "--marker", "marker 1"],
+                               capture_output=True, text=True)
+            self.assertIn("A's own markers: marker 2", r.stdout)
+            self.assertIn("B is all in the other one", r.stdout)
+            r = subprocess.run([sys.executable, script, ra, "--diff", rb, "--marker", "missing"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no marker named 'missing'", r.stdout)
+
+
 class FrameNames(unittest.TestCase):
     """summarize.py names each stack frame by its function, keeping the address first."""
 

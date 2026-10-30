@@ -19,7 +19,8 @@ Choose what to record (messages, entities created and destroyed, entity events, 
 Home the moment the thing you are looking for happens. **Export** writes
 `recordings/<time>-<name>.jsonl` next to gridnode.dll: a header line, then one line per event.
 The **Ignore** lists leave out message types and event targets that are too frequent to be
-useful.
+useful. F8 only pauses: an export holds everything since the last **Clear**, so press Clear between
+recordings you want to keep apart.
 
 ### Objects: what a pointer was
 
@@ -146,6 +147,30 @@ with their blueprint when the recording knows it.
 python tools/recording/summarize.py rec.jsonl --object 12          # one object: what it was, when made and destroyed, every line about it
 python tools/recording/summarize.py rec.jsonl --object 0x1b4015800 # every object that had this address
 ```
+
+### Comparing two recordings
+
+Record the same thing done two ways (a kick and a slow open of the same door, a ghost and no
+ghost), with a marker at the moment that matters in each, then:
+
+```
+python tools/recording/summarize.py kick-door.jsonl --diff slow-door.jsonl --marker "marker 1" --diff-marker "marker 2" --window 2
+```
+
+lists what happens only in the first (A), far more often in A (`x` is how many times more often,
+per second, so different lengths compare), only in B, and far more in B; then A's own lines in the
+order they first appear (seconds from the marker) and the call stacks behind them, the lines only A
+has first. Without `--marker` it compares the whole recordings; `--marker "*"` takes every marker.
+Values (animation and field values, list contents) are left out so the two line up; `--values` keeps
+them. `--kinds event,sent,call` compares only those line kinds (a part of the level streaming in can
+otherwise fill the list), `--min-lift 3` asks for a bigger difference ("more" also needs at least 3
+lines beyond what the other recording's rate predicts). It says so when both recordings start with
+the same lines (exported without Clear). In the stacks, frames that a fifth or more of A's stacks
+go through (event dispatch, the update passes) are folded into one `(N shared: ...)` line.
+
+Many events reach their target from the queued-event pass (`FUN_143125240` under
+`fb_UpdateManager_runPass`, e.g. `DoorKick` from `ClientGameWorld_postUpdate`): their stack shows
+the delivery, not the code that posted them.
 
 ### Into Ghidra
 
