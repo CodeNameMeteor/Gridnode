@@ -55,6 +55,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     guarded("world", [] { worldClientTick(); });
     guarded("client messages", [] { messagesClientTick(); });
     guarded("faith", [] { faithClientTick(); });
+    guarded("movement events", [] { movementEventsClientTick(); });
     guarded("layouts (client)", [] { layouts::clientTick(); });
     guarded("client dispatch", [&] { client().dispatch(dtOf(updateInfo)); });
 }

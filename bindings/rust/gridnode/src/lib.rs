@@ -279,6 +279,56 @@ pub fn landing_prediction() -> Option<Landing> {
     let mut l: Landing = unsafe { core::mem::zeroed() };
     (unsafe { (api().landing_prediction.unwrap())(&mut l) } == 0).then_some(l)
 }
+
+// ---- movement events, settings, hotkeys (API 9) ---------------------------------------------------
+pub use crate::sys::gn_movement_event as MovementEvent;
+unsafe extern "C" fn movement_tramp<F: FnMut(&MovementEvent, &Movement)>(e: *const MovementEvent, now: *const Movement, user: *mut c_void) {
+    guard("a movement callback", (), || (*(user as *mut F))(&*e, &*now))
+}
+/// `f(event, now)` for every landing, take-off and movement state change (`sys::GN_MOVE_EVENT_*`),
+/// on the client thread, on the tick it happens.
+pub fn on_movement<F: FnMut(&MovementEvent, &Movement) + Send + 'static>(f: F) -> bool {
+    unsafe { (api().on_movement.unwrap())(name(), Some(movement_tramp::<F>), keep(f)) == 0 }
+}
+/// The mod's setting `key` (kept in mods/<mod>.ini), or None when unset.
+pub fn config_get(key: &str) -> Option<String> {
+    let k = cstr(key);
+    let mut buf = [0 as c_char; 1024];
+    let r = unsafe { (api().config_get.unwrap())(name(), k.as_ptr(), buf.as_mut_ptr(), buf.len()) };
+    (r == 0 || r == crate::sys::GN_ERR_FULL as c_int).then(|| unsafe { string(buf.as_ptr()) })
+}
+/// Sets the mod's setting `key` (written to disk a second after the last change).
+pub fn config_set(key: &str, value: &str) -> bool {
+    let (k, v) = (cstr(key), cstr(value));
+    unsafe { (api().config_set.unwrap())(name(), k.as_ptr(), v.as_ptr()) == 0 }
+}
+unsafe extern "C" fn hotkey_tramp<F: FnMut()>(user: *mut c_void) {
+    guard("a hotkey callback", (), || (*(user as *mut F))())
+}
+/// A key the player can rebind (kept in the mod's settings as key.<id>); `f()` on the client thread
+/// when it goes down.
+/// `default_vk`: a Windows virtual-key code (`b'F' as i32`), 0 for none.
+pub fn hotkey<F: FnMut() + Send + 'static>(id: &str, label: &str, default_vk: i32, f: F) -> bool {
+    let (i, l) = (cstr(id), cstr(label));
+    unsafe { (api().hotkey_add.unwrap())(name(), i.as_ptr(), l.as_ptr(), default_vk, Some(hotkey_tramp::<F>), keep(f)) == 0 }
+}
+pub use crate::sys::gn_hotkey_info as HotkeyInfo;
+/// The hotkey as it is now (its key and name, the default, whether it waits for a key, clashes).
+pub fn hotkey_info(id: &str) -> Option<HotkeyInfo> {
+    let i = cstr(id);
+    let mut h: HotkeyInfo = unsafe { core::mem::zeroed() };
+    (unsafe { (api().hotkey_info.unwrap())(name(), i.as_ptr(), &mut h) } == 0).then_some(h)
+}
+/// Waits for the next key the player presses (Escape: none, Backspace: the default).
+pub fn hotkey_rebind(id: &str) -> bool {
+    let i = cstr(id);
+    unsafe { (api().hotkey_rebind.unwrap())(name(), i.as_ptr()) == 0 }
+}
+/// Sets the hotkey's key (a virtual-key code, 0 none, -1 the default).
+pub fn hotkey_set(id: &str, vk: i32) -> bool {
+    let i = cstr(id);
+    unsafe { (api().hotkey_set.unwrap())(name(), i.as_ptr(), vk) == 0 }
+}
 /// A movement tuning value by name (None until GridNode has verified it this session).
 pub fn tuning(name: &str) -> Option<f32> {
     unsafe {

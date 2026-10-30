@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gridnode/api.h"
@@ -79,6 +80,8 @@ int jumpHeldByMods(); // GridNode holds jump for a mod (gn::jump): 1 or 0
 float oldTrainerSpeed();  // research: the user's old trainer's speed path (-1 none)
 float speedProbeSample(); // research: her measured horizontal speed (m/s, -1 none); scores speed candidates
 int movementSet(const gn_movement* in, uint32_t fields);
+int onMovement(const std::string& mod, gn_movement_fn fn, void* user);
+void movementEventsClientTick(); // client thread: movement events to the mods listening
 uint32_t tuningCount();
 int tuningAt(uint32_t index, gn_tuning* out);
 int tuningSet(const char* name, float value);
@@ -86,6 +89,22 @@ int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
 int positionSet(const float pos[3]);
 int godModeSet(int on); // server thread
+
+// Mod settings (config.cpp): mods/<mod>.ini.
+void configStart(const std::wstring& folder); // the mods folder
+int configGet(const char* mod, const char* key, char* out, size_t size);
+int configSet(const char* mod, const char* key, const char* value);
+std::string configValue(const std::string& mod, const std::string& key, bool* found);
+void configFlush(bool now); // GridNode's thread: writes settings changed over a second ago (all, when now)
+
+// Hotkeys (hotkeys.cpp): mods' keys, rebound in the mods' own windows, stored in their settings.
+int hotkeyAdd(const char* mod, const char* id, const char* label, int defaultVk, gn_hotkey_fn fn, void* user);
+int hotkeyInfo(const char* mod, const char* id, gn_hotkey_info* out);
+int hotkeyRebind(const char* mod, const char* id);
+int hotkeySet(const char* mod, const char* id, int vk);
+namespace hotkeys {
+void frame(bool menuOpen); // render thread, every frame
+} // namespace hotkeys
 
 // Assets (assets.cpp).
 void* assetFind(const char* path, uint32_t* group);
@@ -180,6 +199,7 @@ void setInputCapture(bool on);           // free camera with the menu closed: th
 void setPointer(bool on);                // free camera with the menu closed: show the cursor (for handles); centres it when turned on
 void takeLook(float& dx, float& dy);     // movement since the last call (raw counts)
 std::string keyName(int vk);
+std::vector<std::pair<int, std::string>> reservedKeys(); // GridNode's own keys (the menu, the tools'), for hotkey clashes
 int keyFromName(const std::string& name);
 } // namespace ui
 

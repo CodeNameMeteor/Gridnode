@@ -14,6 +14,7 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -268,6 +269,69 @@ using Landing = gn_landing;
 // The game's own landing prediction for Faith (ticks to hit in 60ths of a second, hit height, soft
 // landing); false until she has been in the air.
 inline bool landingPrediction(Landing& out) { return api().landing_prediction(&out) == GN_OK; }
+
+// ---- movement events, settings, hotkeys (API 9) ------------------------------------------------
+using MovementEvent = gn_movement_event;
+// fn(const MovementEvent& e, const Movement& now) for every landing, take-off and movement state
+// change (GN_MOVE_EVENT_*), on the client thread, on the tick it happens.
+template <class F> bool onMovement(F f) {
+    using Fn = std::function<void(const MovementEvent&, const Movement&)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    return api().on_movement(modName(), [](const gn_movement_event* e, const gn_movement* m, void* u) { (*static_cast<Fn*>(u))(*e, *m); },
+                             p) == GN_OK;
+}
+
+// The mod's settings, kept between runs in mods/<mod>.ini (written a second after a change).
+namespace config {
+inline std::string get(const char* key, const std::string& def = {}) {
+    char buf[1024];
+    const int r = api().config_get(modName(), key, buf, sizeof(buf));
+    return r == GN_OK || r == GN_ERR_FULL ? std::string(buf) : def;
+}
+inline float getFloat(const char* key, float def) {
+    const std::string v = get(key);
+    char* end = nullptr;
+    const float f = v.empty() ? def : std::strtof(v.c_str(), &end);
+    return end && *end == 0 ? f : def;
+}
+inline int getInt(const char* key, int def) {
+    const std::string v = get(key);
+    char* end = nullptr;
+    const long i = v.empty() ? def : std::strtol(v.c_str(), &end, 10);
+    return end && *end == 0 ? static_cast<int>(i) : def;
+}
+inline bool getBool(const char* key, bool def) {
+    const std::string v = get(key);
+    return v == "1" || v == "true" ? true : v == "0" || v == "false" ? false : def;
+}
+inline bool setString(const char* key, const std::string& value) { return api().config_set(modName(), key, value.c_str()) == GN_OK; }
+inline bool setFloat(const char* key, float value) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", value);
+    return setString(key, buf);
+}
+inline bool setInt(const char* key, int value) { return setString(key, std::to_string(value)); }
+inline bool setBool(const char* key, bool value) { return setString(key, value ? "1" : "0"); }
+} // namespace config
+
+// A key the player can rebind, kept in the mod's settings (key.<id>). fn() runs on the client thread
+// when it goes down (game focused, menu closed). defaultVk: a Windows virtual-key code ('F', VK_F1),
+// 0 none. Show it in the mod's window with gn::ui::hotkeyButton(id) (gridnode/ui.hpp).
+template <class F> bool hotkey(const char* id, const char* label, int defaultVk, F f) {
+    auto* p = detail::keep(std::function<void()>(std::move(f)));
+    return api().hotkey_add(modName(), id, label, defaultVk, [](void* u) { (*static_cast<std::function<void()>*>(u))(); }, p) == GN_OK;
+}
+using HotkeyInfo = gn_hotkey_info;
+inline bool hotkeyInfo(const char* id, HotkeyInfo& out) { return api().hotkey_info(modName(), id, &out) == GN_OK; }
+// Its key's name ("F", "none"), "" for no such hotkey: for labels like "God mode  [1]".
+inline std::string hotkeyName(const char* id) {
+    HotkeyInfo i;
+    return hotkeyInfo(id, i) ? std::string(i.name) : std::string();
+}
+// Waits for the next key the player presses (Escape: none, Backspace: the default).
+inline bool hotkeyRebind(const char* id) { return api().hotkey_rebind(modName(), id) == GN_OK; }
+// A key directly (a virtual-key code, 0 none, -1 the default).
+inline bool hotkeySet(const char* id, int vk) { return api().hotkey_set(modName(), id, vk) == GN_OK; }
 
 using Tuning = gn_tuning;
 inline uint32_t tuningCount() { return api().tuning_count(); }

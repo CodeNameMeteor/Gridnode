@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "gridnode/build.hpp"
+#include "gridnode/config.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -179,7 +180,7 @@ Tuning* findTuning(const char* name) {
 
 // ---- Faith's movement -----------------------------------------------------------------------------
 struct MovementPtrs {
-    uintptr_t ground = 0, state = 0, motion = 0, camera = 0;
+    uintptr_t ground = 0, state = 0, camera = 0;
 };
 MovementPtrs movementPtrs() {
     MovementPtrs p;
@@ -191,8 +192,6 @@ MovementPtrs movementPtrs() {
         p.ground = ptr(mv + k::Movement_Ground);
         p.state = ptr(mv + k::Movement_State);
     }
-    const uintptr_t body = ptr(ptr(c + k::Character_PhysicsHolder) + k::PhysicsHolder_Body);
-    p.motion = ptr(body + k::Body_Motion);
     const uintptr_t cam = ptr(c + k::Character_Camera);
     if (typeIs(cam, "PamClientCharacterCameraComponent")) p.camera = cam;
     return p;
@@ -408,7 +407,8 @@ int movementGet(gn_movement* out) {
     mem::read(p.state + k::State_WallRuns, out->wall_runs);
     mem::read(p.ground + k::Ground_LastY, out->last_ground_y);
     out->on_ground = mem::readOr<uint8_t>(p.ground + k::Ground_OnGround);
-    if (p.motion) mem::read(p.motion + k::Motion_Speed, out->speed);
+    float vel[3] = {};
+    if (mem::read(p.ground + k::Ground_Velocity, vel, sizeof(vel))) out->speed = std::sqrt(vel[0] * vel[0] + vel[2] * vel[2]);
     if (p.camera) mem::read(p.camera + k::Camera_Forward, out->camera_forward, sizeof(out->camera_forward));
     return GN_OK;
 }
@@ -424,7 +424,25 @@ int movementSet(const gn_movement* in, uint32_t fields) {
     if (fields & GN_MOVE_WALL_CLIMBS) mem::write(p.state + k::State_WallClimbs, in->wall_climbs);
     if (fields & GN_MOVE_WALL_RUNS) mem::write(p.state + k::State_WallRuns, in->wall_runs);
     if (fields & GN_MOVE_LAST_GROUND_Y) mem::write(p.ground + k::Ground_LastY, in->last_ground_y);
-    if ((fields & GN_MOVE_SPEED) && p.motion) mem::write(p.motion + k::Motion_Speed, in->speed);
+    if (fields & GN_MOVE_SPEED) {
+        // Her velocity, scaled to the speed (its direction kept; standing still, her camera's). The old
+        // trainer's field (round values while running, so likely the speed she is driven at) gets it
+        // too, by its proper path: slot +0x1e8 of the object at 0x1423dd6f8. Which one the game keeps
+        // through a position load is untested.
+        float vel[3] = {};
+        if (mem::read(p.ground + k::Ground_Velocity, vel, sizeof(vel))) {
+            float len = std::sqrt(vel[0] * vel[0] + vel[2] * vel[2]), dx = vel[0], dz = vel[2];
+            float fwd[4] = {};
+            if (len < 0.01f && p.camera && mem::read(p.camera + k::Camera_Forward, fwd, sizeof(fwd)))
+                dx = fwd[0], dz = fwd[2], len = std::sqrt(dx * dx + dz * dz);
+            if (len >= 0.01f) {
+                vel[0] = dx / len * in->speed, vel[2] = dz / len * in->speed;
+                mem::write(p.ground + k::Ground_Velocity, vel, sizeof(vel));
+            }
+        }
+        const uintptr_t drive = ptr(ptr(ptr(mem::rva(k::Speed_DriveGlobal)) + k::Speed_DriveSlot) + k::Body_Motion);
+        if (drive) mem::write(drive + k::Motion_Speed, in->speed);
+    }
     return GN_OK;
 }
 
@@ -543,7 +561,8 @@ int tuningSet(const char* name, float value) {
 
 
 // ---- research: which field holds her speed ---------------------------------------------------------
-// gn_movement.speed (body motion +0x438) read 0.00 most of the time in game (2026-10-30). The
+// gn_movement.speed (then body motion +0x438) read 0.00 most of the time in game (2026-10-30); this
+// found her velocity at movement ground +0xd0 (speed-3 and speed-4), now its source. Kept for checking other fields the same way. The
 // Recorder's movement watch calls this every frame: when her position moves on, her horizontal speed
 // is measured from it and every float (and every x/z pair of a vector) in the objects around her
 // movement is scored by how often it matches (within 15%, while she moves faster than 1 m/s). The best
@@ -680,6 +699,60 @@ float speedProbeSample() {
     }
     if (g_probeSamples % 100 == 0 && g_probeReports < 5) ++g_probeReports, probeReport(), probeChains(c);
     return measured;
+}
+
+
+// ---- movement events (gn_api on_movement) ----------------------------------------------------------
+// Faith's movement read once per client tick, while a mod listens: a landing (in air 1 -> 0), a take-off
+// and a change of movement state, in that order. The landing tick is the bhop tick (state 0 there,
+// recorded 2026-10-30), so a listener sees it as LANDED then STATE (8 -> 0).
+namespace {
+struct MoveListener {
+    std::string mod;
+    gn_movement_fn fn;
+    void* user;
+};
+std::mutex g_moveM;
+std::vector<MoveListener> g_moveListeners; // (g_moveM)
+movement::Sample g_moveWas;                // client thread
+bool g_moveHave = false;                   // client thread
+} // namespace
+
+int onMovement(const std::string& mod, gn_movement_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_moveM);
+    g_moveListeners.push_back({mod, fn, user});
+    return GN_OK;
+}
+
+void movementEventsClientTick() {
+    std::vector<MoveListener> listeners;
+    {
+        std::lock_guard<std::mutex> lock(g_moveM);
+        if (g_moveListeners.empty()) return;
+        listeners = g_moveListeners;
+    }
+    gn_movement m{};
+    if (movementGet(&m) != GN_OK) {
+        g_moveHave = false; // no Faith (loading, a menu): the next reading starts again
+        return;
+    }
+    const movement::Sample now{m.state, m.on_ground != 0};
+    const movement::Sample was = g_moveWas;
+    const bool had = g_moveHave;
+    g_moveWas = now, g_moveHave = true;
+    if (!had) return;
+    for (const movement::Event& e : movement::diff(was, now)) {
+        const gn_movement_event ev{e.kind, e.state, e.oldState, now.inAir ? 1 : 0};
+        for (const MoveListener& l : listeners) {
+            try {
+                l.fn(&ev, &m, l.user);
+            } catch (...) {
+                static std::atomic<int> said{0};
+                if (said.fetch_add(1) < 10) GN_LOG("[%s] a movement callback threw; ignored", l.mod.c_str());
+            }
+        }
+    }
 }
 
 } // namespace gn::host

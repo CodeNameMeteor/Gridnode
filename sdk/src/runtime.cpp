@@ -238,6 +238,7 @@ void run(HMODULE self) {
            GRIDNODE_PLAYER_BUILD ? "player" : "developer", s.ui.inspector, s.ui.editor, s.ui.recorder, s.ui.console);
     host::ui::install(s.ui);
 
+    host::configStart(s.modsFolder); // mods' settings live next to them
     if (s.modsEnabled) host::loadMods(s.modsFolder);
     else GN_LOG("mods: disabled in gridnode.ini");
 
@@ -251,6 +252,7 @@ void run(HMODULE self) {
     for (unsigned i = 1; !g_stop; ++i) {
         Sleep(100);
         host::pollLevel();
+        host::configFlush(false);
         if (i % 10) continue;
         host::refreshCreators();
         const size_t n = host::boundCreatorCount();
@@ -270,6 +272,7 @@ void run(HMODULE self) {
 
 void shutdown() {
     g_stop = true;
+    host::configFlush(true); // what changed in the last second
     log::close();
 }
 

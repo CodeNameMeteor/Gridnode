@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 8 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction */
+#define GN_API_VERSION 9 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -163,6 +163,30 @@ typedef struct gn_landing {
 #define GN_MOVE_WALL_RUNS 0x8u
 #define GN_MOVE_LAST_GROUND_Y 0x10u
 #define GN_MOVE_SPEED 0x20u
+
+/* A change in Faith's movement (on_movement), seen on a client tick. On one tick a landing or take-off
+ * comes first, then the state change: a bhop's landing tick is LANDED then STATE (8 -> 0). */
+#define GN_MOVE_EVENT_STATE 1    /* the movement state changed: old_state -> state */
+#define GN_MOVE_EVENT_LANDED 2   /* she touched the ground (in the air -> not) */
+#define GN_MOVE_EVENT_AIRBORNE 3 /* she left the ground */
+typedef struct gn_movement_event {
+    int32_t kind;      /* GN_MOVE_EVENT_* */
+    int32_t state;     /* the movement state now */
+    int32_t old_state; /* the movement state at the tick before */
+    int32_t in_air;    /* 1 in the air now, 0 on the ground */
+} gn_movement_event;
+typedef void (*gn_movement_fn)(const gn_movement_event* e, const gn_movement* now, void* user);
+
+/* A mod's hotkey went down (hotkey_add). Client thread. */
+typedef void (*gn_hotkey_fn)(void* user);
+/* A hotkey as it is now (hotkey_info), for the mod's own UI. */
+typedef struct gn_hotkey_info {
+    int32_t vk;         /* its key (a Windows virtual-key code), 0 for none */
+    int32_t default_vk; /* the key the mod gave it */
+    int32_t waiting;    /* 1 while hotkey_rebind waits for a key */
+    char name[32];      /* the key's name: "F", "F8", "none" */
+    char clash[192];    /* what else is on that key ("Save position, other-mod: X, GridNode: the menu"), "" for nothing */
+} gn_hotkey_info;
 
 /* Input actions (action_press). */
 #define GN_ACTION_JUMP 0xb5a0a981u
@@ -385,6 +409,36 @@ typedef struct gn_api {
      * prediction (pointer swaps); GN_ERR_UNAVAILABLE until the game has predicted for her (she has
      * been in the air) or if it cannot be read in this build. Any thread (it reads). */
     int (*landing_prediction)(gn_landing* out);
+
+    /* ==== GN_API_VERSION 9 ==================================================================== */
+
+    /* ---- mod settings ----------------------------------------------------------------------------
+     * Values a mod keeps between runs, as key=value lines in <mods folder>/<mod>.ini (the mod name
+     * made file-safe). Read when the mod first asks, written a second after the last change and when
+     * the game closes. Keys: not empty, no '=' or line break, no spaces at either end; values: one
+     * line (spaces at either end are dropped). config_get: GN_ERR_NOT_FOUND when unset (out is ""),
+     * GN_ERR_FULL when out was too small (the value is cut to fit). Any thread. */
+    int (*config_get)(const char* mod, const char* key, char* out, size_t size);
+    int (*config_set)(const char* mod, const char* key, const char* value);
+
+    /* ---- hotkeys ---------------------------------------------------------------------------------
+     * A key the player can rebind, kept in the mod's own settings as key.<id>; the mod shows it in its
+     * own window (gn::ui::hotkeyButton in gridnode/ui.hpp), so its players need no GridNode tool.
+     * default_vk: a Windows virtual-key code ('F', 0x70 for F1), 0 for none. fn runs on the client
+     * thread when the key goes down, while the game window has focus and the menu is closed (keys are
+     * read every frame, so a short tap is seen). The same id again replaces the hotkey.
+     * hotkey_rebind: waits for the next key the player presses (Escape: none, Backspace: the
+     * default); hotkey_set: a key directly (-1: the default). GN_ERR_NOT_FOUND for no such hotkey.
+     * Any thread. Needs the overlay ([ui] enabled, the default). */
+    int (*hotkey_add)(const char* mod, const char* id, const char* label, int default_vk, gn_hotkey_fn fn, void* user);
+    int (*hotkey_info)(const char* mod, const char* id, gn_hotkey_info* out);
+    int (*hotkey_rebind)(const char* mod, const char* id);
+    int (*hotkey_set)(const char* mod, const char* id, int vk);
+
+    /* ---- movement events -------------------------------------------------------------------------
+     * fn for every change in Faith's movement (gn_movement_event), on the client thread, on the tick it
+     * happens; `now` is her movement on that tick. Read only while some mod listens. */
+    int (*on_movement)(const char* mod, gn_movement_fn fn, void* user);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

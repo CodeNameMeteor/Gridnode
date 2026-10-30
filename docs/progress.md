@@ -14,6 +14,20 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 9: mod settings, hotkeys, movement events** (2026-10-30, untested in game).
+  `config_get` / `config_set`: per-mod `key=value` files in the mods folder (`config.cpp`, written a
+  second after the last change and at exit; parsing in `config_core.cpp`, host-tested).
+  `hotkey_add` / `hotkey_info` / `hotkey_rebind` / `hotkey_set`: keys read every frame on the render
+  thread, run on the client thread, kept as `key.<id>` in the mod's own settings and rebound in the
+  mod's own window with `gn::ui::hotkeyButton` / `hotkeyRow` (clashes with other mods and GridNode's
+  menu, F7, F8 and Home shown) (`hotkeys.cpp`). First test: a GridNode **Hotkeys** window, where
+  clicking a key did nothing (it waited on GetAsyncKeyState's unreliable "pressed since" bit); the
+  user wanted the keys in each mod instead (a mod's players need no GridNode tool), and the wait now
+  reads keys going down. `on_movement`: landed / airborne / state events from a reading per client tick
+  (`faith.cpp`, the diff host-tested). Rust bindings regenerated with wrappers. The MEC trainer uses
+  all three: its keys are hotkeys (plus "auto bunny hop on / off", no default key) in a Keys tab, its settings
+  are kept in `mods/mec-trainer.ini` (not god mode, noclip, frozen time), and its HUD shows the bhop
+  chain (from movement events) with an option to log every event.
 - **Bhop research: the game's own landing prediction** (2026-10-30, Ghidra; untested in game). The
   movement state and in-air byte are a mirror of ANT's graph (`PamMovement_readAntState`), and the
   jump button goes into ANT as held / not held, so a press in the air is spent there: the press must
@@ -212,10 +226,15 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
-3. What `gn_movement.speed` (body motion +0x438) is: it reads 0.00 most of the time. The `speed`
-   recording had no speed in it, so the movement watch now records "speed (measured)" (from her
-   position) and "speed (game)", and scores every float near her movement against the measured speed
-   (`speed probe:` lines in the log, every 100 samples). First try (`speed-2`) logged nothing: it only took 10-100 ms steps and her position moves every frame; now measured over 0.1 s. "speed (game)" read 0 for all 30 s. The user's old trainer read speed at [[[0x1423e29b8] + 0x2378] + 0x10] + 0x438; +0x2378 is past the end of that 0x2180-byte object (a Cheat Engine path into the next allocation), so the probe logs that path and ours side by side, and the recording gets "speed (old trainer)".
+3. Check `gn_movement.speed`, now the length of her velocity at movement ground +0xd0 (x, z at
+   +0xd0, +0xd8): `speed (game)` should follow `speed (measured)`. The speed probe matched it in
+   82-86% of samples in two runs (`speed-3`, `speed-4`); the old trainer path
+   ([[[0x1423e29b8] + 0x2378] + 0x10] + 0x438, a Cheat Engine path past the end of its object;
+   properly slot +0x1e8 of the object at 0x1423dd6f8) 77%; our old path (Faith +0x28 -> +0x1f0 ->
+   +0x10 -> +0x438) never (+0x1f0 held garbage or a MathEntity). The first pick, movement state
+   +0x1bc, matched in `speed-3` only and read 0 throughout `speed-4`: one run is not enough. Writing
+   the speed (the trainer's position load) did not keep it with +0x1bc; it now scales her velocity
+   and writes the old trainer's field too (untested).
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
 
 ## Decisions and gotchas

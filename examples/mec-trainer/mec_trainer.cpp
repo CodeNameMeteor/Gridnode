@@ -12,12 +12,16 @@
 //   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
-// Hotkeys (as in MEC_Trainer; ignored while the GridNode menu is open or the game is not focused):
+// Hotkeys (GridNode hotkeys, kept in mods/mec-trainer.ini; defaults as in MEC_Trainer):
 //   1 god mode   2 noclip   3 no stumble   4 save position   5 load position
-//   F arm the bunny hop   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down)
+//   F arm the bunny hop   (none) auto bunny hop on / off   (rebound in the trainer's Keys tab)
+//   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down; fixed keys)
+//
+// Settings (sliders, checkboxes) are kept in mods/mec-trainer.ini between runs (gn::config), except
+// god mode, noclip and frozen time, which start off.
 //
 // Threads: render (window, HUD: reads atomics, posts work), client tick (movement features,
-// hotkeys), server tick (noclip and teleports). Faith's state is read on the client thread.
+// hotkeys run there), server tick (noclip and teleports). Faith's state is read on the client thread.
 #include <windows.h>
 
 #include <algorithm>
@@ -185,6 +189,30 @@ std::atomic<float> g_groundY{0.f};        // the ground under her (server ray ca
 std::atomic<bool> g_haveGround{false};
 std::atomic<float> g_groundDist{-1.f};    // her height above it (client), for the window
 std::atomic<int> g_bhops{0}, g_bhopHits{0};
+// Bhop chains from GridNode's movement events, whoever pressed jump: a landing out of a wall run or
+// swing (LANDED, old state 8 / 25) that goes straight back into that state is a bhop; any other
+// state after the landing ends the chain.
+std::atomic<int> g_chain{0}, g_bestChain{0};
+std::atomic<bool> g_logMoves{false};
+int g_chainFrom = 0; // (client thread) the state she landed out of, 0 when not on a bhop landing
+
+void onMove(const gn::MovementEvent& e, const gn::Movement&) {
+    if (g_logMoves)
+        gn::log("movement: %s, state %d -> %d", e.kind == GN_MOVE_EVENT_LANDED ? "landed" : e.kind == GN_MOVE_EVENT_AIRBORNE ? "airborne" : "state",
+                e.old_state, e.state);
+    if (e.kind == GN_MOVE_EVENT_LANDED) {
+        g_chainFrom = e.old_state == 8 || e.old_state == 25 ? e.old_state : 0;
+        if (!g_chainFrom) g_chain = 0;
+    } else if (e.kind == GN_MOVE_EVENT_STATE && e.state != 0 && g_chainFrom) {
+        if (e.state == g_chainFrom) {
+            const int n = g_chain.fetch_add(1) + 1;
+            if (n > g_bestChain) g_bestChain = n;
+        } else {
+            g_chain = 0;
+        }
+        g_chainFrom = 0;
+    }
+}
 DWORD g_bhopArmedAt = 0, g_lastHop = 0;
 
 // Client tick only.
@@ -279,6 +307,12 @@ void serverTick(float) {
     if (g_god) gn::godMode(true); // again after a respawn (a new health component)
 }
 
+// A label with its hotkey's key, as the player bound it ("God mode  [1]"; no brackets for no key).
+std::string withKey(const char* label, const char* id, const char* suffix = "") {
+    const std::string k = gn::hotkeyName(id);
+    return std::string(label) + (k.empty() || k == "none" ? "" : "  [" + k + "]") + suffix;
+}
+
 // Arming one hop turns auto off: the two would fight over the same landing.
 void bhopArm() {
     if (g_bhopAuto.exchange(false)) gn::log("bhop: armed: auto bhop off");
@@ -327,25 +361,7 @@ void clientTick(float dt) {
     g_speed = m.speed;
     g_state = m.state;
     g_lastGroundY = m.last_ground_y;
-
-    // Hotkeys (edge-triggered).
-    const bool keys = gameFocused() && !gn::ui::menuOpen();
-    static bool was[6] = {};
-    const int vk[6] = {'1', '2', '3', '4', '5', 'F'};
-    for (int i = 0; i < 6; ++i) {
-        const bool down = keys && (GetAsyncKeyState(vk[i]) & 0x8000) != 0;
-        if (down && !was[i]) {
-            switch (i) {
-            case 0: g_god = !g_god; setGodMode(g_god); break;
-            case 1: g_noclip = !g_noclip; if (g_noclip && !g_god) { g_god = true; setGodMode(true); } break;
-            case 2: g_noStumble = !g_noStumble; break;
-            case 3: savePosition(); break;
-            case 4: loadPosition(); break;
-            case 5: bhopArm(); break;
-            }
-        }
-        was[i] = down;
-    }
+    const bool keys = gameFocused() && !gn::ui::menuOpen(); // noclip's movement keys (fixed, held)
 
     // Noclip.
     static int g_noclipGrace = 0;
@@ -492,15 +508,15 @@ void worldTab() {
 void trainerTab() {
     bool v;
     v = g_god;
-    if (ImGui::Checkbox("God mode  [1]", &v)) g_god = v, setGodMode(v);
+    if (ImGui::Checkbox(withKey("God mode", "god").c_str(), &v)) g_god = v, setGodMode(v);
     v = g_noclip;
-    if (ImGui::Checkbox("Noclip  [2]", &v)) g_noclip = v;
+    if (ImGui::Checkbox(withKey("Noclip", "noclip").c_str(), &v)) g_noclip = v;
     if (g_noclip) {
         float s = g_noclipSpeed;
         if (ImGui::SliderFloat("Noclip speed  [E / R]", &s, 0.1f, 5.f, "%.2fx")) g_noclipSpeed = s;
     }
     v = g_noStumble;
-    if (ImGui::Checkbox("No stumble  [3]", &v)) g_noStumble = v;
+    if (ImGui::Checkbox(withKey("No stumble", "no_stumble").c_str(), &v)) g_noStumble = v;
     v = g_sameWall;
     if (ImGui::Checkbox("Same wall climbs / runs", &v)) g_sameWall = v;
     v = g_infClimbs;
@@ -515,10 +531,10 @@ void trainerTab() {
     ImGui::SameLine();
     v = g_bhopSwing;
     if (ImGui::Checkbox("Mag rope swings", &v)) g_bhopSwing = v;
-    if (ImGui::Button(g_bhopArmed ? "Armed..." : "Arm  [F]")) bhopArm();
+    if (ImGui::Button(g_bhopArmed ? "Armed...###arm" : withKey("Arm", "bhop_arm", "###arm").c_str())) bhopArm();
     ImGui::SameLine();
     v = g_bhopAuto;
-    if (ImGui::Checkbox("Auto", &v)) g_bhopAuto = v;
+    if (ImGui::Checkbox(withKey("Auto", "bhop_auto").c_str(), &v)) g_bhopAuto = v;
     float contact = g_bhopContact, bias = g_bhopBiasMs;
     bool usePredict = g_bhopUsePrediction;
     if (ImGui::Checkbox("Use the game's landing prediction", &usePredict)) g_bhopUsePrediction = usePredict;
@@ -543,10 +559,16 @@ void trainerTab() {
                           "+ looks further ahead (presses earlier), - less. 0 to start with.");
     ImGui::TextDisabled("state %d, ground %.2f m, presses %d, hits %d", g_state.load(), g_groundDist.load(), g_bhops.load(),
                         g_bhopHits.load());
-    ImGui::SeparatorText("Position");
-    if (ImGui::Button("Save  [4]")) savePosition();
+    ImGui::Text("Chain %d, best %d", g_chain.load(), g_bestChain.load());
     ImGui::SameLine();
-    if (ImGui::Button("Load  [5]")) loadPosition();
+    if (ImGui::SmallButton("Reset best")) g_bestChain = 0;
+    v = g_logMoves;
+    if (ImGui::Checkbox("Log movement events", &v)) g_logMoves = v;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every landing, take-off and state change to gridnode.log (gn::onMovement).");
+    ImGui::SeparatorText("Position");
+    if (ImGui::Button(withKey("Save", "save").c_str())) savePosition();
+    ImGui::SameLine();
+    if (ImGui::Button(withKey("Load", "load").c_str())) loadPosition();
     ImGui::SameLine();
     if (ImGui::Button("Jump")) gn::jump();
     {
@@ -587,6 +609,55 @@ void landingHud() {
     ImGui::Dummy(ImVec2(w, h));
 }
 
+// Every hotkey, rebound here (kept in mods/mec-trainer.ini as key.<id>).
+struct KeyRow {
+    const char* id;
+    const char* label;
+};
+const KeyRow kKeyRows[] = {{"god", "God mode on / off"},
+                           {"noclip", "Noclip on / off (god mode with it)"},
+                           {"no_stumble", "No stumble on / off"},
+                           {"save", "Save position"},
+                           {"load", "Load position"},
+                           {"bhop_arm", "Bunny hop: arm one hop (auto off)"},
+                           {"bhop_auto", "Bunny hop: auto on / off"}};
+
+void keysTab() {
+    ImGui::TextDisabled("Click a key, then press the new one. Escape: no key. Backspace: the default.");
+    for (const KeyRow& k : kKeyRows) gn::ui::hotkeyRow(k.id, k.label);
+    ImGui::TextDisabled("Noclip: WASD, Space up, Shift / C down, E / R slower / faster (fixed).");
+}
+
+// ---- settings kept between runs (mods/mec-trainer.ini) -------------------------------------------------
+struct BoolSetting {
+    const char* key;
+    std::atomic<bool>* v;
+};
+struct FloatSetting {
+    const char* key;
+    std::atomic<float>* v;
+};
+// God mode, noclip and frozen time are left out: they start off each run.
+const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall", &g_sameWall},
+                              {"inf_climbs", &g_infClimbs},        {"inf_runs", &g_infRuns},
+                              {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
+                              {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
+                              {"bhop.auto", &g_bhopAuto},          {"bhop.wall_runs", &g_bhopWall},
+                              {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction}};
+const FloatSetting kFloats[] = {{"noclip.speed", &g_noclipSpeed},  {"bhop.press_below", &g_bhopPredictBelow},
+                                {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs}};
+
+void loadSettings() {
+    for (const BoolSetting& s : kBools) *s.v = gn::config::getBool(s.key, s.v->load());
+    for (const FloatSetting& s : kFloats) *s.v = gn::config::getFloat(s.key, s.v->load());
+}
+
+// After the window: GridNode keeps the values and writes the file only when one changed.
+void saveSettings() {
+    for (const BoolSetting& s : kBools) gn::config::setBool(s.key, s.v->load());
+    for (const FloatSetting& s : kFloats) gn::config::setFloat(s.key, s.v->load());
+}
+
 void window() {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 26, ImGui::GetFontSize() * 30), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("MEC Trainer")) {
@@ -606,9 +677,14 @@ void window() {
             worldTab();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Keys")) {
+            keysTab();
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     ImGui::End();
+    saveSettings();
 }
 
 void hud() {
@@ -623,6 +699,7 @@ void hud() {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
             ImGui::Text("Speed %.2f m/s   State %d", g_hSpeed.load(), g_state.load());
             if (g_landHud) landingHud();
+            if (g_chain || g_bestChain) ImGui::Text("Bhop chain %d   best %d", g_chain.load(), g_bestChain.load());
         }
         ImGui::End();
     }
@@ -651,8 +728,24 @@ GN_MOD("mec-trainer") {
             if (menuOpen) window();
         }))
         gn::log("no overlay: hotkeys only");
+    loadSettings();
+    // Run on the client thread, as the old key loop did.
+    gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });
+    gn::hotkey("noclip", "Noclip on / off (god mode with it)", '2', [] {
+        g_noclip = !g_noclip;
+        if (g_noclip && !g_god) g_god = true, setGodMode(true);
+    });
+    gn::hotkey("no_stumble", "No stumble on / off", '3', [] { g_noStumble = !g_noStumble; });
+    gn::hotkey("save", "Save position", '4', savePosition);
+    gn::hotkey("load", "Load position", '5', loadPosition);
+    gn::hotkey("bhop_arm", "Bunny hop: arm one hop (auto off)", 'F', bhopArm);
+    gn::hotkey("bhop_auto", "Bunny hop: auto on / off", 0, [] {
+        g_bhopAuto = !g_bhopAuto;
+        gn::log("bhop: auto %s", g_bhopAuto ? "on" : "off");
+    });
+    gn::onMovement(onMove);
     gn::onClientTick(clientTick);
     gn::onServerTick(serverTick);
-    gn::log("ready: INSERT for the window; 1 god, 2 noclip, 3 no stumble, 4 save, 5 load, F bunny hop");
+    gn::log("ready: INSERT for the window; keys in its Keys tab (1 god, 2 noclip, 3 no stumble, 4 save, 5 load, F bunny hop)");
     return true;
 }

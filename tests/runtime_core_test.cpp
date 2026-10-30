@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+#include "gridnode/config.hpp"
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/reflect/registry.hpp"
@@ -193,12 +194,58 @@ void testDispatcher() {
     CHECK(ran == 1000);
 }
 
+void testConfig() {
+    // Comments, blank lines, spaces and lines without '=' are skipped; a later key wins.
+    const config::Entries e = config::parse("# header\n\n bhop.below = 1.66 \r\nnoise\n;x=1\nkey.arm=F\nbhop.below=1.7\nempty=\n");
+    CHECK(e.size() == 3);
+    CHECK(config::find(e, "bhop.below") && *config::find(e, "bhop.below") == "1.7");
+    CHECK(config::find(e, "key.arm") && *config::find(e, "key.arm") == "F");
+    CHECK(config::find(e, "empty") && config::find(e, "empty")->empty());
+    CHECK(!config::find(e, "x"));
+    // Written and read back gives the same entries; the header lines are comments.
+    const std::string text = config::serialize(e, "two\nlines");
+    CHECK(text.rfind("# two\n# lines\n", 0) == 0);
+    CHECK(config::parse(text) == e);
+    // set: changed or not, and values on one line.
+    config::Entries f;
+    CHECK(config::set(f, "a", "1"));
+    CHECK(!config::set(f, "a", " 1 "));
+    CHECK(config::set(f, "a", "x\ny"));
+    CHECK(*config::find(f, "a") == "x y");
+    CHECK(config::validKey("key.arm") && !config::validKey("") && !config::validKey(" a") && !config::validKey("a=b") &&
+          !config::validKey("#a") && !config::validKey("a\nb"));
+    // File names stay inside the mods folder.
+    CHECK(config::fileName("mec-trainer") == "mec-trainer");
+    CHECK(config::fileName("../x y") == ".._x_y");
+    CHECK(config::fileName("..") == "_..");
+    CHECK(config::fileName("") == "_");
+}
+
+void testMovementEvents() {
+    using namespace movement;
+    // A bhop's landing tick: in the air in state 8 -> on the ground in state 0: landed, then the state.
+    std::vector<Event> ev = diff({8, true}, {0, false});
+    CHECK(ev.size() == 2);
+    CHECK(ev[0].kind == kEventLanded && ev[0].state == 0 && ev[0].oldState == 8);
+    CHECK(ev[1].kind == kEventState && ev[1].state == 0 && ev[1].oldState == 8);
+    // Off again in the wall-run state.
+    ev = diff({0, false}, {8, true});
+    CHECK(ev.size() == 2 && ev[0].kind == kEventAirborne && ev[1].kind == kEventState);
+    // Nothing changed: nothing.
+    CHECK(diff({1, false}, {1, false}).empty());
+    // A state change in the air alone.
+    ev = diff({2, true}, {8, true});
+    CHECK(ev.size() == 1 && ev[0].kind == kEventState && ev[0].oldState == 2);
+}
+
 } // namespace
 
 int main() {
     testRegistry();
     testHookTable();
     testDispatcher();
+    testConfig();
+    testMovementEvents();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

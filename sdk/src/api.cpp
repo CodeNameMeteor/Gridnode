@@ -176,6 +176,7 @@ size_t apiLevelName(char* out, size_t size) {
     return n.size();
 }
 int apiOnLevel(const char* mod, gn_level_fn fn, void* user) { return onLevel(mod ? mod : "?", fn, user); }
+int apiOnMovement(const char* mod, gn_movement_fn fn, void* user) { return onMovement(mod ? mod : "?", fn, user); }
 int apiOnUi(const char* mod, gn_ui_fn fn, void* user) { return ui::onUi(mod ? mod : "?", fn, user); }
 void* apiUiContext() { return ui::context(); }
 void apiUiAllocators(void** a, void** f, void** u) { ui::allocators(a, f, u); }
@@ -296,6 +297,13 @@ const gn_api* api() {
         a.entities_near = entitiesNear;
         a.entity_set_transform = entitySetTransform;
         a.landing_prediction = landingPrediction;
+        a.config_get = configGet;
+        a.config_set = configSet;
+        a.hotkey_add = hotkeyAdd;
+        a.hotkey_info = hotkeyInfo;
+        a.hotkey_rebind = hotkeyRebind;
+        a.hotkey_set = hotkeySet;
+        a.on_movement = apiOnMovement;
         return a;
     }();
     return &table;

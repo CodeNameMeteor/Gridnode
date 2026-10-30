@@ -33,6 +33,7 @@ add_library(gn_reflect STATIC
   sdk/src/reflect/registry.cpp
   sdk/src/hook_table.cpp
   sdk/src/dispatch.cpp
+  sdk/src/config_core.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -154,6 +155,8 @@ add_library(gridnode SHARED
   sdk/src/messages.cpp
   sdk/src/faith.cpp
   sdk/src/landing.cpp
+  sdk/src/config.cpp
+  sdk/src/hotkeys.cpp
   sdk/src/assets.cpp
   sdk/src/layouts.cpp
   $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>

@@ -1170,7 +1170,7 @@ constexpr MoveField kMoveFields[] = {
     {"wall climbs", 0x38, 'i'},    {"wall runs", 0x3c, 'i'}, {"jump held", 0, 'b'},
     {"jump held by mods", 0, 'b'}, // gn::jump (a trainer's auto-bhop), which "jump held" does not see
     {"speed (measured)", 0, 'f'},  // from her position; a line when it moves by 0.1 m/s or more
-    {"speed (game)", 0x438, 'f'},  // gn_movement.speed (body motion +0x438), under suspicion
+    {"speed (game)", 0xd0, 'f'},   // gn_movement.speed (her velocity, movement ground +0xd0)
     {"speed (old trainer)", 0x438, 'f'}, // [[[0x1423e29b8] + 0x2378] + 0x10] + 0x438, the user's old speedometer
 };
 std::array<double, std::size(kMoveFields)> g_moveLast{};

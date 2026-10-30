@@ -194,6 +194,50 @@ gn::Landing l;
 if (gn::landingPrediction(l) && l.age_ms < 100 && l.ticks_to_hit < 1.66f) gn::jump(); // on the landing tick
 ```
 
+## Movement events, settings and hotkeys (API 9)
+
+- **Movement events.** `gn::onMovement(fn)` calls `fn(const gn::MovementEvent& e, const
+  gn::Movement& now)` on the client thread for every change in Faith's movement, on the tick it
+  happens: `GN_MOVE_EVENT_LANDED`, `GN_MOVE_EVENT_AIRBORNE` and `GN_MOVE_EVENT_STATE` (`old_state`
+  -> `state`). On one tick the landing or take-off comes first, then the state. Her movement is read
+  only while a mod listens. A bhop's landing tick is `LANDED` then `STATE` 8 -> 0, and the next
+  tick `AIRBORNE` and `STATE` 0 -> 8 (25 for a mag rope swing); a missed one goes 0 -> 1.
+- **Settings.** `gn::config::getFloat("key", default)`, `setFloat`, and the same for `Bool`, `Int`
+  and `String`. They are kept in `<mods folder>/<mod>.ini` as `key=value` lines, read when the mod
+  first asks and written a second after the last change (and when the game closes), so setting
+  them every frame is fine. Keys: no `=`, line breaks or spaces at either end.
+- **Hotkeys.** `gn::hotkey("id", "label", defaultKey, fn)` adds a key the player can rebind.
+  `defaultKey` is a Windows virtual-key code (`'F'`, `VK_F1`, 0 for none); the player's choice is kept
+  in the mod's own settings as `key.<id>`. `fn()` runs on the client thread when the key goes down,
+  while the game has focus and the menu is closed; keys are read every frame, so a short tap counts.
+  The mod shows its keys in its own window, so its players need nothing else:
+  `gn::ui::hotkeyButton("id")` (click it, then press a key; Escape: none, Backspace: the default) or
+  `gn::ui::hotkeyRow("id", "label")` for a list, both with a warning when another hotkey of any mod,
+  or a GridNode key (the menu, F7, F8, Home), is on the same key. `gn::hotkeyName("id")` gives the
+  key's name for labels; `gn::hotkeyRebind`, `gn::hotkeySet` and `gn::hotkeyInfo` are the parts.
+
+```cpp
+GN_MOD("my-mod") {
+    static std::atomic<float> limit{gn::config::getFloat("limit", 1.5f)};
+    gn::hotkey("toggle", "Turn the thing on / off", 'G', [] { gn::log("toggled"); });
+    gn::onMovement([](const gn::MovementEvent& e, const gn::Movement&) {
+        if (e.kind == GN_MOVE_EVENT_LANDED) gn::log("landed out of state %d", e.old_state);
+    });
+    gn::ui::onDraw([](bool open) {
+        if (!open) return;
+        ImGui::Begin("My mod");
+        float v = limit;
+        if (ImGui::SliderFloat("Limit", &v, 0.f, 3.f)) limit = v, gn::config::setFloat("limit", v);
+        gn::ui::hotkeyRow("toggle", "Turn the thing on / off");
+        ImGui::End();
+    });
+    return true;
+}
+```
+
+In Rust: `gridnode::on_movement`, `config_get` / `config_set`, `hotkey`, `hotkey_info`, `hotkey_rebind` and
+`hotkey_set`.
+
 ## UI (Dear ImGui)
 
 GridNode draws a Dear ImGui overlay on the game. **INSERT** opens its menu: the GridNode window

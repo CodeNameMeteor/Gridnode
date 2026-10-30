@@ -79,7 +79,7 @@ has spawned, on the server (+0x148) and the client (+0xb0) (`docs/research/repla
 
 **Faith's movement** (off by default) records, every frame, the movement values the game keeps
 outside entities (`PamMovement` in `faith.yaml`): the movement state (1 ground, 2 jump, 8 wall run),
-in air (1 airborne), wall count, wall climbs and wall runs, the player's jump input (the jump action, whatever key it is bound to) and jumps a mod pressed through `gn::jump` (`jump held by mods`), and her horizontal speed: `speed (measured)` from her position and `speed (game)` (`gn_movement.speed`, under suspicion), each a line when it changes by 0.1 m/s. While it runs, the log gets `speed probe:` lines: the fields near her movement that best match the measured speed (research for the speed field). A
+in air (1 airborne), wall count, wall climbs and wall runs, the player's jump input (the jump action, whatever key it is bound to) and jumps a mod pressed through `gn::jump` (`jump held by mods`), and her horizontal speed: `speed (measured)` from her position and `speed (game)` (`gn_movement.speed`, from her velocity at movement ground +0xd0) and `speed (old trainer)` (a Cheat Engine path, for comparison), each a line when it changes by 0.1 m/s. While it runs, the log gets `speed probe:` lines: the fields near her movement that best match the measured speed (how the velocity was found). A
 `field` line on `PamClientCharacterEntity` is written when one changes, so a jump is a handful of
 lines. Speed is left out (it changes every frame). It also records the game's own landing prediction:
 ANT's `PositionPredictionProcessorAsset` works out, when a jump or fall starts, where and when the

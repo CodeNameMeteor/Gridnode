@@ -69,7 +69,7 @@ constants:
   - { name: InputDevices_Vtable, value: 0x141c0d0e8 }
   - { name: Keyboard_Bytes, value: 0x1a78 }
   - { name: Keyboard_Keys, value: 0x1acc }
-  - { name: Character_PhysicsHolder, value: 0x28 }
+  - { name: Character_PhysicsHolder, value: 0x28, note: "Wrong for the speed: in game +0x28 -> +0x1f0 read 0x800000008 (speed-3, 2026-10-30). Kept for the speed probe only." }
   - { name: Character_MovementOwner, value: 0xb0 }
   - { name: Character_Camera, value: 0x250 }
   - { name: Camera_Forward, value: 0x70 }
@@ -84,7 +84,10 @@ constants:
   - { name: State_Movement, value: 0x90 }
   - { name: PhysicsHolder_Body, value: 0x1f0 }
   - { name: Body_Motion, value: 0x10 }
-  - { name: Motion_Speed, value: 0x438 }
+  - { name: Motion_Speed, value: 0x438, note: "The old trainer's speed ([[[0x1423e29b8] + 0x2378] + 0x10] + 0x438; +0x2378 is past that object, slot +0x1e8 of the 0x1b50-byte object at 0x1423dd6f8). Matched the measured speed 77% of the time; it holds round values (7.0, 7.2) while running." }
+  - { name: Speed_DriveGlobal, value: 0x1423dd6f8, note: "Global holding a 0x1b50-byte object (made in 0x142fe1fd0, constructor 0x142ff7a80). Its +0x1e8 is the slot the old trainer's path reached (+0x2378 past the object before it)." }
+  - { name: Speed_DriveSlot, value: 0x1e8, note: "In the Speed_DriveGlobal object: -> object (vtable 0x141ac3588), +0x10 -> motion, +0x438 the old trainer's speed. gn_movement writes the speed there too (untested)." }
+  - { name: Ground_Velocity, value: 0xd0, note: "Her velocity (Vec3 f32: x +0xd0, y +0xd4, z +0xd8) in the movement ground object; gn_movement.speed is the length of x and z. The speed probe matched it to her measured speed in 82-86% of samples in two runs (speed-3, speed-4, 2026-10-30), the old trainer path 77%. Movement state +0x1bc, the first pick, matched in one run only and read 0 in the next." }
   - { name: TimeOfDay_Clock1, value: 0x8 }
   - { name: TimeOfDay_Clock2, value: 0x28 }
   - { name: Clock_Time, value: 0x30 }

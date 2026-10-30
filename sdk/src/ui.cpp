@@ -527,6 +527,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
             try {
                 if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
                 if (g_settings.recorder) recorder::frame();
+                hotkeys::frame(open);
             } catch (...) { // never into the game's Present
                 ImGui::ErrorRecoveryTryToRecoverState(&state);
                 static int said = 0;
@@ -602,6 +603,13 @@ std::string keyName(int vk) {
     char buf[8];
     snprintf(buf, sizeof(buf), "VK_%02X", vk & 0xFF);
     return buf;
+}
+
+std::vector<std::pair<int, std::string>> reservedKeys() {
+    std::vector<std::pair<int, std::string>> r{{g_settings.menuKey, "the menu"}};
+    if (g_settings.recorder) r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"});
+    if (g_settings.editor) r.push_back({VK_F7, "free camera (default)"});
+    return r;
 }
 
 int keyFromName(const std::string& n) {
