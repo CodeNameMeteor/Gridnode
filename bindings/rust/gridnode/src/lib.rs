@@ -272,6 +272,13 @@ pub fn movement() -> Option<Movement> {
 }
 /// Writes the fields in `fields` (`sys::GN_MOVE_*`).
 pub fn set_movement(m: &Movement, fields: u32) -> bool { unsafe { (api().movement_set.unwrap())(m, fields) == 0 } }
+pub use crate::sys::gn_landing as Landing;
+/// The game's own landing prediction for Faith (ticks to hit in 60ths of a second, hit height, soft
+/// landing); None until she has been in the air.
+pub fn landing_prediction() -> Option<Landing> {
+    let mut l: Landing = unsafe { core::mem::zeroed() };
+    (unsafe { (api().landing_prediction.unwrap())(&mut l) } == 0).then_some(l)
+}
 /// A movement tuning value by name (None until GridNode has verified it this session).
 pub fn tuning(name: &str) -> Option<f32> {
     unsafe {

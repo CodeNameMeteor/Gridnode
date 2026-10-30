@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 7;
+pub const GN_API_VERSION: u32 = 8;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -113,6 +113,16 @@ pub struct gn_movement {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_landing {
+    pub ticks_to_hit: f32,
+    pub hit_height: f32,
+    pub soft_landing: i32,
+    pub age_ms: u32,
+    pub count: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_tuning {
     pub name: *const c_char,
     pub group: *const c_char,
@@ -199,6 +209,7 @@ pub struct gn_api {
     pub asset_release: Option<unsafe extern "C" fn(asset: *mut c_void)>,
     pub entities_near: Option<unsafe extern "C" fn(pos: *const f32, radius: f32, fn_: gn_entity_fn, user: *mut c_void) -> c_int>,
     pub entity_set_transform: Option<unsafe extern "C" fn(entity: *mut c_void, to: *const gn_transform) -> c_int>,
+    pub landing_prediction: Option<unsafe extern "C" fn(out: *mut gn_landing) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -211,6 +222,7 @@ const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_transform>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
+const _: () = assert!(core::mem::size_of::<gn_landing>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 512);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 520);

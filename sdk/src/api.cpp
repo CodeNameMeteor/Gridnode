@@ -295,6 +295,7 @@ const gn_api* api() {
         a.asset_release = assetRelease;
         a.entities_near = entitiesNear;
         a.entity_set_transform = entitySetTransform;
+        a.landing_prediction = landingPrediction;
         return a;
     }();
     return &table;

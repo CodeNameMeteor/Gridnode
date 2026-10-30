@@ -104,7 +104,7 @@ functions:
     signature: "void(i64* character, void* inputState, f32 dt, f32 scale)"
     confidence: inferred
     sources: [gridnode, ghidra]
-    note: "Per character: reads the move and look actions (analog) and the button actions (digital) and hands them to the ANT input (0x142b8a7a0, 0x142bc5540). Named in Ghidra; first GridNodeSync round trip."
+    note: "Per character: reads the move and look actions (analog) and the button actions (digital) and hands them to the ANT input (0x142b8a7a0, 0x142bc5540). Named in Ghidra; first GridNodeSync round trip. The buttons go in as held / not held (a 0x100-byte block copied into ANT each tick; jump 0xb5a0a981 is its byte +0x39): ANT's graph makes its own presses from them, so a jump press made in the air is spent there (bhops, 2026-10-30)."
   - name: PamClientAntInputComponent_onInput
     va: 0x143911c80
     signature: "void(void* inputListener, EntryInputState* state, void* player)"

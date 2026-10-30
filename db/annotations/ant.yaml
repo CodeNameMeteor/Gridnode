@@ -69,6 +69,30 @@ functions:
     signature: "void()"
     confidence: inferred
     sources: [ghidra, user]
+  # The landing prediction and the movement mirror, read in Ghidra 2026-10-30 (bhop research).
+  - name: PositionPredictionProcessorAsset_create
+    va: 0x142eff9a0
+    signature: "void*()"
+    note: "Vtable 0x141ab0b70 +0 (the asset type registered by ant_definePositionPredictionProcessorAsset). Allocates the 0x58-byte asset (vtable 0x141aabb98): +0x10 Timespan (2.0), +0x14 Iterations (6), then the output bindings: +0x18 HitPosition, +0x20 HitPositionY, +0x28 TicksToHit, +0x30 IsSoftLanding, +0x38 SoftLandingCenter, +0x40 SoftLandingRadius, +0x48 SoftLandingGuidance, +0x50 PositionPredictionBus."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PositionPredictionProcessorAsset_update
+    va: 0x142f28e20
+    signature: "void(void* asset, void* context)"
+    note: "Vtable 0x141aabb98 +0x20. Takes the result from the bus if there is one, else runs ant_predictTrajectoryHit on the character's active trajectory (PamplonaFeature +0x38, or per instance) when its start time (+0x80) is >= 0, then sets that time to -1: one prediction per jump or fall. Writes each output through its binding's writer ((binding + 0x20)->vtable +8: writer, state, value). The Recorder's movement watch wraps this slot to record the outputs."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_predictTrajectoryHit
+    va: 0x142f3b9a0
+    signature: "void(void* trajectory, void* query, f32* out)"
+    note: "Samples the trajectory (position +0x30, velocity +0x60, acceleration terms +0x50/+0x70, start time +0x80) at query.Iterations points over query.Timespan and casts each segment (0x142f4b320); out = hit position (4 floats) and out[4] = time to the hit x 60 (TicksToHit, 60ths of a second; Timespan x 60 when nothing is hit)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PamMovement_readAntState
+    va: 0x142d6c2b0
+    note: "Fills Faith's movement struct from ANT values (each through value->vtable +0x10 with a type id: 0x1c0b376 bool, 0xbd87f16 float, then accessor->vtable +0): among them +0x4 (float), +0x15..+0x19 flags, +0x17 in the air. So the movement state the game code and GridNode read is a mirror of ANT's graph. Called from 0x142d96d30."
+    confidence: inferred
+    sources: [ghidra]
   # Asset and value types: each builds its field descriptors (0x142c0c590: index, name, type) and
   # registers the type by name with ANT (0x142c352b0 on the registry from 0x142c2f840). Names from the
   # user's Ghidra; checked 2026-10-29: each one passes its own type's name. Field names in the order defined.

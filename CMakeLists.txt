@@ -153,6 +153,7 @@ add_library(gridnode SHARED
   sdk/src/settings.cpp
   sdk/src/messages.cpp
   sdk/src/faith.cpp
+  sdk/src/landing.cpp
   sdk/src/assets.cpp
   sdk/src/layouts.cpp
   $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>

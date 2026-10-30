@@ -62,8 +62,8 @@ structs:
     confidence: inferred
     note: "Not a reflected type; reached from PamClientCharacterEntity.movementOwner +0x48 -> +0."
     members:
-      - { offset: 0x20, name: ground, type: "void*", note: "+0x4 last ground Y (f32), +0x17 on ground (u8)." }
-      - { offset: 0x28, name: state, type: "void*", note: "+0x18 wall count, +0x38 wall climbs, +0x3c wall runs, +0x90 movement state (all i32)." }
+      - { offset: 0x20, name: ground, type: "void*", note: "+0x4 last ground Y (f32), +0x17 in the air (u8: 1 airborne, 0 on the ground; was noted as on ground, checked with the Recorder 2026-10-30)." }
+      - { offset: 0x28, name: state, type: "void*", note: "+0x18 wall count, +0x38 wall climbs, +0x3c wall runs, +0x90 movement state (all i32). States seen 2026-10-30: 1 on the ground, 2 jumping, 8 wall run (lasts through the jump off the wall until the landing), 30 briefly before a run." }
 
 constants:
   - { name: InputDevices_Vtable, value: 0x141c0d0e8 }

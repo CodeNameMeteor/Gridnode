@@ -146,7 +146,7 @@ std::string level = gn::levelName();
 Entity pointers are only good while the entity lives (most until their level ends). Keep them
 in a per-level variable cleared by `onLevel`, or look them up again each time.
 
-## Faith, keys, tuning and game state (API 6)
+## Faith, keys, tuning and game state (API 6, landing prediction API 8)
 
 Found with `examples/probe` while porting MEC_Trainer (`db/annotations/faith.yaml`).
 
@@ -155,7 +155,7 @@ gn::jump();                                   // a tap of the jump input: the ga
 gn::keyPress(gn::keyFind("Space"), 4);        // any key, as the game reads it, for 4 client ticks
 
 gn::Movement m;
-if (gn::movement(m)) {                        // state, wall counters, last ground Y, on ground, speed, camera forward
+if (gn::movement(m)) {                        // state, wall counters, last ground Y, on_ground (1 in the air), speed, camera forward
     m.wall_runs = 0;
     gn::setMovement(m, GN_MOVE_WALL_RUNS);    // only the fields named
 }
@@ -178,6 +178,21 @@ gn::setTimeOfDay(12 * 3600.f);
   only written after GridNode has seen its default at that address; until then `available` is 0
   and `tuning_set` refuses. The values are shared by every character and stay until set back.
 - **God mode** is the game's own `GameSettings.IsGodMode` (`gn::settings`).
+- **Landing prediction** (API 8). Every tick while Faith is in the air, the animation system
+  predicts when and where she will hit the ground (`PositionPredictionProcessorAsset`).
+  `gn::landingPrediction(l)` gives its latest prediction for her: `ticks_to_hit` in 60ths of a
+  second, `hit_height`, `soft_landing`, how old it is (`age_ms`) and a `count` that changes with each
+  prediction. The first call wraps the prediction (pointer swaps); false until she has been in the
+  air. The jump action only counts on the tick she lands (a press in the air is spent there), and in
+  testing `ticks_to_hit` read 0.52-1.65 on the tick before a landing and 1.68 or more the tick before
+  that: the MEC trainer's auto-bhop presses jump on the first tick it drops below 1.66 with the hit
+  below her (a hit above her feet is geometry she is rising into), unless `soft_landing` is set: a soft landing
+  grounds her whatever the input, so it cannot be bhopped. Near walls and edges it can drop early.
+
+```cpp
+gn::Landing l;
+if (gn::landingPrediction(l) && l.age_ms < 100 && l.ticks_to_hit < 1.66f) gn::jump(); // on the landing tick
+```
 
 ## UI (Dear ImGui)
 

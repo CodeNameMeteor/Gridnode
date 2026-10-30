@@ -264,6 +264,10 @@ using Movement = gn_movement;
 inline bool movement(Movement& out) { return api().movement_get(&out) == GN_OK; }
 // Writes the fields named in `fields` (GN_MOVE_*).
 inline bool setMovement(const Movement& in, uint32_t fields) { return api().movement_set(&in, fields) == GN_OK; }
+using Landing = gn_landing;
+// The game's own landing prediction for Faith (ticks to hit in 60ths of a second, hit height, soft
+// landing); false until she has been in the air.
+inline bool landingPrediction(Landing& out) { return api().landing_prediction(&out) == GN_OK; }
 
 using Tuning = gn_tuning;
 inline uint32_t tuningCount() { return api().tuning_count(); }

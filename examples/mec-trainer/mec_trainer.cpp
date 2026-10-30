@@ -9,7 +9,7 @@
 //   - time of day: gn::setTimeOfDay, the level's own clock (checked by type)
 //   - save / load position: the game's own teleport on the server thread
 //   - noclip: gn::setPosition every client tick (no teleport, so the camera stays free)
-//   - bunny hop: ray cast + movement state on the server tick, then gn::jump()
+//   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
 // Hotkeys (as in MEC_Trainer; ignored while the GridNode menu is open or the game is not focused):
@@ -40,6 +40,9 @@ std::atomic<float> g_noclipSpeed{0.5f}, g_frozenTime{0.f}, g_timeScale{1.f};
 // ---- what the client tick saw (render thread shows it) ------------------------------------------------
 std::atomic<bool> g_haveFaith{false};
 std::atomic<float> g_px{0}, g_py{0}, g_pz{0}, g_speed{0}, g_lastGroundY{0}, g_timeOfDay{-1};
+// Her horizontal speed from her position each client tick. gn::movement's speed (the physics body's
+// +0x438) read 0.00 most of the time in game, so the HUD measures it; the save keeps the game's value.
+std::atomic<float> g_hSpeed{0};
 std::atomic<int> g_state{0};
 std::atomic<bool> g_loading{false};
 
@@ -141,43 +144,120 @@ void noclipClient(const gn::Movement& m, bool keys) {
 }
 
 // ---- bunny hop -------------------------------------------------------------------------------------------
-// The wall run jump window: after jumping off a wall run Faith touches the ground for a few frames
-// while her state still says jumping (8), and a jump then keeps her speed. Armed with F (once) or
-// always (Auto), the server tick casts a ray down every tick and jumps the moment both are true.
+// The wall run jump window (recorded 2026-10-30, docs/recording.md "Faith's movement"): state 8 is
+// the wall run, and it lasts through the jump off the wall until she lands. The tick she lands on
+// decides: with jump held then she stays in the wall-run state and leaves the ground again (the
+// bhop, speed kept); without it she is grounded (state 1) in that same tick. The client ticks at
+// 30 a second, and the press has to come on the last tick before the landing: in the logs every hit
+// landed one tick after its press, every miss two ticks after (or the press came too late).
+// So each client tick predicts her height one tick on (her fall and its growth) and presses when
+// that reaches the landing height:
+//   - in a chain, the height she last landed at, on the client (exact on the same ground; on flat
+//     ground the hops were exactly 20 ticks apart);
+//   - otherwise the server ray's ground plus the contact height (~0.15 m by the logs; the ray is
+//     cast where the server has her, so it is good to ~0.1 m).
+// Timed on the client from the client character: the movement state is the client's, and on a slow
+// frame the server's copy of her lags (presses then came after she had landed). Armed with F (once)
+// or always (Auto).
+// Better: the game's own landing prediction (gn::landingPrediction, its ticks to hit in 60ths of a
+// second, recomputed each tick in the air). It read 0.74-1.54 on the tick before a landing and
+// 1.68-2.91 the tick before that, so the first tick it drops below ~1.66 is the one to press on; it
+// does not depend on the ray, the frame rate or her speed. In auto-bhop-4 every hit was pressed at
+// 0.52-1.65 with the hit 0.11-0.35 m below her; every miss was pressed at 1.73-1.81 (a tick early) or
+// with the hit above her (she was still rising toward a ledge or wall, not landing), so both wait.
+// With 1.66 the next test chained without end (92 hits in 93 presses; the miss was pressed at 1.68). The heights above are the fallback when
+// it is not available. A predicted soft landing is skipped: bhops only happen on landings where
+// Faith can jump, and a soft landing grounds her whatever the input (tested 2026-10-30).
 std::atomic<bool> g_bhopArmed{false}, g_bhopAuto{false};
-std::atomic<float> g_bhopTolerance{0.10f}; // metres between her feet and the ground that count as "on it"
-std::atomic<float> g_groundDist{-1.f};     // last ray cast (-1: nothing below)
-std::atomic<int> g_bhops{0};
+std::atomic<float> g_bhopContact{0.15f}; // ray height (m) at which a landing registers, when there is no last landing
+std::atomic<float> g_bhopBiasMs{0.f};    // look this much further ahead (+) or less (-) than one tick
+std::atomic<bool> g_bhopUsePrediction{true};
+std::atomic<float> g_bhopPredictBelow{1.66f}; // press when the game's ticks to hit (60ths) drop below this
+std::atomic<float> g_groundY{0.f};        // the ground under her (server ray cast)
+std::atomic<bool> g_haveGround{false};
+std::atomic<float> g_groundDist{-1.f};    // her height above it (client), for the window
+std::atomic<int> g_bhops{0}, g_bhopHits{0};
 DWORD g_bhopArmedAt = 0, g_lastHop = 0;
 
-std::mutex g_hopM; // the check runs on both ticks, whichever comes first
-float g_minDist8 = 1e9f; // closest to the ground during the current state-8 stretch (diagnostics)
-bool g_in8 = false;
+// Client tick only.
+float g_prevY = 0.f, g_prevVy = 0.f;
+bool g_havePrevY = false, g_wasInAir = false;
+float g_landY = 0.f, g_landGroundY = 0.f; // where she last landed (client y) and the ray's ground then
+DWORD g_landAt = 0;
+int g_watchHop = 0;    // client ticks left to see how the last press went
+bool g_watchLanded = false;
 
-// Server and client tick: jump if the window is open. dist: the latest ray cast.
-void bhopCheck(const char* tick) {
-    std::lock_guard<std::mutex> lock(g_hopM);
-    gn::Movement m;
-    if (!gn::movement(m)) return;
-    const float dist = g_groundDist.load();
-    // Diagnostics: each time state 8 ends, how close to the ground it got.
-    if (m.state == 8) {
-        g_in8 = true;
-        if (dist >= 0.f) g_minDist8 = std::min(g_minDist8, dist);
-    } else if (g_in8) {
-        g_in8 = false;
-        if (g_bhopArmed || g_bhopAuto) gn::log("bhop: state 8 ended, closest to the ground %.3f m (tolerance %.2f)", g_minDist8, g_bhopTolerance.load());
-        g_minDist8 = 1e9f;
+void bhopCheck(const gn::Movement& m, float y, float dt) {
+    const bool inAir = m.on_ground != 0; // on_ground reads 1 in the air (the name is historical)
+    const float vy = g_havePrevY && dt > 0.f ? (g_prevY - y) / dt : 0.f; // falling speed, m/s (down is +)
+    const float acc = g_havePrevY && dt > 0.f ? std::clamp((vy - g_prevVy) / dt, 0.f, 40.f) : 0.f;
+    g_prevY = y, g_prevVy = vy;
+    g_havePrevY = true;
+    const float ground = g_groundY.load();
+    g_groundDist = g_haveGround ? y - ground : -1.f;
+    if (g_wasInAir && !inAir) { // a landing: remember its height for the next hop
+        g_landY = y, g_landGroundY = ground, g_landAt = GetTickCount();
+    }
+    g_wasInAir = inAir;
+
+    // How the last press went. A hit is airborne in the wall-run state again within a few ticks of
+    // the landing (sometimes through state 0 for two ticks); grounded (1), a plain jump (2) or a hard
+    // landing (24) is a miss.
+    if (g_watchHop > 0) {
+        --g_watchHop;
+        if (!inAir || m.state != 8) g_watchLanded = true;
+        if (g_watchLanded && inAir && m.state == 8) {
+            g_bhopHits.fetch_add(1);
+            gn::log("bhop: hit");
+            g_watchHop = 0;
+        } else if (g_watchLanded && m.state != 8 && m.state != 0) {
+            gn::log("bhop: missed (state %d at the landing)", m.state);
+            g_watchHop = 0;
+        } else if (g_watchHop == 0) {
+            gn::log("bhop: no result within 60 ticks of the press (state %d)", m.state);
+        }
     }
     if (!g_bhopArmed && !g_bhopAuto) return;
     if (g_bhopArmed && GetTickCount() - g_bhopArmedAt > 5000) g_bhopArmed = false; // armed for 5 s
-    if (m.state != 8 || dist < 0.f || dist > std::max(0.04f, g_bhopTolerance.load())) return;
-    if (GetTickCount() - g_lastHop < 250) return; // one jump per window
+    if (m.state != 8 || !inAir) return;
+    // The game's prediction, when it is fresh (it is made every tick while she is in the air).
+    gn::Landing lp{};
+    if (g_bhopUsePrediction && gn::landingPrediction(lp) && lp.age_ms < 100) {
+        if (lp.ticks_to_hit <= 0.f || lp.ticks_to_hit > g_bhopPredictBelow.load()) return;
+        if (lp.hit_height >= y) return; // a hit above her feet is not a landing (she is rising into geometry)
+        if (GetTickCount() - g_lastHop < 250) return; // one press per landing
+        if (lp.soft_landing) { // a soft landing never bhops (the game grounds her whatever the input)
+            g_lastHop = GetTickCount();
+            gn::log("bhop: soft landing predicted: no bhop possible, not pressed");
+            return;
+        }
+        g_lastHop = GetTickCount();
+        gn::jump();
+        g_bhops.fetch_add(1);
+        g_bhopArmed = false;
+        g_watchHop = 60;
+        g_watchLanded = false;
+        gn::log("bhop: jump pressed by the game's prediction: %.2f/60 s to the hit at %.2f (she is at %.2f)", lp.ticks_to_hit,
+                lp.hit_height, y);
+        return;
+    }
+    if (vy < 1.5f) return; // a wall run itself barely falls
+    // The landing height: the last landing's if it was on this ground, else the ray's.
+    const bool chain = g_landAt && GetTickCount() - g_landAt < 3000 && g_haveGround && std::fabs(ground - g_landGroundY) < 0.15f;
+    if (!chain && !g_haveGround) return;
+    const float target = chain ? g_landY : ground + g_bhopContact.load();
+    const float ahead = std::max(0.f, dt + g_bhopBiasMs.load() / 1000.f);
+    const float next = y - vy * ahead - 0.5f * acc * ahead * ahead; // her height one tick on
+    if (next > target) return;
+    if (GetTickCount() - g_lastHop < 250) return; // one press per landing
     g_lastHop = GetTickCount();
-    gn::jump(); // the key goes down now; the game reads it in its next frame
+    gn::jump(); // the game reads it on its next tick: the landing tick
     g_bhops.fetch_add(1);
     g_bhopArmed = false;
-    gn::log("bhop: jumped on the %s tick, %.3f m above the ground", tick, dist);
+    g_watchHop = 60;
+    g_watchLanded = false;
+    gn::log("bhop: jump pressed %.3f m above the %s, falling %.1f m/s; next tick %+.3f m (tick %.1f ms)", y - target,
+            chain ? "last landing" : "ray's contact height", vy, next - target, dt * 1000.f);
 }
 
 void serverTick(float) {
@@ -186,18 +266,20 @@ void serverTick(float) {
     if (!faith || !gn::positionOf(faith, p)) return;
     gn::RayHit hit;
     const bool hitGround = gn::raycast({p.x, p.y + 0.5f, p.z}, {p.x, p.y - 3.f, p.z}, hit);
-    g_groundDist = hitGround ? std::max(0.f, p.y - hit.position[1]) : -1.f;
+    if (hitGround) g_groundY = hit.position[1];
+    g_haveGround = hitGround;
     if (g_god) gn::godMode(true); // again after a respawn (a new health component)
-    bhopCheck("server");
 }
 
+// Arming one hop turns auto off: the two would fight over the same landing.
 void bhopArm() {
+    if (g_bhopAuto.exchange(false)) gn::log("bhop: armed: auto bhop off");
     g_bhopArmed = true;
     g_bhopArmedAt = GetTickCount();
 }
 
 // ---- client tick -----------------------------------------------------------------------------------------
-void clientTick(float) {
+void clientTick(float dt) {
     const gn::GameState gs = gn::gameState();
     g_loading = gs.loading != 0;
     g_timeOfDay = gs.time_of_day;
@@ -220,10 +302,19 @@ void clientTick(float) {
     gn::Movement m{};
     const bool have = faith && gn::positionOf(faith, p) && gn::movement(m);
     g_haveFaith = have;
+    static bool havePrev = false;
     if (!have) {
         g_noclipActive = false;
+        g_havePrevY = false;
+        havePrev = false;
         return;
     }
+    if (havePrev && dt > 0.f) {
+        const float dx = p.x - g_px.load(), dz = p.z - g_pz.load();
+        const float s = std::sqrt(dx * dx + dz * dz) / dt;
+        if (s < 100.f) g_hSpeed = s; // more is a teleport (a load, a respawn, noclip's save and load)
+    }
+    havePrev = true;
     g_px = p.x, g_py = p.y, g_pz = p.z;
     g_speed = m.speed;
     g_state = m.state;
@@ -273,9 +364,10 @@ void clientTick(float) {
     }
     if (g_noclipActive) {
         noclipClient(m, keys);
+        g_havePrevY = false;
         return;
     }
-    bhopCheck("client");
+    bhopCheck(m, p.y, dt);
 
     // No stumble (and god mode: falls are deaths in MEC, not damage): a fall only counts from where
     // Faith is now.
@@ -406,13 +498,30 @@ void trainerTab() {
     ImGui::SameLine();
     v = g_bhopAuto;
     if (ImGui::Checkbox("Auto", &v)) g_bhopAuto = v;
-    float tol = g_bhopTolerance;
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
-    if (ImGui::SliderFloat("Ground tolerance (m)", &tol, 0.04f, 0.5f, "%.2f")) g_bhopTolerance = tol;
+    float contact = g_bhopContact, bias = g_bhopBiasMs;
+    bool usePredict = g_bhopUsePrediction;
+    if (ImGui::Checkbox("Use the game's landing prediction", &usePredict)) g_bhopUsePrediction = usePredict;
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How far above the ground still counts as on it. Standing, the ray reads about 0.02 m\n"
-                          "(her position sits just above the collision), so 0 would never fire. 0.10 works.");
-    ImGui::TextDisabled("state %d, ground %.2f m, hops %d", g_state.load(), g_groundDist.load(), g_bhops.load());
+        ImGui::SetTooltip("The animation system predicts every tick how long until she lands. Off: the trainer's own\n"
+                          "estimate from heights (the settings below).");
+    float below = g_bhopPredictBelow;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    if (ImGui::SliderFloat("Press below (1/60 s)", &below, 0.5f, 3.f, "%.2f")) g_bhopPredictBelow = below;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump is pressed on the first tick the predicted time to the hit is under this. On the tick\n"
+                          "before a landing it read 0.52-1.65, the tick before that 1.68-2.91: 1.66 sits between.");
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    if (ImGui::SliderFloat("Contact height (m)", &contact, 0.f, 0.4f, "%.2f")) g_bhopContact = contact;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("For the first hop (no landing on this ground yet): how high above the ground, by the ray,\n"
+                          "the landing registers (about 0.15 m). Chained hops aim at the height of the last landing.");
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    if (ImGui::SliderFloat("Bias (ms)", &bias, -20.f, 20.f, "%.0f")) g_bhopBiasMs = bias;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump is pressed on the last tick before the landing, by her height one tick (33 ms) on.\n"
+                          "+ looks further ahead (presses earlier), - less. 0 to start with.");
+    ImGui::TextDisabled("state %d, ground %.2f m, presses %d, hits %d", g_state.load(), g_groundDist.load(), g_bhops.load(),
+                        g_bhopHits.load());
     ImGui::SeparatorText("Position");
     if (ImGui::Button("Save  [4]")) savePosition();
     ImGui::SameLine();
@@ -465,7 +574,7 @@ void hud() {
         ImGui::SetNextWindowBgAlpha(0.45f);
         if (ImGui::Begin("##mec_hud", nullptr, f)) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
-            ImGui::Text("Speed %.2f m/s   State %d", g_speed.load(), g_state.load());
+            ImGui::Text("Speed %.2f m/s   State %d", g_hSpeed.load(), g_state.load());
         }
         ImGui::End();
     }

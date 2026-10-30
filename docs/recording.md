@@ -75,6 +75,23 @@ the list as it is now (`items`, the first 64). The first reading of each entity 
 Up to 256 entries are read. **Add the spawners' lists** watches the characters each character spawner
 has spawned, on the server (+0x148) and the client (+0xb0) (`docs/research/replay-ghosts.md`).
 
+### Faith's movement
+
+**Faith's movement** (off by default) records, every frame, the movement values the game keeps
+outside entities (`PamMovement` in `faith.yaml`): the movement state (1 ground, 2 jump, 8 wall run),
+in air (1 airborne), wall count, wall climbs and wall runs, the player's jump input (the jump action, whatever key it is bound to) and jumps a mod pressed through `gn::jump` (`jump held by mods`). A
+`field` line on `PamClientCharacterEntity` is written when one changes, so a jump is a handful of
+lines. Speed is left out (it changes every frame). It also records the game's own landing prediction:
+ANT's `PositionPredictionProcessorAsset` works out, when a jump or fall starts, where and when the
+character will hit the ground (`predicted ticks to hit`, in 60ths of a second, `predicted hit
+height`, `predicted soft landing`), as field lines on the character it is for. For movement research
+such as bhops:
+
+```
+python tools/recording/summarize.py bhop.jsonl --marker "marker 1" --window 1 --all
+python tools/recording/summarize.py hop.jsonl --diff miss.jsonl --kinds field --values
+```
+
 ### Sending an event
 
 **Send an event (research)** delivers an event to every live entity of a class, as one of the

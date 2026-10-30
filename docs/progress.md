@@ -14,6 +14,81 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Bhop research: the game's own landing prediction** (2026-10-30, Ghidra; untested in game). The
+  movement state and in-air byte are a mirror of ANT's graph (`PamMovement_readAntState`), and the
+  jump button goes into ANT as held / not held, so a press in the air is spent there: the press must
+  land on exactly the landing tick, which prediction from heights cannot always hit. ANT's
+  `PositionPredictionProcessorAsset` (vtable 0x141aabb98, update +0x20) computes, once per jump or
+  fall, the time to the hit from the trajectory (`ant_predictTrajectoryHit`, x60). The Recorder's
+  Faith's movement watch now wraps that update (pointer swap) and records the prediction
+  (`gridnode-predict1.dll`, confirmed in game: `predict-test`, 1,498 predictions in 50 s). The
+  prediction is recomputed every tick (~33 ms) while she is in the air, not once per jump. On the
+  tick before a landing it read 0.74-1.54 (60ths of a second), two ticks before 1.96-2.91, on the
+  landing tick 0.06-0.44, in 23 of 29 landings (17 of 19 from the wall-run state); in the other 6 it
+  dropped near 0 a few ticks early and hovered (the hit height moving too: an edge, slope or the
+  wall). So "press on the first tick it drops below ~1.8" picks the landing tick ~9 times in 10, at
+  any speed. Annotated in `ant.yaml`, `input.yaml`.
+  **API 8: `landing_prediction`** (`sdk/src/landing.cpp`, `gn::landingPrediction`, Rust
+  `landing_prediction`): wraps the prediction's update and the float / bool game-state writers' write
+  (pointer swaps, chained with the Recorder's) on the first call and keeps Faith's. The trainer's
+  auto-bhop presses on the first tick it drops below 1.8 (slider), the heights as the fallback.
+  First test (`landing1`, `auto-bhop`): the prediction was never used: Faith's +0xd0 held vtable
+  0x141b06828, not ClientAntAnimatableEntity's 0x141b06770 (an object inside the entity; the game has
+  no type info to say where), so it fell back to the heights (63 hits, 10 misses over both logs).
+  And the Recorder recorded no predictions: its own "slot holds the game's function" check refused
+  the landing module's wrapper. Now Faith's animated entity is the ClientAntAnimatableEntity on her
+  bus (+0x20), searched on the caller's thread (never in the wrappers on the animation threads),
+  and the Recorder lets the hook table chain. Second test (`landing2`, `auto-bhop-2`): still no
+  prediction (not on her bus either) and still none recorded: the Recorder's ANT writer hook refused a
+  slot that did not hold game code, i.e. held the landing module's wrapper (fixed: the hook table
+  checks). Heights alone: 54 hits, 13 misses. Now Faith's entity is also the tracked one her +0xd0
+  points into, and the log gives the evidence when none fits. Third test (`landing3`, `auto-bhop-3`):
+  works. Faith's +0xd0 points 0x30 into her ClientAntAnimatableEntity. 11 presses by the prediction,
+  9 hits; in the recording every press landed exactly one tick later (the right tick). One miss was a
+  predicted soft landing: she went to state 1 although jump came on time. Soft landings cannot be
+  bhopped (user, 2026-10-30): the trainer now skips them (logged, not counted). The other (pressed at 1.71, outside the recording) ended a chain whose press values
+  crept up 1.35 -> 1.71, so 1.8 may be near the upper edge: watch it.
+  Fourth test (`auto-bhop-4`, long chains and cboosts; 84 presses, 76 hits, 7 misses, 5 soft landings
+  skipped): every hit was pressed at 0.52-1.65 with the hit 0.11-0.35 m below her. Four misses were
+  pressed at 1.73-1.81 and landed two ticks later (a tick early); three had the hit above her
+  (+0.08 to +0.19 m: rising toward a ledge, one landed 19 ticks later). The trainer now presses below
+  1.7 and only with the hit below her. With the slider at 1.66 (user, 2026-10-30): chains without
+  end, 92 hits in 93 presses, the miss pressed at 1.68. Default now 1.66. Arming one hop (F) turns
+  auto off. The HUD speed is measured from her position: `gn_movement.speed` (body motion +0x438)
+  read 0.00 most of the time; what that field is needs a look.
+- **Bhops** (2026-10-30, two recordings and the trainer's log): a successful bhop lands with
+  `FootPlantLandSoft` and `FootPlantWall` at once (still in the wall state) and its jump fires no
+  `Jump` event (not a ground jump); a vertical-speed-like ANT value goes from -8.8 straight to +4.9.
+  The failed one jumped 0.17-0.33 s after landing; several of Faith's ANT flags flip about 0.17 s
+  after touchdown there (likely the switch to grounded: the window is shorter). The trainer's
+  auto-bhop never fired: on the server tick (30/s) Faith falls ~0.29 m between checks, so state 8
+  always ended 0.15-0.25 m above the ground by its ray cast (tolerance 0.10).
+  **Faith's movement** in the Recorder (off by default; confirmed in game, ~25 lines a recording):
+  state, in air, wall counters and the jump action every frame, as field lines when they change.
+  It showed (`bhop-hit` / `bhop-miss`, 2026-10-30): state 8 is the wall run and lasts through the
+  jump off the wall until the landing; the landing tick decides: with jump held then, she stays in
+  state 8 and leaves the ground 37 ms later (the bhop); without it she is state 1 in that same tick.
+  So the jump must be down on the landing tick (pressed the tick before). The "on ground" byte
+  (ground +0x17, `gn_movement.on_ground`) is 1 in the AIR: notes and comments corrected, names kept.
+  The trainer's auto-bhop now presses jump on the server tick before the landing (its fall over the
+  last tick predicts the next), and logs hit / missed. First test (`mec_trainer-bhop1.dll`, log
+  10:28-10:30): 22 hits, 13 misses; the landing registers while the ray still reads ~0.20 m, every
+  press at least ~1 tick of fall before that height hit, every one later than ~0.65 tick missed (up
+  to 3 ticks early still hit). Second test (`mec_trainer-bhop2.dll`, lead in ticks): 81 hits, 24
+  misses, chains of 8-10; presses 2.1-2.2 ticks early missed too (the press is released before the
+  landing), so the window is ~33-67 ms; and at a low frame rate (while recording) presses came after
+  she had landed: the server's copy of her position lags the client's. Now the prediction runs on the
+  client tick from the client character (the server ray only gives the ground height), timed in ms
+  (lead 50 ms), and a hit is judged at the landing (in air drops to 0) instead of "state 8 and wall
+  count 0", which counted chained hits a tick early. Third test (`bhop3`, lead 20 ms best): the
+  client ticks at 30/s too (33.3 ms); every hit landed one tick after its press, every miss two
+  ticks after: the press must come on the last tick before the landing. The ray-based height is good
+  to ~0.1 m only (half a tick at 6 m/s). Chained hops on flat ground are exactly 20 ticks apart, and
+  a hit can land into state 0 for two ticks before state 8 again; a cboost landing (14.8 m/s) went to
+  state 24. Now (`mec_trainer-bhop4.dll`, untested): each client tick predicts her height one tick on
+  and presses when it reaches the last landing's client height (in a chain) or the ray's ground +
+  0.15 m (first hop); Bias slider. The Recorder's movement watch also records "jump held by mods"
+  (`gridnode-movewatch3.dll`).
 - **Recording diff** (2026-10-30): `summarize.py A --diff B` lists what happens only (or far more,
   per second) in A, only in B, A's lines in order from the marker, and their stacks; `--marker` /
   `--diff-marker` / `"*"`, `--kinds`, `--values`, `--min-lift`. Tried on the door recordings: kick vs
@@ -132,7 +207,7 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 1. Check the `hypothesis` functions (421, named in Ghidra, unchecked) area by area, and give them signatures.
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a
    ~0.1 s ghost now show in the server list?).
-3. In game: a recording diff of something new (see the human test of 2026-10-30).
+3. What `gn_movement.speed` (body motion +0x438) is: it reads 0.00 most of the time.
 Later: layout editor (occluders in the overlay, copying a whole group prop, confirm magrope `Target`).
 
 ## Decisions and gotchas

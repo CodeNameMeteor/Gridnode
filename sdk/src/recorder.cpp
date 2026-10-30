@@ -141,6 +141,7 @@ std::string g_level;               // (g_m)
 std::vector<Obj> g_objs;           // (g_m) id = index + 1
 std::unordered_map<uintptr_t, uint32_t> g_objAt; // (g_m) address -> the latest object there
 std::atomic<bool> g_wantDestroyed{true};
+std::atomic<bool> g_wantMovement{false}; // off by default: only for movement research (bhops, wall moves)
 
 double now() {
     LARGE_INTEGER c;
@@ -583,16 +584,22 @@ void antCodeWrite(uintptr_t writer, uintptr_t state, uint8_t kind, const float* 
 } catch (...) {
 }
 bool antRecording() { return g_recording.load(std::memory_order_relaxed) && g_wantAnim.load(std::memory_order_relaxed); }
+bool movementRecording() { return g_recording.load(std::memory_order_relaxed) && g_wantMovement.load(std::memory_order_relaxed); }
+void predictWrite(uintptr_t writer, uintptr_t state, uint8_t kind, float v); // the landing prediction (below)
 
 template <size_t I> void antIntDetour(void* w, void* state, uint64_t v) {
     if (antRecording() && !t_antCtx.active) {
         const float f[1] = {static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v))};
         antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I], f);
     }
+    if (movementRecording())
+        predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I],
+                     static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v)));
     reinterpret_cast<void (*)(void*, void*, uint64_t)>(g_antIntOrig[I])(w, state, v);
 }
 template <size_t I> void antFloatDetour(void* w, void* state, float v) {
     if (antRecording() && !t_antCtx.active) antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, &v);
+    if (movementRecording()) predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, v);
     reinterpret_cast<void (*)(void*, void*, float)>(g_antFloatOrig[I])(w, state, v);
 }
 template <size_t I> void antPtrDetour(void* w, void* state, const float* v) {
@@ -615,8 +622,10 @@ size_t g_antIntUsed = 0, g_antFloatUsed = 0, g_antPtrUsed = 0; // (g_antHookM)
 
 // Wraps the writer's interface (+8) the first time its vtable is met.
 void hookAntWriter(uintptr_t writer, uint8_t kind) {
+    // The slot may already hold GridNode's own wrapper (landing_prediction): the hook table checks it
+    // and chains, so only the vtable itself is checked here.
     const uintptr_t vt = writer ? mem::readOr<uintptr_t>(writer) : 0;
-    if (!mem::inImage(vt) || !mem::inImage(mem::readOr<uintptr_t>(vt + kAntWriteSlot))) return;
+    if (!mem::inImage(vt) || !mem::readOr<uintptr_t>(vt + kAntWriteSlot)) return;
     std::lock_guard<std::mutex> lock(g_antHookM);
     if (g_antWriterHooked.count(vt)) return;
     g_antWriterHooked[vt] = true;
@@ -642,6 +651,95 @@ void hookAntWriter(uintptr_t writer, uint8_t kind) {
     }
     GN_LOG("recorder: ANT writer vtable 0x%llx (%s values) %s%s", static_cast<unsigned long long>(mem::va(vt)), antValueName(kind),
            r == hook::Result::Ok ? "wrapped" : "not wrapped: ", r == hook::Result::Ok ? "" : why.c_str());
+}
+
+// ---- the landing prediction (Faith's movement) --------------------------------------------------
+// ANT's PositionPredictionProcessorAsset (vtable 0x141aabb98) predicts where and when a character
+// hits the ground. Its update (+0x20, 0x142f28e20) runs the character's trajectory against the world
+// (0x142f3b9a0) when a jump or fall trajectory starts, then writes the results through game-state
+// writers: hit height (asset +0x20), ticks to hit (+0x28, in 60ths of a second) and soft landing
+// (+0x30); each binding's writer is at its +0x20. With Faith's movement on, GridNode wraps that
+// update (a pointer swap), learns the writers, and records their writes as field lines on the
+// character they belong to: the prediction next to the landing.
+constexpr uint64_t kPredictVtable = 0x141aabb98, kPredictSlot = 0x20, kPredictFn = 0x142f28e20;
+constexpr uint64_t kAntFloatWriterVtable = 0x141a434d0, kAntBoolWriterVtable = 0x141a435c8; // as recorded (2026-10-30)
+struct PredictOut {
+    uint32_t off;
+    const char* label;
+    uint8_t kind;
+};
+constexpr PredictOut kPredictOut[] = {
+    {0x20, "predicted hit height", kAntFloat},
+    {0x28, "predicted ticks to hit", kAntFloat}, // 60ths of a second (0x142f3b9a0 multiplies by 60)
+    {0x30, "predicted soft landing", kAntBool},
+};
+std::unordered_map<uintptr_t, const char*> g_predictWriters; // (g_antM) writer -> label
+std::unordered_map<uint64_t, float> g_predictLast;           // (g_antM) state ^ writer -> last value
+uint64_t g_predictOrig = 0;
+std::atomic<bool> g_predictHooked{false};
+
+void predictDetour(void* asset, void* ctx, void* a3, void* a4) {
+    if (movementRecording()) {
+        try {
+            for (const PredictOut& o : kPredictOut) {
+                const uintptr_t binding = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(asset) + o.off);
+                if (!binding) continue;
+                const uintptr_t writer = binding + 0x20;
+                // Only the writer classes the Recorder has met with these value types (a float wrapper on
+                // an int writer would pass the wrong register through).
+                const uint64_t wvt = mem::va(mem::readOr<uintptr_t>(writer));
+                if (wvt != (o.kind == kAntBool ? kAntBoolWriterVtable : kAntFloatWriterVtable)) {
+                    static std::atomic<int> said{0};
+                    if (said.fetch_add(1) < 3) GN_LOG("recorder: landing prediction: %s writer has vtable 0x%llx; not recorded", o.label,
+                                                      static_cast<unsigned long long>(wvt));
+                    continue;
+                }
+                hookAntWriter(writer, o.kind);
+                std::lock_guard<std::mutex> lock(g_antM);
+                g_predictWriters[writer] = o.label;
+            }
+        } catch (...) {
+        }
+    }
+    reinterpret_cast<void (*)(void*, void*, void*, void*)>(g_predictOrig)(asset, ctx, a3, a4);
+}
+
+void hookPredict() {
+    if (g_predictHooked.exchange(true)) return;
+    // The hook table checks the slot: the game's function, or GridNode's landing_prediction wrapper
+    // on top of it (then this one chains).
+    const uintptr_t slot = mem::rva(kPredictVtable) + kPredictSlot;
+    std::string why;
+    const auto r = hooks().install("recorder", slot, mem::rva(kPredictFn), reinterpret_cast<uint64_t>(&predictDetour), &g_predictOrig, &why);
+    GN_LOG("recorder: landing prediction (PositionPredictionProcessorAsset +0x20) %s%s", r == hook::Result::Ok ? "wrapped" : "not wrapped: ",
+           r == hook::Result::Ok ? "" : why.c_str());
+}
+
+void predictWrite(uintptr_t writer, uintptr_t state, uint8_t kind, float v) try {
+    const char* label = nullptr;
+    float old = 0.f;
+    bool first = true;
+    {
+        std::lock_guard<std::mutex> lock(g_antM);
+        const auto it = g_predictWriters.find(writer);
+        if (it == g_predictWriters.end()) return;
+        label = it->second;
+        const uint64_t key = static_cast<uint64_t>(state) * 1000003ull ^ static_cast<uint64_t>(writer);
+        const auto last = g_predictLast.find(key);
+        if (last != g_predictLast.end()) old = last->second, first = false;
+        g_predictLast[key] = v;
+    }
+    const auto [owner, ownerType] = antOwner(state); // takes g_antM itself
+    Event ev;
+    ev.t = now();
+    ev.kind = kField;
+    ev.thread = GetCurrentThreadId();
+    ev.ptr = owner, ev.type = ownerType;
+    ev.text = label;
+    ev.fieldType = kind == kAntBool ? 'b' : 'f', ev.fieldOff = 0;
+    ev.value[0] = v, ev.value[1] = old, ev.value[2] = first ? 1.f : 0.f;
+    push(std::move(ev)); // every prediction, changed or not: there is one per jump
+} catch (...) {
 }
 
 // The data objects' write (+0x18), one wrapper per Write<Type>GameState class.
@@ -1055,6 +1153,51 @@ bool pollWatchesImpl() {
     }
     for (Event& ev : out) push(std::move(ev));
     return true;
+}
+
+// ---- Faith's movement ---------------------------------------------------------------------------
+// Every frame while recording (render thread): the movement fields the game keeps outside entities
+// (state, in air, wall counters; faith.yaml's PamMovement) and the player's jump action, as
+// field lines when they change. Speed is left out: it changes every frame. The offsets in the lines
+// are PamMovement's (ground +0x20 -> +0x17, state +0x28 -> ...); the jump action has none.
+struct MoveField {
+    const char* label;
+    uint32_t off;
+    char type;
+};
+constexpr MoveField kMoveFields[] = {
+    {"movement state", 0x90, 'i'}, {"in air", 0x17, 'b'}, {"wall count", 0x18, 'i'},
+    {"wall climbs", 0x38, 'i'},    {"wall runs", 0x3c, 'i'}, {"jump held", 0, 'b'},
+    {"jump held by mods", 0, 'b'}, // gn::jump (a trainer's auto-bhop), which "jump held" does not see
+};
+std::array<double, std::size(kMoveFields)> g_moveLast{};
+bool g_moveRead = false; // g_moveLast holds a reading of this recording (render thread)
+
+void pollMovement() {
+    gn_movement m{};
+    if (movementGet(&m) != GN_OK) return;
+    const int jump = jumpHeld();
+    const double v[] = {double(m.state), double(m.on_ground), double(m.wall_count), double(m.wall_climbs), double(m.wall_runs),
+                        double(jump < 0 ? 0 : jump), double(jumpHeldByMods())};
+    static const Type* faithType = registry().find("PamClientCharacterEntity");
+    const uintptr_t faith = reinterpret_cast<uintptr_t>(localClientCharacter());
+    const double t = now();
+    for (size_t i = 0; i < std::size(kMoveFields); ++i) {
+        if (g_moveRead && g_moveLast[i] == v[i]) continue;
+        Event ev;
+        ev.t = t;
+        ev.kind = kField;
+        ev.thread = GetCurrentThreadId();
+        ev.ptr = faith, ev.type = faithType;
+        ev.text = kMoveFields[i].label;
+        ev.fieldType = kMoveFields[i].type, ev.fieldOff = kMoveFields[i].off;
+        ev.value[0] = static_cast<float>(v[i]);
+        ev.value[1] = static_cast<float>(g_moveLast[i]);
+        ev.value[2] = g_moveRead ? 0.f : 1.f;
+        push(std::move(ev));
+        g_moveLast[i] = v[i];
+    }
+    g_moveRead = true;
 }
 
 void pollWatches() {
@@ -1945,6 +2088,8 @@ void frame() {
     if (pressed[0]) setRecording(!g_recording.load());
     if (pressed[1] && g_recording.load()) marker(nextMarkerName());
     if (g_recording.load()) pollWatches();
+    if (g_recording.load() && g_wantMovement.load()) pollMovement(), hookPredict();
+    else g_moveRead = false; // the next recording (or switching it on) starts with a first reading
     if (g_recording.load()) { // a small red dot, top right, while recording
         const ImGuiIO& io = ImGui::GetIO();
         const float r = ImGui::GetFontSize() * 0.4f;
@@ -2012,6 +2157,15 @@ void draw(bool* open) {
         ImGui::SetTooltip("Changes to animation (ANT) game state values: the flags that drive doors and other animated objects.\n"
                           "Bools, ints and enums are recorded when they change; floats and vectors (which change all the time) only with\n"
                           "the second box, at most 10 a second each.");
+    bool mv = g_wantMovement.load();
+    if (ImGui::Checkbox("Faith's movement", &mv)) g_wantMovement = mv;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every frame: Faith's movement state, in air, wall count, wall climbs, wall runs, your jump input and\n"
+                          "jumps pressed by mods (gn::jump),\n"
+                          "recorded when they change (field lines on PamClientCharacterEntity). For movement research such as bhops;\n"
+                          "off by default.");
 
     ImGui::SeparatorText("Markers");
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);

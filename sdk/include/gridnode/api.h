@@ -25,7 +25,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 7 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7) */
+#define GN_API_VERSION 8 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -135,15 +135,28 @@ typedef struct gn_field {
  * at once, on the calling thread (the values are single words the game reads each tick). Values that
  * are not finite are refused with GN_ERR_ARGUMENT. */
 typedef struct gn_movement {
-    int32_t state;          /* the movement state (MEC_Trainer: 2 standing/running, 3-4 wall moves, 8 jumping...) */
+    int32_t state;          /* the movement state: 1 on the ground, 2 jumping, 8 wall run (and the jump off it, until
+                               landing), 3-4 other wall moves... (recorded 2026-10-30) */
     int32_t wall_count;     /* walls used since the ground */
     int32_t wall_climbs;    /* wall climbs used */
     int32_t wall_runs;      /* wall runs used */
     float last_ground_y;    /* height of the last ground; falls are measured from it (fall damage, stumbles) */
-    int32_t on_ground;
+    int32_t on_ground;      /* 1 while she is in the AIR, 0 on the ground (the name is historical; recorded 2026-10-30) */
     float speed;            /* horizontal speed, m/s */
     float camera_forward[3];
 } gn_movement;
+/* The game's own landing prediction for Faith (landing_prediction): what the animation system works
+ * out every tick while she is in the air (PositionPredictionProcessorAsset). */
+typedef struct gn_landing {
+    float ticks_to_hit;   /* 60ths of a second until she hits the ground. In testing it read 0.74-1.54 on
+                             the tick before the landing (2-3 two ticks before): the tick to press jump on
+                             for a bhop. Not reliable near walls and edges (it can drop early and hover). */
+    float hit_height;     /* world height (Y) of the predicted hit */
+    int32_t soft_landing; /* the game expects a soft landing: she cannot jump out of it (no bhop) */
+    uint32_t age_ms;      /* since the game last predicted for her (it only does while she is in the air) */
+    uint32_t count;       /* predictions so far: changes each time the game predicts */
+} gn_landing;
+
 #define GN_MOVE_STATE 0x1u
 #define GN_MOVE_WALL_COUNT 0x2u
 #define GN_MOVE_WALL_CLIMBS 0x4u
@@ -364,6 +377,14 @@ typedef struct gn_api {
      * on its realm's thread (server entities: server thread; client: client thread). */
     int (*entities_near)(const float pos[3], float radius, gn_entity_fn fn, void* user);
     int (*entity_set_transform)(void* entity, const gn_transform* to);
+
+    /* ==== GN_API_VERSION 8 ==================================================================== */
+
+    /* ---- landing prediction ----------------------------------------------------------------------
+     * The latest landing prediction the game made for Faith (gn_landing). The first call wraps the
+     * prediction (pointer swaps); GN_ERR_UNAVAILABLE until the game has predicted for her (she has
+     * been in the air) or if it cannot be read in this build. Any thread (it reads). */
+    int (*landing_prediction)(gn_landing* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

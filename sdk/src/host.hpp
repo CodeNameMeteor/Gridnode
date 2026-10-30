@@ -73,6 +73,9 @@ int jump();
 int actionPress(uint32_t hash, uint32_t ticks);
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
+int jumpHeld();       // the player's jump action: 1 held, 0 not, -1 unavailable
+int landingPrediction(gn_landing* out); // landing.cpp
+int jumpHeldByMods(); // GridNode holds jump for a mod (gn::jump): 1 or 0
 int movementSet(const gn_movement* in, uint32_t fields);
 uint32_t tuningCount();
 int tuningAt(uint32_t index, gn_tuning* out);

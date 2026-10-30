@@ -364,6 +364,30 @@ void faithClientTick() {
     }
 }
 
+int jumpHeld() {
+    // The player's own jump input (the live state; an action GridNode presses is in the override).
+    const int bit = digitalBit(static_cast<uint32_t>(k::Action_Jump));
+    const uintptr_t player = clientPlayer();
+    const uintptr_t live = player ? ptr(player + ka::ClientPlayer_InputState) : 0;
+    uint64_t bits = 0;
+    if (bit < 0 || !live || !mem::read(live + ka::EntryInputState_Digital, bits)) return -1;
+    return (bits >> bit) & 1 ? 1 : 0;
+}
+
+int jumpHeldByMods() {
+    // GridNode (for a mod) is holding the jump action or the Space key it falls back to.
+    {
+        std::lock_guard<std::mutex> lock(g_actM);
+        if (g_overrideOn)
+            for (const HeldAction& a : g_actions)
+                if (a.hash == static_cast<uint32_t>(k::Action_Jump)) return 1;
+    }
+    static const int space = keyFind("IDK_Space");
+    const int key = space > 0 ? space : 57;
+    std::lock_guard<std::mutex> lock(g_keyM);
+    return g_keyHeld[key] || g_keyTicks[key] > 0 ? 1 : 0;
+}
+
 int jump() {
     // The jump action, whatever key the player bound to it; the game decides what it becomes (a
     // jump, a vault, a coil...). Four ticks, as a quick tap. Falls back to the Space key.
