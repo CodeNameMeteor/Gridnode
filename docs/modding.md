@@ -343,6 +343,14 @@ hits within 200 m, else at the camera) and `gn::teleportToFreecam()` at the came
 way it looks; with `keepFlying` false the view goes back to her. It works without the Layout editor
 tool (player builds too). In Rust: `freecam`, `freecam_state`, `freecam_teleport`.
 
+### Entities of a class (API 14)
+
+`gn::entitiesOfClass("PamServerAreaTriggerEntity", [](void* e, gn::Type t) { ... })` calls back for
+every live entity of the class and its subclasses, and returns how many (negative: an unknown class).
+Unlike `gn::entitiesNear` it finds logic entities too (triggers, timelines), which have no
+transform. It sees the entities GridNode saw created: those made before it loaded are missing. In
+Rust: `entities_of_class`. The MEC trainer's Volumes tab uses it ([trigger volumes](research/trigger-volumes.md)).
+
 ### Drawing in the world (API 10)
 
 `gn::ui::view(v)` gives the camera as the game draws this frame (position, forward, right, up,

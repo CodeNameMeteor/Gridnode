@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 13;
+pub const GN_API_VERSION: u32 = 14;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -47,6 +47,7 @@ pub type gn_level_fn = Option<unsafe extern "C" fn(level: *const c_char, loaded:
 pub type gn_ui_fn = Option<unsafe extern "C" fn(menu_open: c_int, user: *mut c_void)>;
 pub type gn_console_fn = Option<unsafe extern "C" fn(output: *const c_char, user: *mut c_void)>;
 pub type gn_message_fn = Option<unsafe extern "C" fn(message: *const c_void, info: *const gn_message_info, user: *mut c_void)>;
+pub type gn_entity_each_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, user: *mut c_void)>;
 pub type gn_entity_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, at: *const gn_transform, distance: f32, user: *mut c_void)>;
 pub type gn_movement_fn = Option<unsafe extern "C" fn(e: *const gn_movement_event, now: *const gn_movement, user: *mut c_void)>;
 pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, event_id: u32, user: *mut c_void)>;
@@ -269,6 +270,7 @@ pub struct gn_api {
     pub freecam_set: Option<unsafe extern "C" fn(on: c_int) -> c_int>,
     pub freecam_get: Option<unsafe extern "C" fn(out: *mut gn_freecam) -> c_int>,
     pub freecam_teleport: Option<unsafe extern "C" fn(to: c_int, keep_flying: c_int) -> c_int>,
+    pub entities_of_class: Option<unsafe extern "C" fn(class_name: *const c_char, fn_: gn_entity_each_fn, user: *mut c_void) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -288,4 +290,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 640);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 648);

@@ -10,6 +10,7 @@
 //   - save / load position: the game's own teleport on the server thread
 //   - noclip: gn::setPosition every client tick (no teleport, so the camera stays free)
 //   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
+//   - trigger volumes: the level's area triggers drawn by category (volumes.cpp)
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
 // Hotkeys (GridNode hotkeys, kept in mods/mec-trainer.ini; defaults as in MEC_Trainer):
@@ -34,6 +35,7 @@
 #include <string>
 
 #include "gridnode/ui.hpp"
+#include "volumes.hpp"
 
 namespace {
 
@@ -309,7 +311,7 @@ void serverTick(float) {
 }
 
 // ---- free camera (GridNode's, the layout editor's: gn::freecam) ------------------------------------
-std::atomic<bool> g_keepFlying{false}; // after a teleport, stay in the free camera (else back to Faith)
+std::atomic<bool> g_keepFlying{true}; // after a teleport, stay in the free camera (the user's choice, 2026-11-01; off: back to Faith)
 
 void toggleFreecam() {
     const bool on = !gn::freecamOn();
@@ -673,7 +675,7 @@ const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall",
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
                               {"bhop.auto", &g_bhopAuto},          {"bhop.wall_runs", &g_bhopWall},
                               {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction},
-                              {"freecam.keep_flying", &g_keepFlying}};
+                              {"freecam.stay_flying", &g_keepFlying}}; // (a new key: the old one saved the first default, off)
 const FloatSetting kFloats[] = {{"noclip.speed", &g_noclipSpeed},  {"bhop.press_below", &g_bhopPredictBelow},
                                 {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs}};
 
@@ -705,6 +707,10 @@ void window() {
         }
         if (ImGui::BeginTabItem("World")) {
             worldTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Volumes")) {
+            volumes::tab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Keys")) {
@@ -742,6 +748,7 @@ void hud() {
         if (g_infClimbs) on += "InfClimbs  ";
         if (g_infRuns) on += "InfRuns  ";
         if (g_freezeTime) on += "FrozenTime  ";
+        if (volumes::anyShown()) on += "Volumes  ";
         if (g_bhopAuto) on += "AutoBhop  ";
         else if (g_bhopArmed) on += "BhopArmed  ";
         if (!on.empty())
@@ -754,11 +761,14 @@ void hud() {
 
 GN_MOD("mec-trainer") {
     if (!gn::ui::onDraw([](bool menuOpen) {
+            volumes::draw();
             hud();
             if (menuOpen) window();
         }))
         gn::log("no overlay: hotkeys only");
     loadSettings();
+    volumes::loadSettings();
+    gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });
     gn::hotkey("noclip", "Noclip on / off (god mode with it)", '2', [] {
@@ -777,7 +787,10 @@ GN_MOD("mec-trainer") {
     gn::hotkey("tp_crosshair", "Free camera: teleport Faith to the crosshair", '7', teleportCrosshair);
     gn::hotkey("tp_freecam", "Free camera: teleport Faith to the camera", '8', teleportFreecam);
     gn::onMovement(onMove);
-    gn::onClientTick(clientTick);
+    gn::onClientTick([](float dt) {
+        clientTick(dt);
+        volumes::clientTick(dt);
+    });
     gn::onServerTick(serverTick);
     gn::log("ready: INSERT for the window; keys in its Keys tab (1 god, 2 noclip, 3 no stumble, 4 save, 5 load, F bunny hop)");
     return true;

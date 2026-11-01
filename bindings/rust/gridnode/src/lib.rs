@@ -364,6 +364,18 @@ pub fn send_event_to_class(class: &str, event: &str) -> Option<u32> {
     (n >= 0).then_some(n as u32)
 }
 
+// ---- entities of a class (API 14) ----------------------------------------------------------------
+unsafe extern "C" fn each_tramp<F: FnMut(*mut c_void, Type)>(e: *mut c_void, t: *const crate::sys::gn_type, user: *mut c_void) {
+    guard("an entity callback", (), || (*(user as *mut F))(e, Type(t)))
+}
+/// `f(entity, type)` for every live entity of the class (and subclasses), logic entities too; how
+/// many, or None for an unknown class. Entities made before GridNode loaded are not seen.
+pub fn entities_of_class<F: FnMut(*mut c_void, Type)>(class: &str, mut f: F) -> Option<u32> {
+    let c = cstr(class);
+    let n = unsafe { (api().entities_of_class.unwrap())(c.as_ptr(), Some(each_tramp::<F>), &mut f as *mut F as *mut c_void) };
+    (n >= 0).then_some(n as u32)
+}
+
 // ---- the free camera (API 13) ---------------------------------------------------------------------
 pub use crate::sys::gn_freecam as Freecam;
 /// GridNode's free camera on / off (at the next frame); false without Faith.

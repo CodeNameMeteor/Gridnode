@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 13 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera */
+#define GN_API_VERSION 14 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -116,6 +116,8 @@ typedef struct gn_transform {
     float trans[4];
 } gn_transform;
 
+/* An entity found by entities_of_class: it and its type. */
+typedef void (*gn_entity_each_fn)(void* entity, const gn_type* type, void* user);
 /* An entity found by entities_near: its type, its world transform, its distance. */
 typedef void (*gn_entity_fn)(void* entity, const gn_type* type, const gn_transform* at, float distance, void* user);
 
@@ -521,6 +523,15 @@ typedef struct gn_api {
     int (*freecam_set)(int on);
     int (*freecam_get)(gn_freecam* out);
     int (*freecam_teleport)(int to, int keep_flying);
+
+    /* ==== GN_API_VERSION 14 =================================================================== */
+
+    /* ---- entities of a class ---------------------------------------------------------------------
+     * fn for every live entity of the class and its subclasses that GridNode saw created (logic
+     * entities too: triggers, checkpoints, which have no place of their own and so never show in
+     * entities_near). How many, or -GN_ERR_NOT_FOUND for an unknown class. Entities made before
+     * GridNode loaded are not seen (inject it before the level loads). Any thread (it reads). */
+    int (*entities_of_class)(const char* class_name, gn_entity_each_fn fn, void* user);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

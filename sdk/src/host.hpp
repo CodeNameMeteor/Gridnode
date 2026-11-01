@@ -131,6 +131,7 @@ void forget(const CodeRange& r);
 void* assetFind(const char* path, uint32_t* group);
 int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user); // world.cpp
 int entitySetTransform(void* entity, const gn_transform* to);
+int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user); // world.cpp; how many, or -GN_ERR_*
 void assetRelease(void* asset);
 
 // Layouts (layouts.cpp, M7): level edits applied at runtime, and their editor.

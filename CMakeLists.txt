@@ -197,7 +197,7 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_include_directories(probe PRIVATE sdk/include)
   set_target_properties(probe PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
-  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp)
+  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp examples/mec-trainer/volumes.cpp)
   target_include_directories(mec_trainer PRIVATE sdk/include)
   target_link_libraries(mec_trainer PRIVATE gn_imgui)
   set_target_properties(mec_trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods

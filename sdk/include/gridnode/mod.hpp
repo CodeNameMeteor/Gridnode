@@ -404,6 +404,12 @@ inline bool setPosition(const Vec3& p) {
 
 // ---- entities in place -------------------------------------------------------------------------------
 // fn(void* entity, Type type, const Transform& at, float distance) for live entities near pos.
+// fn(void* entity, gn::Type type) for every live entity of the class (and subclasses), logic entities
+// too; how many (negative: an unknown class).
+template <class F> int entitiesOfClass(const char* className, F fn) {
+    return api().entities_of_class(className, [](void* e, const gn_type* t, void* u) { (*static_cast<F*>(u))(e, Type(t)); }, &fn);
+}
+
 template <class F> int entitiesNear(const Vec3& pos, float radius, F fn) {
     const float p[3] = {pos.x, pos.y, pos.z};
     return api().entities_near(p, radius,

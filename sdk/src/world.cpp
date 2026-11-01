@@ -547,6 +547,19 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
     return n;
 }
 
+int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user) {
+    if (!className || !fn) return -GN_ERR_ARGUMENT;
+    const reflect::Type* cls = registry().find(className);
+    if (!cls) return -GN_ERR_NOT_FOUND;
+    int n = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || !registry().isKindOf(t, cls) || !inspector::alive(p, t)) continue;
+        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
+        ++n;
+    }
+    return n;
+}
+
 int entitySetTransform(void* entity, const gn_transform* to) {
     if (!entity || !to || !finite(to->right, 3) || !finite(to->up, 3) || !finite(to->forward, 3) || !finite(to->trans, 3))
         return GN_ERR_ARGUMENT;

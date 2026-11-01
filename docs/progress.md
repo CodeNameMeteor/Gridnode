@@ -14,6 +14,15 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Trigger volumes in the MEC trainer** (2026-11-01; shapes confirmed in game, the tab untested).
+  A Volumes tab draws the level's area triggers from their own geometry caches, sorted into
+  categories (cutscenes, checkpoints and spawns, mission, city alert, AI, music and voice, other) by
+  the blueprint names their events reach; ticks per category, a search box, a distance slider and
+  labels on the nearest. Research: [trigger-volumes.md](research/trigger-volumes.md). API 14
+  `entities_of_class` (logic entities, not only spatial ones; Rust `entities_of_class`) came out of
+  it. The user checked the categories in game and found nothing wrong. Not drawn yet: kill volumes,
+  camera triggers, mission checkpoints (no geometry cache at the area trigger's offsets). Next (user):
+  Dash start and end volumes.
 - **The free camera for mods (API 13) and in the MEC trainer** (2026-11-01, untested in game). The layout
   editor's free camera now runs without the editor tool, and a mod's is a plain camera even with the editor on (the first version showed the editor's keys and picking; fixed 2026-11-01):
   `freecam_set` / `freecam_get` / `freecam_teleport` (to its crosshair, or to the camera). The trainer

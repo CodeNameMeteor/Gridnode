@@ -65,4 +65,5 @@ nav:
       - research/mecmp-camera-and-collision.md
       - research/recording-teleport.md
       - research/render-objects.md
+      - research/trigger-volumes.md
   # @generated-nav

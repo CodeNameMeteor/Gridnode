@@ -312,6 +312,7 @@ const gn_api* api() {
         a.on_event = apiOnEvent;
         a.event_name = eventName;
         a.event_send = [](const char* mod, void* entity, const char* event) { return eventSend(mod ? mod : "?", entity, event); };
+        a.entities_of_class = entitiesOfClass;
         a.freecam_set = [](int on) { return layouts::freecamSet(on != 0); };
         a.freecam_get = layouts::freecamGet;
         a.freecam_teleport = [](int to, int keep) { return layouts::teleportRequest(to, keep != 0); };

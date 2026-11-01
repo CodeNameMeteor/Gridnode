@@ -1,0 +1,27 @@
+# Area triggers: their geometry cache and the shapes in it (docs/research/trigger-volumes.md).
+defaults: { confidence: inferred, sources: [ghidra] }
+
+functions:
+  - name: areaTriggerGeometry_contains
+    va: 0x14330d320
+    signature: "bool(void* cache, void* dataAndField, void* busInterface, const float* position)"
+    note: "Whether a world position is inside a trigger's geometry cache: by its kind (+0x20) applies the transform(s) at +0x10 (world to local; kind 2 without one uses the bus's), checks the bounding circle (+0x00 x, +0x04 z, +0x18 radius squared), then each shape at +0x08 with shape_containsPoint. Kind 4 looks the shapes up each time (0x143124f50)."
+    sources: [ghidra, research]
+  - name: areaTriggerGeometry_build
+    va: 0x14330bac0
+    signature: "void(void* cache, void* dataAndField, void* busInterface)"
+    note: "Fills a geometry cache from the data's linked shapes ({data, 0x31fb3b9f 'Geometry'}). PamServerAreaTriggerEntity's vf15 builds two: +0x1b8 (tested) and +0x70."
+  - name: shape_containsPoint
+    va: 0x143427220
+    signature: "bool(const float* localPosition, void* shapeData)"
+    note: "By the shape's type: SphereData (Position +0x20, Radius +0x18), AABBData (Position +0x20, HalfExtents +0x30), OBBData (0x143427610), VectorShapeData (vectorShape_containsPoint)."
+  - name: vectorShape_containsPoint
+    va: 0x1434274b0
+    signature: "bool(const float* localPosition, void* shapeData, bool ignoreHeight)"
+    note: "An outline in x / z (Points +0x18, 0x10 apart, count at -4), crossing test; a VolumeVectorShapeData with Height (+0x28) > 0 also bounds y."
+
+constants:
+  - { name: PamServerAreaTriggerEntity_Geometry, value: 0x1b8, confidence: confirmed, sources: [ghidra, research], note: "The geometry cache tested each tick (drawn in game 2026-11-01). ServerAreaTriggerEntity keeps it at +0x1a8." }
+  - { name: ServerAreaTriggerEntity_Geometry, value: 0x1a8, sources: [ghidra], note: "From its vf25 (0x1433c8230); none live in the city to check." }
+  - { name: Entity_BusInterface, value: 0x20, confidence: confirmed, sources: [ghidra, research], note: "An entity's +0x20 is its bus's interface, the bus + 8 (EntityBus_fireEvent's bus is 8 bytes before it; confirmed by reading the event connections, 2026-11-01)." }
+  - { name: EntityBus_EventConnections, value: 0x68, confidence: confirmed, sources: [ghidra, research], note: "-> +0x120 (+0x148 when bus +0x3c bit 28): {begin, end} of pointers to 0x20-byte records {+0 source data, +8 target, +0x10 event, +0x14 target event, +0x18 kind}, sorted by source." }
