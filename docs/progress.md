@@ -21,8 +21,10 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   labels on the nearest. Research: [trigger-volumes.md](research/trigger-volumes.md). API 14
   `entities_of_class` (logic entities, not only spatial ones; Rust `entities_of_class`) came out of
   it. The user checked the categories in game and found nothing wrong. Not drawn yet: kill volumes,
-  camera triggers, mission checkpoints (no geometry cache at the area trigger's offsets). Next (user):
-  Dash start and end volumes.
+  camera triggers, mission checkpoints (no geometry cache at the area trigger's offsets). Dash start
+  volumes show under "Dashes and challenges" (confirmed, 2026-11-01: the link crosses the Dash
+  blueprint's interface into the parent bus). Open: quitting during a Dash crashed twice (game code,
+  0x143164d50); check once without GridNode (research doc).
 - **The free camera for mods (API 13) and in the MEC trainer** (2026-11-01, untested in game). The layout
   editor's free camera now runs without the editor tool, and a mod's is a plain camera even with the editor on (the first version showed the editor's keys and picking; fixed 2026-11-01):
   `freecam_set` / `freecam_get` / `freecam_teleport` (to its crosshair, or to the camera). The trainer

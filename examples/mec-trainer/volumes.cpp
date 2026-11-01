@@ -30,7 +30,7 @@ namespace volumes {
 namespace {
 
 // ---- categories ----------------------------------------------------------------------------------
-enum Cat { kCutscene, kCheckpoint, kMission, kCityAlert, kAi, kSound, kOther, kCats };
+enum Cat { kChallenge, kCutscene, kCheckpoint, kMission, kCityAlert, kAi, kSound, kOther, kCats };
 struct CatInfo {
     const char* key;
     const char* label;
@@ -38,6 +38,7 @@ struct CatInfo {
     bool on; // default
 };
 const CatInfo kCatInfo[kCats] = {
+    {"challenge", "Dashes and challenges", IM_COL32(255, 150, 30, 240), true},
     {"cutscene", "Cutscenes and scripted scenes", IM_COL32(255, 80, 200, 230), true},
     {"checkpoint", "Checkpoints and spawns", IM_COL32(80, 255, 120, 230), true},
     {"mission", "Mission logic and markers", IM_COL32(255, 200, 60, 230), false},
@@ -47,9 +48,11 @@ const CatInfo kCatInfo[kCats] = {
     {"other", "Other", IM_COL32(200, 200, 200, 160), false},
 };
 // Which category a target says, by its type and blueprint name (lower case). Sound first: mission
-// music prefabs are named "MissionMusic_...".
+// music prefabs are named "MissionMusic_...". Dashes are named challenges in the game's types
+// (PamNamedChallenge*, shared content); their trigger names are a guess until seen in game.
 int categoryOf(const std::string& s) {
     auto has = [&](const char* k) { return s.find(k) != std::string::npos; };
+    if (has("challenge") || has("dash") || has("sharedcontent") || has("timetrial") || has("finishline") || has("/race")) return kChallenge;
     if (has("me_sound") || has("soundentity") || has("voiceover") || has("mixerentity") || has("/vo/") || has("music")) return kSound;
     if (has("timeline") || has("cinematic") || has("sequence") || has("cutscene") || has("animations/") || has("anim_")) return kCutscene;
     if (has("checkpoint") || has("safespawn") || has("respawn") || has("spawncontrol") || has("savegame")) return kCheckpoint;
@@ -67,6 +70,7 @@ std::atomic<int> g_labels{6};
 std::mutex g_searchM;
 std::string g_search; // (g_searchM) lower case; when set, it picks the triggers instead of the categories
 std::atomic<void*> g_highlight{nullptr};
+std::atomic<bool> g_logWanted{false};
 
 // ---- reading the game (client thread) --------------------------------------------------------------
 template <class T> T rd(const void* p, size_t off) {
@@ -211,6 +215,7 @@ std::vector<Line> shapesOf(void* e, const char* cls) {
 struct Conn {
     void* src;
     void* dst;
+    uint32_t ev, tev;
 };
 std::unordered_map<void*, std::vector<Conn>> g_conns; // bus -> its connections, sorted by source
 const std::vector<Conn>& connectionsOf(void* bus) {
@@ -227,8 +232,12 @@ const std::vector<Conn>& connectionsOf(void* bus) {
     if (gn::api().read(b, recs.data(), recs.size() * 8) != GN_OK) return out;
     out.reserve(recs.size());
     for (void* r : recs) {
-        void* pair[2] = {};
-        if (r && gn::api().read(r, pair, sizeof(pair)) == GN_OK) out.push_back({pair[0], pair[1]});
+        struct {
+            void* src;
+            void* dst;
+            uint32_t ev, tev;
+        } rec{};
+        if (r && gn::api().read(r, &rec, sizeof(rec)) == GN_OK) out.push_back({rec.src, rec.dst, rec.ev, rec.tev});
     }
     std::sort(out.begin(), out.end(), [](const Conn& a, const Conn& b) { return a.src < b.src; });
     return out;
@@ -263,35 +272,56 @@ struct Volume {
     std::string hay;  // every target, lower case, for the search
 };
 
+// Follows the trigger's events. A link to an InterfaceDescriptorData leaves the blueprint the trigger
+// is in (a prefab, a Dash's logic): it goes on in the parent bus (the bus interface's +8), from the
+// reference that placed the blueprint (+0x38), with the interface's event (Dash starts, 2026-11-01).
 void classify(void* e, Volume& v) {
     v.classified = true;
-    void* bus = static_cast<char*>(rd<void*>(e, 0x20)) - 8;
-    void* data = rd<void*>(e, 0x28);
-    const std::vector<Conn>& all = connectionsOf(bus);
-    std::vector<std::pair<void*, int>> todo{{data, 0}};
-    std::unordered_set<void*> seen{data};
+    struct Step {
+        void* bus; // as entities keep it: the bus's interface (bus + 8)
+        void* from;
+        int depth;
+        uint32_t event; // 0: any
+    };
+    std::vector<Step> todo{{rd<void*>(e, 0x20), rd<void*>(e, 0x28), 0, 0}};
+    std::unordered_set<void*> seen{todo[0].from};
     int best = kCats;
     while (!todo.empty()) {
-        auto [from, depth] = todo.back();
+        const Step st = todo.back();
         todo.pop_back();
-        auto lo = std::lower_bound(all.begin(), all.end(), from, [](const Conn& c, void* k) { return c.src < k; });
-        for (auto it = lo; it != all.end() && it->src == from; ++it) {
-            if (!it->dst || !seen.insert(it->dst).second) continue;
-            const std::string& name = targetName(it->dst);
+        if (!st.bus) continue;
+        const std::vector<Conn>& all = connectionsOf(static_cast<char*>(st.bus) - 8);
+        std::vector<const Conn*> hits;
+        auto lo = std::lower_bound(all.begin(), all.end(), st.from, [](const Conn& c, void* k) { return c.src < k; });
+        for (auto it = lo; it != all.end() && it->src == st.from; ++it)
+            if (!st.event || it->ev == st.event) hits.push_back(&*it);
+        if (hits.empty() && st.event) {
+            // The placing reference was not the source: any reference sending that interface event.
+            for (const Conn& c : all)
+                if (c.ev == st.event && targetName(c.src).find("ReferenceObjectData") != std::string::npos && hits.size() < 4) hits.push_back(&c);
+        }
+        for (const Conn* c : hits) {
+            if (!c->dst || !seen.insert(c->dst).second) continue;
+            const std::string& name = targetName(c->dst);
             if (name.rfind("PamAreaTriggerData", 0) == 0) continue; // enabling another trigger says nothing
+            if (name.rfind("InterfaceDescriptorData", 0) == 0) {
+                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), rd<void*>(st.bus, 0x38), st.depth + 1, c->tev});
+                seen.erase(c->dst); // the same interface, another event
+                continue;
+            }
             const std::string low = lower(name);
             v.hay += low + "\n";
-            const int c = categoryOf(low);
-            if (c >= 0) {
-                v.cats |= 1u << c;
-                if (c < best) {
-                    best = c;
+            const int cat = categoryOf(low);
+            if (cat >= 0) {
+                v.cats |= 1u << cat;
+                if (cat < best) {
+                    best = cat;
                     const size_t open = name.find('['), slash = name.rfind('/');
                     v.why = open == std::string::npos ? name : name.substr(slash != std::string::npos && slash > open ? slash + 1 : open + 1);
                     if (!v.why.empty() && v.why.back() == ']') v.why.pop_back();
                 }
             }
-            if (depth < 2) todo.push_back({it->dst, depth + 1});
+            if (st.depth < 2) todo.push_back({st.bus, c->dst, st.depth + 1, 0});
         }
     }
     if (!v.cats) v.cats = 1u << kOther;
@@ -401,6 +431,57 @@ void clientTick(float dt) {
         if (budget-- > 0) classify(e, v);
         else ++pending;
     }
+    if (g_logWanted.exchange(false)) {
+        // For sorting out a category: every target the nearest triggers reach, and their buses' blueprints.
+        gn::log("volumes: the nearest triggers at (%.1f, %.1f, %.1f), shown or not", at.x, at.y, at.z);
+        // Research (Dashes): every trigger that reaches a challenge, near or not, with or without shapes.
+        int challenges = 0;
+        for (auto& [e, v] : g_all) {
+            if (!v.classified) classify(e, v);
+            if (!(v.cats & (1u << kChallenge)) || ++challenges > 40) continue;
+            const gn::Type t = gn::Type::of(e);
+            const char* g = static_cast<char*>(e) + (std::strncmp(t.name(), "Pam", 3) == 0 ? 0x1b8 : 0x1a8);
+            char* shapes = rd<char*>(g, 0x08);
+            float d = -1.f;
+            if (!v.lines.empty()) {
+                const float dx = v.centre.x - at.x, dy = v.centre.y - at.y, dz = v.centre.z - at.z;
+                d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            gn::log("  challenge trigger %p: kind %d, %u shapes, %d lines, %.1f m, centre (%.1f, %.1f, %.1f): %s", e, rd<int>(g, 0x20),
+                    shapes ? rd<uint32_t>(shapes, -4) : 0u, int(v.lines.size()), d, v.centre.x, v.centre.y, v.centre.z, v.why.c_str());
+            size_t from = 0;
+            while (from < v.hay.size()) {
+                const size_t to = v.hay.find('\n', from);
+                gn::log("      -> %s", v.hay.substr(from, to - from).c_str());
+                if (to == std::string::npos) break;
+                from = to + 1;
+            }
+        }
+        gn::log("  %d triggers reach a challenge (of %d)", challenges, int(g_all.size()));
+        int n = 0;
+        for (auto& [d, e] : near) {
+            if (n++ >= 8) break;
+            Volume& v = g_all[e];
+            if (!v.classified) classify(e, v);
+            std::string up;
+            void* b = static_cast<char*>(rd<void*>(e, 0x20)) - 8;
+            for (int i = 0; i < 6 && b; ++i) {
+                void* ref = rd<void*>(b, 0x38);
+                const std::string rn = ref ? targetName(ref) : "";
+                if (!rn.empty()) up += (up.empty() ? "" : " < ") + rn;
+                void* parent = rd<void*>(b, 0x8);
+                b = parent ? static_cast<char*>(parent) - 8 : nullptr;
+            }
+            gn::log("  %.1f m %p %s%s%s | in: %s", d, e, kCatInfo[v.primary].label, v.why.empty() ? "" : ": ", v.why.c_str(), up.c_str());
+            size_t from = 0;
+            while (from < v.hay.size()) {
+                const size_t to = v.hay.find('\n', from);
+                gn::log("      -> %s", v.hay.substr(from, to - from).c_str());
+                if (to == std::string::npos) break;
+                from = to + 1;
+            }
+        }
+    }
     std::vector<Shown> shown;
     size_t lines = 0;
     for (auto& [d, e] : near) {
@@ -456,6 +537,9 @@ void tab() {
     int l = g_labels;
     if (ImGui::SliderInt("Labels on the nearest", &l, 0, 30)) g_labels = l, gn::config::setFloat("volumes.labels", float(l));
     if (!g_on) return;
+    if (ImGui::Button("Log the nearest triggers")) g_logWanted = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(what each reaches, to gridnode.log)");
     ImGui::TextDisabled("%d triggers in the level, %d with shapes%s", g_total.load(), g_withShapes.load(),
                         g_pending ? " (still sorting the near ones)" : "");
     ImGui::SeparatorText("Nearest shown (hover to light one up)");

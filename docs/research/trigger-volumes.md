@@ -76,3 +76,21 @@ blueprint through its `Blueprint` field's `Name`. A sublevel's bus can hold thou
 | Back in the Game checkpoint | `PF_SafeSpawnControl`, `MissionMusic_Progression_PF`, `PF_SetTimeOfDay`; then `GoldMissionMarker`, `FadeToWhite`, an elevator, AI spawn |
 | Safehouse | `CityAlert/CityAlertManagerModifier` (three inputs); a second trigger: `VO/Greetings/IcarusGreetings` |
 | Fly Trap cutscene | a `TimelineEntityData` (Play, two Stops); nearby: `PF_Anim_Flytrap_Npc_IcarusFound`, `GoldMissionMarker`, mission music |
+
+## Dashes
+
+A Dash's start volume is a `PamServerAreaTriggerEntity` made when the Dash is opened (about 800 area
+triggers are created then; recording `dash`, 2026-11-01). Entering it sends `Start` to the
+`PamServerNamedChallengeEntity` (call stack through the area trigger's enter code, 0x14395c8a8 /
+0x1433cad1b). The trigger is inside the Dash's blueprint: its `OnEnter` goes to an
+`InterfaceDescriptorData` (the blueprint's interface), and the link to the challenge is in the
+parent bus (the bus interface's +0x8), from the reference that placed the blueprint (+0x38), with
+the interface's event. Following that hop puts the start under "Dashes and challenges" (**confirmed**
+in game, High Roller Avenue).
+
+## Crash on quitting during a Dash
+
+Seen twice (2026-11-01): quitting the game with a Dash open crashes the server thread at
+0x143164d50 (reading +0x28 of a null world, `g_physicsQueryManager`) in the mission clean-up
+`FUN_1439e08f0`, from `levelWorld_tickFrame`. Every frame is the game's; not yet tried without
+GridNode, so whether GridNode's shutdown plays a part is open.
