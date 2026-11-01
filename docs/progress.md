@@ -14,6 +14,15 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **The free camera for mods (API 13) and in the MEC trainer** (2026-11-01, untested in game). The layout
+  editor's free camera now runs without the editor tool, and a mod's is a plain camera even with the editor on (the first version showed the editor's keys and picking; fixed 2026-11-01):
+  `freecam_set` / `freecam_get` / `freecam_teleport` (to its crosshair, or to the camera). The trainer
+  has a Free camera section and hotkeys 6 (fly), 7 (teleport to the crosshair), 8 (to the camera), and
+  "keep flying after a teleport". New plan from the user (2026-11-01), in order: volume
+  visualisation by type (triggers, checkpoints, cutscene starts...; tick what to show), full unload
+  of mods and GridNode (everything restored), a soft anti-cheat in the trainer (block time trial and
+  Dash uploads, an on-screen mark), and patching support in the SDK. The rules now allow patching
+  and the trainer's upload block (CLAUDE.md).
 - **Landing prediction when GridNode loads late** (2026-10-30, untested). A friend's log: auto-bhop fell
   back to the height method because Faith's animated entity was not found ("0
   ClientAntAnimatableEntity tracked": GridNode came in after the level loaded, so no creations were
@@ -291,7 +300,8 @@ network rather than drawing in game. Also present: `PhysicsDebugSettings`, `Debu
 renderer: try them in the console first. Our own `gn::ui::box3d` can draw trigger boxes either way.
 
 ## Decisions and gotchas
-- Never patch game code: pointer swaps only. Leave online services and Beat Revival alone. PC only.
+- Patching game code is allowed since 2026-11-01 (prefer pointer swaps; everything undoable through GridNode).
+  Leave online services and Beat Revival alone, except the trainer's upload block. PC only.
 - Never commit game data or user dumps (dumps, FBX game meshes, event-names.txt, logs, recordings).
 - Commit / push only when asked. Deploy test builds under a unique file name first.
 - A fingerprint's bytes come from a dump, never from a disassembly listing (one instruction has

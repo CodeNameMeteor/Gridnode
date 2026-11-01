@@ -3429,6 +3429,11 @@ struct FreeCam {
     bool looking = false;
 };
 FreeCam g_cam;                       // render thread
+bool g_editorOn = true;              // render thread: the editor drives the camera (its keys, picking, help); false for a mod's
+bool g_camByMod = false;             // render thread: a mod turned the free camera on (gn_api freecam_set): a plain camera
+// Asked for by mods (gn_api freecam_set / teleport_*) on any thread; done in the next frame.
+std::atomic<int> g_camWant{-1};      // -1 nothing, 0 off, 1 on
+std::atomic<int> g_teleportWant{0};  // 0 nothing, 1 to the crosshair, 2 to the free camera; +4: keep flying
 bool g_pointer = false;              // render thread: with the menu closed the mouse moves a cursor (right button: look)
 bool g_gizmoHot = false;             // render thread: the mouse is on (or dragging) a handle, so a click does not pick
 bool g_gizmoShown = false;           // render thread: the handles are showing (last frame)
@@ -3657,38 +3662,40 @@ void freeCamFrame(bool menuOpen) {
         row("Q / E", "down / up");
         row("Shift / Ctrl", "faster / slower");
         row("Wheel", "flying speed");
-        ImGui::Separator();
-        row("Click / " + k(kPick), "pick at the crosshair");
-        row("Shift + click", "add to / take from the selection");
-        row(k(kPointer), g_pointer ? "mouse: back to looking" : "mouse: a pointer, to drag the handles");
-        row(k(kHandles), g_gizmoMode ? "handles: rotate (now) / move" : "handles: move (now) / rotate");
-        row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
-        row(k(kUp) + " / " + k(kDown), "move it up / down");
-        row(k(kTurnL) + " / " + k(kTurnR), "turn it");
-        row(k(kTiltL) + " / " + k(kTiltR), "tilt it left / right");
-        row(k(kTipAway) + " / " + k(kTipToward), "tip it away / toward");
-        row(k(kFlip), "flip it upside down");
-        row(k(kUpright), "stand it upright");
-        row("Ctrl+" + k(kUndo), "undo");
-        row(k(kCopy), "copy");
-        row(k(kPaste), "paste at the crosshair");
-        row(k(kDuplicate), "duplicate in place");
-        row(k(kLibAdd), "add to the library (menu: Library to place)");
-        ImGui::Separator();
-        row(k(kTeleport), "teleport Faith here (keep flying)");
-        row("Shift+" + k(kTeleport), "teleport Faith here and go back to her");
-        row(k(kFreeCam), "back to Faith");
-        Selected cur;
-        if (selection(cur)) {
+        if (g_editorOn) { // the editor's keys (a mod's free camera has its own, in its window)
             ImGui::Separator();
-            const size_t n = selectionAll().size();
-            ImGui::Text("Selected: %s", cur.group ? "a group prop (made standalone when you move it)"
-                                       : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
-            if (n > 1) ImGui::Text("and %llu more (they move and turn with it)", static_cast<unsigned long long>(n - 1));
+            row("Click / " + k(kPick), "pick at the crosshair");
+            row("Shift + click", "add to / take from the selection");
+            row(k(kPointer), g_pointer ? "mouse: back to looking" : "mouse: a pointer, to drag the handles");
+            row(k(kHandles), g_gizmoMode ? "handles: rotate (now) / move" : "handles: move (now) / rotate");
+            row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
+            row(k(kUp) + " / " + k(kDown), "move it up / down");
+            row(k(kTurnL) + " / " + k(kTurnR), "turn it");
+            row(k(kTiltL) + " / " + k(kTiltR), "tilt it left / right");
+            row(k(kTipAway) + " / " + k(kTipToward), "tip it away / toward");
+            row(k(kFlip), "flip it upside down");
+            row(k(kUpright), "stand it upright");
+            row("Ctrl+" + k(kUndo), "undo");
+            row(k(kCopy), "copy");
+            row(k(kPaste), "paste at the crosshair");
+            row(k(kDuplicate), "duplicate in place");
+            row(k(kLibAdd), "add to the library (menu: Library to place)");
+            ImGui::Separator();
+            row(k(kTeleport), "teleport Faith here (keep flying)");
+            row("Shift+" + k(kTeleport), "teleport Faith here and go back to her");
+            row(k(kFreeCam), "back to Faith");
+            Selected cur;
+            if (selection(cur)) {
+                ImGui::Separator();
+                const size_t n = selectionAll().size();
+                ImGui::Text("Selected: %s", cur.group ? "a group prop (made standalone when you move it)"
+                                           : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
+                if (n > 1) ImGui::Text("and %llu more (they move and turn with it)", static_cast<unsigned long long>(n - 1));
+            }
         }
         ImGui::End();
     }
-    if (!menuOpen) { // which way the mouse works, at the bottom of the screen
+    if (!menuOpen && g_editorOn) { // which way the mouse works, at the bottom of the screen
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         auto key = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
         Selected cur;
@@ -5084,7 +5091,7 @@ void keysFrame(bool menuOpen) {
         for (bool& w : g_keyWas) w = true; // nothing fires when focus comes back with a key held
         return;
     }
-    if (bindPressed(kFreeCam) && localClientCharacter()) g_cam.enabled = !g_cam.enabled;
+    if (bindPressed(kFreeCam) && localClientCharacter()) g_cam.enabled = !g_cam.enabled, g_camByMod = false;
     const bool flying = g_cam.active;
     bool fire[kBindCount] = {};
     for (int i = kPick; i < kBindCount; ++i) fire[i] = bindPressed(i);
@@ -5954,16 +5961,39 @@ bool pickBarrier(const float* ray) {
     return true;
 }
 
-void frame(bool menuOpen) {
-    drawOutline();
-    drawBarriers();
-    gizmoFrame(menuOpen);
-    keysFrame(menuOpen);
+void frame(bool menuOpen, bool editor) {
+    // What mods asked for (their hotkeys run on the client thread; the camera is this thread's).
+    if (const int want = g_camWant.exchange(-1); want >= 0) {
+        g_cam.enabled = want != 0;
+        if (want) g_camByMod = true; // flown for a mod: none of the editor's keys, picking or help
+    }
+    // The editor's part only when the editor flies it (or nothing flies): a mod's free camera is plain,
+    // even with the Layout editor tool on (the first version showed the editor's whole camera, 2026-11-01).
+    const bool modCam = g_camByMod && (g_cam.enabled || g_cam.active);
+    g_editorOn = editor && !modCam;
+    if (g_editorOn) {
+        drawOutline();
+        drawBarriers();
+        gizmoFrame(menuOpen);
+        keysFrame(menuOpen);
+    }
+    if (const int want = g_teleportWant.exchange(0)) {
+        const bool keepFlying = (want & 4) != 0;
+        if ((want & 3) == 1) {
+            if (g_cam.active) teleportCrosshair(keepFlying);
+        } else if ((want & 3) == 2 && g_cam.active) {
+            float d[3], r[3], u[3];
+            camBasis(g_cam, d, r, u);
+            const float pos[3] = {g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]};
+            if (!keepFlying) g_cam.enabled = false; // back to Faith's view
+            teleportFaith(pos, d, "the free camera");
+        }
+    }
     freeCamFrame(menuOpen);
     // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
     const ImGuiIO& io = ImGui::GetIO();
-    if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse &&
-        !g_gizmoHot) {
+    if (g_editorOn && menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !io.WantCaptureMouse && !g_gizmoHot) {
         float ray[6];
         if (cursorRay(ray) && !pickBarrier(ray)) pick(ray, io.KeyShift);
     }
@@ -5979,6 +6009,31 @@ bool view(gn_view& out) {
     out.fov_y = fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f; // as the editor's picking: 70 when unreadable
     out.width = io.DisplaySize.x, out.height = io.DisplaySize.y;
     return true;
+}
+
+int freecamSet(bool on) {
+    if (on && !localClientCharacter()) return GN_ERR_UNAVAILABLE;
+    g_camWant = on ? 1 : 0;
+    return GN_OK;
+}
+
+int freecamGet(gn_freecam* out) {
+    if (!out) return GN_ERR_ARGUMENT;
+    *out = gn_freecam{};
+    std::lock_guard<std::mutex> lock(g_viewM); // the frame's copy (g_cam is the render thread's)
+    out->on = g_viewCamOn ? 1 : 0;
+    memcpy(out->position, g_viewCam, sizeof(out->position));
+    return GN_OK;
+}
+
+int teleportRequest(int to, bool keepFlying) {
+    if (to != 1 && to != 2) return GN_ERR_ARGUMENT;
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        if (!g_viewCamOn) return GN_ERR_UNAVAILABLE; // both need the free camera flying
+    }
+    g_teleportWant = to | (keepFlying ? 4 : 0);
+    return GN_OK;
 }
 
 } // namespace gn::host::layouts

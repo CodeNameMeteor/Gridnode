@@ -15,6 +15,7 @@
 // Hotkeys (GridNode hotkeys, kept in mods/mec-trainer.ini; defaults as in MEC_Trainer):
 //   1 god mode   2 noclip   3 no stumble   4 save position   5 load position
 //   F arm the bunny hop   (none) auto bunny hop on / off   (rebound in the trainer's Keys tab)
+//   6 free camera   7 teleport to its crosshair   8 teleport to it (GridNode's free camera)
 //   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down; fixed keys)
 //
 // Settings (sliders, checkboxes) are kept in mods/mec-trainer.ini between runs (gn::config), except
@@ -307,6 +308,20 @@ void serverTick(float) {
     if (g_god) gn::godMode(true); // again after a respawn (a new health component)
 }
 
+// ---- free camera (GridNode's, the layout editor's: gn::freecam) ------------------------------------
+std::atomic<bool> g_keepFlying{false}; // after a teleport, stay in the free camera (else back to Faith)
+
+void toggleFreecam() {
+    const bool on = !gn::freecamOn();
+    if (!gn::freecam(on)) gn::log("free camera: not available (no Faith)");
+}
+void teleportCrosshair() {
+    if (!gn::teleportToCrosshair(g_keepFlying)) gn::log("teleport: fly the free camera first");
+}
+void teleportFreecam() {
+    if (!gn::teleportToFreecam(g_keepFlying)) gn::log("teleport: fly the free camera first");
+}
+
 // A label with its hotkey's key, as the player bound it ("God mode  [1]"; no brackets for no key).
 std::string withKey(const char* label, const char* id, const char* suffix = "") {
     const std::string k = gn::hotkeyName(id);
@@ -575,6 +590,17 @@ void trainerTab() {
         std::lock_guard<std::mutex> lock(g_m);
         if (!g_status.empty()) ImGui::TextDisabled("%s", g_status.c_str());
     }
+    ImGui::SeparatorText("Free camera");
+    const bool flying = gn::freecamOn();
+    if (ImGui::Button(withKey(flying ? "Back to Faith" : "Fly the free camera", "freecam", "###freecam").c_str())) toggleFreecam();
+    ImGui::BeginDisabled(!flying);
+    if (ImGui::Button(withKey("Teleport to the crosshair", "tp_crosshair").c_str())) teleportCrosshair();
+    ImGui::SameLine();
+    if (ImGui::Button(withKey("Teleport to the camera", "tp_freecam").c_str())) teleportFreecam();
+    ImGui::EndDisabled();
+    v = g_keepFlying;
+    if (ImGui::Checkbox("Keep flying after a teleport", &v)) g_keepFlying = v;
+    ImGui::TextDisabled("Mouse looks, W A S D fly, Q / E down / up, Shift / Ctrl faster / slower, wheel: speed.");
     ImGui::SeparatorText("HUD");
     v = g_hud;
     if (ImGui::Checkbox("Player info", &v)) g_hud = v;
@@ -620,7 +646,10 @@ const KeyRow kKeyRows[] = {{"god", "God mode on / off"},
                            {"save", "Save position"},
                            {"load", "Load position"},
                            {"bhop_arm", "Bunny hop: arm one hop (auto off)"},
-                           {"bhop_auto", "Bunny hop: auto on / off"}};
+                           {"bhop_auto", "Bunny hop: auto on / off"},
+                           {"freecam", "Free camera on / off"},
+                           {"tp_crosshair", "Free camera: teleport Faith to the crosshair"},
+                           {"tp_freecam", "Free camera: teleport Faith to the camera"}};
 
 void keysTab() {
     ImGui::TextDisabled("Click a key, then press the new one. Escape: no key. Backspace: the default.");
@@ -643,7 +672,8 @@ const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall",
                               {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
                               {"bhop.auto", &g_bhopAuto},          {"bhop.wall_runs", &g_bhopWall},
-                              {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction}};
+                              {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction},
+                              {"freecam.keep_flying", &g_keepFlying}};
 const FloatSetting kFloats[] = {{"noclip.speed", &g_noclipSpeed},  {"bhop.press_below", &g_bhopPredictBelow},
                                 {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs}};
 
@@ -743,6 +773,9 @@ GN_MOD("mec-trainer") {
         g_bhopAuto = !g_bhopAuto;
         gn::log("bhop: auto %s", g_bhopAuto ? "on" : "off");
     });
+    gn::hotkey("freecam", "Free camera on / off", '6', toggleFreecam);
+    gn::hotkey("tp_crosshair", "Free camera: teleport Faith to the crosshair", '7', teleportCrosshair);
+    gn::hotkey("tp_freecam", "Free camera: teleport Faith to the camera", '8', teleportFreecam);
     gn::onMovement(onMove);
     gn::onClientTick(clientTick);
     gn::onServerTick(serverTick);

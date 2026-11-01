@@ -270,6 +270,20 @@ using Landing = gn_landing;
 // landing); false until she has been in the air.
 inline bool landingPrediction(Landing& out) { return api().landing_prediction(&out) == GN_OK; }
 
+// ---- the free camera (API 13) ----------------------------------------------------------------------
+// GridNode's free camera (the layout editor's): on / off at the next frame.
+using Freecam = gn_freecam;
+inline bool freecam(bool on) { return api().freecam_set(on ? 1 : 0) == GN_OK; }
+inline bool freecamState(Freecam& out) { return api().freecam_get(&out) == GN_OK; }
+inline bool freecamOn() {
+    Freecam f;
+    return freecamState(f) && f.on;
+}
+// Faith to where the free camera's crosshair points, or to the camera itself; keepFlying false goes
+// back to her view. Only while it flies.
+inline bool teleportToCrosshair(bool keepFlying = false) { return api().freecam_teleport(1, keepFlying ? 1 : 0) == GN_OK; }
+inline bool teleportToFreecam(bool keepFlying = false) { return api().freecam_teleport(2, keepFlying ? 1 : 0) == GN_OK; }
+
 // ---- events between entities (API 11) ------------------------------------------------------------
 // An event's id from its name, as the engine hashes it (djb2-xor): eventHash("StartReplay").
 constexpr uint32_t eventHash(const char* name) {

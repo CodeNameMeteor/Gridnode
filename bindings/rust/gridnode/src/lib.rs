@@ -364,6 +364,20 @@ pub fn send_event_to_class(class: &str, event: &str) -> Option<u32> {
     (n >= 0).then_some(n as u32)
 }
 
+// ---- the free camera (API 13) ---------------------------------------------------------------------
+pub use crate::sys::gn_freecam as Freecam;
+/// GridNode's free camera on / off (at the next frame); false without Faith.
+pub fn freecam(on: bool) -> bool { unsafe { (api().freecam_set.unwrap())(on as c_int) == 0 } }
+/// Whether it flies, and where it is.
+pub fn freecam_state() -> Option<Freecam> {
+    let mut f: Freecam = unsafe { core::mem::zeroed() };
+    (unsafe { (api().freecam_get.unwrap())(&mut f) } == 0).then_some(f)
+}
+/// Faith to where the free camera's crosshair points (`to_camera` false) or to the camera itself.
+pub fn freecam_teleport(to_camera: bool, keep_flying: bool) -> bool {
+    unsafe { (api().freecam_teleport.unwrap())(if to_camera { 2 } else { 1 }, keep_flying as c_int) == 0 }
+}
+
 // ---- the view (API 10) ----------------------------------------------------------------------------
 pub use crate::sys::gn_view as View;
 /// The camera as drawn this frame, with the screen size; None with no camera. Render thread.

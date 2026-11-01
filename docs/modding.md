@@ -332,6 +332,17 @@ inspector=1      ; the inspector (tracks every entity the game creates)
 
 MECMP also opens its menu with INSERT: if you run both, give GridNode another `menu_key`.
 
+### The free camera (API 13)
+
+GridNode's free camera (the one the layout editor flies) is there for mods: `gn::freecam(true)` takes
+the view off Faith at the next frame (mouse looks, W A S D fly, Q / E down / up, Shift / Ctrl faster /
+slower, wheel: speed), `gn::freecam(false)` brings it back, `gn::freecamOn()` / `gn::freecamState(f)`
+say whether it flies and where. While it flies with the menu closed the game gets no input; mods'
+hotkeys still work. `gn::teleportToCrosshair()` puts Faith where its crosshair points (on what it
+hits within 200 m, else at the camera) and `gn::teleportToFreecam()` at the camera itself, facing the
+way it looks; with `keepFlying` false the view goes back to her. It works without the Layout editor
+tool (player builds too). In Rust: `freecam`, `freecam_state`, `freecam_teleport`.
+
 ### Drawing in the world (API 10)
 
 `gn::ui::view(v)` gives the camera as the game draws this frame (position, forward, right, up,

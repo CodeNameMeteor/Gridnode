@@ -17,8 +17,9 @@ The user works on Windows; their game folder setup is `D:\Dev\GridNode\bin` (the
 
 ## 2. Ground rules (from the user; keep them)
 
-- **Never patch game code.** Pointer swaps only (vtable slots, creator slots, data). Writing our own
-  thunks in our own memory is fine.
+- **Patching game code is allowed** since 2026-11-01 (the user; before: pointer swaps only). Prefer
+  pointer swaps (vtable slots, creator slots, data); every change goes through GridNode so unload can
+  undo it. Writing our own thunks in our own memory is fine.
 - Leave online services and Beat Revival alone. PC only.
 - **Never commit game data or user dumps:** image dumps (`bin/dumps/*.exe`), FBX game meshes,
   `event-names.txt`, logs, recordings, the reflected dump.

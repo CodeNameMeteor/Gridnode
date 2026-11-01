@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 12 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events */
+#define GN_API_VERSION 13 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -203,6 +203,12 @@ typedef struct gn_view {
  * and the event's id (the djb2-xor hash of its name; gn::eventHash in mod.hpp). On the thread that
  * delivered it, usually the entity's realm thread (server or client); keep it short. */
 typedef void (*gn_event_fn)(void* entity, const gn_type* type, uint32_t event_id, void* user);
+
+/* GridNode's free camera (freecam_get): the one the layout editor flies. */
+typedef struct gn_freecam {
+    int32_t on;        /* flying now */
+    float position[3]; /* where it is (world) */
+} gn_freecam;
 
 /* A mod's hotkey went down (hotkey_add). Client thread. */
 typedef void (*gn_hotkey_fn)(void* user);
@@ -501,6 +507,20 @@ typedef struct gn_api {
      * on_event listeners (and the Recorder) see it like any other. Any thread. */
     int (*event_send)(const char* mod, void* entity, const char* event);
     int (*event_send_class)(const char* mod, const char* class_name, const char* event);
+
+    /* ==== GN_API_VERSION 13 =================================================================== */
+
+    /* ---- the free camera -------------------------------------------------------------------------
+     * GridNode's free camera (the layout editor's), for mods: the view leaves Faith and flies (mouse
+     * looks, W A S D Q E fly, Shift / Ctrl faster / slower, wheel: speed); the game gets no input
+     * while it flies with the menu closed, mods' hotkeys still work. freecam_set: on / off, at the
+     * next frame (GN_ERR_UNAVAILABLE without Faith). teleport: Faith to where the free camera's
+     * crosshair points (to = 1: on what it hits within 200 m, else the camera) or to the camera itself
+     * (to = 2), facing the way it looks, at the next frame; keep_flying 0 goes back to her view.
+     * GN_ERR_UNAVAILABLE while the camera is not flying. Any thread. */
+    int (*freecam_set)(int on);
+    int (*freecam_get)(gn_freecam* out);
+    int (*freecam_teleport)(int to, int keep_flying);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

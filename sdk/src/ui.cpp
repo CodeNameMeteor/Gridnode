@@ -538,7 +538,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
             ImGuiErrorRecoveryState state;
             ImGui::ErrorRecoveryStoreState(&state);
             try {
-                if (g_settings.editor) layouts::frame(open); // the free camera and the editor's keys
+                layouts::frame(open, g_settings.editor); // the free camera (mods use it too); with the editor, its keys
                 if (g_settings.recorder) recorder::frame();
                 hotkeys::frame(open);
             } catch (...) { // never into the game's Present

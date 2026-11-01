@@ -140,7 +140,10 @@ void onLevel(const std::string& level); // GridNode's thread, when a level start
 void serverTick();
 void clientTick();
 void draw(bool* open); // render thread
-void frame(bool menuOpen); // render thread, every frame: the free camera
+void frame(bool menuOpen, bool editor); // render thread, every frame: the free camera (and with editor, the editor's keys and picking)
+int freecamSet(bool on);                  // mods: the free camera on / off (next frame)
+int freecamGet(gn_freecam* out);
+int teleportRequest(int to, bool keepFlying); // 1 the crosshair, 2 the free camera's position (next frame)
 bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
 } // namespace layouts
 
