@@ -376,6 +376,32 @@ pub fn entities_of_class<F: FnMut(*mut c_void, Type)>(class: &str, mut f: F) -> 
     (n >= 0).then_some(n as u32)
 }
 
+// ---- unloading (API 15) -------------------------------------------------------------------------
+/// This mod unloaded (its `gn_mod_unload!` runs, everything it registered goes) once the current
+/// callback returns; it stays unloaded until the GridNode menu's Load. False without `gn_mod_unload!`.
+pub fn unload_self() -> bool { unsafe { (api().mod_unload.unwrap())() == 0 } }
+/// Every mod and GridNode itself unloaded, the game put back as it was (the menu's Unload section).
+pub fn unload_gridnode() { unsafe { (api().gridnode_unload.unwrap())(); } }
+
+// ---- code patches (API 15) -----------------------------------------------------------------------
+/// The call or jmp at `site_va`, which must go to `expected_target_va`, goes to `detour`; `*original`
+/// receives the game's function. Undone when the mod is unloaded.
+/// # Safety
+/// `detour` must be an `extern "C"` function with the called function's signature.
+pub unsafe fn patch_call(site_va: u64, expected_target_va: u64, detour: *const c_void, original: *mut *mut c_void) -> bool {
+    (api().patch_call.unwrap())(name(), site_va, expected_target_va, detour as *mut c_void, original) == 0
+}
+/// `bytes` at `va`, only if `expected` is there now (the same length, at most 64). Undone when the mod
+/// is unloaded.
+pub fn patch_bytes(va: u64, expected: &[u8], bytes: &[u8]) -> bool {
+    if expected.len() != bytes.len() {
+        return false;
+    }
+    unsafe {
+        (api().patch_bytes.unwrap())(name(), va, expected.as_ptr() as *const c_void, bytes.as_ptr() as *const c_void, bytes.len()) == 0
+    }
+}
+
 // ---- the free camera (API 13) ---------------------------------------------------------------------
 pub use crate::sys::gn_freecam as Freecam;
 /// GridNode's free camera on / off (at the next frame); false without Faith.

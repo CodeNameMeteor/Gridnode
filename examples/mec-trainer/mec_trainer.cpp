@@ -11,6 +11,10 @@
 //   - noclip: gn::setPosition every client tick (no teleport, so the camera stays free)
 //   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
 //   - trigger volumes: the level's area triggers drawn by category (volumes.cpp)
+//   - a soft anti-cheat: while the trainer is loaded, Dash and time trial times and ghosts are not
+//     uploaded (the gateway backend's upload requests are dropped), a new best Dash time is not
+//     saved (a code patch, gn::patchCall), and the screen says so
+//     (docs/research in db/annotations/online.yaml)
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
 // Hotkeys (GridNode hotkeys, kept in mods/mec-trainer.ini; defaults as in MEC_Trainer):
@@ -36,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+#include "gridnode/engine.hpp"
 #include "gridnode/ui.hpp"
 #include "volumes.hpp"
 
@@ -62,6 +67,115 @@ std::atomic<bool> g_loading{false};
 std::atomic<bool> g_tuned{false};       // a movement tuning value was set
 float g_timeScaleOriginal = -1.f;       // GameTimeSettings TimeScale before the slider first moved (-1: never)
 std::vector<std::pair<const char*, bool>> g_postOriginal; // post-processing fields as they were
+
+// ---- soft anti-cheat: no Dash or time trial uploads while the trainer is loaded ------------------------
+// The gateway backend runs each upload request message as a call to EA's servers. Two message
+// listeners lead to it (db/annotations/online.yaml); both are wrapped (pointer swaps through GridNode,
+// taken out when the trainer is unloaded) and drop these requests. Everything else passes.
+constexpr uint32_t kBlockedUploads[] = {
+    0x685f689d, // UploadNamedChallengeStatsRequest: a Dash's finish time
+    0x39c9a83d, // UploadStatsRequest: a time trial's finish time and splits
+    0xb70b72ba, // UploadReplayRequestMessageBase: the run's ghost
+    0xaa067849, // SetPlayerGhostRequest: the ghost others race
+};
+using ListenerFn = void (*)(void* listener, void* message);
+ListenerFn g_backendOrig = nullptr, g_routeOrig = nullptr;
+std::atomic<int> g_uploadBlock{0}; // listeners wrapped (2: all)
+std::atomic<int> g_blockedCount{0};
+
+bool dropUpload(void* message) {
+    uint32_t id = 0;
+    if (!message || !gn::read(static_cast<const char*>(message) + 0xc, id)) return false;
+    for (uint32_t b : kBlockedUploads)
+        if (id == b) {
+            if (g_blockedCount.fetch_add(1) < 20) gn::log("anti-cheat: upload %08x not sent (the trainer is loaded)", id);
+            return true;
+        }
+    return false;
+}
+void backendListener(void* listener, void* message) {
+    if (!dropUpload(message)) g_backendOrig(listener, message);
+}
+void routeListener(void* listener, void* message) {
+    if (!dropUpload(message)) g_routeOrig(listener, message);
+}
+// A new best Dash time is not kept while the trainer is loaded: NamedChallengeStats_onFinished (the one
+// call site, patched) runs as usual, so the end screen shows the run, then any best it wrote is put
+// back, with the pending list of changes it appended to (saved later) and its "changed" flag.
+using FinishFn = void (*)(void* dashState, void* challengeData, void* times, uint32_t runId);
+using FindFn = void** (*)(void* map, void** out, const char** key);
+FinishFn g_finishOrig = nullptr;
+std::atomic<bool> g_bestGuard{false};
+std::atomic<int> g_bestsKept{0};
+
+struct BestValue {
+    char* at; // a map node's value (+0x10)
+    int64_t value;
+};
+// The values in the DashState maps for the challenge's stats (main, extras), per player index.
+std::vector<BestValue> bestsOf(void* state, void* data) {
+    std::vector<BestValue> out;
+    std::vector<const char*> keys;
+    if (const char* k = nullptr; gn::read(static_cast<char*>(data) + 0x58, k) && k) keys.push_back(k);
+    char* extras = nullptr;
+    if (gn::read(static_cast<char*>(data) + 0x88, extras) && extras) {
+        uint32_t n = 0;
+        gn::read(extras - 4, n);
+        for (uint32_t i = 0; i < n && i < 16; ++i)
+            if (const char* k = nullptr; gn::read(extras + i * 0x18, k) && k) keys.push_back(k);
+    }
+    char* maps = nullptr;
+    if (!gn::read(static_cast<char*>(state) + 0x38, maps) || !maps) return out;
+    const auto find = reinterpret_cast<FindFn>(gn::rva(gn::engine::function::DashStats_find));
+    for (int player = 0; player < 2; ++player) {
+        char* map = maps + player * 0x30;
+        char* buckets = nullptr;
+        uint32_t count = 0;
+        if (!gn::read(map + 8, buckets) || !gn::read(map + 0x10, count) || !buckets || !count || count > 1000000) continue;
+        void* end = nullptr;
+        gn::read(buckets + size_t(count) * 8, end);
+        for (const char* key : keys) {
+            void* it[2] = {};
+            find(map, it, &key);
+            if (!it[0] || it[0] == end) continue;
+            BestValue b{static_cast<char*>(it[0]) + 0x10, 0};
+            if (gn::read(b.at, b.value)) out.push_back(b);
+        }
+    }
+    return out;
+}
+
+void keepBest(void* state, void* data, void* times, uint32_t run) {
+    if (!state || !data) return g_finishOrig(state, data, times, run);
+    const std::vector<BestValue> before = bestsOf(state, data);
+    uint8_t pending[0x60] = {}; // +0x218 "changed", +0x220.. the pending changes' list
+    const bool havePending = gn::api().read(static_cast<char*>(state) + 0x218, pending, sizeof(pending)) == GN_OK;
+    g_finishOrig(state, data, times, run);
+    bool changed = false;
+    for (const BestValue& b : before) {
+        int64_t now = 0;
+        if (gn::read(b.at, now) && now != b.value) changed = true, gn::write(b.at, b.value);
+    }
+    if (!changed) return;
+    if (havePending) gn::api().write(static_cast<char*>(state) + 0x218, pending, sizeof(pending));
+    g_bestsKept.fetch_add(1);
+    gn::log("anti-cheat: a new best Dash time was not saved (the trainer is loaded)");
+}
+
+void blockUploads() {
+    namespace h = gn::engine::hook;
+    int n = 0;
+    n += gn::hookSlot(h::GatewayBackendListener_onMessage.slot, h::GatewayBackendListener_onMessage.original, &backendListener, &g_backendOrig);
+    n += gn::hookSlot(h::GatewayRouteListener_onMessage.slot, h::GatewayRouteListener_onMessage.original, &routeListener, &g_routeOrig);
+    g_uploadBlock = n;
+    gn::log(n == 2 ? "anti-cheat: Dash and time trial uploads are blocked while the trainer is loaded"
+                   : "anti-cheat: COULD NOT block uploads (%d of 2 listeners wrapped)", n);
+    namespace c = gn::engine::code;
+    namespace f = gn::engine::function;
+    g_bestGuard = gn::patchCall(c::NamedChallengeFinish_statsCall, f::NamedChallengeStats_onFinished, &keepBest, &g_finishOrig);
+    gn::log(g_bestGuard ? "anti-cheat: new best Dash times are not saved while the trainer is loaded"
+                        : "anti-cheat: COULD NOT stop new best Dash times being saved");
+}
 
 // ---- save / load ---------------------------------------------------------------------------------------
 std::mutex g_m;
@@ -628,6 +742,12 @@ void trainerTab() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("In the air: the game's predicted time to the landing and a bar that runs down to it. Green\n"
                           "is the tick auto-bhop presses on (below \"Press below\"), red a soft landing (no bhop).");
+    ImGui::SeparatorText("Unload");
+    if (ImGui::Button("Unload the trainer")) gn::unloadSelf(); // everything it changed goes back (GN_MOD_UNLOAD)
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts back what it changed and unloads it; GridNode's Mods list loads it again.");
+    ImGui::SameLine();
+    if (ImGui::Button("Unload GridNode too")) gn::unloadGridNode();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every mod and GridNode itself: the game as if none of it had loaded.");
 }
 
 // A bar of the predicted time to the landing (12/60 s full), with a tick at the press threshold.
@@ -737,7 +857,24 @@ void window() {
     saveSettings();
 }
 
+// Always on screen while the trainer is loaded (not an option): runs made with it are marked.
+void trainerMark() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const bool blocked = g_uploadBlock.load() == 2 && g_bestGuard.load();
+    char text[160], skipped[48] = "";
+    if (const int n = g_blockedCount.load() + g_bestsKept.load()) snprintf(skipped, sizeof(skipped), " (%d stopped)", n);
+    snprintf(text, sizeof(text),
+             blocked ? "MEC Trainer loaded - Dash and time trial times are not uploaded or saved%s" : "MEC Trainer loaded - times NOT blocked%s",
+             skipped);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 size = ImGui::CalcTextSize(text);
+    const ImVec2 at(vp->WorkPos.x + (vp->WorkSize.x - size.x) * 0.5f, vp->WorkPos.y + 6.f);
+    dl->AddRectFilled(ImVec2(at.x - 8.f, at.y - 3.f), ImVec2(at.x + size.x + 8.f, at.y + size.y + 3.f), IM_COL32(0, 0, 0, 140), 4.f);
+    dl->AddText(at, blocked ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 80, 80, 255), text);
+}
+
 void hud() {
+    trainerMark();
     if (!g_haveFaith) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
@@ -782,6 +919,7 @@ GN_MOD("mec-trainer") {
         gn::log("no overlay: hotkeys only");
     loadSettings();
     volumes::loadSettings();
+    blockUploads();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });

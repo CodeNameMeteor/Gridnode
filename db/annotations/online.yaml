@@ -18,6 +18,11 @@ globals:
     sources: [ghidra]
 
 functions:
+  - name: gatewayBackend_handleMessage
+    va: 0x1439ff680
+    signature: "void(void* backend, void* message, u8 locked)"
+    note: "Switches on the message type id (+0xc) and runs the request: uploads, downloads, presence (see the hooks below for the upload ids)."
+    confidence: inferred
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: OnlineId_copyConstruct
     va: 0x1432f8cd0
@@ -27,10 +32,28 @@ functions:
     sources: [ghidra]
   - name: NamedChallengeStats_onFinished
     va: 0x1439deb10
-    signature: "void(i64, i64, void*, u32)"
-    note: "Named in Ghidra as NamedChallengeStats_onFinished; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
+    signature: "void(void* dashState, void* challengeData, void* times, u32 runId)"
+    note: >-
+      A Dash finished (only call: PamServerNamedChallengeEntity_finish at 0x143a8f522). dashState is
+      the global DashState (0x14257c9d0); times a vector of i64, [0] the main stat. Per player index
+      (+0x10 bytes: active) it queues the online upload (UploadNamedChallengeStatsRequest, index 1),
+      compares the main stat with the best in the map at +0x38 + i*0x30 (keyed by the challenge's
+      stat name, challengeData +0x58; value at node +0x10; StatHigherIsBetter at data +0x28 -> +0x98),
+      and on a new best writes it and the extra stats, appends each change {name, player, old, new}
+      to the pending list at +0x220 and sets +0x218 (saved later). Then sends
+      PamSocialPlayNamedChallengeFinishedMessage and PamSocialPlayNamedChallengeStatsUploadedMessage.
+    confidence: inferred
+    sources: [ghidra, recording]
+  - name: DashStats_find
+    va: 0x1439d9750
+    signature: "void**(void* map, void** out, const char** key)"
+    note: "Finds a stat in a DashState best map (hash of the name, case-insensitive); out[0] is the node (value at +0x10) or the map's end (*(map +8)[*(u32*)(map +0x10)])."
+    confidence: inferred
+  - name: PamServerNamedChallengeEntity_finish
+    va: 0x143a8f260
+    signature: "void(void* entity)"
+    note: "Collects the run's stats from the entity's properties and calls NamedChallengeStats_onFinished. From its onEvent (vtable 0x141c7ec70 +0x20) and 0x143a8e2e0."
+    confidence: inferred
   - name: PamOnlineConnectionDialog_onMessage
     va: 0x1439fee40
     signature: "void(void* self, void*, u64, u64)"
@@ -133,3 +156,35 @@ functions:
     note: "Named in Ghidra as NetworkPamMapTrackerPlacedMessage_ctor; checked in the decompiler (2026-10-30): sets the NetworkPamMapTrackerPlacedMessage vtable."
     confidence: inferred
     sources: [ghidra]
+
+# The gateway backend's uploads (2026-11-02, for the MEC trainer's upload block). The backend's
+# message handler (gatewayBackend_handleMessage) runs each request as a JSON-RPC call; two message
+# listeners lead to it. Message type ids at message +0xc (djb2-xor of the class name):
+#   0x685f689d UploadNamedChallengeStatsRequest  "PamplonaAuthenticated.finish" {challengeId, mainStat, runId}: a Dash time
+#   0x39c9a83d UploadStatsRequest                "PamplonaAuthenticated.finish" {ugcId, finishTime, splitTimes, replayUploadTicket}: a time trial time
+#   0xb70b72ba UploadReplayRequestMessageBase    the run's ghost
+#   0xaa067849 SetPlayerGhostRequest             the ghost shown to others
+#   0x16545a7c UploadSharedContentRequest        "PamplonaAuthenticated.create": publishing a time trial (not a time)
+#   0x5aa5342c UploadUserStatsRequest            "PamplonaAuthenticated.updatePersonaStats"
+hooks:
+  - name: GatewayBackendListener_onMessage
+    kind: vtable-slot
+    vtable: 0x141c68780
+    offset: 0x0
+    original: 0x1439ff670
+    signature: "void(void* listener, void* message)"
+    note: "A message listener (vtable {onMessage, order 0x142a3ad20}): mov rcx,[rcx+0x20]; xor r8d,r8d; jmp gatewayBackend_handleMessage."
+    confidence: inferred
+  - name: GatewayRouteListener_onMessage
+    kind: vtable-slot
+    vtable: 0x141c50d48
+    offset: 0x0
+    original: 0x1439715c0
+    signature: "void(void* listener, void* message)"
+    note: "A message listener: category 0x3010e025 (PamGatewayBackend) goes to the backend through 0x143a02030 (gatewayBackend_handleMessage under its lock); category 0x3c80003d elsewhere."
+    confidence: inferred
+
+code:
+  - name: NamedChallengeFinish_statsCall
+    va: 0x143a8f522
+    note: "call NamedChallengeStats_onFinished in PamServerNamedChallengeEntity_finish (e8 rel32): the MEC trainer patches it to keep a new best from being saved."

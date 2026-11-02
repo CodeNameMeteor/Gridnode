@@ -50,11 +50,15 @@ struct ModInfo {
     int result = 0;
     bool reloadable = false;  // exports gn_mod_unload: loaded from a copy, can be reloaded
     bool autoReload = false;  // reloaded when its file changes
+    bool inMemory = false;    // its DLL is loaded (false after Unload: Load brings it back)
     std::string status;       // the last reload, for the menu
 };
 std::vector<ModInfo> modList();
 void modReload(const std::string& file);             // any thread: done on GridNode's thread
 void modAutoReload(const std::string& file, bool on);
+void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
+void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
+int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
 void pollMods();                                     // GridNode's thread: reloads asked for or due
 bool unloadAllMods(); // GridNode's thread, for a full unload: true when every mod was freed (the rest are inert)
 
@@ -71,6 +75,21 @@ void forgetLevel(const CodeRange& r);
 void forgetMessages(const CodeRange& r);
 void forgetMovement(const CodeRange& r);
 void forgetEvents(const CodeRange& r);
+
+// Code patches (patches.cpp): gn_api patch_bytes / patch_call; undone when their mod (the code that
+// made them: caller) is unloaded, or all at a full unload.
+int patchBytes(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size, const void* caller);
+int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void* detour, void** original, const void* caller);
+size_t forgetPatches(const CodeRange& r);
+size_t removeAllPatches();
+struct PatchInfo {
+    std::string mod;
+    uint64_t va;
+    size_t size;
+    std::string what;
+};
+std::vector<PatchInfo> patchList();
+std::vector<std::pair<uintptr_t, uint64_t>> patchOriginals(); // for an image dump: the original bytes
 
 // Unloading GridNode (unload.cpp): everything it and the mods changed is put back, then gridnode.dll
 // is freed. GridNode's own short-lived threads count themselves so the unload waits for them.

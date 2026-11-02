@@ -58,6 +58,12 @@ ticks, at most 3 s), frees it and loads the new copy, which runs `GN_MOD` again.
 
 Mods without `GN_MOD_UNLOAD` are never unloaded (their DLL stays locked while the game runs).
 
+A loaded mod with `GN_MOD_UNLOAD` also has **Unload** in the Mods list: it is unloaded as above and
+stays unloaded (everything it changed put back) until **Load** brings it back. A mod can do the same
+for itself (API 15): `gn::unloadSelf()` (Rust `unload_self()`) unloads the mod that calls it once the
+current callback has returned, for an "Unload" button in its own window; false for a mod without
+`GN_MOD_UNLOAD`. `gn::unloadGridNode()` (Rust `unload_gridnode()`) unloads everything, as below.
+
 ## Unloading GridNode completely
 
 The GridNode menu's **Unload** section unloads every mod and GridNode itself, and puts the game back
@@ -147,10 +153,17 @@ gn::hookSlot(gn::engine::hook::PamUISystem_update.slot,
 ```
 
 A hook swaps one pointer: a vtable slot, a creator slot, or a function pointer the game keeps in
-data. Game code is never patched (the executable is protected; MECMP has run this way since its
-first release). GridNode checks the slot holds the expected function before swapping, and
-chains hooks: if two mods hook the same slot, the second one's `original` is the first one's
-detour. Always call `original`. Hooks stay for the life of the process.
+data. GridNode checks the slot holds the expected function before swapping, and chains hooks: if
+two mods hook the same slot, the second one's `original` is the first one's detour. Always call
+`original`. Hooks stay until the mod is unloaded.
+
+For a function no pointer leads to (it is only called directly), patch the call (API 15):
+`gn::patchCall(siteVa, expectedTargetVa, &detour, &original)` makes the call or jmp at `siteVa`,
+which must go to `expectedTargetVa`, go to `detour` (through a thunk GridNode puts near the image);
+call the game's function through `original`. `gn::patchBytes(va, expected, bytes, size)` replaces up
+to 64 bytes that must be `expected` now. Patches are listed in the GridNode menu's Hooks section and
+undone when the mod is unloaded (or GridNode is). Prefer a pointer swap where there is one. Rust:
+`patch_call`, `patch_bytes`.
 
 Another mod's hook in a slot GridNode wraps (MECMP's ServerGameWorld tick, for one) is chained
 the same way, whichever was loaded first: a slot that holds code of another loaded module is

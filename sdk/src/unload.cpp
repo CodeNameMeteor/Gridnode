@@ -67,7 +67,9 @@ bool unloadEverything() {
         canFree = false;
     }
 
-    // 3. Every hook, all owners (entity creators and destructors, events, ticks, the recorder's).
+    // 3. Every code patch, then every hook, all owners (entity creators and destructors, events,
+    // ticks, the recorder's).
+    if (const size_t n = removeAllPatches()) GN_LOG("unload: %llu code patches undone", static_cast<unsigned long long>(n));
     std::vector<std::string> refused;
     const size_t out = hooks().remove([](const hook::Entry&) { return true; }, &refused);
     g_unloaded = true;

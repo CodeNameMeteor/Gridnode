@@ -99,8 +99,8 @@ hooks:
     signature: "void(void* world, void* updateInfo)"
 ```
 
-GridNode only ever swaps these pointers; code is never patched. Slots must be 8-byte aligned so
-the swap is atomic.
+GridNode swaps these pointers; code is patched only through `patch_call` / `patch_bytes` (listed,
+undone on unload). Slots must be 8-byte aligned so the swap is atomic.
 
 ### events
 

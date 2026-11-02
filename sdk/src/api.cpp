@@ -1,6 +1,9 @@
 // The gn_api table handed to mods, and the runtime's singletons.
 
 #include <windows.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include <cstring>
 
@@ -232,6 +235,30 @@ int apiRaycast(const float* from, const float* to, float radius, gn_ray_hit* out
 
 } // namespace
 
+namespace {
+// The mod is the one whose code called: the return address is in its image (a direct call through
+// the table, so never inlined into the mod's caller).
+#if defined(_MSC_VER)
+__declspec(noinline) int apiModUnload() { return modUnloadAt(_ReturnAddress()); }
+#else
+__attribute__((noinline)) int apiModUnload() { return modUnloadAt(__builtin_return_address(0)); }
+#endif
+#if defined(_MSC_VER)
+#define GN_CALLER _ReturnAddress()
+#define GN_NOINLINE __declspec(noinline)
+#else
+#define GN_CALLER __builtin_return_address(0)
+#define GN_NOINLINE __attribute__((noinline))
+#endif
+// A patch belongs to the code that made it (undone when that mod is unloaded).
+GN_NOINLINE int apiPatchBytes(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size) {
+    return patchBytes(mod, va, expected, bytes, size, GN_CALLER);
+}
+GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, void* detour, void** original) {
+    return patchCall(mod, site, target, detour, original, GN_CALLER);
+}
+} // namespace
+
 const gn_api* api() {
     static const gn_api table = [] {
         gn_api a{};
@@ -317,6 +344,13 @@ const gn_api* api() {
         a.freecam_get = layouts::freecamGet;
         a.freecam_teleport = [](int to, int keep) { return layouts::teleportRequest(to, keep != 0); };
         a.event_send_class = [](const char* mod, const char* cls, const char* event) { return eventSendClass(mod ? mod : "?", cls, event); };
+        a.mod_unload = apiModUnload;
+        a.patch_bytes = apiPatchBytes;
+        a.patch_call = apiPatchCall;
+        a.gridnode_unload = [] {
+            unloadRequest();
+            return GN_OK;
+        };
         return a;
     }();
     return &table;

@@ -421,10 +421,17 @@ void drawMain() {
                 ImGui::SameLine();
                 if (m.loaded) ImGui::TextDisabled("loaded");
                 else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), m.result ? "failed (%d)" : "unloaded", m.result);
-                if (m.reloadable) {
-                    // A mod that exports gn_mod_unload: rebuilt while the game runs, then reloaded.
+                if (m.reloadable && !m.inMemory) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Load")) modLoad(m.file);
+                    if (!m.status.empty()) ImGui::TextDisabled("    %s", m.status.c_str());
+                } else if (m.reloadable) {
+                    // A mod that exports gn_mod_unload: rebuilt while the game runs, then reloaded, or
+                    // unloaded until Load (everything it changed put back).
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Reload")) modReload(m.file);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Unload")) modUnload(m.file);
                     ImGui::SameLine();
                     bool autoReload = m.autoReload;
                     if (ImGui::Checkbox("when changed", &autoReload)) modAutoReload(m.file, autoReload);
@@ -490,6 +497,7 @@ void drawMain() {
                     std::vector<std::pair<uintptr_t, uint64_t>> restore;
                     for (const auto& [slot, chain] : hooks().snapshot())
                         if (!chain.empty()) restore.push_back({static_cast<uintptr_t>(slot), chain.front().previous});
+                    for (const auto& r : patchOriginals()) restore.push_back(r); // and the game's code bytes under patches
                     const bool ok = mem::dumpImage(path, &why, restore);
                     std::lock_guard<std::mutex> lock(textM);
                     char buf[600];
@@ -508,6 +516,11 @@ void drawMain() {
         }
         if (g_settings.devInfo && ImGui::CollapsingHeader("Hooks")) {
             ImGui::Text("%llu pointer hooks installed", static_cast<unsigned long long>(hooks().count()));
+            const std::vector<PatchInfo> patches = patchList();
+            ImGui::Text("%llu code patches", static_cast<unsigned long long>(patches.size()));
+            for (const PatchInfo& p : patches)
+                ImGui::BulletText("%s: %llx, %llu bytes (%s)", p.mod.c_str(), static_cast<unsigned long long>(p.va),
+                                  static_cast<unsigned long long>(p.size), p.what.c_str());
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));
             ImGui::Text("Client ticks: %llu", static_cast<unsigned long long>(client().ticks()));
         }

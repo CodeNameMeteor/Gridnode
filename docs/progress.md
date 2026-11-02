@@ -14,6 +14,24 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Code patches (API 15)** (2026-11-02, confirmed in game with the trainer's best-time guard). `patch_call` (a call or jmp rel32 sent
+  to a detour through a thunk near the image) and `patch_bytes`; each listed in the menu's Hooks
+  section, undone when its mod (the code that made it) is unloaded or at a full unload, and the
+  original bytes go into image dumps. The MEC trainer uses it: a new best Dash time is not saved
+  while it is loaded (`NamedChallengeStats_onFinished`, call site 0x143a8f522, runs; any best it
+  wrote, its pending changes and its flag are put back).
+- **Unloading from the API and per mod** (2026-11-02, API 15, untested in game). `mod_unload`
+  (`gn::unloadSelf`, Rust `unload_self`): the calling mod (found by its code address) is unloaded and
+  stays unloaded; `gridnode_unload` (`gn::unloadGridNode`, Rust `unload_gridnode`): the full unload.
+  The menu's Mods list has Unload and Load for mods with `GN_MOD_UNLOAD`.
+- **Soft anti-cheat in the MEC trainer** (2026-11-02, confirmed in game: a new best was neither saved
+  nor uploaded, also with Beat Revival connected). While the trainer is loaded,
+  the gateway backend's upload requests for Dash times (`UploadNamedChallengeStatsRequest`), time
+  trial times (`UploadStatsRequest`), ghosts (`UploadReplayRequestMessageBase`,
+  `SetPlayerGhostRequest`) are dropped: both message listeners that lead to the backend are wrapped
+  (hooks `GatewayBackendListener_onMessage`, `GatewayRouteListener_onMessage` in
+  `db/annotations/online.yaml`; out again when the trainer unloads). A line at the top of the screen
+  says the trainer is loaded and whether uploads are blocked; it is not an option.
 - **Full unload of GridNode and every mod** (2026-11-01, untested in game). The menu's Unload section
   ([modding.md](modding.md#unloading-gridnode-completely), `sdk/src/unload.cpp`): mods unloaded (their
   `gn_mod_unload` puts their changes back), GridNode's own changes back (recording, free camera and its

@@ -18,7 +18,7 @@ known about the engine.
 | Reflection | 9,988 engine types by name: fields, enums, sizes, `typeOf(object)` |
 | Entities | creation callbacks per class, components, transforms, the game's own teleport |
 | Threads | server and client ticks, `runOnServer` / `runOnClient` |
-| Hooks | chained pointer hooks (vtable and creator slots); game code is never patched |
+| Hooks | chained pointer hooks (vtable and creator slots); code patches for direct calls, undone on unload |
 | World | Faith on client and server, level events, ray casts |
 | Faith | movement state, wall counters, speed, camera; jump and any input action, whatever the binding; god mode; movement tuning by name |
 | Engine systems | settings (every settings class, by name), the console (every command), engine messages |
@@ -27,7 +27,8 @@ known about the engine.
 
 ## Rules GridNode follows
 
-- Game code is never patched. Hooks only swap pointers in vtables and creator tables.
+- Hooks swap pointers in vtables and creator tables. Game code is patched only where no pointer
+  reaches (a direct call), through GridNode, which lists every patch and undoes it on unload.
 - Nothing runs until the build check passes; on any other build GridNode stays passive.
 - Nothing from the game is published: each user generates their own reflected data, and the full
   reflected reference in these docs is built locally from it.

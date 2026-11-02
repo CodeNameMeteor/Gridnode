@@ -54,7 +54,7 @@ have to rediscover them.
 
 | Rule | Why (source) |
 |---|---|
-| **Hooks are pointer swaps only**: vtable slots, entity-creator slots, and game-owned function pointers (e.g. the stored `XInputGetState`). No inline/trampoline hooks by default. | The PC exe is Denuvo-protected and some functions are virtualised; MECMP never patches code (ARCHITECTURE.md "Rules"). An aligned 8-byte slot store is atomic on x64. |
+| **Hooks are pointer swaps first**: vtable slots, entity-creator slots, and game-owned function pointers (e.g. the stored `XInputGetState`). Code patches (`patch_call`, `patch_bytes`, API 15) only for what no pointer reaches; every one is listed and undone on unload (user, 2026-11-01). | The PC exe is Denuvo-protected and some functions are virtualised; MECMP never patches code (ARCHITECTURE.md "Rules"). An aligned 8-byte slot store is atomic on x64. |
 | **Build check before anything is touched.** Compare known vtable slots and the first bytes of directly called functions; if anything differs, stay passive. | `fingerprint.cpp`. The EA app build loads at 0x140000000 with PE timestamp 0x5762e3b7 and SizeOfImage 0x727b000. |
 | **One build, fixed addresses.** Store image VAs and rebase at runtime. The build check is only a safety net: on an unexpected exe GridNode stays passive instead of crashing. | The game is no longer updated. PS4 layouts differ from PC (Itanium tail padding vs MSVC), so PS4 offsets are never used. |
 | **Engine calls happen on a game thread.** Server-side calls go inside the server tick; client-side writes inside the client updater. | Poses written from the render thread were read half old, half new (hooks.cpp comment). |

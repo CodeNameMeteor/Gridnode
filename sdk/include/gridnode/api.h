@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 14 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class */
+#define GN_API_VERSION 15 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -269,7 +269,8 @@ typedef struct gn_api {
      * expected_va: what the slot must hold before any hook (an image VA); 0 accepts any function
      * in the game image. Hooks on the same slot chain: *original receives what the slot held
      * (the game's function or the previous mod's detour); always call through it.
-     * Game code is never patched. Hooks stay for the life of the process. */
+     * This changes a pointer, not code (for code: patch_call, patch_bytes). Hooks stay until the mod is
+     * unloaded (or GridNode is). */
     int (*hook_slot)(const char* mod, uint64_t slot_va, uint64_t expected_va, void* detour, void** original);
 
     /* ---- reflection ----------------------------------------------------------------------- */
@@ -532,6 +533,33 @@ typedef struct gn_api {
      * entities_near). How many, or -GN_ERR_NOT_FOUND for an unknown class. Entities made before
      * GridNode loaded are not seen (inject it before the level loads). Any thread (it reads). */
     int (*entities_of_class)(const char* class_name, gn_entity_each_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 15 =================================================================== */
+
+    /* ---- unloading -------------------------------------------------------------------------------
+     * mod_unload: unloads the mod that calls it (found by the calling code's address), on GridNode's
+     * thread once the current callback has returned: its gn_mod_unload runs, then GridNode takes out
+     * everything it registered and frees it, as the GridNode menu's Unload does. It stays unloaded
+     * until the menu's Load or a restart. GN_ERR_UNAVAILABLE for a mod without gn_mod_unload;
+     * GN_ERR_NOT_FOUND when not called from a mod. For an "Unload" button in a mod's own window.
+     * gridnode_unload: unloads every mod and GridNode itself, putting the game back as it was (the
+     * menu's Unload section). Any thread; both return at once. */
+    int (*mod_unload)(void);
+    int (*gridnode_unload)(void);
+
+    /* ---- code patches ----------------------------------------------------------------------------
+     * For what no pointer reaches (a direct call); prefer hook_slot. Every patch is listed (the GridNode
+     * menu's Hooks section) and undone when the mod that made it is unloaded, or GridNode is. Patches
+     * may not overlap (GN_ERR_SLOT).
+     * patch_bytes: `size` bytes (at most 64) at va become `bytes`, only if they are `expected` now
+     * (GN_ERR_SLOT otherwise: another game build).
+     * patch_call: the call or jmp rel32 at site_va, which must go to expected_target_va, goes to detour
+     * instead (through a thunk GridNode puts near the image); *original receives the target: call
+     * through it. GN_ERR_SLOT: no call or jmp there, or it goes elsewhere.
+     * Any thread. The bytes change in one store when they fit in an aligned 8 bytes (a call's rel32
+     * nearly always does), so a thread running the code sees the old or the new, never half. */
+    int (*patch_bytes)(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size);
+    int (*patch_call)(const char* mod, uint64_t site_va, uint64_t expected_target_va, void* detour, void** original);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

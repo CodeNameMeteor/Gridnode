@@ -38,6 +38,9 @@ struct Mod {
     FILETIME written{};  // the file's time when loaded
     unsigned copies = 0; // copies made (each load of a reloadable mod gets a new name)
     bool reloadWanted = false;
+    bool unloadWanted = false; // unload and stay unloaded (the menu, or the mod itself: gn_api mod_unload)
+    bool loadWanted = false;   // load again after that
+    CodeRange code;            // its image while loaded (to find a mod by an address in it)
     ULONGLONG changedAt = 0; // the file changed (auto reload waits for it to settle)
 };
 
@@ -109,6 +112,7 @@ void load(Mod& m) {
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                            reinterpret_cast<LPCWSTR>(reinterpret_cast<void*>(entry)), &pinned);
     }
+    m.code = imageOf(m.module);
     const int r = entry(api());
     m.info.loaded = r == GN_OK, m.info.result = r;
     if (r == GN_OK) GN_LOG("mods: %s loaded%s", name.c_str(), m.info.reloadable ? " (reloadable)" : "");
@@ -135,6 +139,7 @@ bool unload(Mod& m) {
     const CodeRange code = imageOf(m.module);
     std::vector<std::string> refused;
     const size_t hooksOut = forgetHooks(code, &refused);
+    forgetPatches(code);
     forgetTicks(code);
     forgetCreated(code);
     forgetLevel(code);
@@ -165,6 +170,7 @@ bool unload(Mod& m) {
     }
     FreeLibrary(m.module);
     m.module = nullptr;
+    m.code = CodeRange{};
     m.info.loaded = false;
     GN_LOG("mods: %s unloaded (%llu hooks taken out)", name.c_str(), static_cast<unsigned long long>(hooksOut));
     return true;
@@ -186,7 +192,10 @@ void reload(Mod& m) {
 std::vector<ModInfo> modList() {
     std::lock_guard<std::mutex> lock(g_modsM);
     std::vector<ModInfo> out;
-    for (const Mod& m : g_mods) out.push_back(m.info);
+    for (const Mod& m : g_mods) {
+        out.push_back(m.info);
+        out.back().inMemory = m.module != nullptr;
+    }
     return out;
 }
 
@@ -194,6 +203,29 @@ void modReload(const std::string& file) {
     std::lock_guard<std::mutex> lock(g_modsM);
     for (Mod& m : g_mods)
         if (m.info.file == file && m.info.reloadable) m.reloadWanted = true;
+}
+
+void modUnload(const std::string& file) {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (Mod& m : g_mods)
+        if (m.info.file == file && m.info.reloadable && m.module) m.unloadWanted = true;
+}
+
+void modLoad(const std::string& file) {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (Mod& m : g_mods)
+        if (m.info.file == file && !m.module) m.loadWanted = true;
+}
+
+int modUnloadAt(const void* address) {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (Mod& m : g_mods) {
+        if (!m.module || !m.code.has(address)) continue;
+        if (!m.info.reloadable) return GN_ERR_UNAVAILABLE;
+        m.unloadWanted = true;
+        return GN_OK;
+    }
+    return GN_ERR_NOT_FOUND;
 }
 
 void modAutoReload(const std::string& file, bool on) {
@@ -214,21 +246,36 @@ void pollMods() {
         {
             std::lock_guard<std::mutex> lock(g_modsM);
             Mod& m = g_mods[i];
-            if (!m.info.reloadable) continue;
-            if (m.info.autoReload && !m.reloadWanted) {
-                // Changed, and left alone for half a second (a build writes the file in parts).
-                const FILETIME w = writeTime(m.path);
-                if (!sameTime(w, m.written) && (w.dwLowDateTime || w.dwHighDateTime)) {
-                    if (!m.changedAt) m.changedAt = now;
-                    else if (now - m.changedAt >= 500) m.reloadWanted = true;
+            if (m.unloadWanted || m.loadWanted) {
+                work = m;
+                m.unloadWanted = m.loadWanted = false;
+            } else {
+                if (!m.info.reloadable || !m.module) continue;
+                if (m.info.autoReload && !m.reloadWanted) {
+                    // Changed, and left alone for half a second (a build writes the file in parts).
+                    const FILETIME w = writeTime(m.path);
+                    if (!sameTime(w, m.written) && (w.dwLowDateTime || w.dwHighDateTime)) {
+                        if (!m.changedAt) m.changedAt = now;
+                        else if (now - m.changedAt >= 500) m.reloadWanted = true;
+                    }
                 }
+                if (!m.reloadWanted) continue;
+                m.reloadWanted = false, m.changedAt = 0;
+                work = m;
             }
-            if (!m.reloadWanted) continue;
-            m.reloadWanted = false, m.changedAt = 0;
-            work = m;
         }
         // Without the lock: the reload waits for frames, and the menu reads the list every frame.
-        reload(work);
+        if (work.unloadWanted) {
+            work.unloadWanted = false;
+            GN_LOG("mods: unloading %s", work.info.file.c_str());
+            if (unload(work)) work.info.status = "unloaded (Load brings it back)";
+        } else if (work.loadWanted) {
+            work.loadWanted = false;
+            load(work);
+            work.info.status = work.info.loaded ? "loaded again" : "load failed";
+        } else {
+            reload(work);
+        }
         std::lock_guard<std::mutex> lock(g_modsM);
         const bool autoReload = g_mods[i].info.autoReload; // may have been changed meanwhile
         g_mods[i] = work;
@@ -253,6 +300,7 @@ bool unloadAllMods() {
         // so GridNode no longer calls it; it may still have its own threads, so GridNode stays loaded.
         const CodeRange code = imageOf(m.module);
         forgetHooks(code, nullptr);
+        forgetPatches(code);
         forgetTicks(code);
         forgetCreated(code);
         forgetLevel(code);

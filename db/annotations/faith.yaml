@@ -35,7 +35,7 @@ globals:
     va: 0x14257c9d0
     type: "void*"
     confidence: inferred
-    note: "+0xe0 = dash started (u8), MEC_Trainer."
+    note: "+0xe0 = dash started (u8), MEC_Trainer. Also the Dash stats: bests per player and stat name, pending changes (NamedChallengeStats_onFinished, online.yaml)."
   - name: AntMovementTuning
     va: 0x1423bd908
     type: "void*"

@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 14;
+pub const GN_API_VERSION: u32 = 15;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -271,6 +271,10 @@ pub struct gn_api {
     pub freecam_get: Option<unsafe extern "C" fn(out: *mut gn_freecam) -> c_int>,
     pub freecam_teleport: Option<unsafe extern "C" fn(to: c_int, keep_flying: c_int) -> c_int>,
     pub entities_of_class: Option<unsafe extern "C" fn(class_name: *const c_char, fn_: gn_entity_each_fn, user: *mut c_void) -> c_int>,
+    pub mod_unload: Option<unsafe extern "C" fn() -> c_int>,
+    pub gridnode_unload: Option<unsafe extern "C" fn() -> c_int>,
+    pub patch_bytes: Option<unsafe extern "C" fn(mod_: *const c_char, va: u64, expected: *const c_void, bytes: *const c_void, size: usize) -> c_int>,
+    pub patch_call: Option<unsafe extern "C" fn(mod_: *const c_char, site_va: u64, expected_target_va: u64, detour: *mut c_void, original: *mut *mut c_void) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -290,4 +294,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 648);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 680);

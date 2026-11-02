@@ -94,6 +94,18 @@ template <class Fn> bool hookSlot(uint64_t slotVa, uint64_t expectedVa, Fn detou
                            reinterpret_cast<void**>(original)) == GN_OK;
 }
 
+// Code patches (API 15), for what no pointer reaches; undone when the mod is unloaded. patchCall: the
+// call or jmp at siteVa, which must go to expectedTargetVa, goes to detour; call the game's function
+// through *original. patchBytes: size bytes at va, which must be `expected`, become `bytes`.
+template <class Fn> bool patchCall(uint64_t siteVa, uint64_t expectedTargetVa, Fn detour, Fn* original) {
+    static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
+    return api().patch_call(modName(), siteVa, expectedTargetVa, reinterpret_cast<void*>(detour),
+                            reinterpret_cast<void**>(original)) == GN_OK;
+}
+inline bool patchBytes(uint64_t va, const void* expected, const void* bytes, size_t size) {
+    return api().patch_bytes(modName(), va, expected, bytes, size) == GN_OK;
+}
+
 // ---- reflection ------------------------------------------------------------------------------
 class Type {
 public:
@@ -401,6 +413,14 @@ inline bool setPosition(const Vec3& p) {
     const float a[3] = {p.x, p.y, p.z};
     return api().position_set(a) == GN_OK;
 }
+
+// ---- unloading (API 15) ----------------------------------------------------------------------------
+// This mod unloaded (its GN_MOD_UNLOAD runs, everything it registered goes) once the current callback
+// returns; it stays unloaded until the GridNode menu's Load. False without GN_MOD_UNLOAD. For an
+// "Unload" button in the mod's own window.
+inline bool unloadSelf() { return api().mod_unload() == GN_OK; }
+// Every mod and GridNode itself unloaded, the game put back as it was (the menu's Unload section).
+inline void unloadGridNode() { api().gridnode_unload(); }
 
 // ---- entities in place -------------------------------------------------------------------------------
 // fn(void* entity, Type type, const Transform& at, float distance) for live entities near pos.
