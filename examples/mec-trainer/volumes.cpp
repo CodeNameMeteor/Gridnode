@@ -313,6 +313,18 @@ bool bridgeInto(void* iface, void* target, void*& childIface, void*& source) {
 // 0x14314eac0: fireEvent(parent, *(bus +0x60) & ~3, event)); `iface` is the bus's interface (bus + 8).
 void* outerSource(void* iface) { return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(rd<void*>(iface, 0x58)) & ~uintptr_t(3)); }
 
+// The bus that event lands in: the parent (interface +8), passed on upwards while that bus is a
+// see-through one (its interface +0x34 bit 27; 0x14314e980), unless it has a proxy (+0x50: not
+// followed). A sublevel's events go this way (its parent bus has no links of its own).
+void* outerBus(void* iface) {
+    char* p = rd<char*>(iface, 0x8);
+    for (int i = 0; p && i < 8 && ((rd<uint32_t>(p, 0x34) >> 27) & 1); ++i) {
+        if (rd<void*>(p, 0x50)) return nullptr;
+        p = rd<char*>(p, 0x8);
+    }
+    return p;
+}
+
 // Follows the trigger's events. A link to an InterfaceDescriptorData leaves the blueprint the trigger
 // is in (a prefab, a Dash's logic): it goes on in the parent bus (the bus interface's +8), from the
 // source EntityBus_deliverEvent gives it (bus +0x60, low bits masked: the interface's +0x58), with the
@@ -346,13 +358,13 @@ void classify(void* e, Volume& v) {
             if (!c->dst || !seen.insert(c->dst).second) continue;
             const std::string& name = targetName(c->dst);
             if (name.rfind("PamAreaTriggerData", 0) == 0) continue; // enabling another trigger says nothing
-            if (void *childIface = nullptr, *src = nullptr; st.depth < 4 && bridgeInto(st.bus, c->dst, childIface, src))
-                todo.push_back({childIface, src, st.depth + 1, c->tev}); // into the placed blueprint
             if (name.rfind("InterfaceDescriptorData", 0) == 0) {
-                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), outerSource(st.bus), st.depth + 1, c->tev});
+                if (st.depth < 4) todo.push_back({outerBus(st.bus), outerSource(st.bus), st.depth + 1, c->tev});
                 seen.erase(c->dst); // the same interface, another event
                 continue;
             }
+            if (void *childIface = nullptr, *src = nullptr; st.depth < 4 && bridgeInto(st.bus, c->dst, childIface, src))
+                todo.push_back({childIface, src, st.depth + 1, c->tev}); // into the placed blueprint
             const std::string low = lower(name);
             v.hay += low + "\n";
             if (!v.teleports && low.find("teleportentitydata") != std::string::npos) {
@@ -433,18 +445,19 @@ void describe(void* e) {
         for (const Conn* c : hits) {
             const std::string& name = targetName(c->dst);
             const std::string pad(size_t(st.depth) * 2 + 4, ' ');
+            if (name.rfind("InterfaceDescriptorData", 0) == 0) {
+                gn::log("%s%s -> out of the blueprint as %s", pad.c_str(), eventText(c->ev).c_str(), eventText(c->tev).c_str());
+                ++lines;
+                if (st.depth < 4) todo.push_back({outerBus(st.bus), outerSource(st.bus), c->tev, st.depth + 1});
+                continue;
+            }
             if (void *childIface = nullptr, *src = nullptr; st.depth < 4 && bridgeInto(st.bus, c->dst, childIface, src)) {
                 gn::log("%s%s -> into %s as %s", pad.c_str(), eventText(c->ev).c_str(), name.c_str(), eventText(c->tev).c_str());
                 ++lines;
                 todo.push_back({childIface, src, c->tev, st.depth + 1});
                 continue;
             }
-            if (name.rfind("InterfaceDescriptorData", 0) == 0) {
-                gn::log("%s%s -> out of the blueprint as %s", pad.c_str(), eventText(c->ev).c_str(), eventText(c->tev).c_str());
-                ++lines;
-                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), outerSource(st.bus), c->tev, st.depth + 1});
-                continue;
-            }
+
             gn::log("%s%s -> %s.%s", pad.c_str(), eventText(c->ev).c_str(), name.c_str(), eventText(c->tev).c_str());
             ++lines;
             if (name.find("TeleportEntityData") != std::string::npos) {

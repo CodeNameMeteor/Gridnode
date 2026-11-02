@@ -58,42 +58,71 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n) {
 
 // 16-byte thunks in pages within 2 GB of the call sites. The free regions are found with VirtualQuery,
 // above the image first, then below it: in one run nothing could be had by asking at fixed steps
-// above the image (2026-11-02).
+// above the image (2026-11-02). Another run hung loading the trainer (2026-11-02, 11:39): with every
+// allocation there refused, trying each 64 KB of 2 GB takes minutes. So the tries are capped and
+// timed. A page that cannot be had read-write-execute (some protections refuse that) is taken
+// read-write and made executable after its one thunk is written: a thunk in use is never made
+// unexecutable again.
 std::mutex g_thunkM;
 uint8_t* g_thunkPage = nullptr; // (g_thunkM)
 size_t g_thunkUsed = 0;
+bool g_thunkWritable = false;   // the page is read-write-execute (more thunks can go on it)
 
-uint8_t* allocNear(uintptr_t site) {
+constexpr int kMaxTries = 64;          // VirtualAlloc calls per search
+constexpr int kTriesPerRegion = 8;     // the lowest addresses of each free region
+constexpr ULONGLONG kMaxSearchMs = 2000;
+
+uint8_t* allocNear(uintptr_t site, bool& writable) {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
     const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
     const uintptr_t lo = site > 0x7ff00000 ? site - 0x7ff00000 : gran, hi = site + 0x7ff00000;
-    auto tryRegion = [&](uintptr_t from, uintptr_t to) -> uint8_t* { // a free region [from, to)
-        for (uintptr_t a = (from + gran - 1) & ~(gran - 1); a + 0x1000 <= to; a += gran)
-            if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE))
+    GN_LOG("patches: looking for a thunk page near %llx", static_cast<unsigned long long>(mem::va(site)));
+    const ULONGLONG start = GetTickCount64();
+    int tries = 0;
+    DWORD firstError = 0;
+    const auto out = [&] { return tries >= kMaxTries || GetTickCount64() - start > kMaxSearchMs; };
+    const auto tryAt = [&](uintptr_t a) -> uint8_t* {
+        ++tries;
+        for (DWORD prot : {DWORD(PAGE_EXECUTE_READWRITE), DWORD(PAGE_READWRITE)}) {
+            if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, prot)) {
+                writable = prot == PAGE_EXECUTE_READWRITE;
                 return static_cast<uint8_t*>(p);
+            }
+            if (!firstError) firstError = GetLastError();
+        }
         return nullptr;
     };
+    uint8_t* found = nullptr;
     const uintptr_t imageEnd = mem::moduleBase() + mem::imageSize();
     MEMORY_BASIC_INFORMATION mbi{};
-    for (uintptr_t a = imageEnd; a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) { // above
+    for (uintptr_t a = imageEnd; !found && !out() && a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) { // above
         const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
-        if (mbi.State == MEM_FREE)
-            if (uint8_t* p = tryRegion(std::max(b, a), std::min(e, hi))) return p;
+        if (mbi.State == MEM_FREE) {
+            const uintptr_t to = std::min(e, hi);
+            uintptr_t x = (std::max(b, a) + gran - 1) & ~(gran - 1);
+            for (int i = 0; !found && i < kTriesPerRegion && x + 0x1000 <= to && !out(); ++i, x += gran) found = tryAt(x);
+        }
         if (e <= a) break;
         a = e;
     }
-    for (uintptr_t a = mem::moduleBase(); a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) { // below
+    for (uintptr_t a = mem::moduleBase(); !found && !out() && a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) { // below
         const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
         if (mbi.State == MEM_FREE) {
             const uintptr_t from = std::max(b, lo), to = std::min(e, a);
-            if (to > from + 0x1000)
-                if (uint8_t* p = tryRegion(((to - 0x1000) & ~(gran - 1)) > from ? (to - 0x1000) & ~(gran - 1) : from, to)) return p;
+            uintptr_t x = to >= 0x1000 ? (to - 0x1000) & ~(gran - 1) : 0; // the highest addresses, nearest the image
+            for (int i = 0; !found && i < kTriesPerRegion && x >= from && x + 0x1000 <= to && !out(); ++i, x -= gran) found = tryAt(x);
         }
         if (b >= a || b == 0) break;
         a = b;
     }
-    return nullptr;
+    const unsigned long long ms = GetTickCount64() - start;
+    if (found)
+        GN_LOG("patches: thunk page at %p (%s, %d tries, %llu ms)", static_cast<void*>(found), writable ? "rwx" : "rw then rx", tries, ms);
+    else
+        GN_LOG("patches: no page within 2 GB of %llx (%d tries, %llu ms, first error %lu)", static_cast<unsigned long long>(mem::va(site)),
+               tries, ms, static_cast<unsigned long>(firstError));
+    return found;
 }
 
 uint8_t* thunkTo(void* detour, uintptr_t site) {
@@ -102,16 +131,22 @@ uint8_t* thunkTo(void* detour, uintptr_t site) {
         const intptr_t d = reinterpret_cast<intptr_t>(p) - static_cast<intptr_t>(site + 5);
         return d > INT32_MIN + 0x2000 && d < INT32_MAX - 0x2000;
     };
-    if (!g_thunkPage || g_thunkUsed + 16 > 0x1000 || !reaches(g_thunkPage)) {
-        g_thunkPage = allocNear(site);
+    if (!g_thunkPage || !g_thunkWritable || g_thunkUsed + 16 > 0x1000 || !reaches(g_thunkPage)) {
+        g_thunkPage = allocNear(site, g_thunkWritable);
         g_thunkUsed = 0;
         if (!g_thunkPage) return nullptr;
     }
     uint8_t* t = g_thunkPage + g_thunkUsed;
-    g_thunkUsed += 16;
     const uint8_t jmp[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
     memcpy(t, jmp, 6);
     memcpy(t + 6, &detour, 8);
+    g_thunkUsed += 16;
+    DWORD tmp = 0;
+    if (!g_thunkWritable && !VirtualProtect(g_thunkPage, 0x1000, PAGE_EXECUTE_READ, &tmp)) {
+        GN_LOG("patches: the thunk page could not be made executable (error %lu)", static_cast<unsigned long>(GetLastError()));
+        g_thunkPage = nullptr;
+        return nullptr;
+    }
     FlushInstructionCache(GetCurrentProcess(), t, 16);
     return t;
 }
