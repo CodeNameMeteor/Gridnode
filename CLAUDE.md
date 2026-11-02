@@ -141,5 +141,7 @@ The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\record
   hook there: the class's objects become unknown (the recorder's tracing did this until 2026-10-29).
 - Recordings get large: a level load is ~135,000 creations. Ask for recordings started after loading
   and before the thing to capture.
+- gridnode.dll is not pinned: a full unload (`sdk/src/unload.cpp`) frees it. Anything that gives the
+  game a pointer into GridNode (a hook, a vtable copy, a listener, a transform) needs a way back in it.
 - Spawners are found by their data in a bus; the game's echo must stay last in the spawner lists
   (see `docs/research/replay-ghosts.md`).

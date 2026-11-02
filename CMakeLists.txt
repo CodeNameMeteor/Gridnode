@@ -148,6 +148,7 @@ add_library(gridnode SHARED
   sdk/src/ticks.cpp
   sdk/src/entities.cpp
   sdk/src/mods.cpp
+  sdk/src/unload.cpp
   sdk/src/world.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp

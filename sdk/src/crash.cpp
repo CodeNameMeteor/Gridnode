@@ -68,8 +68,14 @@ LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+void* g_handler = nullptr;
+
 } // namespace
 
-void install() { AddVectoredExceptionHandler(0, &onException); }
+void install() { g_handler = AddVectoredExceptionHandler(0, &onException); }
+void uninstall() {
+    if (g_handler) RemoveVectoredExceptionHandler(g_handler);
+    g_handler = nullptr;
+}
 
 } // namespace gn::host::crash

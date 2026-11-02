@@ -3113,8 +3113,9 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
         }
         if (attempt < kLibTries) {
             std::thread([e, r, attempt] {
+                BusyThread busy;
                 Sleep(2000);
-                server().post([e, r, attempt] { placeLibraryTry(e, r, attempt + 1); });
+                if (!unloading()) server().post([e, r, attempt] { placeLibraryTry(e, r, attempt + 1); });
             }).detach();
             return;
         }
@@ -3370,7 +3371,10 @@ void maintainSpawned() {
     if (took > 100 && slow++ < 5) GN_LOG("layouts: looking for copies' sources took %llu ms; next look in %llu s at the earliest", took, (nextLook - GetTickCount64()) / 1000);
 }
 
+std::atomic<bool> g_released{false}; // a full unload: nothing more is applied
+
 void serverTick() {
+    if (g_released.load()) return;
     runQueue(g_serverQ);
     static DWORD last = 0;
     const DWORD now = GetTickCount();
@@ -3383,6 +3387,7 @@ void serverTick() {
 }
 
 void clientTick() {
+    if (g_released.load()) return;
     runQueue(g_clientQ);
     // Once Faith is in the level, catch objects created before the layout was read.
     if (!g_sweptThisLevel.load() && localClientCharacter()) {
@@ -3494,6 +3499,7 @@ void unhookCamera() {
 
 // Client thread: put the copy on the view manager's active camera (again after it changes).
 void hookCamera() {
+    if (g_released.load()) return;
     const uintptr_t mgr = firstViewManager();
     const uintptr_t cam = mgr ? mem::readOr<uintptr_t>(mgr + e::st::ClientCameraViewManager::off::activeCamera) : 0;
     const uintptr_t fake = reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]);
@@ -3538,6 +3544,7 @@ void unhookBody() {
 }
 
 void hookBody() {
+    if (g_released.load()) return;
     namespace c = e::constant;
     const auto character = reinterpret_cast<uintptr_t>(localClientCharacter());
     const uintptr_t iface = character ? character + c::ClientCharacter_ViewModeInterface : 0;
@@ -6034,6 +6041,32 @@ int teleportRequest(int to, bool keepFlying) {
     }
     g_teleportWant = to | (keepFlying ? 4 : 0);
     return GN_OK;
+}
+
+void release() {
+    g_released = true;
+    g_camWant = 0; // the render thread turns the free camera off at its next frame
+    // The camera and Faith's view-mode interface wear vtable copies in gridnode.dll: back now, from
+    // this thread (one pointer each; the copies hold the same functions but ours), in case the client
+    // is not ticking. hookCamera / hookBody do nothing once released.
+    unhookCamera();
+    unhookBody();
+    // Copies made from saved layouts go; moved magropes read their own transforms again (ours are
+    // in gridnode.dll). Moved props and barriers keep their places until the level reloads.
+    std::vector<int> copies;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        for (const SpecialCopy& c : g_specCopies) copies.push_back(c.copyId);
+    }
+    for (int id : copies) removeSpecialCopy(id);
+    std::vector<uintptr_t> ropes;
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        for (const auto& [ent, m] : g_ropeMoves) ropes.push_back(ent);
+    }
+    for (uintptr_t ent : ropes) putBackMagrope(ent, registry().typeOf(mem::ProcessMemory(), ent)); // their own pointers, now
+    GN_LOG("layouts: released (%d copies removed, %d magropes given back their transforms)", static_cast<int>(copies.size()),
+           static_cast<int>(ropes.size()));
 }
 
 } // namespace gn::host::layouts

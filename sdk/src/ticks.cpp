@@ -43,6 +43,7 @@ template <class F> void guarded(const char* what, F&& f) {
 
 void serverPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_serverOrig)(world, updateInfo);
+    if (unloaded()) return; // kept in place by a hook over it: the game's update only
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("server messages", [] { messagesServerTick(); });
     guarded("layouts (server)", [] { layouts::serverTick(); });
@@ -51,6 +52,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
 
 void clientPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_clientOrig)(world, updateInfo);
+    if (unloaded()) return;
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("world", [] { worldClientTick(); });
     guarded("client messages", [] { messagesClientTick(); });

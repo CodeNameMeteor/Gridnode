@@ -236,6 +236,42 @@ void pollMods() {
     }
 }
 
+bool unloadAllMods() {
+    std::vector<Mod> mods;
+    {
+        std::lock_guard<std::mutex> lock(g_modsM);
+        mods = g_mods;
+    }
+    bool allFreed = true;
+    for (Mod& m : mods) {
+        if (!m.module) continue;
+        if (m.info.reloadable) {
+            if (!unload(m)) allFreed = false;
+            continue;
+        }
+        // Pinned (no gn_mod_unload): it cannot be freed or asked to stop. Everything it registered goes,
+        // so GridNode no longer calls it; it may still have its own threads, so GridNode stays loaded.
+        const CodeRange code = imageOf(m.module);
+        forgetHooks(code, nullptr);
+        forgetTicks(code);
+        forgetCreated(code);
+        forgetLevel(code);
+        forgetMessages(code);
+        forgetMovement(code);
+        forgetEvents(code);
+        hotkeys::forget(code);
+        ui::forgetUi(code);
+        m.info.loaded = false;
+        m.info.status = "taken out (no gn_mod_unload: it stays in memory)";
+        GN_LOG("mods: %s has no gn_mod_unload: its callbacks and hooks are out, but it stays in memory", m.info.file.c_str());
+        allFreed = false;
+    }
+    configFlush(true);
+    std::lock_guard<std::mutex> lock(g_modsM);
+    g_mods = std::move(mods);
+    return allFreed;
+}
+
 void loadMods(const std::wstring& folder) {
     g_folder = folder;
     if (!g_folder.empty() && g_folder.back() != L'\\' && g_folder.back() != L'/') g_folder += L'\\';

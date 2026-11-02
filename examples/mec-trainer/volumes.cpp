@@ -366,6 +366,10 @@ void levelChanged() { ++g_generation; }
 
 bool anyShown() { return g_on.load(); }
 
+void unload() {
+    g_on = false; // reads nothing more; GridNode drops the trainer's callbacks
+}
+
 void clientTick(float dt) {
     static float t = 0.f;
     if (const unsigned gen = g_generation.load(); gen != g_seenGeneration) {

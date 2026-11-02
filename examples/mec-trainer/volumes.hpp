@@ -10,5 +10,6 @@ void draw();               // the shapes (render thread, every frame)
 void tab();                // the Volumes tab (render thread)
 void levelChanged();       // forget what was read (GridNode's thread)
 bool anyShown();           // for the trainer's on-screen list
+void unload();             // the trainer is being unloaded: nothing more is read
 
 } // namespace volumes

@@ -10,8 +10,9 @@
 
 namespace gn::runtime {
 
-// GridNode's own thread: waits for the engine, checks the build, writes the type dump.
-void run(HMODULE self);
+// GridNode's own thread: waits for the engine, checks the build, writes the type dump. Returns after
+// a full unload (or when GridNode stays passive); true when gridnode.dll can be freed then.
+bool run(HMODULE self);
 // Process exit.
 void shutdown();
 

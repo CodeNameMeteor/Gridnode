@@ -167,12 +167,29 @@ bool available() {
     return ok == 1;
 }
 
+std::atomic<bool> g_release{false};      // a full unload: take every registration out
+std::atomic<int> g_releasedMask{0};       // managers done (bit per manager)
+
 // On the realm's thread: register the wanted categories with this manager (again, if it was recreated).
 void sync(int manager) {
     if (!available()) return;
     const uintptr_t handle = managerHandle(manager);
     const uintptr_t impl = handle ? mem::readOr<uintptr_t>(handle) : 0;
     Registered& r = g_registered[manager];
+    if (g_release.load()) {
+        // Our listener object lives in gridnode.dll: the manager must not keep it.
+        if (impl && impl == r.impl && !r.categories.empty()) {
+            using UnregisterFn = void (*)(void* manager, uint32_t category, void* listener, uint32_t realm);
+            const auto unreg = reinterpret_cast<UnregisterFn>(mem::rva(e::function::MessageManager_unregisterListener));
+            for (uint32_t c : r.categories) unreg(reinterpret_cast<void*>(handle), c, &g_listeners[manager], 0xff);
+            GN_LOG("messages: %llu categor%s taken out of the %s message manager", static_cast<unsigned long long>(r.categories.size()),
+                   r.categories.size() == 1 ? "y" : "ies", manager == 0 ? "core" : manager == 1 ? "client" : "server");
+        }
+        r.categories.clear();
+        r.impl = 0;
+        g_releasedMask.fetch_or(1 << manager);
+        return;
+    }
     if (impl != r.impl) {
         r.impl = impl;
         r.categories.clear();
@@ -210,6 +227,9 @@ void messagesClientTick() {
     sync(1);
 }
 void messagesServerTick() { sync(2); }
+
+void messagesRelease() { g_release = true; }
+bool messagesReleased() { return !available() || g_releasedMask.load() == 7; }
 
 const std::vector<MessageType>& messageTypes() { return catalogue().types; }
 

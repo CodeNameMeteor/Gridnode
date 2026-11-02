@@ -58,6 +58,30 @@ ticks, at most 3 s), frees it and loads the new copy, which runs `GN_MOD` again.
 
 Mods without `GN_MOD_UNLOAD` are never unloaded (their DLL stays locked while the game runs).
 
+## Unloading GridNode completely
+
+The GridNode menu's **Unload** section unloads every mod and GridNode itself, and puts the game back
+as it was, without a restart (a runner can practise with the trainer, then go back to a normal
+game). In order, on GridNode's thread:
+
+1. Every mod is unloaded as above: `gn_mod_unload` is where a mod puts back what it changed in the
+   game (god mode, settings, tuning). A mod without it has its callbacks and hooks taken out but
+   stays in memory, and so does GridNode (the mod may have threads of its own that still call it).
+2. GridNode's own changes go back: recording stops, the free camera turns off (the camera's and
+   Faith's vtable copies are taken off), keys and actions it holds are let go, god mode is put back,
+   copies made by saved layouts are removed and moved magropes read their own transforms again, and
+   the message listeners are unregistered at each manager's next tick.
+3. Every hook in the hook table comes out (entity creators and destructors, events, ticks, the
+   Recorder's).
+4. The overlay closes and DXGI's Present and ResizeBuffers and the game window's procedure go back.
+5. GridNode waits for its own short-lived threads (an export, a dump) and for the game's threads to
+   leave its code, then frees `gridnode.dll`.
+
+If something cannot be put back (another overlay or tool hooked over GridNode), GridNode stays in
+memory but inactive: nothing of it runs. The log says what kept it. Not put back: props and barriers
+moved by a saved layout (until the level reloads) and settings changed through the console. To load
+GridNode again, run `gridnode_inject.exe` or restart the game.
+
 ## Threads
 
 The game updates its server and client worlds on two separate threads, even in single player.

@@ -195,7 +195,7 @@ bool writeDump(const reflect::Reflected& r, const std::wstring& file) {
 
 } // namespace
 
-void run(HMODULE self) {
+bool run(HMODULE self) {
     log::open(self);
     GN_LOG("GridNode %s loading into %s (base 0x%llx)", GRIDNODE_VERSION_STRING, exeName().c_str(),
            static_cast<unsigned long long>(mem::moduleBase()));
@@ -203,7 +203,7 @@ void run(HMODULE self) {
     const size_t typeCount = build::waitForTypeList(5 * 60 * 1000, &g_stop);
     if (!typeCount) {
         GN_LOG("startup: the engine's type list never filled; GridNode stays passive");
-        return;
+        return false;
     }
     GN_LOG("startup: engine type list ready (%llu types)", static_cast<unsigned long long>(typeCount));
 
@@ -211,7 +211,7 @@ void run(HMODULE self) {
     if (!b.details.empty()) GN_LOG("build check:\n%s", b.details.c_str());
     if (!b.ok) {
         GN_LOG("startup: this is not the game build GridNode supports (%d check(s) failed); GridNode stays passive", b.failed);
-        return;
+        return false;
     }
     GN_LOG("startup: build check passed%s", b.warnings ? " (with warnings)" : "");
 
@@ -252,6 +252,11 @@ void run(HMODULE self) {
     DWORD changedAt = GetTickCount();
     for (unsigned i = 1; !g_stop; ++i) {
         Sleep(100);
+        if (host::unloadRequested()) {
+            const bool canFree = host::unloadEverything();
+            log::close();
+            return canFree;
+        }
         host::pollLevel();
         host::configFlush(false);
         host::pollMods();
@@ -270,6 +275,7 @@ void run(HMODULE self) {
             dumpedCreators = creators;
         }
     }
+    return false;
 }
 
 void shutdown() {

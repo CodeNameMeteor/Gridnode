@@ -1139,7 +1139,8 @@ void start() {
     g_started = true;
     // Pruning, on GridNode's own thread (reads only), so dead entries go whether or not a window is open.
     std::thread([] {
-        for (;;) {
+        BusyThread busy;
+        while (!unloading()) {
             Sleep(15);
             prune();
         }

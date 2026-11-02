@@ -1755,6 +1755,7 @@ void exportAll(const std::string& name) {
     }
     if (g_rolling.load()) watchTiming += ",\"rolling_seconds\":" + std::to_string(g_rollSeconds.load()); // only the window was kept
     std::thread([events = std::move(events), objs = std::move(objs), dropped, level, path, file, watchTiming] {
+        BusyThread busy; // a full unload waits for the file
         if (!g_ownersBuilt) buildOwners(); // for "callers" (once)
         FILE* f = _wfopen(path.c_str(), L"wb");
         if (!f) {
@@ -1945,6 +1946,12 @@ std::string nextMarkerName() {
 }
 
 } // namespace
+
+void release() {
+    g_autoEventId = 0;
+    g_rolling = false;
+    setRecording(false);
+}
 
 void start(const std::wstring& gridnodeDir) {
     g_dir = gridnodeDir + L"recordings\\";

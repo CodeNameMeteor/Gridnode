@@ -14,6 +14,15 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Full unload of GridNode and every mod** (2026-11-01, untested in game). The menu's Unload section
+  ([modding.md](modding.md#unloading-gridnode-completely), `sdk/src/unload.cpp`): mods unloaded (their
+  `gn_mod_unload` puts their changes back), GridNode's own changes back (recording, free camera and its
+  vtable copies, held keys and actions, god mode, layout copies and magropes, message listeners), every
+  hook out, the overlay closed and Present / ResizeBuffers / the window procedure back, then
+  `gridnode.dll` freed (it is no longer pinned; the loader's reference is the only one). A mod without
+  `gn_mod_unload` or a hook over GridNode's keeps it in memory, inactive. The MEC trainer now has
+  `GN_MOD_UNLOAD` (god mode, noclip, free camera, tuning, time scale, post-processing, fast loads back),
+  so it is reloadable too.
 - **Trigger volumes in the MEC trainer** (2026-11-01; shapes confirmed in game, the tab untested).
   A Volumes tab draws the level's area triggers from their own geometry caches, sorted into
   categories (cutscenes, checkpoints and spawns, mission, city alert, AI, music and voice, other) by

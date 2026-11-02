@@ -501,6 +501,25 @@ int godModeSet(int on) {
     return GN_OK;
 }
 
+void faithRelease() {
+    client().post([] {
+        {
+            std::lock_guard<std::mutex> lock(g_actM);
+            g_actions.clear();
+            releaseActions();
+        }
+        const uintptr_t dev = inputDevices();
+        std::lock_guard<std::mutex> lock(g_keyM);
+        for (int key = 1; key < kKeys; ++key) {
+            if (g_keyHeld[key] && dev && !physicallyDown(key)) setKey(dev, key, false);
+            g_keyHeld[key] = false, g_keyTicks[key] = 0;
+        }
+    });
+    server().post([] {
+        if (g_godAt) godModeSet(0); // IsImmortal as it was before GridNode set it
+    });
+}
+
 // ---- game state -------------------------------------------------------------------------------------
 namespace {
 uintptr_t timeOfDayClock() {

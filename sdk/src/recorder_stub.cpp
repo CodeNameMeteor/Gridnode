@@ -7,4 +7,5 @@ void onLevel(const std::string&) {}
 void draw(bool*) {}
 void frame() {}
 void onDestroyed(void*) {}
+void release() {}
 } // namespace gn::host::recorder

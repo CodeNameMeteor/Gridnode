@@ -231,7 +231,11 @@ int rawKeyEvent(LPARAM l) {
     return (ri.data.keyboard.Flags & RI_KEY_BREAK) ? 2 : 1;
 }
 
+std::atomic<int> g_releaseState{0}; // a full unload (release()): 0 running, 1 wanted, 2 under way, 3 done
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    // Left in place by a window procedure set over it: the overlay is gone, the game gets everything.
+    if (g_releaseState.load() >= 2) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
     // Alt+F4 always reaches the game.
     if (msg == WM_SYSKEYDOWN && static_cast<int>(w) == VK_F4) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
     const bool keyUp = msg == WM_KEYUP || msg == WM_SYSKEYUP;
@@ -429,6 +433,21 @@ void drawMain() {
                 ImGui::PopID();
             }
         }
+        if (ImGui::CollapsingHeader("Unload")) {
+            static bool sure = false;
+            if (unloadRequested()) {
+                ImGui::TextDisabled("Unloading...");
+            } else {
+                ImGui::TextWrapped("Unloads every mod and GridNode itself and puts back what they changed (the free camera, "
+                                   "god mode, hooks, this overlay). The game carries on as if GridNode had never loaded. "
+                                   "Props moved by a saved layout stay until the level reloads.");
+                ImGui::Checkbox("I am sure", &sure);
+                ImGui::BeginDisabled(!sure);
+                if (ImGui::Button("Unload GridNode and every mod")) unloadRequest();
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("To load it again: gridnode_inject.exe, or restart the game.");
+            }
+        }
         if (g_settings.devInfo && ImGui::CollapsingHeader("World")) {
             void* cc = localClientCharacter();
             void* sc = localServerCharacter();
@@ -450,6 +469,7 @@ void drawMain() {
             if (ImGui::Button("Dump the game image")) {
                 state = 1;
                 std::thread([] {
+                    BusyThread busy; // a full unload waits for the dump
                     wchar_t mod[MAX_PATH] = {};
                     HMODULE self = nullptr;
                     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -522,7 +542,63 @@ void callMods(bool open) {
 
 std::atomic<uint64_t> g_frames{0}; // frames drawn (a mod being unloaded waits for a few)
 
+// A full unload (release()): the render thread closes the overlay and puts the slots back at its
+// next Present; with no frames coming (minimised), GridNode's thread puts them back without closing
+// Dear ImGui (its device objects belong to the render thread).
+void** g_presentSlot = nullptr;
+void** g_resizeSlot = nullptr;
+std::atomic<bool> g_releaseOk{true};
+HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags);
+HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags);
+
+void shutdownOverlay() { // render thread
+    if (!g_ready) return;
+    ImGui::SetCurrentContext(g_imgui.load());
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    g_imgui = nullptr;
+    if (g_rtv) g_rtv->Release(), g_rtv = nullptr;
+    if (g_context) g_context->Release(), g_context = nullptr;
+    if (g_device) g_device->Release(), g_device = nullptr;
+    g_ready = false;
+}
+
+void putBack() {
+    if (g_window && g_origWndProc) {
+        if (GetWindowLongPtrW(g_window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&wndProc)) {
+            SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_origWndProc));
+        } else {
+            GN_LOG("ui: the game window's procedure was replaced after GridNode's; it stays (GridNode stays loaded)");
+            g_releaseOk = false;
+        }
+    }
+    g_open = false, g_capture = false, g_lookCapture = false, g_pointer = false;
+    ClipCursor(nullptr);
+    auto slot = [](void** at, void* mine, void* original, const char* what) {
+        if (!at) return;
+        if (*at == mine) {
+            uintptr_t old = 0;
+            if (mem::patchModulePointer(reinterpret_cast<uintptr_t>(at), reinterpret_cast<uintptr_t>(original), &old)) return;
+            GN_LOG("ui: %s could not be put back", what);
+        } else {
+            GN_LOG("ui: %s was hooked again after GridNode (another overlay); it stays (GridNode stays loaded)", what);
+        }
+        g_releaseOk = false;
+    };
+    slot(g_presentSlot, reinterpret_cast<void*>(&presentHook), reinterpret_cast<void*>(g_origPresent), "Present");
+    slot(g_resizeSlot, reinterpret_cast<void*>(&resizeHook), reinterpret_cast<void*>(g_origResize), "ResizeBuffers");
+}
+
 HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if (g_releaseState.load() != 0) {
+        if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
+            shutdownOverlay();
+            putBack();
+            g_releaseState = 3;
+        }
+        return g_origPresent(sc, sync, flags);
+    }
     if (flags & DXGI_PRESENT_TEST) return g_origPresent(sc, sync, flags);
     if (!g_ready && !g_swapChain) g_ready = init(sc);
     if (g_ready && sc == g_swapChain && g_rtv) {
@@ -586,6 +662,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
 }
 
 HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
+    if (g_releaseState.load() != 0) return g_origResize(sc, count, w, h, fmt, flags);
     if (sc == g_swapChain && g_rtv) {
         g_rtv->Release();
         g_rtv = nullptr;
@@ -742,6 +819,7 @@ bool install(const Settings& s) {
     }
     void** vtbl = *reinterpret_cast<void***>(sc);
     const bool ok = swapSlot(&vtbl[8], &presentHook, &g_origPresent) && swapSlot(&vtbl[13], &resizeHook, &g_origResize);
+    if (ok) g_presentSlot = &vtbl[8], g_resizeSlot = &vtbl[13];
     sc->Release();
     ctx->Release();
     dev->Release();
@@ -761,5 +839,20 @@ void forgetUi(const CodeRange& r) {
 }
 
 uint64_t frameCount() { return g_frames.load(std::memory_order_relaxed); }
+
+bool release() {
+    if (!g_presentSlot) return true; // never hooked
+    if (int running = 0; g_releaseState.compare_exchange_strong(running, 1)) {
+        const ULONGLONG start = GetTickCount64();
+        while (g_releaseState.load() != 3 && GetTickCount64() - start < 2000) Sleep(20);
+        if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
+            GN_LOG("ui: no frame came (the game minimised?): the slots go back without closing the overlay");
+            putBack();
+            g_releaseState = 3;
+        }
+    }
+    while (g_releaseState.load() != 3) Sleep(10); // the render thread is at it
+    return g_releaseOk.load();
+}
 
 } // namespace gn::host::ui

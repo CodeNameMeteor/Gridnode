@@ -189,6 +189,17 @@ void testHookTable() {
     // The last one out: the slot is the game's again.
     m2[0x3000] = 0xD1;
     CHECK(r.remove([](const hook::Entry&) { return true; }) == 1 && m2[0x3000] == 0xA0 && r.count() == 0);
+
+    // A full unload: every owner at once, chains of several hooks on several slots, all back to the game's.
+    m2[0x4000] = 0xB0;
+    uint64_t p1 = 0, p2 = 0, p3 = 0, q1 = 0;
+    CHECK(r.install("gridnode", 0x3000, 0xA0, 0xD1, &p1) == hook::Result::Ok);
+    CHECK(r.install("mod", 0x3000, 0, 0xD2, &p2) == hook::Result::Ok);
+    CHECK(r.install("recorder", 0x3000, 0, 0xD3, &p3) == hook::Result::Ok);
+    CHECK(r.install("events", 0x4000, 0xB0, 0xD4, &q1) == hook::Result::Ok);
+    refused.clear();
+    CHECK(r.remove([](const hook::Entry&) { return true; }, &refused) == 4 && refused.empty());
+    CHECK(m2[0x3000] == 0xA0 && m2[0x4000] == 0xB0 && r.count() == 0);
 }
 
 void testDispatcher() {

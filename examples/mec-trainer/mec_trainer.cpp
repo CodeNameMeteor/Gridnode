@@ -33,6 +33,8 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "gridnode/ui.hpp"
 #include "volumes.hpp"
@@ -55,6 +57,11 @@ std::atomic<bool> g_landHud{false}, g_landShow{false}, g_landSoft{false};
 std::atomic<float> g_landTicks{0.f};
 std::atomic<int> g_state{0};
 std::atomic<bool> g_loading{false};
+
+// ---- what the trainer changed, put back when it is unloaded (render thread) ----------------------------
+std::atomic<bool> g_tuned{false};       // a movement tuning value was set
+float g_timeScaleOriginal = -1.f;       // GameTimeSettings TimeScale before the slider first moved (-1: never)
+std::vector<std::pair<const char*, bool>> g_postOriginal; // post-processing fields as they were
 
 // ---- save / load ---------------------------------------------------------------------------------------
 std::mutex g_m;
@@ -338,21 +345,22 @@ void bhopArm() {
 }
 
 // ---- client tick -----------------------------------------------------------------------------------------
+bool g_fast = false;   // fast loads running (client thread)
+float g_simFps = 30.f; // MaxSimFps before it
+
 void clientTick(float dt) {
     const gn::GameState gs = gn::gameState();
     g_loading = gs.loading != 0;
     g_timeOfDay = gs.time_of_day;
 
     // Fast loads: let the simulation run flat out, but only while loading.
-    static bool fast = false;
-    static float simFps = 30.f;
     const bool wantFast = g_fastLoads && gs.loading;
-    if (wantFast != fast) {
-        fast = wantFast;
+    if (wantFast != g_fast) {
+        g_fast = wantFast;
         gn::Object ts = gn::settings("GameTimeSettings");
-        if (fast) ts.get("MaxSimFps", simFps); // put back exactly what it was
-        ts.set("MaxSimFps", fast ? 50000.f : simFps);
-        ts.set("TimeScale", fast ? 3000.f : g_timeScale.load());
+        if (g_fast) ts.get("MaxSimFps", g_simFps); // put back exactly what it was
+        ts.set("MaxSimFps", g_fast ? 50000.f : g_simFps);
+        ts.set("TimeScale", g_fast ? 3000.f : g_timeScale.load());
     }
     if (g_freezeTime) gn::setTimeOfDay(g_frozenTime);
 
@@ -448,6 +456,7 @@ void movementTab() {
         gn::Tuning t;
         for (uint32_t i = 0; i < gn::tuningCount(); ++i)
             if (gn::tuningAt(i, t)) gn::setTuning(t.name, t.default_value);
+        g_tuned = false;
     }
     ImGui::SameLine();
     if (ImGui::Button("Randomize")) {
@@ -459,6 +468,7 @@ void movementTab() {
             std::uniform_real_distribution<float> dist(d > 0.001f ? d * 0.5f : 0.1f, d > 0.001f ? d * 2.5f : 15.f);
             gn::setTuning(t.name, dist(rng));
         }
+        g_tuned = true;
     }
     std::string group;
     bool open = false;
@@ -473,7 +483,7 @@ void movementTab() {
         ImGui::BeginDisabled(!t.available);
         float v = t.value;
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
-        if (ImGui::InputFloat(t.name, &v, 0.f, 0.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue)) gn::setTuning(t.name, v);
+        if (ImGui::InputFloat(t.name, &v, 0.f, 0.f, "%.3f", ImGuiInputTextFlags_EnterReturnsTrue)) gn::setTuning(t.name, v), g_tuned = true;
         ImGui::EndDisabled();
         if (!t.available && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("Not verified yet: load into a level (GridNode only writes it once it has seen the default %.3f there).",
@@ -506,6 +516,7 @@ void worldTab() {
     }
     float scale = g_timeScale;
     if (ImGui::SliderFloat("Game time scale", &scale, 0.1f, 10.f)) {
+        if (g_timeScaleOriginal < 0.f && !gn::settings("GameTimeSettings").get("TimeScale", g_timeScaleOriginal)) g_timeScaleOriginal = 1.f;
         g_timeScale = scale;
         gn::runOnClient([scale] { gn::settings("GameTimeSettings").set("TimeScale", scale); });
     }
@@ -515,8 +526,11 @@ void worldTab() {
     for (const auto& e : kPost) {
         bool on = false;
         if (!pp.get(e[1], on)) continue;
+        const bool was = on;
         if (ImGui::Checkbox(e[0], &on)) {
             const char* field = e[1];
+            if (std::none_of(g_postOriginal.begin(), g_postOriginal.end(), [&](const auto& o) { return o.first == field; }))
+                g_postOriginal.push_back({field, was});
             gn::runOnClient([field, on] { gn::settings("GlobalPostProcessSettings").set(field, on); });
         }
     }
@@ -793,5 +807,31 @@ GN_MOD("mec-trainer") {
     });
     gn::onServerTick(serverTick);
     gn::log("ready: INSERT for the window; keys in its Keys tab (1 god, 2 noclip, 3 no stumble, 4 save, 5 load, F bunny hop)");
+    return true;
+}
+
+// Unloading (GridNode's Mods: Reload, or a full unload of GridNode): everything the trainer changed
+// in the game goes back. GridNode takes out its callbacks and hotkeys and waits for the ticks, so the
+// tasks posted here run before the trainer is freed.
+GN_MOD_UNLOAD() {
+    // Only what is not kept in the ini (a frame may still save the settings before the UI goes).
+    g_noclip = false, g_bhopArmed = false, g_freezeTime = false;
+    if (g_god.exchange(false)) gn::runOnServer([] { gn::godMode(false); });
+    if (gn::freecamOn()) gn::freecam(false);
+    if (g_tuned.exchange(false)) {
+        gn::Tuning t;
+        for (uint32_t i = 0; i < gn::tuningCount(); ++i)
+            if (gn::tuningAt(i, t)) gn::setTuning(t.name, t.default_value);
+    }
+    const float scale = g_timeScaleOriginal;
+    const auto post = g_postOriginal;
+    gn::runOnClient([scale, post] {
+        gn::Object ts = gn::settings("GameTimeSettings");
+        if (g_fast) ts.set("MaxSimFps", g_simFps), g_fast = false;
+        if (scale >= 0.f) ts.set("TimeScale", scale);
+        for (const auto& [field, on] : post) gn::settings("GlobalPostProcessSettings").set(field, on);
+    });
+    volumes::unload();
+    gn::log("unloading: god mode, noclip, free camera, tuning, time scale and post-processing put back");
     return true;
 }

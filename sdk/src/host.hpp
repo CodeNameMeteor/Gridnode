@@ -56,6 +56,7 @@ std::vector<ModInfo> modList();
 void modReload(const std::string& file);             // any thread: done on GridNode's thread
 void modAutoReload(const std::string& file, bool on);
 void pollMods();                                     // GridNode's thread: reloads asked for or due
+bool unloadAllMods(); // GridNode's thread, for a full unload: true when every mod was freed (the rest are inert)
 
 // A loaded module's code, to take out everything a mod registered when it is unloaded: each part of
 // GridNode drops the callbacks (and hooks) whose function is in it.
@@ -70,6 +71,20 @@ void forgetLevel(const CodeRange& r);
 void forgetMessages(const CodeRange& r);
 void forgetMovement(const CodeRange& r);
 void forgetEvents(const CodeRange& r);
+
+// Unloading GridNode (unload.cpp): everything it and the mods changed is put back, then gridnode.dll
+// is freed. GridNode's own short-lived threads count themselves so the unload waits for them.
+void unloadRequest();   // any thread: done on GridNode's thread
+bool unloadRequested();
+bool unloading();       // true once it started: start nothing new
+bool unloaded();        // its hooks are out: a detour still called (another hook over it) only passes on
+bool unloadEverything(); // GridNode's thread: true when gridnode.dll can be freed now
+struct BusyThread {     // in a thread of ours: the unload waits until it ends
+    BusyThread();
+    ~BusyThread();
+    BusyThread(const BusyThread&) = delete;
+    BusyThread& operator=(const BusyThread&) = delete;
+};
 
 // World (world.cpp): characters, transforms, teleport, components, levels.
 void worldStart();      // after the registry is built: tracks server characters
@@ -109,6 +124,7 @@ int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
 int positionSet(const float pos[3]);
 int godModeSet(int on); // server thread
+void faithRelease();     // a full unload: held keys and actions let go (client thread), god mode as it was (server thread)
 
 // Mod settings (config.cpp): mods/<mod>.ini.
 void configStart(const std::wstring& folder); // the mods folder
@@ -146,6 +162,7 @@ int freecamSet(bool on);                  // mods: the free camera on / off (nex
 int freecamGet(gn_freecam* out);
 int teleportRequest(int to, bool keepFlying); // 1 the crosshair, 2 the free camera's position (next frame)
 bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
+void release(); // a full unload: the free camera off, copies removed, moved magropes given their own transforms back
 } // namespace layouts
 
 // Events between entities (events.cpp): onEvent (vtable +0x20) wrapped in every entity class, for the
@@ -176,6 +193,7 @@ void onLevel(const std::string& level);
 void draw(bool* open);    // render thread
 void frame();             // render thread, every frame: its keys
 void onDestroyed(void* entity); // any game thread, from the entity destructor hooks (entities.cpp), before it goes
+void release();                 // a full unload: stops recording (an export in progress finishes)
 } // namespace recorder
 
 // Settings and console (settings.cpp).
@@ -218,6 +236,8 @@ void messageTap(MessageRecorder rec);               // every category to rec, nu
 bool messagesAvailable();
 void messagesClientTick(); // client thread: registrations with the core and client managers
 void messagesServerTick(); // server thread: registrations with the server manager
+void messagesRelease();    // a full unload: each manager's registrations are taken out at its next tick
+bool messagesReleased();   // all taken out
 
 // Overlay (ui.cpp).
 namespace ui {
@@ -236,6 +256,7 @@ bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);
 void forgetUi(const CodeRange& r);
 uint64_t frameCount(); // frames drawn so far
+bool release(); // a full unload: the overlay closed, Present, ResizeBuffers and the window procedure back; false if one could not be
 void* context();
 void allocators(void** alloc, void** free, void** user);
 int check(const char* mod, const char* version, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx);
@@ -254,6 +275,7 @@ int keyFromName(const std::string& name);
 // Inspector (inspector.cpp): start() tracks entities from then on; draw() on the render thread.
 namespace crash {
 void install(); // logs the first few faults (address, registers, stack code addresses)
+void uninstall();
 }
 
 namespace inspector {
