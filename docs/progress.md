@@ -313,6 +313,12 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 - **Layout editor** (paused on purpose): barriers and magropes shown, moved, saved and copied;
   magrope trigger volumes sized by their transform (`Target` drawn as a point, meaning unconfirmed).
 
+## Checked in game (2026-11-02)
+Confirmed: the landing late-load fix (auto-bhop), the Keys tab's click-to-rebind, the speed field
+(the trainer's HUD speed was jittery tick to tick: now measured over a quarter second, untested).
+The crash when quitting during a Dash (0x143164d50, a null world in the mission clean-up
+`FUN_1439e08f0`) happens only with GridNode injected; not explained yet.
+
 ## Next steps
 1. The 335 `hypothesis` functions left (all have signatures now): read them one by one, area by area
    (resources, render, levels, reflection, startup first).

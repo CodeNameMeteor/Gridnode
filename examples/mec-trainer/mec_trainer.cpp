@@ -34,6 +34,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <mutex>
 #include <random>
 #include <string>
@@ -490,10 +491,31 @@ void clientTick(float dt) {
         havePrev = false;
         return;
     }
-    if (havePrev && dt > 0.f) {
-        const float dx = p.x - g_px.load(), dz = p.z - g_pz.load();
-        const float s = std::sqrt(dx * dx + dz * dz) / dt;
-        if (s < 100.f) g_hSpeed = s; // more is a teleport (a load, a respawn, noclip's save and load)
+    // Her horizontal speed over the last quarter second of real time, not tick to tick: her position
+    // moves in physics steps that do not line up with the client ticks, so a per-tick speed jumps
+    // around (user, 2026-11-02: "really jittery").
+    {
+        struct Sample {
+            double t;
+            float x, z;
+        };
+        static std::deque<Sample> samples;
+        LARGE_INTEGER now, freq;
+        QueryPerformanceCounter(&now), QueryPerformanceFrequency(&freq);
+        const double t = double(now.QuadPart) / double(freq.QuadPart);
+        if (!havePrev) samples.clear();
+        if (!samples.empty()) {
+            const Sample& last = samples.back();
+            const float dx = p.x - last.x, dz = p.z - last.z;
+            if (t > last.t && std::sqrt(dx * dx + dz * dz) / (t - last.t) > 100.f) samples.clear(); // a teleport
+        }
+        samples.push_back({t, p.x, p.z});
+        while (samples.size() > 2 && t - samples[1].t >= 0.25) samples.pop_front();
+        const Sample& first = samples.front();
+        if (t - first.t > 0.05) {
+            const float dx = p.x - first.x, dz = p.z - first.z;
+            g_hSpeed = static_cast<float>(std::sqrt(dx * dx + dz * dz) / (t - first.t));
+        }
     }
     havePrev = true;
     g_px = p.x, g_py = p.y, g_pz = p.z;
@@ -884,7 +906,7 @@ void hud() {
         ImGui::SetNextWindowBgAlpha(0.45f);
         if (ImGui::Begin("##mec_hud", nullptr, f)) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
-            ImGui::Text("Speed %.2f m/s   State %d", g_hSpeed.load(), g_state.load());
+            ImGui::Text("Speed %.1f m/s   State %d", g_hSpeed.load(), g_state.load());
             if (g_landHud) landingHud();
             if (g_chain || g_bestChain) ImGui::Text("Bhop chain %d   best %d", g_chain.load(), g_bestChain.load());
         }
