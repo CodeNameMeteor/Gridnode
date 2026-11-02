@@ -11,5 +11,7 @@ void tab();                // the Volumes tab (render thread)
 void levelChanged();       // forget what was read (GridNode's thread)
 bool anyShown();           // for the trainer's on-screen list
 void unload();             // the trainer is being unloaded: nothing more is read
+void logAimed();           // the trigger in the middle of the screen to gridnode.log (any thread; while picking)
+void togglePick();         // picking (that trigger lit up) on / off
 
 } // namespace volumes

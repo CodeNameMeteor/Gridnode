@@ -61,7 +61,7 @@ functions:
   - name: EntityBus_deliverEvent
     va: 0x14314eac0
     signature: "void(void* bus, void* connection, void* event)"
-    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent."
+    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent. A connection to the blueprint's interface (target == bus +0x68 -> +0xb8 -> +0x28) fires the event in the parent bus (+0x10, minus 8) from source bus +0x60 (low two bits masked): how a blueprint's output leaves it."
     confidence: inferred
     sources: [ghidra]
   - name: EntityBusPeer_sendEvent

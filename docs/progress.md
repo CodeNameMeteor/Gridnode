@@ -313,6 +313,14 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
 - **Layout editor** (paused on purpose): barriers and magropes shown, moved, saved and copied;
   magrope trigger volumes sized by their transform (`Target` drawn as a point, meaning unconfirmed).
 
+## Volumes tab, 2026-11-02 (picking and trails untested in game)
+Picking (0 toggles, 9 logs the trigger in the middle of the screen, a "Largest shown" size filter),
+a per-trigger Log of every link it follows, a Teleports category with each destination drawn (Old
+Friends' fall catcher), and trails that follow events out of a blueprint (source bus +0x60) and into
+placed blueprints (FullEntityBusBridge), so story checkpoints sort as checkpoints. Patches: the
+thunk for patch_call is placed with VirtualQuery above or below the image (one run found no memory
+at fixed steps), and every way a patch can fail is logged. See research/trigger-volumes.md.
+
 ## Checked in game (2026-11-02)
 Confirmed: the landing late-load fix (auto-bhop), the Keys tab's click-to-rebind, the speed field
 (the trainer's HUD speed was jittery tick to tick: now measured over a quarter second, untested).

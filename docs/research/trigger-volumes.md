@@ -84,8 +84,8 @@ triggers are created then; recording `dash`, 2026-11-01). Entering it sends `Sta
 `PamServerNamedChallengeEntity` (call stack through the area trigger's enter code, 0x14395c8a8 /
 0x1433cad1b). The trigger is inside the Dash's blueprint: its `OnEnter` goes to an
 `InterfaceDescriptorData` (the blueprint's interface), and the link to the challenge is in the
-parent bus (the bus interface's +0x8), from the reference that placed the blueprint (+0x38), with
-the interface's event. Following that hop puts the start under "Dashes and challenges" (**confirmed**
+parent bus (the bus interface's +0x8), from the source EntityBus_deliverEvent gives it (bus +0x60,
+low two bits masked, the reference that placed the blueprint), with the interface's event. Following that hop puts the start under "Dashes and challenges" (**confirmed**
 in game, High Roller Avenue).
 
 ## Crash on quitting during a Dash
@@ -94,3 +94,27 @@ Seen twice (2026-11-01): quitting the game with a Dash open crashes the server t
 0x143164d50 (reading +0x28 of a null world, `g_physicsQueryManager`) in the mission clean-up
 `FUN_1439e08f0`, from `levelWorld_tickFrame`. Every frame is the game's; not yet tried without
 GridNode, so whether GridNode's shutdown plays a part is open.
+
+## Teleports (fall catchers)
+
+The Old Friends skip runners use is an area trigger about 120 m across under the roofs (centre
+(28.2, 30.2, 80.5)), RunOnce, whose `OnEnter` goes straight to a `PamTeleportEntityData` `Teleport`
+(2026-11-02, the trainer's per-trigger log). Falling into it puts Faith at the teleport's
+`NewPositionTransform` (TeleportEntityData +0x20; `CheckBelowGround` +0x18), in the next area. The
+Volumes tab has a Teleports category and draws a line to where each one sends her (as authored: a
+link may set the transform at run time).
+
+## Key checkpoints (story checkpoints)
+
+A trigger high above the city at (609.5, 580.5, 211.3), 24 m across, RunOnce (recording
+`checkpoint`, 2026-11-02): entering it sends `Save` through a `FullEntityBus::FullEntityBusBridge`
+to a `PamServerMissionCheckpointEntity`, and in the same tick 8 progression flags are set, the game
+is saved (`CoreWriteSaveGameDoneMessage`), `PamTelemetryStoryCheckpointMessage` is sent and the next
+mission trigger is enabled. Nothing checks earlier checkpoints: entering it overwrites the save.
+
+The trigger is inside a sublevel: its output leaves through the blueprint's interface into the
+parent bus, where a placed blueprint (a reference whose peer is a bridge) takes it on. A bridge's
+onEvent (vtable 0x141aea788 +0x20, 0x14314a5d0) fires the event in the bridged bus (bridge +8) from
+that bus's interface descriptor (bus +0x68 -> +0xb8 -> +0x28). The peer of a target is found as
+EntityBus_deliverEvent does: the bus data's sorted targets (+0xd0, +0xf8 when bus +0x3c bit 28) give
+the index into the bus's peer table (+0x40). The Volumes tab follows both ways now.

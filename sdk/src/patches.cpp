@@ -9,6 +9,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -55,17 +56,54 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n) {
     return true;
 }
 
-// 16-byte thunks in pages within 2 GB of the image.
+// 16-byte thunks in pages within 2 GB of the call sites. The free regions are found with VirtualQuery,
+// above the image first, then below it: in one run nothing could be had by asking at fixed steps
+// above the image (2026-11-02).
 std::mutex g_thunkM;
 uint8_t* g_thunkPage = nullptr; // (g_thunkM)
 size_t g_thunkUsed = 0;
-uint8_t* thunkTo(void* detour) {
+
+uint8_t* allocNear(uintptr_t site) {
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
+    const uintptr_t lo = site > 0x7ff00000 ? site - 0x7ff00000 : gran, hi = site + 0x7ff00000;
+    auto tryRegion = [&](uintptr_t from, uintptr_t to) -> uint8_t* { // a free region [from, to)
+        for (uintptr_t a = (from + gran - 1) & ~(gran - 1); a + 0x1000 <= to; a += gran)
+            if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE))
+                return static_cast<uint8_t*>(p);
+        return nullptr;
+    };
+    const uintptr_t imageEnd = mem::moduleBase() + mem::imageSize();
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (uintptr_t a = imageEnd; a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) { // above
+        const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
+        if (mbi.State == MEM_FREE)
+            if (uint8_t* p = tryRegion(std::max(b, a), std::min(e, hi))) return p;
+        if (e <= a) break;
+        a = e;
+    }
+    for (uintptr_t a = mem::moduleBase(); a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) { // below
+        const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
+        if (mbi.State == MEM_FREE) {
+            const uintptr_t from = std::max(b, lo), to = std::min(e, a);
+            if (to > from + 0x1000)
+                if (uint8_t* p = tryRegion(((to - 0x1000) & ~(gran - 1)) > from ? (to - 0x1000) & ~(gran - 1) : from, to)) return p;
+        }
+        if (b >= a || b == 0) break;
+        a = b;
+    }
+    return nullptr;
+}
+
+uint8_t* thunkTo(void* detour, uintptr_t site) {
     std::lock_guard<std::mutex> lock(g_thunkM);
-    if (!g_thunkPage || g_thunkUsed + 16 > 0x1000) {
-        g_thunkPage = nullptr;
-        const uintptr_t end = mem::moduleBase() + mem::imageSize();
-        for (uintptr_t a = (end + 0xffff) & ~uintptr_t(0xffff); a < end + 0x70000000 && !g_thunkPage; a += 0x10000)
-            g_thunkPage = static_cast<uint8_t*>(VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+    const auto reaches = [site](const uint8_t* p) {
+        const intptr_t d = reinterpret_cast<intptr_t>(p) - static_cast<intptr_t>(site + 5);
+        return d > INT32_MIN + 0x2000 && d < INT32_MAX - 0x2000;
+    };
+    if (!g_thunkPage || g_thunkUsed + 16 > 0x1000 || !reaches(g_thunkPage)) {
+        g_thunkPage = allocNear(site);
         g_thunkUsed = 0;
         if (!g_thunkPage) return nullptr;
     }
@@ -92,7 +130,11 @@ int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t
         return GN_ERR_SLOT;
     }
     Patch p{mod, at, std::vector<uint8_t>(n), std::vector<uint8_t>(bytes, bytes + n), owner, what};
-    if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n)) return GN_ERR_ARGUMENT;
+    if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n)) {
+        GN_LOG("[%s] patch at %llx: the code could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(at)),
+               static_cast<unsigned long>(GetLastError()));
+        return GN_ERR_ARGUMENT;
+    }
     GN_LOG("[%s] patched %llu bytes at %llx (%s)", mod, static_cast<unsigned long long>(n), static_cast<unsigned long long>(mem::va(at)), what.c_str());
     g_patches.push_back(std::move(p));
     return GN_OK;
@@ -138,10 +180,12 @@ int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void*
                static_cast<unsigned long long>(mem::va(target)), static_cast<unsigned long long>(expectedTargetVa));
         return GN_ERR_SLOT;
     }
-    uint8_t* thunk = thunkTo(detour);
-    if (!thunk) return GN_ERR_UNAVAILABLE;
-    const intptr_t to = reinterpret_cast<intptr_t>(thunk) - static_cast<intptr_t>(site + 5);
-    if (to < INT32_MIN || to > INT32_MAX) return GN_ERR_UNAVAILABLE;
+    uint8_t* thunk = thunkTo(detour, site);
+    const intptr_t to = thunk ? reinterpret_cast<intptr_t>(thunk) - static_cast<intptr_t>(site + 5) : 0;
+    if (!thunk || to < INT32_MIN || to > INT32_MAX) {
+        GN_LOG("[%s] patch_call at %llx: no memory within 2 GB of it for the thunk", mod, static_cast<unsigned long long>(siteVa));
+        return GN_ERR_UNAVAILABLE;
+    }
     *original = reinterpret_cast<void*>(target); // published before the call goes anywhere new
     const int32_t rel2 = static_cast<int32_t>(to);
     char what[64];

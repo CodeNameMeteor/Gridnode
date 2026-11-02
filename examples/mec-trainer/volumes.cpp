@@ -30,7 +30,7 @@ namespace volumes {
 namespace {
 
 // ---- categories ----------------------------------------------------------------------------------
-enum Cat { kChallenge, kCutscene, kCheckpoint, kMission, kCityAlert, kAi, kSound, kOther, kCats };
+enum Cat { kChallenge, kTeleport, kCutscene, kCheckpoint, kMission, kCityAlert, kAi, kSound, kOther, kCats };
 struct CatInfo {
     const char* key;
     const char* label;
@@ -39,6 +39,7 @@ struct CatInfo {
 };
 const CatInfo kCatInfo[kCats] = {
     {"challenge", "Dashes and challenges", IM_COL32(255, 150, 30, 240), true},
+    {"teleport", "Teleports (fall catchers, skips)", IM_COL32(0, 255, 230, 240), true},
     {"cutscene", "Cutscenes and scripted scenes", IM_COL32(255, 80, 200, 230), true},
     {"checkpoint", "Checkpoints and spawns", IM_COL32(80, 255, 120, 230), true},
     {"mission", "Mission logic and markers", IM_COL32(255, 200, 60, 230), false},
@@ -53,6 +54,7 @@ const CatInfo kCatInfo[kCats] = {
 int categoryOf(const std::string& s) {
     auto has = [&](const char* k) { return s.find(k) != std::string::npos; };
     if (has("challenge") || has("dash") || has("sharedcontent") || has("timetrial") || has("finishline") || has("/race")) return kChallenge;
+    if (has("teleportentitydata")) return kTeleport; // Old Friends' fall catcher under the roofs (2026-11-02)
     if (has("me_sound") || has("soundentity") || has("voiceover") || has("mixerentity") || has("/vo/") || has("music")) return kSound;
     if (has("timeline") || has("cinematic") || has("sequence") || has("cutscene") || has("animations/") || has("anim_")) return kCutscene;
     if (has("checkpoint") || has("safespawn") || has("respawn") || has("spawncontrol") || has("savegame")) return kCheckpoint;
@@ -66,6 +68,8 @@ int categoryOf(const std::string& s) {
 std::atomic<bool> g_on{false};
 std::atomic<bool> g_catOn[kCats];
 std::atomic<float> g_radius{60.f};
+std::atomic<float> g_maxSize{150.f}; // larger ones (zones) are left out
+std::atomic<bool> g_pick{false};     // the one in the middle of the screen lights up (off unless asked: user, 2026-11-02)
 std::atomic<int> g_labels{6};
 std::mutex g_searchM;
 std::string g_search; // (g_searchM) lower case; when set, it picks the triggers instead of the categories
@@ -227,7 +231,7 @@ const std::vector<Conn>& connectionsOf(void* bus) {
     const size_t at = (rd<uint32_t>(bus, 0x3c) & 0x10000000) ? 0x148 : 0x120;
     char* b = rd<char*>(x, at);
     char* e = rd<char*>(x, at + 8);
-    if (!b || e <= b || e - b > 8 * 100000) return out;
+    if (!b || e <= b || e - b > 8 * 4000000) return out; // a level's root bus holds a great many
     std::vector<void*> recs(size_t(e - b) / 8);
     if (gn::api().read(b, recs.data(), recs.size() * 8) != GN_OK) return out;
     out.reserve(recs.size());
@@ -263,18 +267,56 @@ const std::string& targetName(void* p) {
 
 struct Volume {
     std::vector<Line> lines;
-    gn::Vec3 centre;
-    float reach = 0.f; // from the centre to its farthest point
+    gn::Vec3 centre, lo, hi; // the box around its shapes
+    float reach = 0.f;       // from the centre to its farthest point
     bool classified = false;
     uint32_t cats = 0;
     int primary = kOther;
     std::string why;  // the target that decided it, short
     std::string hay;  // every target, lower case, for the search
+    bool teleports = false;
+    gn::Vec3 teleportTo; // a teleport it fires: TeleportEntityData NewPositionTransform (+0x20), as authored
 };
+
+// A target that is a placed blueprint (a prefab or sublevel reference) whose peer in this bus is a
+// FullEntityBusBridge: the bridge's onEvent (vtable +0x20, 0x14314a5d0) fires the event in the bridged
+// bus (bridge +8) from that bus's interface descriptor (bus +0x68 -> +0xb8 -> +0x28). The peer is
+// found as EntityBus_deliverEvent does: the bus data's sorted targets (+0xd0, +0xf8 when bus +0x3c
+// bit 28) give the index into the peer table (bus +0x40). Key checkpoints go this way (2026-11-02).
+bool bridgeInto(void* iface, void* target, void*& childIface, void*& source) {
+    char* bus = static_cast<char*>(iface) - 8;
+    char* x = rd<char*>(bus, 0x68);
+    if (!x || !target) return false;
+    const size_t at = (rd<uint32_t>(bus, 0x3c) & 0x10000000) ? 0xf8 : 0xd0;
+    char* b = rd<char*>(x, at);
+    char* e = rd<char*>(x, at + 8);
+    if (!b || e <= b || e - b > 8 * 4000000) return false;
+    size_t lo = 0, hi = size_t(e - b) / 8; // lower_bound over sorted pointers
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (rd<uintptr_t>(b, mid * 8) < reinterpret_cast<uintptr_t>(target)) lo = mid + 1;
+        else hi = mid;
+    }
+    if (lo >= size_t(e - b) / 8 || rd<void*>(b, lo * 8) != target) return false;
+    void* peer = rd<void*>(rd<char*>(bus, 0x40), lo * 8);
+    const gn::Type pt = peer ? gn::Type::of(peer) : gn::Type();
+    if (!pt || !std::strstr(pt.name(), "FullEntityBusBridge")) return false;
+    char* child = rd<char*>(peer, 8);
+    char* cx = child ? rd<char*>(child, 0x68) : nullptr;
+    char* desc = cx ? rd<char*>(cx, 0xb8) : nullptr;
+    source = desc ? rd<void*>(desc, 0x28) : nullptr;
+    childIface = child ? child + 8 : nullptr;
+    return childIface && source;
+}
+
+// What a blueprint's interface event comes out of in the parent bus (EntityBus_deliverEvent
+// 0x14314eac0: fireEvent(parent, *(bus +0x60) & ~3, event)); `iface` is the bus's interface (bus + 8).
+void* outerSource(void* iface) { return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(rd<void*>(iface, 0x58)) & ~uintptr_t(3)); }
 
 // Follows the trigger's events. A link to an InterfaceDescriptorData leaves the blueprint the trigger
 // is in (a prefab, a Dash's logic): it goes on in the parent bus (the bus interface's +8), from the
-// reference that placed the blueprint (+0x38), with the interface's event (Dash starts, 2026-11-01).
+// source EntityBus_deliverEvent gives it (bus +0x60, low bits masked: the interface's +0x58), with the
+// interface's event (Dash starts, 2026-11-01; the source offset from EntityBus_deliverEvent, 2026-11-02).
 void classify(void* e, Volume& v) {
     v.classified = true;
     struct Step {
@@ -304,13 +346,20 @@ void classify(void* e, Volume& v) {
             if (!c->dst || !seen.insert(c->dst).second) continue;
             const std::string& name = targetName(c->dst);
             if (name.rfind("PamAreaTriggerData", 0) == 0) continue; // enabling another trigger says nothing
+            if (void *childIface = nullptr, *src = nullptr; st.depth < 4 && bridgeInto(st.bus, c->dst, childIface, src))
+                todo.push_back({childIface, src, st.depth + 1, c->tev}); // into the placed blueprint
             if (name.rfind("InterfaceDescriptorData", 0) == 0) {
-                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), rd<void*>(st.bus, 0x38), st.depth + 1, c->tev});
+                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), outerSource(st.bus), st.depth + 1, c->tev});
                 seen.erase(c->dst); // the same interface, another event
                 continue;
             }
             const std::string low = lower(name);
             v.hay += low + "\n";
+            if (!v.teleports && low.find("teleportentitydata") != std::string::npos) {
+                // Where it sends her, unless a link overrides the transform at run time.
+                v.teleports = true;
+                v.teleportTo = rd<gn::Vec3>(c->dst, 0x20 + 0x30);
+            }
             const int cat = categoryOf(low);
             if (cat >= 0) {
                 v.cats |= 1u << cat;
@@ -329,6 +378,88 @@ void classify(void* e, Volume& v) {
 }
 
 std::unordered_map<void*, Volume> g_all; // client thread
+std::string eventText(uint32_t id) {
+    if (!id) return "-";
+    std::string n = gn::eventName(id);
+    if (!n.empty()) return n;
+    char b[16];
+    snprintf(b, sizeof(b), "%08x", id);
+    return b;
+}
+
+// One trigger in full, for working out what it does (the tab's Log button): its data, shapes and
+// every link its events follow, four steps deep, out of blueprints through their interfaces.
+void describe(void* e) {
+    const gn::Type t = gn::Type::of(e);
+    void* data = rd<void*>(e, 0x28);
+    const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
+    gn::log("volumes: trigger %p (%s), data %s %p: Delay %.2f, RunOnce %d, Enabled %d", e, t ? t.name() : "?", dt ? dt.name() : "?", data,
+            data ? rd<float>(data, 0x60) : 0.f, data ? rd<uint8_t>(data, 0x64) : 0, data ? rd<uint8_t>(data, 0x65) : 0);
+    if (auto it = g_all.find(e); it != g_all.end() && !it->second.lines.empty()) {
+        const Volume& v = it->second;
+        gn::log("  shapes: %d lines, centre (%.1f, %.1f, %.1f), %.1f m across", int(v.lines.size()), v.centre.x, v.centre.y, v.centre.z, v.reach * 2.f);
+    }
+    int lines = 0;
+    struct Step {
+        void* bus;
+        void* from;
+        uint32_t event; // 0: any
+        int depth;
+    };
+    std::vector<Step> todo{{rd<void*>(e, 0x20), data, 0, 0}};
+    std::unordered_set<void*> seen{data};
+    while (!todo.empty() && lines < 120) {
+        const Step st = todo.back();
+        todo.pop_back();
+        if (!st.bus) continue;
+        const std::vector<Conn>& all = connectionsOf(static_cast<char*>(st.bus) - 8);
+        std::vector<const Conn*> hits;
+        auto lo = std::lower_bound(all.begin(), all.end(), st.from, [](const Conn& c, void* k) { return c.src < k; });
+        for (auto it = lo; it != all.end() && it->src == st.from; ++it)
+            if (!st.event || it->ev == st.event) hits.push_back(&*it);
+        if (st.event) {
+            // Just left a blueprint: say where it went, and if the placing reference sends nothing on,
+            // any reference in that bus that sends the interface's event (as the sorting does).
+            const std::string pad(size_t(st.depth) * 2 + 4, ' ');
+            gn::log("%s(in bus %p, placed by %s %p: %d links in it, %d from it with %s)", pad.c_str(), st.bus, targetName(st.from).c_str(), st.from,
+                    int(all.size()), int(hits.size()), eventText(st.event).c_str());
+            if (hits.empty())
+                for (const Conn& c : all)
+                    if (c.ev == st.event && hits.size() < 6) {
+                        gn::log("%s(sent by %s %p)", pad.c_str(), targetName(c.src).c_str(), c.src);
+                        hits.push_back(&c);
+                    }
+        }
+        for (const Conn* c : hits) {
+            const std::string& name = targetName(c->dst);
+            const std::string pad(size_t(st.depth) * 2 + 4, ' ');
+            if (void *childIface = nullptr, *src = nullptr; st.depth < 4 && bridgeInto(st.bus, c->dst, childIface, src)) {
+                gn::log("%s%s -> into %s as %s", pad.c_str(), eventText(c->ev).c_str(), name.c_str(), eventText(c->tev).c_str());
+                ++lines;
+                todo.push_back({childIface, src, c->tev, st.depth + 1});
+                continue;
+            }
+            if (name.rfind("InterfaceDescriptorData", 0) == 0) {
+                gn::log("%s%s -> out of the blueprint as %s", pad.c_str(), eventText(c->ev).c_str(), eventText(c->tev).c_str());
+                ++lines;
+                if (st.depth < 4) todo.push_back({rd<void*>(st.bus, 0x8), outerSource(st.bus), c->tev, st.depth + 1});
+                continue;
+            }
+            gn::log("%s%s -> %s.%s", pad.c_str(), eventText(c->ev).c_str(), name.c_str(), eventText(c->tev).c_str());
+            ++lines;
+            if (name.find("TeleportEntityData") != std::string::npos) {
+                const gn::Vec3 to = rd<gn::Vec3>(c->dst, 0x20 + 0x30);
+                gn::log("%s  (to %.1f, %.1f, %.1f; CheckBelowGround %d)", pad.c_str(), to.x, to.y, to.z, rd<uint8_t>(c->dst, 0x18));
+            }
+            if (st.depth < 4 && c->dst && seen.insert(c->dst).second) todo.push_back({st.bus, c->dst, 0, st.depth + 1});
+        }
+    }
+    if (!lines) gn::log("  (no links found from its data)");
+}
+
+std::atomic<void*> g_describeWanted{nullptr};
+std::atomic<void*> g_aimed{nullptr}; // the one in the middle of the screen (render thread)
+
 std::atomic<unsigned> g_generation{0};    // bumped on a level change
 unsigned g_seenGeneration = 0;
 
@@ -336,7 +467,9 @@ unsigned g_seenGeneration = 0;
 struct Shown {
     void* e;
     std::vector<Line> lines;
-    gn::Vec3 centre;
+    gn::Vec3 centre, lo, hi;
+    bool teleports;
+    gn::Vec3 teleportTo;
     ImU32 colour;
     int primary;
     float dist;
@@ -355,11 +488,24 @@ bool wanted(const Volume& v, const std::string& search) {
 
 } // namespace
 
+void logAimed() {
+    if (!g_pick || !g_on) return gn::log("volumes: picking is off (Volumes tab, or its key)");
+    if (void* a = g_aimed.load()) g_describeWanted = a;
+    else gn::log("volumes: no trigger in the middle of the screen");
+}
+
+void togglePick() {
+    g_pick = !g_pick;
+    if (!g_pick) g_aimed = nullptr;
+    gn::log("volumes: picking %s", g_pick ? "on" : "off");
+}
+
 void loadSettings() {
     g_on = gn::config::getBool("volumes.on", false);
     for (int c = 0; c < kCats; ++c) g_catOn[c] = gn::config::getBool((std::string("volumes.") + kCatInfo[c].key).c_str(), kCatInfo[c].on);
     g_radius = gn::config::getFloat("volumes.radius", 60.f);
     g_labels = int(gn::config::getFloat("volumes.labels", 6.f));
+    g_maxSize = gn::config::getFloat("volumes.max_size", 150.f);
 }
 
 void levelChanged() { ++g_generation; }
@@ -403,6 +549,7 @@ void clientTick(float dt) {
                     for (const gn::Vec3& p : {l.a, l.b})
                         lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)}, hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
                 v.centre = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+                v.lo = lo, v.hi = hi;
                 const float dx = hi.x - lo.x, dy = hi.y - lo.y, dz = hi.z - lo.z;
                 v.reach = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
             }
@@ -413,6 +560,7 @@ void clientTick(float dt) {
 
     // Near ones, nearest first; a few new ones classified per tick (a bus can hold thousands of links).
     const float radius = g_radius;
+    const float maxSize = g_maxSize;
     std::string search;
     {
         std::lock_guard<std::mutex> lock(g_searchM);
@@ -423,8 +571,11 @@ void clientTick(float dt) {
     for (auto& [e, v] : g_all) {
         if (v.lines.empty()) continue;
         ++withShapes;
-        const float dx = v.centre.x - at.x, dy = v.centre.y - at.y, dz = v.centre.z - at.z;
-        const float d = std::max(0.f, std::sqrt(dx * dx + dy * dy + dz * dz) - v.reach);
+        if (v.reach * 2.f > maxSize) continue; // a zone around half the city hides what is in it
+        // From her to the nearest point of its box (0 inside).
+        const float dx = std::max({v.lo.x - at.x, 0.f, at.x - v.hi.x}), dy = std::max({v.lo.y - at.y, 0.f, at.y - v.hi.y}),
+                    dz = std::max({v.lo.z - at.z, 0.f, at.z - v.hi.z});
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (d <= radius) near.push_back({d, e});
     }
     std::sort(near.begin(), near.end());
@@ -435,6 +586,7 @@ void clientTick(float dt) {
         if (budget-- > 0) classify(e, v);
         else ++pending;
     }
+    if (void* d = g_describeWanted.exchange(nullptr)) describe(d);
     if (g_logWanted.exchange(false)) {
         // For sorting out a category: every target the nearest triggers reach, and their buses' blueprints.
         gn::log("volumes: the nearest triggers at (%.1f, %.1f, %.1f), shown or not", at.x, at.y, at.z);
@@ -492,11 +644,28 @@ void clientTick(float dt) {
         const Volume& v = g_all[e];
         if (!v.classified || !wanted(v, search)) continue;
         if ((lines += v.lines.size()) > 40000) break; // a busy place stays drawable
-        shown.push_back({e, v.lines, v.centre, kCatInfo[v.primary].colour, v.primary, d, v.why});
+        shown.push_back({e, v.lines, v.centre, v.lo, v.hi, v.teleports, v.teleportTo, kCatInfo[v.primary].colour, v.primary, d, v.why});
     }
     g_total = int(g_all.size()), g_withShapes = withShapes, g_pending = pending;
     std::lock_guard<std::mutex> lock(g_shownM);
     g_shown = std::move(shown);
+}
+
+// Where the view's centre line first enters the box, or -1 (slab test).
+float rayBox(const gn::ui::View& v, const gn::Vec3& lo, const gn::Vec3& hi) {
+    float tmin = 0.f, tmax = 1e9f;
+    const float o[3] = {v.position[0], v.position[1], v.position[2]}, b0[3] = {lo.x, lo.y, lo.z}, b1[3] = {hi.x, hi.y, hi.z};
+    for (int k = 0; k < 3; ++k) {
+        if (std::fabs(v.forward[k]) < 1e-6f) {
+            if (o[k] < b0[k] || o[k] > b1[k]) return -1.f;
+            continue;
+        }
+        float t0 = (b0[k] - o[k]) / v.forward[k], t1 = (b1[k] - o[k]) / v.forward[k];
+        if (t0 > t1) std::swap(t0, t1);
+        tmin = std::max(tmin, t0), tmax = std::min(tmax, t1);
+        if (tmin > tmax) return -1.f;
+    }
+    return tmin;
 }
 
 void draw() {
@@ -506,11 +675,33 @@ void draw() {
     const int labels = g_labels;
     void* hl = g_highlight.exchange(nullptr);
     std::lock_guard<std::mutex> lock(g_shownM);
+    // The one in the middle of the screen: the nearest box the view's centre line enters (from inside
+    // a box, the smallest one around the camera).
+    void* aimed = nullptr;
+    float best = 1e9f, bestSize = 1e9f;
+    if (g_pick)
+        for (const Shown& s : g_shown) {
+            const float t = rayBox(view, s.lo, s.hi);
+            if (t < 0.f) continue;
+            const float size = (s.hi.x - s.lo.x) + (s.hi.y - s.lo.y) + (s.hi.z - s.lo.z);
+            if (t < best - 0.01f || (t <= best + 0.01f && size < bestSize)) best = t, bestSize = size, aimed = s.e;
+        }
+    g_aimed = aimed;
+    if (aimed) {
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const ImVec2 c(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
+        ImGui::GetForegroundDrawList()->AddCircle(c, 5.f, IM_COL32(255, 255, 255, 200));
+    }
     int n = 0;
     for (const Shown& s : g_shown) {
-        const bool lit = s.e == hl;
+        const bool lit = s.e == hl || s.e == aimed;
         const ImU32 c = lit ? IM_COL32(255, 255, 255, 255) : s.colour;
         for (const Line& l : s.lines) gn::ui::line3d(view, l.a, l.b, c, lit ? 3.f : 1.5f);
+        if (s.teleports) { // where it sends her
+            gn::ui::line3d(view, s.centre, s.teleportTo, IM_COL32(0, 255, 230, lit ? 255 : 120), 1.f);
+            gn::ui::marker(view, s.teleportTo, IM_COL32(0, 255, 230, 255), 5.f);
+            if (lit) gn::ui::text3d(view, s.teleportTo, "teleports here", IM_COL32(0, 255, 230, 255));
+        }
         if (n++ < labels || lit) {
             char label[200];
             snprintf(label, sizeof(label), "%s%s%s  %.0f m", kCatInfo[s.primary].label, s.why.empty() ? "" : ": ", s.why.c_str(), s.dist);
@@ -538,20 +729,35 @@ void tab() {
     }
     float r = g_radius;
     if (ImGui::SliderFloat("Distance (m)", &r, 5.f, 300.f, "%.0f")) g_radius = r, gn::config::setFloat("volumes.radius", r);
+    float ms = g_maxSize;
+    if (ImGui::SliderFloat("Largest shown (m)", &ms, 5.f, 2000.f, "%.0f", ImGuiSliderFlags_Logarithmic))
+        g_maxSize = ms, gn::config::setFloat("volumes.max_size", ms);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zones bigger than this (music, city alert, streaming) are left out, so the small triggers in them show.");
     int l = g_labels;
     if (ImGui::SliderInt("Labels on the nearest", &l, 0, 30)) g_labels = l, gn::config::setFloat("volumes.labels", float(l));
     if (!g_on) return;
+    bool pick = g_pick;
+    if (ImGui::Checkbox("Pick: the one in the middle of the screen lights up", &pick)) togglePick();
+    if (g_pick) {
+        if (ImGui::Button("Log the one in the middle of the screen")) logAimed();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(white; the free camera helps aim)");
+    }
     if (ImGui::Button("Log the nearest triggers")) g_logWanted = true;
     ImGui::SameLine();
     ImGui::TextDisabled("(what each reaches, to gridnode.log)");
     ImGui::TextDisabled("%d triggers in the level, %d with shapes%s", g_total.load(), g_withShapes.load(),
                         g_pending ? " (still sorting the near ones)" : "");
-    ImGui::SeparatorText("Nearest shown (hover to light one up)");
+    ImGui::SeparatorText("Nearest shown (hover to light one up; Log: everything it does, to gridnode.log)");
     std::lock_guard<std::mutex> lock(g_shownM);
     int n = 0;
     for (const Shown& s : g_shown) {
         if (n++ >= 20) break;
         ImGui::PushStyleColor(ImGuiCol_Text, s.colour);
+        ImGui::PushID(s.e);
+        if (ImGui::SmallButton("Log")) g_describeWanted = s.e;
+        ImGui::PopID();
+        ImGui::SameLine();
         ImGui::Text("%5.0f m  %s%s%s", s.dist, kCatInfo[s.primary].label, s.why.empty() ? "" : ": ", s.why.c_str());
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered()) g_highlight = s.e;

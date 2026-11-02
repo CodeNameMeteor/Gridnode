@@ -960,6 +960,8 @@ GN_MOD("mec-trainer") {
     gn::hotkey("freecam", "Free camera on / off", '6', toggleFreecam);
     gn::hotkey("tp_crosshair", "Free camera: teleport Faith to the crosshair", '7', teleportCrosshair);
     gn::hotkey("tp_freecam", "Free camera: teleport Faith to the camera", '8', teleportFreecam);
+    gn::hotkey("vol_pick", "Volumes: picking on / off (the trigger in the middle of the screen lights up)", '0', volumes::togglePick);
+    gn::hotkey("vol_log", "Volumes: log the picked trigger", '9', volumes::logAimed);
     gn::onMovement(onMove);
     gn::onClientTick([](float dt) {
         clientTick(dt);
