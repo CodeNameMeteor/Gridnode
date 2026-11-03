@@ -14,6 +14,11 @@
 
 namespace gn::host {
 
+void logHookException(const char* where, const char* what) {
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 50) GN_LOG("%s threw%s%s%s; ignored (the game's own code went on)", where, what ? " (" : "", what ? what : "", what ? ")" : "");
+}
+
 reflect::Registry& registry() {
     static reflect::Registry r;
     return r;
@@ -22,14 +27,32 @@ reflect::Registry& registry() {
 hook::HookTable& hooks() {
     static hook::HookTable t({
         [](uint64_t slot, uint64_t& v) { return mem::read(static_cast<uintptr_t>(slot), v); },
-        [](uint64_t slot, uint64_t v) { return mem::patchPointer(static_cast<uintptr_t>(slot), static_cast<uintptr_t>(v), nullptr); },
+        [](uint64_t slot, uint64_t v) {
+            if (isDetourSlot(slot)) { // a function detour's slot: GridNode's own read-write data
+                InterlockedExchange64(reinterpret_cast<volatile LONG64*>(slot), static_cast<LONG64>(v));
+                return true;
+            }
+            return mem::patchPointer(static_cast<uintptr_t>(slot), static_cast<uintptr_t>(v), nullptr);
+        },
         [](uint64_t fn) {
             if (!mem::inImage(static_cast<uintptr_t>(fn))) return false;
             for (const mem::Section& s : mem::imageSections())
                 if (s.region.code && fn >= s.region.begin && fn < s.region.end) return true;
             return false;
         },
-        [](uint64_t fn) { return mem::foreignCode(static_cast<uintptr_t>(fn)); },
+        [](uint64_t fn) {
+            // Another module's code in the slot: taken as its hook and chained over (GridNode and MECMP in
+            // either order). Said each time, with the module, since any module passes (an overlay too).
+            if (!mem::foreignCode(static_cast<uintptr_t>(fn))) return false;
+            HMODULE m = nullptr;
+            char path[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(static_cast<uintptr_t>(fn)), &m))
+                GetModuleFileNameA(m, path, MAX_PATH);
+            GN_LOG("hooks: a slot holds %llx, in %s: taken as that module's hook, GridNode's goes on top of it",
+                   static_cast<unsigned long long>(fn), path);
+            return true;
+        },
     });
     return t;
 }
@@ -257,6 +280,8 @@ GN_NOINLINE int apiPatchBytes(const char* mod, uint64_t va, const void* expected
 GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, void* detour, void** original) {
     return patchCall(mod, site, target, detour, original, GN_CALLER);
 }
+GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
+GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
 } // namespace
 
 const gn_api* api() {
@@ -347,6 +372,12 @@ const gn_api* api() {
         a.mod_unload = apiModUnload;
         a.patch_bytes = apiPatchBytes;
         a.patch_call = apiPatchCall;
+        a.hook_function = [](const char* mod, uint64_t fn, void* detour, void** original) {
+            return hookFunction(mod ? mod : "?", fn, detour, original);
+        };
+        a.mod_export = apiModExport;
+        a.mod_import = apiModImport;
+        a.mod_version = modVersion;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

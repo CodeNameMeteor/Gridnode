@@ -18,6 +18,9 @@ DWORD WINAPI mainThread(LPVOID) {
         return 0;
     }
     const bool canFree = gn::runtime::run(g_self);
+    // Stopped either way (passive, or unloaded but kept in memory): another GridNode may start. The
+    // injector loads it as a copy under another name, as this one is still mapped as gridnode.dll.
+    if (!canFree && instance) ReleaseMutex(instance), CloseHandle(instance), instance = nullptr;
     if (canFree) {
         // A full unload put everything back: let a later GridNode (injected again) start, and free
         // this one. The loader's LoadLibrary is the only reference, so this unmaps it.

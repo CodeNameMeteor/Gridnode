@@ -18,7 +18,9 @@ struct SlotAccess {
     // Is this a function in the game image? (used when no expected value is given)
     std::function<bool(uint64_t fn)> isGameCode;
     // Optional: is this another mod's hook (code of another loaded module)? Such a slot is chained
-    // instead of refused, so GridNode and MECMP can be loaded in either order.
+    // instead of refused, so GridNode and MECMP can be loaded in either order. The expected-value
+    // check is skipped for it on purpose: what the game had is that hook's business (GridNode logs
+    // the module each time, since any loaded module passes this test).
     std::function<bool(uint64_t fn)> isForeignHook;
 };
 

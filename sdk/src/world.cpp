@@ -552,8 +552,8 @@ int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user) {
     const reflect::Type* cls = registry().find(className);
     if (!cls) return -GN_ERR_NOT_FOUND;
     int n = 0;
-    for (const auto& [p, t] : inspector::tracked()) {
-        if (!t || !registry().isKindOf(t, cls) || !inspector::alive(p, t)) continue;
+    for (const auto& [p, t] : inspector::trackedOf(cls)) {
+        if (!inspector::alive(p, t)) continue;
         fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
         ++n;
     }

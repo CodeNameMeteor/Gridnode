@@ -1,4 +1,7 @@
-// Loads the mods: every DLL in the mods folder that exports gn_mod_load, in name order.
+// Loads the mods: every DLL in the mods folder that exports gn_mod_load, dependencies first, otherwise
+// in name order. A mod may say who it is (gn_mod_info: id, version, dependencies): every DLL is opened
+// first, the order worked out (gridnode/mod_order.hpp), then each gn_mod_load called in it; a mod whose
+// hard dependency is missing or too old is not started (the Mods list says why).
 //
 // A mod that also exports gn_mod_unload can be reloaded without restarting the game (the GridNode
 // menu's Mods list, or when its file changes): it is loaded from a copy in mods\.loaded\, so its DLL
@@ -15,13 +18,18 @@
 #include <string>
 #include <vector>
 
+#include <map>
+#include <set>
+
 #include "gridnode/log.hpp"
+#include "gridnode/mod_order.hpp"
 #include "host.hpp"
 
 namespace gn::host {
 namespace {
 
 using UnloadFn = int (*)();
+using InfoFn = const gn_mod_manifest* (*)();
 
 std::string narrow(const std::wstring& w) {
     if (w.empty()) return {};
@@ -40,9 +48,24 @@ struct Mod {
     bool reloadWanted = false;
     bool unloadWanted = false; // unload and stay unloaded (the menu, or the mod itself: gn_api mod_unload)
     bool loadWanted = false;   // load again after that
+    bool inert = false;        // taken out, but a thread was still in its code: not freed (Unload tries again)
     CodeRange code;            // its image while loaded (to find a mod by an address in it)
     ULONGLONG changedAt = 0; // the file changed (auto reload waits for it to settle)
+    std::vector<modorder::Dep> deps;
 };
+
+// Functions mods offer each other (gn_api mod_export / mod_import), by "<id>.<name>".
+struct Export {
+    void* fn;
+    CodeRange owner;
+};
+std::mutex g_expM;
+std::map<std::string, Export> g_exports;            // (g_expM)
+std::map<std::string, std::set<std::string>> g_importers; // (g_expM) exporter id -> ids that imported from it
+// (g_expM) The mod whose gn_mod_load is running: not in g_mods yet (or only as its old copy), but its
+// exports and imports are made from there (the trainer's godMode was "not offered", 2026-11-03).
+std::string g_startingId;
+CodeRange g_startingCode;
 
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
@@ -71,8 +94,29 @@ CodeRange imageOf(HMODULE m) {
     return {base, base + nt->OptionalHeader.SizeOfImage};
 }
 
-// Loads one mod and calls its gn_mod_load. The result is in m.info.
-void load(Mod& m) {
+std::string str(const char* s) { return s ? s : ""; }
+
+// Who the mod says it is (gn_mod_info, optional): id (default: the file name), name, version, author,
+// description, dependencies.
+void readManifest(Mod& m) {
+    std::string stem = m.info.file;
+    if (stem.size() > 4) stem.resize(stem.size() - 4);
+    m.info.id = stem, m.info.name.clear(), m.info.version.clear(), m.info.author.clear(), m.info.description.clear();
+    m.info.depends.clear();
+    m.deps.clear();
+    auto info = m.module ? reinterpret_cast<InfoFn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_info"))) : nullptr;
+    const gn_mod_manifest* mf = info ? info() : nullptr;
+    if (!mf || mf->size < sizeof(uint32_t) + 6 * sizeof(void*)) return;
+    if (mf->id && *mf->id) m.info.id = mf->id;
+    m.info.name = str(mf->name), m.info.version = str(mf->version), m.info.author = str(mf->author), m.info.description = str(mf->description);
+    for (const char* const* d = mf->depends; d && *d; ++d) {
+        m.deps.push_back(modorder::parseDep(*d));
+        m.info.depends += (m.info.depends.empty() ? "" : ", ") + std::string(*d);
+    }
+}
+
+// Opens the mod's DLL (a copy, when reloadable) and reads its manifest; false when it is not a mod.
+bool openMod(Mod& m) {
     const std::string name = m.info.file;
     m.written = writeTime(m.path);
     m.info.reloadable = exportsUnload(m.path);
@@ -84,8 +128,13 @@ void load(Mod& m) {
         CreateDirectoryW(dir.c_str(), nullptr);
         std::wstring stem = m.path.substr(g_folder.size());
         stem.resize(stem.size() - 4); // ".dll"
-        from = dir + stem + L"." + std::to_wstring(++m.copies) + L".dll";
-        if (!CopyFileW(m.path.c_str(), from.c_str(), FALSE)) {
+        // A name still mapped (a copy kept in memory, maybe by an earlier GridNode) cannot be written: the next.
+        bool copied = false;
+        for (int tries = 0; tries < 50 && !copied; ++tries) {
+            from = dir + stem + L"." + std::to_wstring(++m.copies) + L".dll";
+            copied = CopyFileW(m.path.c_str(), from.c_str(), FALSE) != 0;
+        }
+        if (!copied) {
             GN_LOG("mods: %s could not be copied to .loaded (error %lu); loaded in place, not reloadable", name.c_str(),
                    static_cast<unsigned long>(GetLastError()));
             from = m.path;
@@ -96,33 +145,125 @@ void load(Mod& m) {
     if (!m.module) {
         m.info.loaded = false, m.info.result = -1;
         GN_LOG("mods: %s could not be loaded (error %lu)", name.c_str(), static_cast<unsigned long>(GetLastError()));
-        return;
+        return false;
     }
-    auto entry = reinterpret_cast<gn_mod_load_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load")));
-    if (!entry) {
+    if (!GetProcAddress(m.module, "gn_mod_load")) {
         GN_LOG("mods: %s does not export gn_mod_load; skipped", name.c_str());
         FreeLibrary(m.module);
         m.module = nullptr;
         m.info.loaded = false, m.info.result = -1;
-        return;
+        return false;
     }
+    m.code = imageOf(m.module);
+    readManifest(m);
+    return true;
+}
+
+// A mod opened but not started (its dependencies are not there): closed again.
+void closeMod(Mod& m, const std::string& why) {
+    m.info.loaded = false, m.info.result = -1, m.info.status = why;
+    GN_LOG("mods: %s not loaded: %s", m.info.file.c_str(), why.c_str());
+    if (m.module) FreeLibrary(m.module);
+    m.module = nullptr;
+    m.code = CodeRange{};
+}
+
+// Calls its gn_mod_load. The result is in m.info.
+void start(Mod& m) {
+    const std::string name = m.info.file;
+    auto entry = reinterpret_cast<gn_mod_load_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load")));
     if (!m.info.reloadable) {
         // Never unloaded: their hooks and callbacks point into them.
         HMODULE pinned = nullptr;
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                            reinterpret_cast<LPCWSTR>(reinterpret_cast<void*>(entry)), &pinned);
     }
-    m.code = imageOf(m.module);
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        g_startingId = m.info.id, g_startingCode = m.code;
+    }
     const int r = entry(api());
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        g_startingId.clear(), g_startingCode = CodeRange{};
+    }
     m.info.loaded = r == GN_OK, m.info.result = r;
-    if (r == GN_OK) GN_LOG("mods: %s loaded%s", name.c_str(), m.info.reloadable ? " (reloadable)" : "");
+    const std::string who = m.info.version.empty() ? m.info.id : m.info.id + " " + m.info.version;
+    if (r == GN_OK) GN_LOG("mods: %s loaded (%s)%s", name.c_str(), who.c_str(), m.info.reloadable ? ", reloadable" : "");
     else GN_LOG("mods: %s returned %d from gn_mod_load", name.c_str(), r);
 }
 
+// The loaded mods other than `self` (g_modsM held): for a reload's dependency check.
+std::string missingDep(const Mod& m) {
+    for (const modorder::Dep& d : m.deps) {
+        if (d.soft) continue;
+        const Mod* found = nullptr;
+        for (const Mod& o : g_mods)
+            if (o.info.loaded && o.info.id == d.id && o.info.file != m.info.file) found = &o;
+        if (!found) return "needs " + d.id + ", which is not loaded";
+        if (!d.minVersion.empty() && modorder::compareVersions(found->info.version, d.minVersion) < 0)
+            return "needs " + d.id + " " + d.minVersion + " or newer (it is " + found->info.version + ")";
+    }
+    return {};
+}
+
+// Opens and starts one mod on its own (a reload, the menu's Load): its dependencies must be loaded.
+void load(Mod& m) {
+    if (!openMod(m)) return;
+    std::string why;
+    {
+        std::lock_guard<std::mutex> lock(g_modsM);
+        why = missingDep(m);
+    }
+    if (!why.empty()) return closeMod(m, why);
+    start(m);
+}
+
+// The loaded mods that need m (a hard dependency, or a function imported from it); g_modsM not held.
+std::string dependentsOf(const Mod& m) {
+    std::set<std::string> ids;
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (auto it = g_importers.find(m.info.id); it != g_importers.end()) ids = it->second;
+    }
+    std::string out;
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& o : g_mods) {
+        if (!o.module || o.info.file == m.info.file) continue;
+        bool needs = ids.count(o.info.id) != 0;
+        for (const modorder::Dep& d : o.deps) needs = needs || (!d.soft && d.id == m.info.id);
+        if (needs) out += (out.empty() ? "" : ", ") + o.info.id;
+    }
+    return out;
+}
+
+void forgetExports(const CodeRange& r, const std::string& id) {
+    std::lock_guard<std::mutex> lock(g_expM);
+    for (auto it = g_exports.begin(); it != g_exports.end();) it = r.has(it->second.fn) ? g_exports.erase(it) : std::next(it);
+    g_importers.erase(id);
+    for (auto& [exporter, importers] : g_importers) importers.erase(id);
+}
+
 // Takes the mod out and frees it; false (and it stays loaded, inert or not) when that is not safe.
-bool unload(Mod& m) {
+bool unload(Mod& m, bool all = false) {
     const std::string name = m.info.file;
     if (!m.module) return true;
+    if (m.inert) { // everything of it is out already: only the free is left
+        if (!waitCodeQuiet(m.module, ("mods: " + name).c_str(), 1000)) return false;
+        FreeLibrary(m.module);
+        m.module = nullptr, m.code = CodeRange{}, m.inert = false;
+        m.info.status = "unloaded (Load brings it back)";
+        GN_LOG("mods: %s freed", name.c_str());
+        return true;
+    }
+    if (!all) {
+        // Mods that call into it would be left calling freed code.
+        if (const std::string deps = dependentsOf(m); !deps.empty()) {
+            m.info.status = "kept loaded: " + deps + " need" + (deps.find(',') == std::string::npos ? "s" : "") + " it (unload them first)";
+            GN_LOG("mods: %s %s", name.c_str(), m.info.status.c_str());
+            return false;
+        }
+    }
     if (auto stop = reinterpret_cast<UnloadFn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_unload")))) {
         int r = 0;
         try {
@@ -148,6 +289,7 @@ bool unload(Mod& m) {
     forgetEvents(code);
     hotkeys::forget(code);
     ui::forgetUi(code);
+    forgetExports(code, m.info.id);
     configFlush(true);
     if (!refused.empty()) {
         // One of its hooks has another mod's hook on top: freeing it would send that hook into freed
@@ -167,6 +309,16 @@ bool unload(Mod& m) {
         // No frames at all for a second: the overlay is off or the window is minimised.
         const bool drawn = ui::frameCount() >= frames + 3 || (ui::frameCount() == frames && GetTickCount64() - start > 1000);
         if (ticks && drawn && GetTickCount64() - start >= 300) break;
+    }
+    // A game thread may still be in a detour of it (its original running a long time), or in a thread
+    // the mod started: only freed once no thread runs there or returns there.
+    if (!waitCodeQuiet(m.module, ("mods: " + name).c_str(), 3000)) {
+        m.inert = true;
+        m.info.loaded = false;
+        m.info.status = "taken out, but a thread was still in its code: kept in memory (Unload tries again)";
+        GN_LOG("mods: %s %s", name.c_str(), m.info.status.c_str());
+        forgetExports(code, m.info.id);
+        return false;
     }
     FreeLibrary(m.module);
     m.module = nullptr;
@@ -290,10 +442,11 @@ bool unloadAllMods() {
         mods = g_mods;
     }
     bool allFreed = true;
-    for (Mod& m : mods) {
+    for (auto it = mods.rbegin(); it != mods.rend(); ++it) { // in load order: dependents first, going back
+        Mod& m = *it;
         if (!m.module) continue;
         if (m.info.reloadable) {
-            if (!unload(m)) allFreed = false;
+            if (!unload(m, true)) allFreed = false;
             continue;
         }
         // Pinned (no gn_mod_unload): it cannot be freed or asked to stop. Everything it registered goes,
@@ -309,6 +462,7 @@ bool unloadAllMods() {
         forgetEvents(code);
         hotkeys::forget(code);
         ui::forgetUi(code);
+        forgetExports(code, m.info.id);
         m.info.loaded = false;
         m.info.status = "taken out (no gn_mod_unload: it stays in memory)";
         GN_LOG("mods: %s has no gn_mod_unload: its callbacks and hooks are out, but it stays in memory", m.info.file.c_str());
@@ -318,6 +472,61 @@ bool unloadAllMods() {
     std::lock_guard<std::mutex> lock(g_modsM);
     g_mods = std::move(mods);
     return allFreed;
+}
+
+namespace {
+// The mod whose code holds `caller`: the one being started, or a loaded one.
+bool modAtAddress(const void* caller, std::string& id, CodeRange& code) {
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (!g_startingId.empty() && g_startingCode.has(caller)) {
+            id = g_startingId, code = g_startingCode;
+            return true;
+        }
+    }
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& m : g_mods)
+        if (m.module && m.code.has(caller)) {
+            id = m.info.id, code = m.code;
+            return true;
+        }
+    return false;
+}
+} // namespace
+
+int modExport(const void* caller, const char* name, void* fn) {
+    if (!name || !*name || !fn) return GN_ERR_ARGUMENT;
+    std::string id;
+    CodeRange code;
+    modAtAddress(caller, id, code);
+    if (id.empty()) return GN_ERR_NOT_FOUND;
+    if (!code.has(fn)) return GN_ERR_ARGUMENT; // only its own code: taken out when it is unloaded
+    std::lock_guard<std::mutex> lock(g_expM);
+    g_exports[id + "." + name] = {fn, code};
+    return GN_OK;
+}
+
+void* modImport(const void* caller, const char* modId, const char* name) {
+    if (!modId || !name) return nullptr;
+    std::string me;
+    CodeRange unused;
+    modAtAddress(caller, me, unused);
+    std::lock_guard<std::mutex> lock(g_expM);
+    auto it = g_exports.find(std::string(modId) + "." + name);
+    if (it == g_exports.end()) return nullptr;
+    if (!me.empty() && me != modId) g_importers[modId].insert(me); // it now needs that mod loaded
+    return it->second.fn;
+}
+
+int modVersion(const char* modId, char* out, size_t size) {
+    if (!modId) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& m : g_mods)
+        if (m.info.loaded && m.info.id == modId) {
+            if (out && size) snprintf(out, size, "%s", m.info.version.c_str());
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
 }
 
 void loadMods(const std::wstring& folder) {
@@ -343,16 +552,31 @@ void loadMods(const std::wstring& folder) {
     FindClose(h);
     std::sort(files.begin(), files.end());
 
-    int loaded = 0;
+    // Every DLL opened (manifests read), then started dependencies first.
+    std::vector<Mod> opened;
     for (const std::wstring& f : files) {
         Mod m;
         m.info.file = narrow(f);
         m.path = g_folder + f;
-        load(m);
-        if (m.info.loaded) ++loaded;
-        if (!m.module) continue; // not a mod
+        if (openMod(m)) opened.push_back(std::move(m));
+    }
+    std::vector<modorder::Entry> entries;
+    for (const Mod& m : opened) entries.push_back({m.info.id, m.info.version, m.deps});
+    const modorder::Plan plan = modorder::plan(entries);
+    int loaded = 0;
+    std::vector<bool> placed(opened.size(), false);
+    for (size_t i : plan.order) {
+        placed[i] = true;
+        start(opened[i]);
+        if (opened[i].info.loaded) ++loaded;
         std::lock_guard<std::mutex> lock(g_modsM);
-        g_mods.push_back(std::move(m));
+        g_mods.push_back(opened[i]); // in load order (a full unload goes back through it)
+    }
+    for (size_t i = 0; i < opened.size(); ++i) {
+        if (placed[i]) continue;
+        closeMod(opened[i], plan.problem[i]);
+        std::lock_guard<std::mutex> lock(g_modsM);
+        g_mods.push_back(opened[i]);
     }
     GN_LOG("mods: %d of %llu loaded", loaded, static_cast<unsigned long long>(files.size()));
 }

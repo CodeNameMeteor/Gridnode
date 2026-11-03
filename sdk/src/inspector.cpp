@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <set>
@@ -47,8 +48,33 @@ std::vector<Tracked> g_entities; // guarded by g_m; appended by game threads, pr
 std::unordered_map<uintptr_t, size_t> g_index; // guarded by g_m: pointer -> its entry (memory is reused)
 constexpr size_t kMaxTracked = 400000;
 size_t g_pruneAt = 0;   // pruning thread
-std::unordered_map<uintptr_t, uint8_t> g_dead; // guarded by g_m: addresses of entities found dead (until reused)
+std::unordered_map<uintptr_t, uint64_t> g_dead; // guarded by g_m: addresses of entities found dead (until reused) -> when marked
+std::deque<std::pair<uintptr_t, uint64_t>> g_deadOrder; // guarded by g_m: oldest first (entries already erased are skipped)
+uint64_t g_deadSeq = 0;                                  // guarded by g_m
 constexpr size_t kMaxDead = 200000;
+
+// (g_m) Marks an address dead. When the set is full the oldest quarter goes, never all of it: a freed
+// entity whose memory still holds its vtable would pass the vtable test again (and a write through
+// the layout editor or a mod would land in freed memory). The oldest are the likeliest to have been
+// reused, which clears their mark anyway (review, 2026-11-03).
+void markDeadLocked(uintptr_t p) {
+    if (g_dead.size() >= kMaxDead) {
+        size_t evict = kMaxDead / 4;
+        while (evict && !g_deadOrder.empty()) {
+            const auto [a, seq] = g_deadOrder.front();
+            g_deadOrder.pop_front();
+            if (auto it = g_dead.find(a); it != g_dead.end() && it->second == seq) g_dead.erase(it), --evict;
+        }
+    }
+    g_dead[p] = ++g_deadSeq;
+    g_deadOrder.push_back({p, g_deadSeq});
+    if (g_deadOrder.size() > 4 * kMaxDead) { // entries erased by reuse pile up: keep the live ones
+        std::deque<std::pair<uintptr_t, uint64_t>> keep;
+        for (const auto& e : g_deadOrder)
+            if (auto it = g_dead.find(e.first); it != g_dead.end() && it->second == e.second) keep.push_back(e);
+        g_deadOrder.swap(keep);
+    }
+}
 bool g_started = false; // GridNode's thread, before the UI exists
 size_t g_dropped = 0;   // guarded by g_m
 
@@ -59,14 +85,14 @@ void onEntity(void* entity, void*, void*) {
     const Type* t = typeOf(p);
     if (!t) return;
     std::lock_guard<std::mutex> lock(g_m);
-    if (g_entities.size() >= kMaxTracked) {
-        ++g_dropped;
-        return;
-    }
-    g_dead.erase(p); // a new entity at that address
+    g_dead.erase(p); // a new entity at that address (before the cap: else it would stay hidden)
     const auto it = g_index.find(p);
     if (it != g_index.end()) { // the address was reused by a new entity
         g_entities[it->second].type = t;
+        return;
+    }
+    if (g_entities.size() >= kMaxTracked) {
+        ++g_dropped;
         return;
     }
     g_index.emplace(p, g_entities.size());
@@ -97,8 +123,7 @@ void prune() {
         // Still the same entry (not re-created at the same address since we looked)?
         if (i >= g_entities.size() || g_entities[i].ptr != it->second.ptr || g_entities[i].type != it->second.type) continue;
         g_index.erase(g_entities[i].ptr);
-        if (g_dead.size() >= kMaxDead) g_dead.clear(); // bounded; the vtable test still applies
-        g_dead[g_entities[i].ptr] = 1;
+        markDeadLocked(g_entities[i].ptr);
         if (i + 1 != g_entities.size()) {
             g_entities[i] = g_entities.back();
             g_index[g_entities[i].ptr] = i;
@@ -1118,6 +1143,15 @@ std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() {
     return out;
 }
 
+std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base) {
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
+    if (!base) return out;
+    std::lock_guard<std::mutex> lock(g_m);
+    for (const Tracked& t : g_entities)
+        if (t.type && registry().isKindOf(t.type, base)) out.push_back({t.ptr, t.type});
+    return out;
+}
+
 bool alive(uintptr_t p, const reflect::Type* type) {
     if (!p || !type) return false;
     {
@@ -1130,8 +1164,7 @@ bool alive(uintptr_t p, const reflect::Type* type) {
 void markDead(uintptr_t p) {
     if (!p) return;
     std::lock_guard<std::mutex> lock(g_m);
-    if (g_dead.size() >= kMaxDead) g_dead.clear();
-    g_dead[p] = 1; // its tracked entry is dropped by the pruning thread once the memory changes
+    markDeadLocked(p); // its tracked entry is dropped by the pruning thread once the memory changes
 }
 
 void start() {

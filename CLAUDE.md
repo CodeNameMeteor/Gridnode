@@ -38,9 +38,9 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
-| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw` |
+| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw`, `detour-demo` |
 | `bindings/rust/gridnode` | Rust bindings, generated from `api.h` |
-| `tests/` | host-side tests (reflect walker, runtime core, engine header, types, Rust harness) |
+| `tests/` | host-side tests (reflect walker, runtime core, x64 decoder, engine header, types, Rust harness) |
 | `docs/` | MkDocs site; `research/` holds engine findings |
 
 **Do not read or grep:** `db/reflected/`, `third_party/`, `build*/`, generated `engine.hpp`, dumps,
@@ -143,5 +143,7 @@ The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\record
   and before the thing to capture.
 - gridnode.dll is not pinned: a full unload (`sdk/src/unload.cpp`) frees it. Anything that gives the
   game a pointer into GridNode (a hook, a vtable copy, a listener, a transform) needs a way back in it.
+- Function detours (`patches.cpp`, `gn::x64`) keep their slot in GridNode's memory: the hook table writes
+  it through `isDetourSlot`, and the image dump skips it.
 - Spawners are found by their data in a bus; the game's echo must stay last in the spawner lists
   (see `docs/research/replay-ghosts.md`).

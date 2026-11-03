@@ -34,6 +34,8 @@ add_library(gn_reflect STATIC
   sdk/src/hook_table.cpp
   sdk/src/dispatch.cpp
   sdk/src/config_core.cpp
+  sdk/src/x64.cpp
+  sdk/src/mod_order.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -46,6 +48,9 @@ if(GRIDNODE_BUILD_TESTS)
   add_executable(runtime_core_test tests/runtime_core_test.cpp)
   target_link_libraries(runtime_core_test PRIVATE gn_reflect)
   add_test(NAME runtime_core COMMAND runtime_core_test)
+  add_executable(x64_test tests/x64_test.cpp)
+  target_link_libraries(x64_test PRIVATE gn_reflect)
+  add_test(NAME x64 COMMAND x64_test)
   find_package(Threads REQUIRED)
   target_link_libraries(runtime_core_test PRIVATE Threads::Threads)
 endif()
@@ -150,6 +155,7 @@ add_library(gridnode SHARED
   sdk/src/mods.cpp
   sdk/src/unload.cpp
   sdk/src/patches.cpp
+  sdk/src/quiet.cpp
   sdk/src/world.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
@@ -171,6 +177,10 @@ set_source_files_properties(third_party/imgui/backends/imgui_impl_dx11.cpp third
                             PROPERTIES COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/W0,-w>")
 target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src third_party/imgui)
 target_link_libraries(gridnode PRIVATE gn_reflect gn_engine gn_imgui d3d11 dxgi d3dcompiler gdi32 dwmapi)
+if(NOT MSVC)
+  # cmpxchg16b for a detour's entry jump (patches.cpp); every CPU 64-bit Windows 8.1+ runs on has it.
+  set_source_files_properties(sdk/src/patches.cpp PROPERTIES COMPILE_OPTIONS -mcx16)
+endif()
 set_target_properties(gridnode PROPERTIES OUTPUT_NAME "gridnode" PREFIX "")
 target_compile_definitions(gridnode PRIVATE GRIDNODE_PLAYER_BUILD=$<BOOL:${GRIDNODE_PLAYER_BUILD}>)
 
@@ -209,6 +219,11 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_link_libraries(world_draw PRIVATE gn_imgui)
   set_target_properties(world_draw PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(detour_demo SHARED examples/detour-demo/detour_demo.cpp)
+  target_include_directories(detour_demo PRIVATE sdk/include)
+  target_link_libraries(detour_demo PRIVATE gn_imgui gn_engine)
+  set_target_properties(detour_demo PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
   add_library(trainer SHARED examples/trainer/trainer.cpp)
   target_include_directories(trainer PRIVATE sdk/include)
   target_link_libraries(trainer PRIVATE gn_imgui)

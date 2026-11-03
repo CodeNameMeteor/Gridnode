@@ -63,7 +63,10 @@ def decode(p: bytes):
         raw = p[13:13 + size]
         if enc:
             raw = zlib.decompress(raw)
-        return list(struct.unpack(f"<{n}{_ARRAY[t]}", raw[: n * struct.calcsize(_ARRAY[t])]))
+        need = n * struct.calcsize(_ARRAY[t])
+        if need > len(raw):  # counts come from the file: never trusted past the data there
+            raise ValueError(f"array property says {n} items, holds {len(raw)} bytes")
+        return list(struct.unpack(f"<{n}{_ARRAY[t]}", raw[:need]))
     raise ValueError(f"property type {t!r}")
 
 
@@ -101,21 +104,30 @@ def read(path: str) -> Fbx:
         raise ValueError(f"{path}: property type {t!r} at {o}")
 
     def node(o: int):
+        if o + hs > len(d):
+            raise ValueError(f"{path}: a node header past the end of the file at {o}")
         end, count, _ = struct.unpack_from("<QQQ" if wide else "<III", d, o)
         nl = d[o + hs - 1]
         p = o + hs
         if end == 0:
             return None, p + nl
+        # Offsets and counts come from the file: a node ends after it starts and inside the file.
+        if end <= o or end > len(d) or p + nl > end or count > end - p:
+            raise ValueError(f"{path}: a broken node at {o} (end {end}, {count} properties)")
         name = d[p:p + nl].decode()
         p += nl
         props = []
         for _ in range(count):
             n = proplen(p)
+            if p + n > end:
+                raise ValueError(f"{path}: a property past its node's end at {p}")
             props.append(d[p:p + n])
             p += n
         kids, term = [], False
         while p < end:
             k, p2 = node(p)
+            if p2 <= p:
+                raise ValueError(f"{path}: a node that does not advance at {p}")
             p = p2
             if k is None:
                 term = True

@@ -750,3 +750,30 @@ functions:
     note: "Defines the ANT type WorldRayCastQueryFilterAsset (fields: AsyncFromInput, ImmediateFromInput, TraceDistance, Fatness, Offset, OffsetYaw, OffsetPitch, CollisionLayer, JointTraceStart, RayCastBus, WantsHit, AimAtTargetAnimatable, ...)."
     confidence: inferred
     sources: [ghidra]
+
+# The landing prediction's hook points (GridNode's landing.cpp and the Recorder's movement watch).
+hooks:
+  - name: PositionPrediction_update
+    kind: vtable-slot
+    vtable: 0x141aabb98
+    offset: 0x20
+    original: 0x142f28e20
+    signature: "void(void* asset, void* context, void*, void*)"
+    note: "PositionPredictionProcessorAsset_update in the asset's vtable: wrapped to know which writes are the prediction's."
+    confidence: inferred
+  - name: AntFloatWriter_write
+    kind: vtable-slot
+    vtable: 0x141a434d0
+    offset: 0x8
+    original: 0x142da3e80
+    signature: "void(void* writer, void* state, f32 value)"
+    note: "The float output writer of an ANT binding ((binding + 0x20)->vtable +8). Seen writing the prediction's HitPositionY and TicksToHit (2026-10-30); slot read from the game image 2026-11-03."
+    confidence: inferred
+  - name: AntBoolWriter_write
+    kind: vtable-slot
+    vtable: 0x141a435c8
+    offset: 0x8
+    original: 0x142c3ea40
+    signature: "void(void* writer, void* state, u64 value)"
+    note: "The bool output writer of an ANT binding (IsSoftLanding). Slot read from the game image 2026-11-03."
+    confidence: inferred

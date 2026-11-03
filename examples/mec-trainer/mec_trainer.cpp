@@ -932,7 +932,14 @@ void hud() {
 
 } // namespace
 
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.3.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+
+namespace {
+int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))
+} // namespace
+
 GN_MOD("mec-trainer") {
+    gn::exportFn("godMode", &trainerGodMode);
     if (!gn::ui::onDraw([](bool menuOpen) {
             volumes::draw();
             hud();

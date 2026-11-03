@@ -106,6 +106,33 @@ inline bool patchBytes(uint64_t va, const void* expected, const void* bytes, siz
     return api().patch_bytes(modName(), va, expected, bytes, size) == GN_OK;
 }
 
+// Function detours (API 16): calls to the game's function at fnVa go to detour, with the same
+// arguments; call the game's function through *original (before, after, or not at all). Taken out
+// when the mod is unloaded. The detour runs on the caller's thread.
+template <class Fn> bool hookFunction(uint64_t fnVa, Fn detour, Fn* original) {
+    static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
+    return api().hook_function(modName(), fnVa, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(original)) == GN_OK;
+}
+
+// ---- other mods (API 16) ----------------------------------------------------------------------
+// A mod says who it is with GN_MOD_INFO / GN_MOD_INFO_DEPS (below; gn_mod_info in gridnode/api.h).
+// exportFn offers a function of this mod as "<its id>.<name>"; importFn gets another mod's (null when
+// it is not loaded or does not offer it); modVersion: whether a mod is loaded, and its version.
+template <class Fn> bool exportFn(const char* name, Fn fn) {
+    static_assert(std::is_pointer<Fn>::value, "fn must be a function pointer");
+    return api().mod_export(name, reinterpret_cast<void*>(fn)) == GN_OK;
+}
+template <class Fn> Fn importFn(const char* modId, const char* name) {
+    static_assert(std::is_pointer<Fn>::value, "Fn must be a function pointer type");
+    return reinterpret_cast<Fn>(api().mod_import(modId, name));
+}
+inline bool modVersion(const char* modId, std::string* version = nullptr) {
+    char b[64] = {};
+    if (api().mod_version(modId, b, sizeof(b)) != GN_OK) return false;
+    if (version) *version = b;
+    return true;
+}
+
 // ---- reflection ------------------------------------------------------------------------------
 class Type {
 public:
@@ -482,6 +509,22 @@ private:
 // DLL changes). The body runs before GridNode takes out the mod's callbacks and hooks and frees it:
 // stop the mod's own threads and undo what GridNode cannot see (memory it wrote, objects it made).
 // Return true to go ahead, false to stay loaded. Mods without it are never unloaded.
+// The mod's manifest (API 16): who it is and what it needs, read before gn_mod_load. Dependencies:
+// "id", "id>=1.2" (that version or newer), "?id" (optional: loaded after it when it is there).
+//     GN_MOD_INFO("my-mod", "My mod", "1.0.0", "me", "What it does");
+//     GN_MOD_INFO_DEPS("my-mod", "My mod", "1.0.0", "me", "What it does", "mec-trainer>=1.3", "?other");
+#define GN_MOD_INFO_DEPS(ID, NAME, VERSION, AUTHOR, DESCRIPTION, ...)                                         \
+    extern "C" GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info() {                                           \
+        static const char* const deps[] = {__VA_ARGS__, nullptr};                                             \
+        static const gn_mod_manifest m{sizeof(gn_mod_manifest), ID, NAME, VERSION, AUTHOR, DESCRIPTION, deps}; \
+        return &m;                                                                                            \
+    }
+#define GN_MOD_INFO(ID, NAME, VERSION, AUTHOR, DESCRIPTION)                                                   \
+    extern "C" GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info() {                                           \
+        static const gn_mod_manifest m{sizeof(gn_mod_manifest), ID, NAME, VERSION, AUTHOR, DESCRIPTION, nullptr}; \
+        return &m;                                                                                            \
+    }
+
 #define GN_MOD_UNLOAD()                                                                           \
     static bool gn_mod_unload_main();                                                             \
     extern "C" GN_MOD_EXPORT int gn_mod_unload() { return gn_mod_unload_main() ? 0 : 1; }          \

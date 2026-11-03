@@ -4,6 +4,8 @@
 // overlay closes and the game's Present and window procedure go back. Then gridnode.dll is freed
 // (dllmain.cpp). Anything that cannot be put back (another tool hooked over GridNode, a mod without
 // gn_mod_unload) keeps it loaded but inert: nothing of it runs any more.
+// Before the free, every other thread is checked for being in GridNode's code or about to return
+// into it (quiet.cpp); if one still is after a few seconds, GridNode stays in memory, inert.
 //
 // Not put back: props and barriers moved by a saved layout (until the level reloads), and settings
 // changed through the console.
@@ -88,7 +90,14 @@ bool unloadEverything() {
         GN_LOG("unload: %d of GridNode's threads still running (an export?); GridNode stays loaded", g_busy.load());
         canFree = false;
     }
-    Sleep(500);
+    // A game thread may still be in one of GridNode's hooks (a tick wrapping a level load runs for
+    // seconds), or returning into one: gridnode.dll is freed only once none is.
+    if (canFree) {
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(reinterpret_cast<void*>(&unloadEverything)), &self);
+        if (!self || !waitCodeQuiet(self, "unload: gridnode.dll", 5000)) canFree = false;
+    }
     configFlush(true);
     GN_LOG(canFree ? "unload: done; gridnode.dll is being freed" : "unload: done; GridNode stays in memory, inactive (see above)");
     return canFree;

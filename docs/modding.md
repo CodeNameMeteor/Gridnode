@@ -1,8 +1,8 @@
 # Writing a mod
 
 A GridNode mod is a DLL in the `mods/` folder next to `gridnode.dll`. GridNode loads every DLL
-there (in name order) once the game has started, the build check has passed and the engine's
-types are known, and calls its `gn_mod_load`.
+there once the game has started, the build check has passed and the engine's types are known, and
+calls its `gn_mod_load`: dependencies first (below), otherwise in file name order.
 
 ```cpp
 #include <gridnode/engine.hpp>   // addresses and offsets from db/annotations (optional)
@@ -20,6 +20,29 @@ in `build/mods/`), or in your own project: add `sdk/include` and the generated
 `build/generated` to the include path. No library to link: the API is a table of function
 pointers handed to `gn_mod_load` (`gridnode/api.h`), so a mod can be built with MSVC, MinGW or
 clang, independently of how `gridnode.dll` was built.
+
+## Manifest and other mods (API 16)
+
+A mod can say who it is and what it needs. GridNode reads it before calling `gn_mod_load`:
+
+```cpp
+GN_MOD_INFO("my-mod", "My mod", "1.0.0", "me", "What it does");
+// or, with dependencies: "id" (needed), "id>=1.2" (that version or newer), "?id" (optional)
+GN_MOD_INFO_DEPS("my-mod", "My mod", "1.0.0", "me", "What it does", "mec-trainer>=1.3", "?other-mod");
+```
+
+Without one, the id is the file name without `.dll`. Every DLL is opened first, then the mods are
+started dependencies first. A mod whose needed dependency is missing, too old or failed is not
+started; the Mods list says why (hover a mod for its id, author, description and dependencies). An
+optional dependency only orders the two: the mod loads after it when it is there.
+
+Mods can call each other. `gn::exportFn("name", &fn)` offers one of the mod's functions as
+`<its id>.name`; another mod gets it with `gn::importFn<Fn>("its-id", "name")` (null when that mod is
+not loaded or does not offer it), from `gn_mod_load` or later, after declaring the dependency so the
+other mod is loaded first. `gn::modVersion("its-id", &version)` says whether a mod is loaded. A mod
+that another one needs, or imported from, cannot be unloaded on its own (the Mods list says which mod
+needs it); a full unload goes through them in reverse order. Rust: `export_fn`, `import_fn`,
+`mod_version`. See `examples/detour-demo`.
 
 ## Rust
 
@@ -64,6 +87,10 @@ for itself (API 15): `gn::unloadSelf()` (Rust `unload_self()`) unloads the mod t
 current callback has returned, for an "Unload" button in its own window; false for a mod without
 `GN_MOD_UNLOAD`. `gn::unloadGridNode()` (Rust `unload_gridnode()`) unloads everything, as below.
 
+Before the mod's DLL is freed, GridNode pauses the game's other threads and looks for one still in
+its code (a detour whose original runs for a long time, or a thread the mod started): if one stays
+for a few seconds, the mod is taken out but kept in memory, and Unload tries again.
+
 ## Unloading GridNode completely
 
 The GridNode menu's **Unload** section unloads every mod and GridNode itself, and puts the game back
@@ -86,7 +113,8 @@ game). In order, on GridNode's thread:
 If something cannot be put back (another overlay or tool hooked over GridNode), GridNode stays in
 memory but inactive: nothing of it runs. The log says what kept it. Not put back: props and barriers
 moved by a saved layout (until the level reloads) and settings changed through the console. To load
-GridNode again, run `gridnode_inject.exe` or restart the game.
+GridNode again, run `gridnode_inject.exe` or restart the game. When the earlier GridNode is still in
+memory (inactive), the injector loads a copy of it, `gridnode-2.dll`, from the same folder.
 
 ## Threads
 
@@ -164,6 +192,24 @@ call the game's function through `original`. `gn::patchBytes(va, expected, bytes
 to 64 bytes that must be `expected` now. Patches are listed in the GridNode menu's Hooks section and
 undone when the mod is unloaded (or GridNode is). Prefer a pointer swap where there is one. Rust:
 `patch_call`, `patch_bytes`.
+
+Any function of the game can be detoured, not only one a pointer or a call site leads to (API 16):
+
+```cpp
+using FireEvent = void (*)(void* bus, void* source, void* event);
+static FireEvent original;
+static void detour(void* bus, void* source, void* event) { /* before */ original(bus, source, event); /* after */ }
+
+gn::hookFunction(gn::engine::function::EntityBus_fireEvent, &detour, &original);
+```
+
+GridNode moves the function's first instructions to a trampoline near the image (rewriting anything
+that depends on its address) and puts a jump at its entry; `original` runs the game's function
+(call it, or not, to replace it). Several mods may detour one function: they chain as hooks do. The
+detour runs on whatever thread calls the function, so keep it short and thread safe. It is taken out
+when the mod is unloaded; the entry jump goes when GridNode is. Refused (`false`, and a line in
+gridnode.log) for a function shorter than 5 bytes or one that jumps back into its first bytes. Rust:
+`hook_function`. Detoured functions are listed in the GridNode menu's Hooks section.
 
 Another mod's hook in a slot GridNode wraps (MECMP's ServerGameWorld tick, for one) is chained
 the same way, whichever was loaded first: a slot that holds code of another loaded module is

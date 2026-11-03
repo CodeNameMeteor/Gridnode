@@ -356,8 +356,41 @@ Each milestone ends with something testable in game.
 | **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
+| **M9** | (1-3 done 2026-11-03: detours, manifests, crash notes) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
 
 ---
+
+### M9 plan: a loader like the others
+
+Already there: a mods folder, ticks, per-mod unload and hot reload, chained vtable hooks with undo,
+code patches, per-mod settings and rebindable keys, the overlay, the inspector, reflection by name,
+messages and events, Rust bindings. What the others have and we do not, most useful first:
+
+1. **Function detours** (Harmony / MonoMod): code before, after or instead of any function, not only
+   virtual ones. A trampoline at the function's entry, chained between mods, undone on unload.
+2. **Mod manifests, dependencies and load order** (BepInEx's plugin info): an id, a version, hard and
+   soft dependencies; mods load in dependency order, a missing one is a clear error; mods offer
+   functions to each other by name.
+3. **A crash reporter that unwinds**: the game ships its unwind tables (`.pdata`), so a real call
+   stack, each frame named from our annotations, the thread named, and the mod whose code is on it.
+4. **Settings declared once, with a page drawn for every mod** (ConfigEntry + ConfigurationManager):
+   type, default, range and description.
+5. **A scripting console** (Lua, as UE4SS and MelonLoader mods use): reflection and events from a
+   console in the overlay; small mods without a compiler.
+6. **Packaging**: a mod template (CMake, Cargo), a zip layout the loader reads, versioned SDK releases.
+7. **Asset swaps at load** (BepInEx preloader patchers): textures, meshes, data replaced as the game
+   loads them. Large research; overlaps M7.
+
+Research tools on top of them:
+
+- **Bus graph** tab: what any entity's events reach, across blueprints (the Volumes tab's walker).
+- **Function tracer**: pick an address, log each call (arguments, the object's type, the caller);
+  uses the detours.
+- **Typed memory scan**: search by value, results as "object of type, field"; pointer paths from
+  known statics.
+- **Field diff**: snapshot an object, act in game, snapshot again, see what changed.
+- **The game's debug drawing**: `ShowTriggerDebugText`, `DebugRenderSettings`, the Havok debug
+  settings, if retail kept the renderer.
 
 ### Settings, console and messages (decided 2026-10-19)
 

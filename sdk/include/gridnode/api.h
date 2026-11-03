@@ -18,6 +18,13 @@
  * whose code is in the mod, waits for the game's threads to leave it, frees it, and loads it again.
  * Other mods are never unloaded.
  *
+ * A mod may also say who it is (API 16):
+ *
+ *     GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info(void);
+ *
+ * called before gn_mod_load: its id, version and dependencies. Mods are loaded dependencies first,
+ * otherwise in file name order; a mod whose hard dependency is missing or too old is not started.
+ *
  * The API is a table of function pointers, so a mod can be built with any compiler (MSVC,
  * MinGW, clang) and needs no import library. C++ mods should use gridnode/mod.hpp, which wraps
  * this table.
@@ -35,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 15 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches */
+#define GN_API_VERSION 16 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -54,6 +61,19 @@ extern "C" {
 #define GN_ERR_MISMATCH 7      /* the mod was built against a different Dear ImGui */
 
 typedef struct gn_type gn_type; /* a runtime TypeInfo / ClassInfo of the engine */
+
+/* What gn_mod_info returns (API 16; static, it is read before gn_mod_load). Every string may be null. */
+typedef struct gn_mod_manifest {
+    uint32_t size;              /* sizeof(gn_mod_manifest) */
+    const char* id;             /* unique, e.g. "mec-trainer"; null: the file name without .dll */
+    const char* name;           /* shown in the Mods list */
+    const char* version;        /* dotted numbers, "1.2.0" */
+    const char* author;
+    const char* description;
+    const char* const* depends; /* null-terminated: "id" (needed), "id>=1.2" (that version or newer),
+                                   "?id" (optional: loaded after it when it is there) */
+} gn_mod_manifest;
+typedef const gn_mod_manifest* (*gn_mod_info_fn)(void);
 
 typedef void (*gn_tick_fn)(float dt, void* user);
 typedef void (*gn_task_fn)(void* user);
@@ -556,10 +576,37 @@ typedef struct gn_api {
      * patch_call: the call or jmp rel32 at site_va, which must go to expected_target_va, goes to detour
      * instead (through a thunk GridNode puts near the image); *original receives the target: call
      * through it. GN_ERR_SLOT: no call or jmp there, or it goes elsewhere.
-     * Any thread. The bytes change in one store when they fit in an aligned 8 bytes (a call's rel32
-     * nearly always does), so a thread running the code sees the old or the new, never half. */
+     * Any thread. The bytes change in one store when they fit in an aligned 8 or 16 bytes (a call's
+     * rel32 nearly always does); longer ones are written with the game's other threads paused and
+     * none about to run them. Either way a thread running the code sees the old or the new, never
+     * half. */
     int (*patch_bytes)(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size);
     int (*patch_call)(const char* mod, uint64_t site_va, uint64_t expected_target_va, void* detour, void** original);
+
+    /* ==== GN_API_VERSION 16 =================================================================== */
+
+    /* ---- function detours ------------------------------------------------------------------------
+     * Any function of the game, not only a virtual one: calls to function_va go to detour, which gets
+     * the function's own arguments; *original receives what to call for the game's behaviour (call
+     * it before, after, or not at all). The function's first instructions are moved to a trampoline
+     * near the image and a jump put at its entry, once per function; several mods may detour the
+     * same function (each gets the one below as its original, as with hook_slot). Taken out when the
+     * mod is unloaded; the entry jump goes when GridNode is. GN_ERR_SLOT when the entry cannot be
+     * moved (the function is shorter than 5 bytes, or starts with a jump back into itself);
+     * GN_ERR_ARGUMENT when function_va is not in the game's code. Any thread. A detour runs on
+     * whatever thread calls the function: keep it short and thread safe. */
+    int (*hook_function)(const char* mod, uint64_t function_va, void* detour, void** original);
+
+    /* ---- functions between mods ------------------------------------------------------------------
+     * mod_export: offers fn (in the calling mod's code) to other mods as "<its id>.<name>".
+     * mod_import: another mod's function, or null (not loaded, or not offered); call it from
+     * gn_mod_load or later, after declaring that mod a dependency so it loads first. A mod that
+     * imported from another keeps it loaded: that one cannot be unloaded on its own.
+     * mod_version: GN_OK and its version (into out, may be null) when that mod is loaded,
+     * GN_ERR_NOT_FOUND otherwise (an optional dependency's check). Any thread. */
+    int (*mod_export)(const char* name, void* fn);
+    void* (*mod_import)(const char* mod_id, const char* name);
+    int (*mod_version)(const char* mod_id, char* out, size_t size);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

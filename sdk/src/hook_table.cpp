@@ -27,7 +27,8 @@ Result HookTable::install(const std::string& owner, uint64_t slot, uint64_t expe
     uint64_t current = 0;
     if (!io_.read(slot, current)) return fail(Result::Slot, "slot " + hex(slot) + " is not readable");
     auto& chain = slots_[slot];
-    const bool foreign = io_.isForeignHook && io_.isForeignHook(current);
+    // Asked only when the slot does not hold what GridNode put there (the check may log).
+    const bool foreign = (chain.empty() || current != chain.back().detour) && io_.isForeignHook && io_.isForeignHook(current);
     if (chain.empty()) {
         if (!foreign && (expected ? current != expected : !io_.isGameCode(current))) {
             slots_.erase(slot);

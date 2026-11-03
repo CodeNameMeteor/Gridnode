@@ -17,6 +17,7 @@
 #include <string>
 
 #include "gridnode/log.hpp"
+#include "gridnode/engine.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/reflect/layout.hpp"
 #include "host.hpp"
@@ -24,8 +25,10 @@
 namespace gn::host {
 namespace {
 
-constexpr uint64_t kPredictVtable = 0x141aabb98, kPredictSlot = 0x20, kPredictFn = 0x142f28e20;
-constexpr uint64_t kFloatWriterVtable = 0x141a434d0, kBoolWriterVtable = 0x141a435c8, kWriteSlot = 0x8;
+// The three slots (db/annotations/ant.yaml), each checked to hold the expected function before it is
+// wrapped (the writers were taken as found until 2026-11-03).
+namespace eh = gn::engine::hook;
+constexpr uint64_t kFloatWriterVtable = eh::AntFloatWriter_write.slot - 0x8, kBoolWriterVtable = eh::AntBoolWriter_write.slot - 0x8;
 constexpr uint32_t kHitHeight = 0x20, kTicksToHit = 0x28, kSoftLanding = 0x30, kBindingWriter = 0x20;
 // Faith's animated entity (a ClientAntAnimatableEntity) and its game state, as the Recorder finds a
 // state from its entity: +0x158 -> +0x10, then +0x40. Her +0xd0 leads to her animation, but in game it
@@ -79,8 +82,8 @@ uintptr_t findFaithState(uintptr_t c) {
     const uintptr_t bus = mem::readOr<uintptr_t>(c + kEntityBus);
     uintptr_t below = 0, belowBus = 0, onBus = 0;
     size_t candidates = 0;
-    for (const auto& [p, ty] : inspector::tracked()) {
-        if (!ty || !registry().isKindOf(ty, animType)) continue;
+    for (const auto& [p, ty] : inspector::trackedOf(animType)) { // not a copy of every entity, once a second
+        if (!ty) continue;
         ++candidates;
         const uint32_t size = ty->size ? ty->size : 0x760;
         if (direct >= p && direct < p + size) {
@@ -173,10 +176,12 @@ bool ensureHooked() {
     std::lock_guard<std::mutex> lock(g_hookM);
     if (g_hooked) return g_hooked > 0;
     // The writers first, so the prediction's own wrapper never runs without them.
-    const bool ok = install("the float game-state writer", kFloatWriterVtable + kWriteSlot, 0, reinterpret_cast<uint64_t>(&floatDetour), &g_floatOrig) &&
-                    install("the bool game-state writer", kBoolWriterVtable + kWriteSlot, 0, reinterpret_cast<uint64_t>(&boolDetour), &g_boolOrig) &&
-                    install("the landing prediction", kPredictVtable + kPredictSlot, kPredictFn, reinterpret_cast<uint64_t>(&predictDetour),
-                            &g_predictOrig);
+    const bool ok = install("the float game-state writer", eh::AntFloatWriter_write.slot, eh::AntFloatWriter_write.original,
+                            reinterpret_cast<uint64_t>(&floatDetour), &g_floatOrig) &&
+                    install("the bool game-state writer", eh::AntBoolWriter_write.slot, eh::AntBoolWriter_write.original,
+                            reinterpret_cast<uint64_t>(&boolDetour), &g_boolOrig) &&
+                    install("the landing prediction", eh::PositionPrediction_update.slot, eh::PositionPrediction_update.original,
+                            reinterpret_cast<uint64_t>(&predictDetour), &g_predictOrig);
     g_hooked = ok ? 1 : -1;
     GN_LOG("landing: %s", ok ? "the game's landing prediction is read (PositionPredictionProcessorAsset +0x20)" : "not available");
     return ok;

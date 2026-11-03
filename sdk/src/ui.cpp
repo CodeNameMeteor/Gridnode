@@ -444,7 +444,11 @@ void drawMain() {
             if (mods.empty()) ImGui::TextDisabled("No mods loaded.");
             for (const ModInfo& m : mods) {
                 ImGui::PushID(m.file.c_str());
-                ImGui::BulletText("%s", m.file.c_str());
+                if (m.name.empty() && m.version.empty()) ImGui::BulletText("%s", m.file.c_str());
+                else ImGui::BulletText("%s %s", m.name.empty() ? m.id.c_str() : m.name.c_str(), m.version.c_str());
+                if (ImGui::IsItemHovered() && (!m.description.empty() || !m.author.empty() || !m.depends.empty()))
+                    ImGui::SetTooltip("%s\nid %s%s%s%s%s%s%s", m.file.c_str(), m.id.c_str(), m.author.empty() ? "" : "\nby ", m.author.c_str(),
+                                      m.description.empty() ? "" : "\n", m.description.c_str(), m.depends.empty() ? "" : "\nneeds: ", m.depends.c_str());
                 ImGui::SameLine();
                 if (m.loaded) ImGui::TextDisabled("loaded");
                 else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), m.result ? "failed (%d)" : "unloaded", m.result);
@@ -452,6 +456,8 @@ void drawMain() {
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Load")) modLoad(m.file);
                     if (!m.status.empty()) ImGui::TextDisabled("    %s", m.status.c_str());
+                } else if (!m.inMemory && !m.status.empty()) { // not started: a dependency is missing
+                    ImGui::TextDisabled("    %s", m.status.c_str());
                 } else if (m.reloadable) {
                     // A mod that exports gn_mod_unload: rebuilt while the game runs, then reloaded, or
                     // unloaded until Load (everything it changed put back).
@@ -523,7 +529,7 @@ void drawMain() {
                     // another mod had hooked first keeps that mod's pointer, and the check reports it as such).
                     std::vector<std::pair<uintptr_t, uint64_t>> restore;
                     for (const auto& [slot, chain] : hooks().snapshot())
-                        if (!chain.empty()) restore.push_back({static_cast<uintptr_t>(slot), chain.front().previous});
+                        if (!chain.empty() && !isDetourSlot(slot)) restore.push_back({static_cast<uintptr_t>(slot), chain.front().previous});
                     for (const auto& r : patchOriginals()) restore.push_back(r); // and the game's code bytes under patches
                     const bool ok = mem::dumpImage(path, &why, restore);
                     std::lock_guard<std::mutex> lock(textM);
@@ -548,6 +554,13 @@ void drawMain() {
             for (const PatchInfo& p : patches)
                 ImGui::BulletText("%s: %llx, %llu bytes (%s)", p.mod.c_str(), static_cast<unsigned long long>(p.va),
                                   static_cast<unsigned long long>(p.size), p.what.c_str());
+            for (const auto& [slot, chain] : hooks().snapshot()) {
+                const uint64_t fn = detourFunction(slot);
+                if (!fn || chain.empty()) continue;
+                std::string who;
+                for (const hook::Entry& e : chain) who += (who.empty() ? "" : " < ") + e.owner;
+                ImGui::BulletText("function %llx detoured by %s", static_cast<unsigned long long>(fn), who.c_str());
+            }
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));
             ImGui::Text("Client ticks: %llu", static_cast<unsigned long long>(client().ticks()));
         }
@@ -581,6 +594,7 @@ void callMods(bool open) {
 }
 
 std::atomic<uint64_t> g_frames{0}; // frames drawn (a mod being unloaded waits for a few)
+std::atomic<DWORD> g_renderThread{0}; // the thread that draws the overlay (the crash notes name it)
 
 // A full unload (release()): the render thread closes the overlay and puts the slots back at its
 // next Present; with no frames coming (minimised), GridNode's thread puts them back without closing
@@ -685,6 +699,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         }
         callMods(open);
         g_frames.fetch_add(1, std::memory_order_relaxed);
+        g_renderThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
         g_typing = ImGui::GetIO().WantTextInput;
         ImGui::Render();
         // The backend restores most pipeline state, but not the render targets: put the game's back.
@@ -879,6 +894,7 @@ void forgetUi(const CodeRange& r) {
 }
 
 uint64_t frameCount() { return g_frames.load(std::memory_order_relaxed); }
+bool isRenderThread() { return g_renderThread.load(std::memory_order_relaxed) == GetCurrentThreadId(); }
 
 bool release() {
     if (!g_presentSlot) return true; // never hooked

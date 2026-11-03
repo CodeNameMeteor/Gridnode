@@ -93,13 +93,30 @@ Candidate findGame() {
     return c;
 }
 
-// Where gridnode.dll is loaded in pid from (empty: not loaded).
-std::wstring loadedGridNode(DWORD pid) {
+// Where a module of that file name is loaded in pid from (empty: not loaded).
+std::wstring loadedModule(DWORD pid, const wchar_t* name) {
     std::wstring path;
     forEachModule(pid, [&](const MODULEENTRY32W& me) {
-        if (_wcsicmp(me.szModule, L"gridnode.dll") == 0) path = me.szExePath;
+        if (_wcsicmp(me.szModule, name) == 0) path = me.szExePath;
     });
     return path;
+}
+std::wstring loadedGridNode(DWORD pid) { return loadedModule(pid, L"gridnode.dll"); }
+
+// Whether a GridNode is running in pid (it holds this mutex while it is; one that was unloaded but
+// kept in memory, or stayed passive, has let it go: gridnode.dll is loaded there, inactive).
+bool gridNodeActive(DWORD pid) {
+    wchar_t name[64];
+    swprintf(name, 64, L"Local\\GridNode_core_%lu", pid);
+    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, name);
+    if (!m) return false;
+    CloseHandle(m);
+    return true;
+}
+
+const wchar_t* fileName(const wchar_t* path) {
+    const wchar_t* slash = wcsrchr(path, L'\\');
+    return slash ? slash + 1 : path;
 }
 
 int fail(const wchar_t* what) {
@@ -191,7 +208,7 @@ int inject(DWORD pid, const wchar_t* dll) {
     CloseHandle(proc);
 
     // The thread's exit code is only the low 32 bits of the HMODULE, so ask the game whether the module is there.
-    if (loadedGridNode(pid).empty()) {
+    if (loadedModule(pid, fileName(dll)).empty()) {
         wprintf(L"FAILED: the game could not load gridnode.dll (missing dependency, blocked file, or wrong\n"
                 L"architecture). Windows may block downloaded files: right-click gridnode.dll, Properties, Unblock.\n");
         return 1;
@@ -252,9 +269,25 @@ int wmain(int argc, wchar_t** argv) {
 
     const std::wstring already = loadedGridNode(game.pid);
     if (!already.empty()) {
-        if (_wcsicmp(already.c_str(), dll) == 0) wprintf(L"gridnode.dll is already loaded in the game. Nothing to do.\n");
-        else wprintf(L"The game already has a gridnode.dll, from %ls.\nRestart the game to use this one.\n", already.c_str());
-        return finish(0);
+        if (gridNodeActive(game.pid)) {
+            if (_wcsicmp(already.c_str(), dll) == 0) wprintf(L"gridnode.dll is already loaded in the game. Nothing to do.\n");
+            else wprintf(L"The game already has a gridnode.dll, from %ls.\nRestart the game to use this one.\n", already.c_str());
+            return finish(0);
+        }
+        // Unloaded but kept in memory (a thread was still in its code), so gridnode.dll is taken:
+        // a copy under another name next to it, which reads the same gridnode.ini and mods folder.
+        wprintf(L"An earlier GridNode was unloaded but is still in memory; loading a copy of gridnode.dll.\n");
+        const std::wstring dir(static_cast<const wchar_t*>(dll), fileName(dll));
+        wchar_t copy[MAX_PATH] = L"";
+        for (int k = 2; k < 100; ++k) {
+            swprintf(copy, MAX_PATH, L"%lsgridnode-%d.dll", dir.c_str(), k);
+            if (!loadedModule(game.pid, fileName(copy)).empty()) continue;
+            if (CopyFileW(dll, copy, FALSE)) break;
+            copy[0] = 0;
+        }
+        if (!copy[0]) return finish(fail(L"copying gridnode.dll"));
+        wprintf(L"DLL: %ls\n", copy);
+        return finish(inject(game.pid, copy));
     }
     return finish(inject(game.pid, dll));
 }

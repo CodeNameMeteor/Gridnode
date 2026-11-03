@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,6 +14,31 @@
 #include "gridnode/reflect/registry.hpp"
 
 namespace gn::host {
+
+// GridNode's part of a hook (everything but the call to the game's original): an exception never
+// leaves into the engine's frames (it is logged, the first few times per site, and dropped).
+void logHookException(const char* where, const char* what);
+template <class F> void guardHook(const char* where, F&& f) noexcept {
+    try {
+        f();
+    } catch (const std::exception& e) {
+        logHookException(where, e.what());
+    } catch (...) {
+        logHookException(where, nullptr);
+    }
+}
+
+// Threads in a module's code (quiet.cpp), before it is freed: any other thread running there or with
+// an address in it on the used part of its stack (paused while looked at).
+struct ThreadsInCode {
+    int threads = 0;
+    unsigned long firstThread = 0;
+    uintptr_t firstAt = 0;
+    bool onStack = false; // found by scanning a stack (maybe stale), not by unwinding it
+};
+ThreadsInCode threadsInCode(void* module); // an HMODULE
+// Looks again every 100 ms for up to ms; false (logged, as `what`) when threads are still there.
+bool waitCodeQuiet(void* module, const char* what, unsigned long ms);
 
 reflect::Registry& registry();
 hook::HookTable& hooks();
@@ -52,6 +78,8 @@ struct ModInfo {
     bool autoReload = false;  // reloaded when its file changes
     bool inMemory = false;    // its DLL is loaded (false after Unload: Load brings it back)
     std::string status;       // the last reload, for the menu
+    // From its manifest (gn_mod_info); id defaults to the file name without .dll.
+    std::string id, name, version, author, description, depends;
 };
 std::vector<ModInfo> modList();
 void modReload(const std::string& file);             // any thread: done on GridNode's thread
@@ -60,6 +88,9 @@ void modUnload(const std::string& file);             // any thread: unloaded on 
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
 int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
 void pollMods();                                     // GridNode's thread: reloads asked for or due
+int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
+void* modImport(const void* caller, const char* modId, const char* name); // gn_api mod_import
+int modVersion(const char* modId, char* out, size_t size);               // gn_api mod_version
 bool unloadAllMods(); // GridNode's thread, for a full unload: true when every mod was freed (the rest are inert)
 
 // A loaded module's code, to take out everything a mod registered when it is unloaded: each part of
@@ -80,6 +111,11 @@ void forgetEvents(const CodeRange& r);
 // made them: caller) is unloaded, or all at a full unload.
 int patchBytes(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size, const void* caller);
 int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void* detour, void** original, const void* caller);
+// Function detours (patches.cpp): gn_api hook_function. The detours go in the hook table (by slot);
+// these tell the table's slot writer and the Hooks list about the slots.
+int hookFunction(const char* mod, uint64_t fnVa, void* detour, void** original);
+bool isDetourSlot(uint64_t slot);
+uint64_t detourFunction(uint64_t slot); // the function a detour slot belongs to (va), or 0
 size_t forgetPatches(const CodeRange& r);
 size_t removeAllPatches();
 struct PatchInfo {
@@ -289,11 +325,12 @@ void takeLook(float& dx, float& dy);     // movement since the last call (raw co
 std::string keyName(int vk);
 std::vector<std::pair<int, std::string>> reservedKeys(); // GridNode's own keys (the menu, the tools'), for hotkey clashes
 int keyFromName(const std::string& name);
+bool isRenderThread(); // the thread drawing the overlay (Present)
 } // namespace ui
 
 // Inspector (inspector.cpp): start() tracks entities from then on; draw() on the render thread.
 namespace crash {
-void install(); // logs the first few faults (address, registers, stack code addresses)
+void install(); // logs the first few faults: address, registers, the unwound call stack with names
 void uninstall();
 }
 
@@ -302,6 +339,7 @@ void start();
 void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
 std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
+std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base); // the same, only that class and its subclasses (no full copy)
 bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type
 void markDead(uintptr_t entity); // GridNode is destroying it: alive() is false from now on (until a new entity is made there)
 } // namespace inspector

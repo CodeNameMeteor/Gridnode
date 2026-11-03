@@ -13,6 +13,7 @@
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
+#include "gridnode/mod_order.hpp"
 #include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
 
@@ -332,9 +333,41 @@ void testEventHash() {
     static_assert(gn::eventHash("StreamOut") == 0x21f3f677u, "usable at compile time");
 }
 
+void testModOrder() {
+    using namespace gn::modorder;
+    const Dep d = parseDep(" ?trainer >= 1.2 ");
+    CHECK(d.soft && d.id == "trainer" && d.minVersion == "1.2");
+    CHECK(!parseDep("core").soft && parseDep("core").minVersion.empty());
+    CHECK(compareVersions("1.2", "1.2.0") == 0);
+    CHECK(compareVersions("1.10", "1.9") > 0);
+    CHECK(compareVersions("2-beta", "2.0") == 0);
+    CHECK(compareVersions("0.9", "1") < 0);
+
+    // a needs c; b soft-needs a; c alone: c, a, b.
+    std::vector<Entry> mods = {{"a", "1.0", {parseDep("c>=2")}}, {"b", "1", {parseDep("?a")}}, {"c", "2.1", {}}};
+    Plan p = plan(mods);
+    CHECK((p.order == std::vector<size_t>{2, 0, 1}));
+    // c too old: a out, b still loads (soft).
+    mods[2].version = "1.5";
+    p = plan(mods);
+    CHECK((p.order == std::vector<size_t>{2, 1}));
+    CHECK(p.problem[0].find("2 or newer") != std::string::npos);
+    // A missing soft dependency is fine; a missing hard one is not, and takes its dependents.
+    p = plan({{"x", "", {parseDep("?nothere")}}, {"y", "", {parseDep("nothere")}}, {"z", "", {parseDep("y")}}});
+    CHECK((p.order == std::vector<size_t>{0}));
+    CHECK(p.problem[1].find("not there") != std::string::npos);
+    CHECK(p.problem[2].find("did not load") != std::string::npos);
+    // A cycle, and a duplicate id.
+    p = plan({{"p", "", {parseDep("q")}}, {"q", "", {parseDep("p")}}, {"r", "", {}}, {"r", "", {}}});
+    CHECK((p.order == std::vector<size_t>{2}));
+    CHECK(p.problem[0] == "in a dependency cycle" && p.problem[1] == "in a dependency cycle");
+    CHECK(p.problem[3].find("already taken") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
+    testModOrder();
     testRegistry();
     testHookTable();
     testDispatcher();

@@ -403,7 +403,13 @@ struct AntLast {
     float v[16];
     double t;
 };
-std::unordered_map<uint64_t, AntLast> g_antLast;                // (g_antM) (state ^ writer) -> last value
+// The last value of each (state, writer), in shards: every ANT write passes here while recording, on
+// several animation threads, so one lock for all of them was a queue (review, 2026-11-03).
+struct AntShard {
+    std::mutex m;
+    std::unordered_map<uint64_t, AntLast> last; // (m) (state ^ writer) -> last value
+};
+std::array<AntShard, 32> g_antLast;
 std::unordered_map<uintptr_t, std::pair<uintptr_t, const Type*>> g_antOwner; // (g_antM) state -> animated entity
 double g_antOwnersAt = -10.0;                                   // (g_antM)
 
@@ -439,13 +445,14 @@ bool antChanged(uintptr_t state, uintptr_t writer, uint8_t kind, const float* v,
     if (!scalarish && !g_wantAnimFloats.load(std::memory_order_relaxed)) return false;
     const uint64_t key = static_cast<uint64_t>(state) * 1000003ull ^ static_cast<uint64_t>(writer);
     const double t = now();
-    std::lock_guard<std::mutex> lock(g_antM);
-    auto it = g_antLast.find(key);
-    if (it == g_antLast.end()) {
+    AntShard& sh = g_antLast[(key ^ (key >> 17) ^ (key >> 33)) % g_antLast.size()];
+    std::lock_guard<std::mutex> lock(sh.m);
+    auto it = sh.last.find(key);
+    if (it == sh.last.end()) {
         AntLast l{};
         memcpy(l.v, v, sizeof(float) * n);
         l.t = t;
-        g_antLast.emplace(key, l);
+        sh.last.emplace(key, l);
         return true;
     }
     bool diff = false;
@@ -493,26 +500,29 @@ bool movementRecording() { return g_recording.load(std::memory_order_relaxed) &&
 void predictWrite(uintptr_t writer, uintptr_t state, uint8_t kind, float v); // the landing prediction (below)
 
 template <size_t I> void antIntDetour(void* w, void* state, uint64_t v) {
-    if (antRecording() && !t_antCtx.active) {
-        const float f[1] = {static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v))};
-        antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I], f);
-    }
-    if (movementRecording())
-        predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I],
-                     static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v)));
+    if (antRecording() || movementRecording())
+        guardHook("the recorder's ANT write hook", [&] {
+            const float f[1] = {static_cast<float>(g_antIntKind[I] == kAntBool ? static_cast<uint8_t>(v) : static_cast<int32_t>(v))};
+            if (antRecording() && !t_antCtx.active) antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I], f);
+            if (movementRecording()) predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antIntKind[I], f[0]);
+        });
     reinterpret_cast<void (*)(void*, void*, uint64_t)>(g_antIntOrig[I])(w, state, v);
 }
 template <size_t I> void antFloatDetour(void* w, void* state, float v) {
-    if (antRecording() && !t_antCtx.active) antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, &v);
-    if (movementRecording()) predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, v);
+    if (antRecording() || movementRecording())
+        guardHook("the recorder's ANT write hook", [&] {
+            if (antRecording() && !t_antCtx.active) antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, &v);
+            if (movementRecording()) predictWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), kAntFloat, v);
+        });
     reinterpret_cast<void (*)(void*, void*, float)>(g_antFloatOrig[I])(w, state, v);
 }
 template <size_t I> void antPtrDetour(void* w, void* state, const float* v) {
-    if (antRecording() && !t_antCtx.active && v) {
-        float f[4] = {};
-        mem::read(reinterpret_cast<uintptr_t>(v), f, sizeof(f));
-        antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antPtrKind[I], f);
-    }
+    if (antRecording() && !t_antCtx.active && v)
+        guardHook("the recorder's ANT write hook", [&] {
+            float f[4] = {};
+            mem::read(reinterpret_cast<uintptr_t>(v), f, sizeof(f));
+            antCodeWrite(reinterpret_cast<uintptr_t>(w), reinterpret_cast<uintptr_t>(state), g_antPtrKind[I], f);
+        });
     reinterpret_cast<void (*)(void*, void*, const float*)>(g_antPtrOrig[I])(w, state, v);
 }
 template <size_t... I> constexpr auto makeAntInt(std::index_sequence<I...>) { return std::array<void (*)(void*, void*, uint64_t), sizeof...(I)>{&antIntDetour<I>...}; }
@@ -566,8 +576,9 @@ void hookAntWriter(uintptr_t writer, uint8_t kind) {
 // (+0x30); each binding's writer is at its +0x20. With Faith's movement on, GridNode wraps that
 // update (a pointer swap), learns the writers, and records their writes as field lines on the
 // character they belong to: the prediction next to the landing.
-constexpr uint64_t kPredictVtable = 0x141aabb98, kPredictSlot = 0x20, kPredictFn = 0x142f28e20;
-constexpr uint64_t kAntFloatWriterVtable = 0x141a434d0, kAntBoolWriterVtable = 0x141a435c8; // as recorded (2026-10-30)
+// db/annotations/ant.yaml: the prediction's update slot and the two writer classes.
+constexpr uint64_t kPredictSlotVa = e::hook::PositionPrediction_update.slot, kPredictFn = e::hook::PositionPrediction_update.original;
+constexpr uint64_t kAntFloatWriterVtable = e::hook::AntFloatWriter_write.slot - 0x8, kAntBoolWriterVtable = e::hook::AntBoolWriter_write.slot - 0x8;
 struct PredictOut {
     uint32_t off;
     const char* label;
@@ -613,7 +624,7 @@ void hookPredict() {
     if (g_predictHooked.exchange(true)) return;
     // The hook table checks the slot: the game's function, or GridNode's landing_prediction wrapper
     // on top of it (then this one chains).
-    const uintptr_t slot = mem::rva(kPredictVtable) + kPredictSlot;
+    const uintptr_t slot = mem::rva(kPredictSlotVa);
     std::string why;
     const auto r = hooks().install("recorder", slot, mem::rva(kPredictFn), reinterpret_cast<uint64_t>(&predictDetour), &g_predictOrig, &why);
     GN_LOG("recorder: landing prediction (PositionPredictionProcessorAsset +0x20) %s%s", r == hook::Result::Ok ? "wrapped" : "not wrapped: ",
@@ -1446,10 +1457,11 @@ void setRecording(bool on) {
     if (on && g_wantAnim.load()) hookAnim();
     if (on && g_wantDestroyed.load()) hookDestructors(); // once; the inspector has usually done it already
     if (on) g_watchFoundAt = -10.0;                      // watches: look for existing instances straight away
-    if (on) {
-        std::lock_guard<std::mutex> lock(g_antM);
-        g_antLast.clear(); // each recording starts with the values as they are
-    }
+    if (on)
+        for (AntShard& sh : g_antLast) { // each recording starts with the values as they are
+            std::lock_guard<std::mutex> lock(sh.m);
+            sh.last.clear();
+        }
     g_recording = on;
     if (on) messageTap(&onMessage);
     GN_LOG("recorder: %s", on ? "recording" : "paused");
@@ -1716,6 +1728,10 @@ bool validName(const std::string& n) {
 
 // Writes everything recorded (a copy, on its own thread so the game does not stall).
 void exportAll(const std::string& name) {
+    if (!validName(name)) { // the file name is built from it: no separators, no "..", whoever calls
+        GN_LOG("recorder: not exported: the name may only hold letters, digits, - and _ (40 at most)");
+        return;
+    }
     std::vector<Event> events;
     uint64_t dropped;
     std::string level;

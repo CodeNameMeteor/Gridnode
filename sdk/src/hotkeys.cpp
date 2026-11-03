@@ -5,6 +5,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -53,10 +54,18 @@ Hotkey* findKey(const char* mod, const char* id) {
     return nullptr;
 }
 
+// A key press, run later on the client thread: skipped when its hotkey went meanwhile (its mod being
+// unloaded: forget() ran after the task was queued).
 struct Fire {
     gn_hotkey_fn fn;
     void* user;
-    void operator()() const { fn(user); }
+    void operator()() const {
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            if (std::none_of(g_keys.begin(), g_keys.end(), [this](const Hotkey& k) { return k.fn == fn && k.user == user; })) return;
+        }
+        fn(user);
+    }
 };
 
 // Keys a hotkey can be: not the left and right mouse buttons (they click the menu) and not a modifier

@@ -8,15 +8,18 @@
 // be on its way through it), so it is never reused.
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
 
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/x64.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -32,8 +35,53 @@ struct Patch {
 std::mutex g_m;
 std::vector<Patch> g_patches; // (g_m)
 
-// Writes code bytes in one store when they fit in an aligned 8 bytes (a thread may be running it).
-bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n) {
+// Every other thread of the game paused (handles in `out`, to resume). The list is made before the
+// first pause: nothing may allocate or log while threads are paused (one may hold the heap's lock).
+void pauseOthers(std::vector<HANDLE>& out) {
+    std::vector<DWORD> ids;
+    if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
+        THREADENTRY32 te{};
+        te.dwSize = sizeof(te);
+        const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
+        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
+            if (te.th32OwnerProcessID == pid && te.th32ThreadID != me) ids.push_back(te.th32ThreadID);
+        CloseHandle(snap);
+    }
+    std::vector<HANDLE> opened;
+    opened.reserve(ids.size());
+    for (DWORD id : ids)
+        if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, id)) opened.push_back(h);
+    out.clear();
+    out.reserve(opened.size());
+    for (HANDLE h : opened) {
+        if (SuspendThread(h) != DWORD(-1)) out.push_back(h); // reserved: no allocation
+        else CloseHandle(h);
+    }
+}
+
+void resumeAll(std::vector<HANDLE>& hs) {
+    for (HANDLE h : hs) {
+        ResumeThread(h);
+        CloseHandle(h);
+    }
+    hs.clear();
+}
+
+// A paused thread whose next instruction is in [at, at + n).
+bool anyThreadIn(const std::vector<HANDLE>& hs, uintptr_t at, size_t n) {
+    for (HANDLE h : hs) {
+        alignas(16) CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (GetThreadContext(h, &ctx) && ctx.Rip >= at && ctx.Rip < at + n) return true;
+    }
+    return false;
+}
+
+// Writes code a thread may be running: in one store when the bytes fit in an aligned 8 or 16 bytes;
+// otherwise with every other thread paused and none about to run them (patch_bytes over 16 bytes, or
+// across a 16-byte boundary), so no thread ever runs half old, half new code (review, 2026-11-03).
+// othersPaused: the caller paused them already (a detour's entry).
+bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused = false) {
     DWORD prot = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(at), n, PAGE_EXECUTE_READWRITE, &prot)) return false;
     const uintptr_t q = at & ~uintptr_t(7);
@@ -47,8 +95,46 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n) {
             if (seen == old) break;
             old = seen;
         }
-    } else {
+    } else if (const uintptr_t o = at & ~uintptr_t(15); at + n <= o + 16) {
+        // A detour's 5-byte jump at a function entry not inside one aligned 8 bytes: one 16-byte store.
+        alignas(16) uint8_t now[16];
+        for (;;) {
+            memcpy(now, reinterpret_cast<const void*>(o), 16);
+            alignas(16) uint8_t want[16];
+            memcpy(want, now, 16);
+            memcpy(want + (at - o), bytes, n);
+#if defined(_MSC_VER)
+            LONG64 cmp[2];
+            memcpy(cmp, now, 16);
+            LONG64 hiLo[2];
+            memcpy(hiLo, want, 16);
+            if (_InterlockedCompareExchange128(reinterpret_cast<volatile LONG64*>(o), hiLo[1], hiLo[0], cmp)) break;
+#else
+            unsigned __int128 expect, desired;
+            memcpy(&expect, now, 16);
+            memcpy(&desired, want, 16);
+            if (__sync_bool_compare_and_swap(reinterpret_cast<volatile unsigned __int128*>(o), expect, desired)) break;
+#endif
+        }
+    } else if (othersPaused) {
         memcpy(reinterpret_cast<void*>(at), bytes, n);
+    } else {
+        bool written = false;
+        for (int attempt = 0; attempt < 100 && !written; ++attempt) {
+            std::vector<HANDLE> paused;
+            pauseOthers(paused);
+            if (!anyThreadIn(paused, at, n)) {
+                memcpy(reinterpret_cast<void*>(at), bytes, n);
+                written = true;
+            }
+            resumeAll(paused);
+            if (!written) Sleep(1);
+        }
+        if (!written) {
+            DWORD tmp;
+            VirtualProtect(reinterpret_cast<void*>(at), n, prot, &tmp);
+            return false; // a thread kept running those bytes
+        }
     }
     DWORD tmp;
     VirtualProtect(reinterpret_cast<void*>(at), n, prot, &tmp);
@@ -72,12 +158,13 @@ constexpr int kMaxTries = 64;          // VirtualAlloc calls per search
 constexpr int kTriesPerRegion = 8;     // the lowest addresses of each free region
 constexpr ULONGLONG kMaxSearchMs = 2000;
 
-uint8_t* allocNear(uintptr_t site, bool& writable) {
+// exec: code (read-write-execute, else read-write: writable says which); otherwise data (read-write).
+uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
     const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
     const uintptr_t lo = site > 0x7ff00000 ? site - 0x7ff00000 : gran, hi = site + 0x7ff00000;
-    GN_LOG("patches: looking for a thunk page near %llx", static_cast<unsigned long long>(mem::va(site)));
+    GN_LOG("patches: looking for a %s page near %llx", exec ? "code" : "data", static_cast<unsigned long long>(mem::va(site)));
     const ULONGLONG start = GetTickCount64();
     int tries = 0;
     DWORD firstError = 0;
@@ -85,6 +172,7 @@ uint8_t* allocNear(uintptr_t site, bool& writable) {
     const auto tryAt = [&](uintptr_t a) -> uint8_t* {
         ++tries;
         for (DWORD prot : {DWORD(PAGE_EXECUTE_READWRITE), DWORD(PAGE_READWRITE)}) {
+            if (!exec && prot == PAGE_EXECUTE_READWRITE) continue;
             if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, prot)) {
                 writable = prot == PAGE_EXECUTE_READWRITE;
                 return static_cast<uint8_t*>(p);
@@ -118,37 +206,52 @@ uint8_t* allocNear(uintptr_t site, bool& writable) {
     }
     const unsigned long long ms = GetTickCount64() - start;
     if (found)
-        GN_LOG("patches: thunk page at %p (%s, %d tries, %llu ms)", static_cast<void*>(found), writable ? "rwx" : "rw then rx", tries, ms);
+        GN_LOG("patches: %s page at %p (%s, %d tries, %llu ms)", exec ? "code" : "data", static_cast<void*>(found),
+               !exec ? "rw" : writable ? "rwx" : "rw then rx", tries, ms);
     else
         GN_LOG("patches: no page within 2 GB of %llx (%d tries, %llu ms, first error %lu)", static_cast<unsigned long long>(mem::va(site)),
                tries, ms, static_cast<unsigned long>(firstError));
     return found;
 }
 
-uint8_t* thunkTo(void* detour, uintptr_t site) {
-    std::lock_guard<std::mutex> lock(g_thunkM);
-    const auto reaches = [site](const uint8_t* p) {
-        const intptr_t d = reinterpret_cast<intptr_t>(p) - static_cast<intptr_t>(site + 5);
-        return d > INT32_MIN + 0x2000 && d < INT32_MAX - 0x2000;
-    };
-    if (!g_thunkPage || !g_thunkWritable || g_thunkUsed + 16 > 0x1000 || !reaches(g_thunkPage)) {
-        g_thunkPage = allocNear(site, g_thunkWritable);
+bool reaches(const uint8_t* p, uintptr_t site) { // a rel32 at site reaches the page p is in
+    const intptr_t d = reinterpret_cast<intptr_t>(p) - static_cast<intptr_t>(site + 5);
+    return d > INT32_MIN + 0x2000 && d < INT32_MAX - 0x2000;
+}
+
+// (g_thunkM) Room for n bytes of code within reach of site; codeDone once they are written.
+uint8_t* codeRoom(uintptr_t site, size_t n) {
+    n = (n + 15) & ~size_t(15);
+    if (n > 0x1000) return nullptr;
+    if (!g_thunkPage || !g_thunkWritable || g_thunkUsed + n > 0x1000 || !reaches(g_thunkPage, site)) {
+        g_thunkPage = allocNear(site, true, g_thunkWritable);
         g_thunkUsed = 0;
         if (!g_thunkPage) return nullptr;
     }
     uint8_t* t = g_thunkPage + g_thunkUsed;
-    const uint8_t jmp[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
-    memcpy(t, jmp, 6);
-    memcpy(t + 6, &detour, 8);
-    g_thunkUsed += 16;
+    g_thunkUsed += n;
+    return t;
+}
+
+bool codeDone(uint8_t* t, size_t n) { // (g_thunkM)
     DWORD tmp = 0;
     if (!g_thunkWritable && !VirtualProtect(g_thunkPage, 0x1000, PAGE_EXECUTE_READ, &tmp)) {
         GN_LOG("patches: the thunk page could not be made executable (error %lu)", static_cast<unsigned long>(GetLastError()));
         g_thunkPage = nullptr;
-        return nullptr;
+        return false;
     }
-    FlushInstructionCache(GetCurrentProcess(), t, 16);
-    return t;
+    FlushInstructionCache(GetCurrentProcess(), t, n);
+    return true;
+}
+
+uint8_t* thunkTo(void* detour, uintptr_t site) {
+    std::lock_guard<std::mutex> lock(g_thunkM);
+    uint8_t* t = codeRoom(site, 16);
+    if (!t) return nullptr;
+    const uint8_t jmp[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
+    memcpy(t, jmp, 6);
+    memcpy(t + 6, &detour, 8);
+    return codeDone(t, 16) ? t : nullptr;
 }
 
 bool overlaps(uintptr_t at, size_t n) { // g_m held
@@ -157,7 +260,10 @@ bool overlaps(uintptr_t at, size_t n) { // g_m held
     return false;
 }
 
-int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what) {
+// written: the bytes are already there (a detour's entry, written with the other threads stopped);
+// `original` then holds what was there before.
+int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what,
+        const uint8_t* written = nullptr) {
     std::lock_guard<std::mutex> lock(g_m);
     if (unloading()) return GN_ERR_UNAVAILABLE;
     if (overlaps(at, n)) {
@@ -165,7 +271,8 @@ int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t
         return GN_ERR_SLOT;
     }
     Patch p{mod, at, std::vector<uint8_t>(n), std::vector<uint8_t>(bytes, bytes + n), owner, what};
-    if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n)) {
+    if (written) memcpy(p.original.data(), written, n);
+    else if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n)) {
         GN_LOG("[%s] patch at %llx: the code could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(at)),
                static_cast<unsigned long>(GetLastError()));
         return GN_ERR_ARGUMENT;
@@ -226,6 +333,159 @@ int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void*
     char what[64];
     snprintf(what, sizeof(what), "call to %llx", static_cast<unsigned long long>(expectedTargetVa));
     return add(mod, site + 1, reinterpret_cast<const uint8_t*>(&rel2), 4, reinterpret_cast<uintptr_t>(caller), what);
+}
+
+// ---- function detours (hook_function) ----------------------------------------------------------
+// The function's first instructions move to a trampoline near the image (gn::x64::trampoline) and a
+// 5-byte jmp at its entry goes to a stub, "jmp [rip+x]" through a pointer slot in GridNode's data
+// page. That slot is chained by the hook table like any vtable slot: each detour gets the one
+// below it as its original, the trampoline (the game's function) last; a mod's detours come out when
+// it is unloaded. The entry jump is GridNode's own patch: it stays, going straight through the slot
+// to the trampoline, until GridNode is unloaded.
+namespace {
+// Writes a detour's entry jump with every other thread of the game stopped: a thread stopped inside
+// the instructions being replaced (most functions start with a 1-byte push, so the jump covers
+// several) goes on from the same instruction in the trampoline. Nothing here allocates or logs while
+// the threads are stopped (one of them may hold the heap's or the log's lock).
+bool writeEntry(uintptr_t fn, const uint8_t (&jmp)[5], size_t copied, const std::vector<std::pair<size_t, size_t>>& starts, uint8_t* tramp,
+                int& moved) {
+    std::vector<HANDLE> stopped;
+    pauseOthers(stopped);
+    moved = 0;
+    for (HANDLE h : stopped) {
+        alignas(16) CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        if (!GetThreadContext(h, &ctx) || ctx.Rip < fn || ctx.Rip >= fn + copied) continue;
+        for (const auto& [from, to] : starts)
+            if (ctx.Rip == fn + from) {
+                ctx.Rip = reinterpret_cast<uintptr_t>(tramp) + to;
+                if (SetThreadContext(h, &ctx)) ++moved;
+                break;
+            }
+    }
+    const bool ok = writeCode(fn, jmp, 5, true);
+    resumeAll(stopped);
+    return ok;
+}
+
+struct Detour {
+    uint8_t* tramp = nullptr;
+    uint64_t* slot = nullptr;
+};
+std::mutex g_detM;
+std::map<uintptr_t, Detour> g_detours; // (g_detM) by function
+uint8_t* g_slotPage = nullptr;          // (g_detM) pointer slots, read-write data
+size_t g_slotUsed = 0;
+
+bool isGameCode(uintptr_t fn) {
+    if (!mem::inImage(fn)) return false;
+    for (const mem::Section& sec : mem::imageSections())
+        if (sec.region.code && fn >= sec.region.begin && fn < sec.region.end) return true;
+    return false;
+}
+
+// (g_detM) The function's slot, made on first use. GN_OK, or an error already logged.
+int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
+    if (auto it = g_detours.find(fn); it != g_detours.end()) {
+        out = it->second;
+        return GN_OK;
+    }
+    uint8_t code[64] = {};
+    if (!mem::read(fn, code, sizeof(code))) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_thunkM);
+    uint8_t* room = codeRoom(fn, 128); // trampoline (up to 0x60), then the stub at +0x70
+    if (!room) {
+        GN_LOG("[%s] hook_function %llx: no memory within 2 GB of it", mod, static_cast<unsigned long long>(mem::va(fn)));
+        return GN_ERR_UNAVAILABLE;
+    }
+    std::vector<uint8_t> tramp;
+    std::vector<std::pair<size_t, size_t>> starts;
+    size_t copied = 0;
+    std::string why;
+    if (!x64::trampoline(code, sizeof(code), fn, 5, reinterpret_cast<uint64_t>(room), tramp, copied, &why, &starts) || tramp.size() > 0x60) {
+        GN_LOG("[%s] hook_function %llx: %s", mod, static_cast<unsigned long long>(mem::va(fn)), why.empty() ? "trampoline too long" : why.c_str());
+        return GN_ERR_SLOT;
+    }
+    uint8_t* stub = room + 0x70;
+    if (!g_slotPage || g_slotUsed + 8 > 0x1000 || !reaches(g_slotPage, reinterpret_cast<uintptr_t>(stub))) {
+        bool unused = false;
+        g_slotPage = allocNear(reinterpret_cast<uintptr_t>(stub), false, unused);
+        g_slotUsed = 0;
+        if (!g_slotPage) return GN_ERR_UNAVAILABLE;
+    }
+    auto* slot = reinterpret_cast<uint64_t*>(g_slotPage + g_slotUsed);
+    g_slotUsed += 8;
+    *slot = reinterpret_cast<uint64_t>(room);
+    memcpy(room, tramp.data(), tramp.size());
+    const int32_t toSlot = static_cast<int32_t>(reinterpret_cast<intptr_t>(slot) - reinterpret_cast<intptr_t>(stub + 6));
+    const uint8_t jmp[2] = {0xff, 0x25}; // jmp [rip+toSlot]
+    memcpy(stub, jmp, 2);
+    memcpy(stub + 2, &toSlot, 4);
+    if (!codeDone(room, 128)) return GN_ERR_UNAVAILABLE;
+    // The entry: jmp rel32 to the stub, GridNode's patch (undone when GridNode is unloaded).
+    uint8_t entry[5] = {0xe9};
+    const int32_t toStub = static_cast<int32_t>(reinterpret_cast<intptr_t>(stub) - static_cast<intptr_t>(fn + 5));
+    memcpy(entry + 1, &toStub, 4);
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (overlaps(fn, 5)) {
+            GN_LOG("[%s] hook_function %llx: a code patch is there", mod, static_cast<unsigned long long>(mem::va(fn)));
+            return GN_ERR_SLOT;
+        }
+    }
+    int moved = 0;
+    if (!writeEntry(fn, entry, copied, starts, room, moved)) {
+        GN_LOG("[%s] hook_function %llx: the entry could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(fn)),
+               static_cast<unsigned long>(GetLastError()));
+        return GN_ERR_SLOT;
+    }
+    char what[96];
+    snprintf(what, sizeof(what), "detour entry (%llu bytes moved%s)", static_cast<unsigned long long>(copied),
+             moved ? ", a thread moved into the trampoline" : "");
+    add("GridNode", fn, entry, 5, reinterpret_cast<uintptr_t>(&detourSlot), what, code); // listed, undone at a full unload
+    out = {room, slot};
+    g_detours[fn] = out;
+    return GN_OK;
+}
+} // namespace
+
+int hookFunction(const char* mod, uint64_t fnVa, void* detour, void** original) {
+    if (!mod || !detour || !original || !fnVa) return GN_ERR_ARGUMENT;
+    const uintptr_t fn = mem::rva(fnVa);
+    if (!isGameCode(fn)) {
+        GN_LOG("[%s] hook_function %llx: not in the game's code", mod, static_cast<unsigned long long>(fnVa));
+        return GN_ERR_ARGUMENT;
+    }
+    if (unloading()) return GN_ERR_UNAVAILABLE;
+    Detour d;
+    {
+        std::lock_guard<std::mutex> lock(g_detM);
+        if (const int r = detourSlot(mod, fn, d); r != GN_OK) return r;
+    }
+    // Not under g_detM: the hook table writes the slot through isDetourSlot.
+    std::string why;
+    const auto r = hooks().install(mod, reinterpret_cast<uint64_t>(d.slot), reinterpret_cast<uint64_t>(d.tramp), reinterpret_cast<uint64_t>(detour),
+                                   reinterpret_cast<uint64_t*>(original), &why);
+    if (r != hook::Result::Ok) {
+        GN_LOG("[%s] hook_function %llx refused: %s", mod, static_cast<unsigned long long>(fnVa), why.c_str());
+        return GN_ERR_SLOT;
+    }
+    GN_LOG("[%s] hooked function %llx", mod, static_cast<unsigned long long>(fnVa));
+    return GN_OK;
+}
+
+bool isDetourSlot(uint64_t slot) {
+    std::lock_guard<std::mutex> lock(g_detM);
+    for (const auto& [fn, d] : g_detours)
+        if (reinterpret_cast<uint64_t>(d.slot) == slot) return true;
+    return false;
+}
+
+uint64_t detourFunction(uint64_t slot) {
+    std::lock_guard<std::mutex> lock(g_detM);
+    for (const auto& [fn, d] : g_detours)
+        if (reinterpret_cast<uint64_t>(d.slot) == slot) return mem::va(fn);
+    return 0;
 }
 
 size_t forgetPatches(const CodeRange& r) {

@@ -402,6 +402,36 @@ pub fn patch_bytes(va: u64, expected: &[u8], bytes: &[u8]) -> bool {
     }
 }
 
+// ---- function detours and other mods (API 16) ---------------------------------------------------------
+/// Calls to the game's function at `function_va` go to `detour`, with the same arguments; `*original`
+/// receives what to call for the game's behaviour. Taken out when the mod is unloaded.
+/// # Safety
+/// `detour` must be an `extern "C"` function with the game function's signature, safe on any thread.
+pub unsafe fn hook_function(function_va: u64, detour: *const c_void, original: *mut *mut c_void) -> bool {
+    (api().hook_function.unwrap())(name(), function_va, detour as *mut c_void, original) == 0
+}
+/// Offers a function of this mod to other mods as "<its id>.<name>".
+pub fn export_fn(fn_name: &str, f: *const c_void) -> bool {
+    let n = cstr(fn_name);
+    unsafe { (api().mod_export.unwrap())(n.as_ptr(), f as *mut c_void) == 0 }
+}
+/// Another mod's function (null when that mod is not loaded or does not offer it); cast it to its type.
+pub fn import_fn(mod_id: &str, fn_name: &str) -> *mut c_void {
+    let (m, n) = (cstr(mod_id), cstr(fn_name));
+    unsafe { (api().mod_import.unwrap())(m.as_ptr(), n.as_ptr()) }
+}
+/// The version of a loaded mod; None when it is not loaded.
+pub fn mod_version(mod_id: &str) -> Option<String> {
+    let m = cstr(mod_id);
+    let mut b = [0 as c_char; 64];
+    unsafe {
+        if (api().mod_version.unwrap())(m.as_ptr(), b.as_mut_ptr(), b.len()) != 0 {
+            return None;
+        }
+        Some(CStr::from_ptr(b.as_ptr()).to_string_lossy().into_owned())
+    }
+}
+
 // ---- the free camera (API 13) ---------------------------------------------------------------------
 pub use crate::sys::gn_freecam as Freecam;
 /// GridNode's free camera on / off (at the next frame); false without Faith.

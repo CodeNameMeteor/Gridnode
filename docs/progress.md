@@ -14,6 +14,38 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Review fixes** (2026-11-03, untested in game). Before a mod or gridnode.dll is freed, every other
+  thread is paused and checked for running in its code or having an address in it on its stack
+  (`quiet.cpp`); still there after a few seconds: it stays in memory, inert (a mod: Unload tries
+  again). GridNode's part of the destructor and recorder ANT hooks runs under `guardHook` (no
+  exception into engine frames). The dead-entity set evicts its oldest quarter instead of clearing
+  (a freed entity could pass as alive again); a reused address is cleared before the 400,000 cap.
+  Code writes that fit no aligned 8 or 16 bytes are made with the other threads paused and none
+  about to run them. Creation listeners: 64 per creator, extra ones logged. Chaining over another
+  module's code in a slot is logged with the module.
+  Second pass: functions between mods work from `gn_mod_load` (the mod being started is known by
+  its code; the trainer's `godMode` was "not offered"); the recorder's ANT value cache is split into
+  32 locks; `exportAll` checks its name itself; the landing hooks check the writers' functions
+  (`AntFloatWriter_write`, `AntBoolWriter_write`, `PositionPrediction_update` in `ant.yaml`);
+  `inspector::trackedOf(class)` instead of copying every entity; a queued hotkey press of an unloaded
+  mod is skipped; `fbxbin.py` checks counts against the file. Left: the 11 vtables `faith.cpp` checks
+  on its tuning paths are not annotated (compared only, never called: a mismatch turns the tuning off).
+  Third pass (user's test, 2026-11-03): the "still in its code" check scanned whole stacks and a stale
+  trainer address in a waiting thread kept it in memory for good; stacks are now unwound with the
+  modules' unwind data (read by hand while threads are paused), scanning only past code with none.
+  A GridNode kept in memory lets go of its instance mutex, and `gridnode_inject` then loads a copy
+  (`gridnode-2.dll`); mod copies in `mods\.loaded` skip names still mapped.
+- **M9, first three items (API 16)** (2026-11-03, untested in game). Function detours (`hook_function`:
+  the entry's instructions moved to a trampoline by `gn::x64`, a jump at the entry written with the
+  other threads stopped, the detours chained in the hook table through a slot of ours; checked on the
+  662 functions named in Ghidra: 658 take a detour, 4 are too short, instruction lengths agree with
+  objdump). Mod manifests (`gn_mod_info`, `GN_MOD_INFO[_DEPS]`): ids, versions, hard and optional
+  dependencies, the load order from them (`gridnode/mod_order.hpp`), functions between mods
+  (`mod_export` / `mod_import` / `mod_version`); a mod others need cannot be unloaded on its own.
+  Crash notes: the stack unwound with the modules' unwind data, game frames named from the
+  annotations (`meta::functionsByAddress`) or as `FUN_<va>`, the thread named (server, client,
+  render), the mods on the stack. Example: `examples/detour-demo`. The trainer has a manifest
+  (`mec-trainer` 1.3.0) and offers `godMode`.
 - **Code patches (API 15)** (2026-11-02, confirmed in game with the trainer's best-time guard). `patch_call` (a call or jmp rel32 sent
   to a detour through a thunk near the image) and `patch_bytes`; each listed in the menu's Hooks
   section, undone when its mod (the code that made it) is unloaded or at a full unload, and the

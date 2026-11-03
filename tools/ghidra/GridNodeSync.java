@@ -134,6 +134,9 @@ public class GridNodeSync extends GhidraScript {
 		// Script arguments (headless, or a remote run): "import FILE" or "export FILE". No dialogs then.
 		String[] args = getScriptArgs();
 		if (args != null && args.length >= 2) {
+			// The rest is one path, joined back with spaces: GhidraMCP splits its argument string on
+			// whitespace with no quoting, so "D:\My Files\x.json" arrives as two arguments. (A path with
+			// two spaces in a row would come back with one; none of ours have that.)
 			File f = new File(String.join(" ", Arrays.copyOfRange(args, 1, args.length)));
 			if (args[0].equalsIgnoreCase("import")) {
 				doImport(f);

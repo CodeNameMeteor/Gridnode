@@ -71,12 +71,21 @@ template <size_t I> void* factoryDetour(void* creator, void* ci, void* a3, void*
         void* user;
         const Listener* l;
     };
-    std::array<Call, 32> calls;
-    size_t n = 0;
+    std::array<Call, 64> calls; // on the stack: no allocation on the game's thread
+    size_t n = 0, over = 0;
     {
         std::shared_lock<std::shared_mutex> lock(g_lock);
         for (const Listener* l : s.listeners)
-            if (n < calls.size() && registry().isKindOf(t, l->type)) calls[n++] = {l->fn, l->user, l};
+            if (registry().isKindOf(t, l->type)) {
+                if (n < calls.size()) calls[n++] = {l->fn, l->user, l};
+                else ++over;
+            }
+    }
+    if (over) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 5)
+            GN_LOG("on_created: %llu listener(s) for one %s not called: more than %llu on one creator", static_cast<unsigned long long>(over),
+                   t->name.c_str(), static_cast<unsigned long long>(calls.size()));
     }
     for (size_t i = 0; i < n; ++i) {
         try {
@@ -208,8 +217,10 @@ std::array<DtorSlot, kDtorPool> g_dtors;
 std::atomic<uint64_t> g_destroyedCount{0};
 
 template <size_t I> void* dtorDetour(void* self, uint64_t a2, uint64_t a3, uint64_t a4) {
-    recorder::onDestroyed(self);                            // while it can still say what it was
-    inspector::markDead(reinterpret_cast<uintptr_t>(self)); // before the object goes
+    guardHook("the entity destructor hook", [self] {               // both allocate: bad_alloc stays here
+        recorder::onDestroyed(self);                            // while it can still say what it was
+        inspector::markDead(reinterpret_cast<uintptr_t>(self)); // before the object goes
+    });
     g_destroyedCount.fetch_add(1, std::memory_order_relaxed);
     return reinterpret_cast<DtorFn>(g_dtors[I].original)(self, a2, a3, a4);
 }
