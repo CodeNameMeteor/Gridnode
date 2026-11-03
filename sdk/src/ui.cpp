@@ -473,6 +473,7 @@ void drawMain() {
                 ImGui::PopID();
             }
         }
+        drawSettingsPages(); // the mods' declared settings (modsettings.cpp)
         if (ImGui::CollapsingHeader("Unload")) {
             static bool sure = false;
             if (unloadRequested()) {

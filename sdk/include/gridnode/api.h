@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 16 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods */
+#define GN_API_VERSION 17 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -74,6 +74,30 @@ typedef struct gn_mod_manifest {
                                    "?id" (optional: loaded after it when it is there) */
 } gn_mod_manifest;
 typedef const gn_mod_manifest* (*gn_mod_info_fn)(void);
+
+/* A declared setting (API 17, setting_add). Copied: the strings need not stay. */
+#define GN_SETTING_BOOL 1   /* a checkbox: 0 or 1 */
+#define GN_SETTING_INT 2    /* a whole number (a slider when min < max) */
+#define GN_SETTING_FLOAT 3  /* a number (a slider when min < max) */
+#define GN_SETTING_CHOICE 4 /* one of `choices`: the value is its index */
+#define GN_SETTING_TEXT 5   /* one line of text (def_text) */
+#define GN_SETTING_HIDDEN 1 /* flags: only in the file, not on the settings page */
+typedef struct gn_setting {
+    uint32_t size;              /* sizeof(gn_setting) */
+    int32_t kind;               /* GN_SETTING_* */
+    const char* id;             /* its key in the mod's settings file */
+    const char* label;          /* on the page (null: the id) */
+    const char* description;    /* a tooltip, and a comment in the file (may be null) */
+    const char* group;          /* settings with the same group are shown under one heading (may be null) */
+    double def;                 /* default (BOOL 0 / 1, CHOICE an index) */
+    double min;                 /* range (min == max: no range) */
+    double max;
+    double step;                /* INT / FLOAT without a range: the +/- buttons' step (0: none) */
+    const char* const* choices; /* CHOICE: null-terminated labels */
+    const char* def_text;       /* TEXT: the default */
+    uint32_t flags;             /* GN_SETTING_HIDDEN */
+} gn_setting;
+typedef void (*gn_setting_fn)(const char* id, void* user);
 
 typedef void (*gn_tick_fn)(float dt, void* user);
 typedef void (*gn_task_fn)(void* user);
@@ -607,6 +631,28 @@ typedef struct gn_api {
     int (*mod_export)(const char* name, void* fn);
     void* (*mod_import)(const char* mod_id, const char* name);
     int (*mod_version)(const char* mod_id, char* out, size_t size);
+
+    /* ==== GN_API_VERSION 17 =================================================================== */
+
+    /* ---- declared settings -----------------------------------------------------------------------
+     * A setting declared once with its kind, default, range and description. GridNode keeps it in the
+     * mod's settings file (the same file as config_get / config_set, its key the setting's id, with
+     * its label and description as a comment above it), clamps what is set to the range, and draws
+     * it on the mod's page in the GridNode menu (Mod settings), which every mod with declared settings
+     * gets unless it hides it (settings_page). Without GridNode's menu the file is the way to change
+     * them. The same id again replaces the declaration (a reload).
+     * setting_number: the value of a BOOL, INT, FLOAT or CHOICE (the index); NaN for an unknown id or
+     * a TEXT. setting_text: any setting as text (out cut to fit: GN_ERR_FULL). setting_set_*: clamped
+     * to the range, and the mod's listeners told (setting_on_change: fn(id, user) on the client
+     * thread; id null: any of the mod's settings). Declarations and listeners go when the mod is
+     * unloaded. Any thread. */
+    int (*setting_add)(const char* mod, const gn_setting* setting);
+    double (*setting_number)(const char* mod, const char* id);
+    int (*setting_text)(const char* mod, const char* id, char* out, size_t size);
+    int (*setting_set_number)(const char* mod, const char* id, double value);
+    int (*setting_set_text)(const char* mod, const char* id, const char* value);
+    int (*setting_on_change)(const char* mod, const char* id, gn_setting_fn fn, void* user);
+    int (*settings_page)(const char* mod, int shown); /* shown 0: no page for this mod (its own window has them) */
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

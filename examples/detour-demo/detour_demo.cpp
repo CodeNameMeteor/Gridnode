@@ -7,6 +7,7 @@
 //     two detours on one function chained (GridNode menu, Hooks)
 //   - a function from another mod (gn::importFn): the trainer's god mode, read through its export
 //   - a button that crashes the game on purpose, to see the crash notes in gridnode.log
+//   - declared settings (API 17): no UI code for them here, GridNode draws them (Mod settings)
 // Its window is in the GridNode menu (INSERT).
 
 #include <atomic>
@@ -28,6 +29,9 @@ using PostEvent = void (*)(void* busPeer, void* source, uint32_t eventId, void* 
 FireEvent g_fireA = nullptr, g_fireB = nullptr;
 PostEvent g_post = nullptr;
 std::atomic<uint64_t> g_fires{0}, g_firesB{0}, g_posts{0};
+// Declared settings: on the GridNode menu's Mod settings page and in mods\detour-demo.ini.
+gn::setting::Setting g_countPosts, g_window, g_rateEvery, g_unit, g_title;
+std::atomic<bool> g_countPostsOn{true}; // read in the detour: an atomic, not a call per event
 
 // Detours run on whatever thread calls the function: only atomics here.
 void fireA(void* bus, void* source, void* event) {
@@ -39,9 +43,10 @@ void fireB(void* bus, void* source, void* event) {
     g_fireB(bus, source, event);
 }
 void post(void* busPeer, void* source, uint32_t id, void* a4) {
-    g_posts.fetch_add(1, std::memory_order_relaxed);
+    if (g_countPostsOn.load(std::memory_order_relaxed)) g_posts.fetch_add(1, std::memory_order_relaxed);
     g_post(busPeer, source, id, a4);
 }
+
 
 using GodMode = int (*)();
 GodMode g_trainerGod = nullptr;
@@ -50,6 +55,17 @@ bool g_hooked[3] = {};
 } // namespace
 
 GN_MOD("detour-demo") {
+    using namespace gn::setting;
+    g_window = addBool("window", "Show the window", true, {"The Detour demo window, while the menu is open", "Window"});
+    g_title = addText("title", "Window title", "Detour demo", {"Its title bar", "Window"});
+    g_countPosts = addBool("count_posts", "Count postEvent calls", true, {"Off: the postEvent detour only passes calls on", "Counting"});
+    g_rateEvery = addFloat("rate_every", "Rate over (s)", 1.f, 0.25f, 5.f, {"How long the calls per second are averaged over", "Counting"});
+    g_unit = addChoice("unit", "Rate as", 0, {"per second", "per frame (60 Hz)"}, {"How the rates are shown", "Counting"});
+    g_countPostsOn = g_countPosts.on();
+    onChange(nullptr, [](const char* id) {
+        g_countPostsOn = g_countPosts.on();
+        gn::log("setting %s is now %s", id, gn::setting::Setting(id).text().c_str());
+    });
     g_hooked[0] = gn::hookFunction(f::EntityBus_fireEvent, &fireA, &g_fireA);
     g_hooked[1] = gn::hookFunction(f::EntityBus_fireEvent, &fireB, &g_fireB); // on top of fireA
     g_hooked[2] = gn::hookFunction(f::EntityBus_postEvent, &post, &g_post);
@@ -62,21 +78,26 @@ GN_MOD("detour-demo") {
     }
     gn::log("detours: fireEvent %s / %s, postEvent %s", g_hooked[0] ? "ok" : "FAILED", g_hooked[1] ? "ok" : "FAILED", g_hooked[2] ? "ok" : "FAILED");
     gn::ui::onDraw([](bool menuOpen) {
-        if (!menuOpen) return;
+        if (!menuOpen || !g_window.on()) return;
         static auto last = std::chrono::steady_clock::now();
         static uint64_t f0 = 0, p0 = 0;
         static double fireRate = 0, postRate = 0;
         const auto now = std::chrono::steady_clock::now();
         const double dt = std::chrono::duration<double>(now - last).count();
-        if (dt >= 1.0) {
+        if (dt >= g_rateEvery.value()) {
             const uint64_t f1 = g_fires.load(), p1 = g_posts.load();
             fireRate = (f1 - f0) / dt, postRate = (p1 - p0) / dt;
             f0 = f1, p0 = p1, last = now;
         }
-        ImGui::Begin("Detour demo");
-        ImGui::Text("EntityBus_fireEvent: %llu calls (%.0f/s); second detour saw %llu", static_cast<unsigned long long>(g_fires.load()), fireRate,
-                    static_cast<unsigned long long>(g_firesB.load()));
-        ImGui::Text("EntityBus_postEvent: %llu calls (%.0f/s)", static_cast<unsigned long long>(g_posts.load()), postRate);
+        const std::string title = g_title.text() + "###detour-demo"; // the id stays when the title changes
+        ImGui::Begin(title.c_str());
+        const bool perFrame = g_unit.integer() == 1;
+        const double k = perFrame ? 1.0 / 60.0 : 1.0;
+        const char* unit = perFrame ? "/frame" : "/s";
+        ImGui::Text("EntityBus_fireEvent: %llu calls (%.0f%s); second detour saw %llu", static_cast<unsigned long long>(g_fires.load()), fireRate * k,
+                    unit, static_cast<unsigned long long>(g_firesB.load()));
+        ImGui::Text("EntityBus_postEvent: %llu calls (%.0f%s)%s", static_cast<unsigned long long>(g_posts.load()), postRate * k, unit,
+                    g_countPostsOn ? "" : " (not counting)");
         if (g_trainerGod) ImGui::Text("Trainer god mode (through its export): %s", g_trainerGod() ? "on" : "off");
         else ImGui::TextDisabled("The MEC trainer is not loaded (or does not offer godMode).");
         if (ImGui::Button("Unload this mod")) gn::unloadSelf();

@@ -181,28 +181,44 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
         }
         return nullptr;
     };
+    // From the site outwards, the near side first: a site below the image (a page made earlier) looks
+    // down first, then up. Each direction has half the time: walking up from the image can pass
+    // thousands of the game's regions without a free one (2 s and no try at all, 2026-11-03), and the
+    // free space just below the image was never reached.
     uint8_t* found = nullptr;
-    const uintptr_t imageEnd = mem::moduleBase() + mem::imageSize();
+    const uintptr_t imageBase = mem::moduleBase(), imageEnd = imageBase + mem::imageSize();
     MEMORY_BASIC_INFORMATION mbi{};
-    for (uintptr_t a = imageEnd; !found && !out() && a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) { // above
-        const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
-        if (mbi.State == MEM_FREE) {
-            const uintptr_t to = std::min(e, hi);
-            uintptr_t x = (std::max(b, a) + gran - 1) & ~(gran - 1);
-            for (int i = 0; !found && i < kTriesPerRegion && x + 0x1000 <= to && !out(); ++i, x += gran) found = tryAt(x);
+    const auto up = [&](uintptr_t from, ULONGLONG until) {
+        for (uintptr_t a = from; !found && !out() && GetTickCount64() < until && a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) {
+            const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
+            if (mbi.State == MEM_FREE) {
+                const uintptr_t to = std::min(e, hi);
+                uintptr_t x = (std::max(b, a) + gran - 1) & ~(gran - 1);
+                for (int i = 0; !found && i < kTriesPerRegion && x + 0x1000 <= to && !out(); ++i, x += gran) found = tryAt(x);
+            }
+            if (e <= a) break;
+            a = e;
         }
-        if (e <= a) break;
-        a = e;
-    }
-    for (uintptr_t a = mem::moduleBase(); !found && !out() && a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) { // below
-        const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
-        if (mbi.State == MEM_FREE) {
-            const uintptr_t from = std::max(b, lo), to = std::min(e, a);
-            uintptr_t x = to >= 0x1000 ? (to - 0x1000) & ~(gran - 1) : 0; // the highest addresses, nearest the image
-            for (int i = 0; !found && i < kTriesPerRegion && x >= from && x + 0x1000 <= to && !out(); ++i, x -= gran) found = tryAt(x);
+    };
+    const auto down = [&](uintptr_t from, ULONGLONG until) {
+        for (uintptr_t a = from; !found && !out() && GetTickCount64() < until && a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) {
+            const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
+            if (mbi.State == MEM_FREE) {
+                const uintptr_t lowest = std::max(b, lo), to = std::min(e, a);
+                uintptr_t x = to >= 0x1000 ? (to - 0x1000) & ~(gran - 1) : 0; // the highest addresses, nearest the site
+                for (int i = 0; !found && i < kTriesPerRegion && x >= lowest && x + 0x1000 <= to && !out(); ++i, x -= gran) found = tryAt(x);
+            }
+            if (b >= a || b == 0) break;
+            a = b;
         }
-        if (b >= a || b == 0) break;
-        a = b;
+    };
+    const ULONGLONG half = start + kMaxSearchMs / 2, all = start + kMaxSearchMs;
+    if (site < imageBase) {
+        down(site, half);
+        up(site, all);
+    } else {
+        up(std::max(site, imageEnd), half);
+        down(std::min(site, imageBase), all);
     }
     const unsigned long long ms = GetTickCount64() - start;
     if (found)

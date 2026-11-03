@@ -17,7 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <string>
+#include <vector>
 #include <type_traits>
 #include <utility>
 
@@ -394,6 +396,80 @@ inline bool setFloat(const char* key, float value) {
 inline bool setInt(const char* key, int value) { return setString(key, std::to_string(value)); }
 inline bool setBool(const char* key, bool value) { return setString(key, value ? "1" : "0"); }
 } // namespace config
+
+// ---- declared settings (API 17) ---------------------------------------------------------------------
+// Declared once; kept in the mod's settings file with their description; on the mod's page in the
+// GridNode menu (Mod settings) unless gn::setting::page(false). For example:
+//     static gn::setting::Setting speed;
+//     GN_MOD("my-mod") {
+//         speed = gn::setting::addFloat("speed", "Speed", 2.f, 0.1f, 10.f, {"Metres per tick", "Movement"});
+//         gn::setting::onChange("speed", [](const char*) { gn::log("speed is now %.2f", speed.value()); });
+//         ...
+//     }
+//     ... speed.value() anywhere, any thread.
+namespace setting {
+struct Options {
+    const char* description = nullptr; // tooltip and file comment
+    const char* group = nullptr;       // heading on the page
+    double step = 0;                   // int / float without a range: the +/- step
+    uint32_t flags = 0;                // GN_SETTING_HIDDEN: only in the file
+};
+class Setting {
+public:
+    Setting() = default;
+    explicit Setting(std::string id) : id_(std::move(id)) {}
+    explicit operator bool() const { return !id_.empty(); }
+    const std::string& id() const { return id_; }
+    double number() const { return api().setting_number(modName(), id_.c_str()); } // NaN: unknown (or a text)
+    bool on() const { return number() != 0; }
+    int integer() const { return static_cast<int>(number()); } // INT, or a CHOICE's index
+    float value() const { return static_cast<float>(number()); }
+    std::string text() const {
+        char b[1024];
+        const int r = api().setting_text(modName(), id_.c_str(), b, sizeof(b));
+        return r == GN_OK || r == GN_ERR_FULL ? std::string(b) : std::string();
+    }
+    bool set(double v) const { return api().setting_set_number(modName(), id_.c_str(), v) == GN_OK; }
+    bool setText(const std::string& v) const { return api().setting_set_text(modName(), id_.c_str(), v.c_str()) == GN_OK; }
+
+private:
+    std::string id_;
+};
+namespace detail {
+inline Setting add(const char* id, const char* label, int32_t kind, double def, double min, double max, const char* const* choices,
+                   const char* defText, const Options& o) {
+    gn_setting s{};
+    s.size = sizeof(s), s.kind = kind, s.id = id, s.label = label, s.description = o.description, s.group = o.group;
+    s.def = def, s.min = min, s.max = max, s.step = o.step, s.choices = choices, s.def_text = defText, s.flags = o.flags;
+    return api().setting_add(modName(), &s) == GN_OK ? Setting(id) : Setting();
+}
+} // namespace detail
+inline Setting addBool(const char* id, const char* label, bool def, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_BOOL, def ? 1 : 0, 0, 0, nullptr, nullptr, o);
+}
+inline Setting addInt(const char* id, const char* label, int def, int min, int max, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_INT, def, min, max, nullptr, nullptr, o);
+}
+inline Setting addFloat(const char* id, const char* label, float def, float min, float max, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_FLOAT, def, min, max, nullptr, nullptr, o);
+}
+inline Setting addChoice(const char* id, const char* label, int def, std::initializer_list<const char*> choices, const Options& o = {}) {
+    std::vector<const char*> c(choices);
+    c.push_back(nullptr); // copied by GridNode: need not outlive the call
+    return detail::add(id, label, GN_SETTING_CHOICE, def, 0, 0, c.data(), nullptr, o);
+}
+inline Setting addText(const char* id, const char* label, const char* def, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_TEXT, 0, 0, 0, nullptr, def, o);
+}
+// f(const char* id) on the client thread when a setting changes (id null: any of the mod's).
+template <class F> bool onChange(const char* id, F f) {
+    auto* p = ::gn::detail::keep(std::function<void(const char*)>(std::move(f)));
+    return api().setting_on_change(modName(), id, [](const char* changed, void* u) { (*static_cast<std::function<void(const char*)>*>(u))(changed); },
+                                   p) == GN_OK;
+}
+// false: no page in the GridNode menu for this mod (its own window shows them).
+inline void page(bool shown) { api().settings_page(modName(), shown ? 1 : 0); }
+} // namespace setting
 
 // A key the player can rebind, kept in the mod's settings (key.<id>). fn() runs on the client thread
 // when it goes down (game focused, menu closed). defaultVk: a Windows virtual-key code ('F', VK_F1),

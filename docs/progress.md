@@ -14,6 +14,11 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Declared settings (API 17, M9 item 4)** (2026-11-03, untested in game). `setting_add` and friends,
+  `gn::setting::addBool / addInt / addFloat / addChoice / addText`: kept in the mod's ini with their
+  description as a comment, clamped, and drawn by GridNode on a page per mod (menu, Mod settings;
+  `settings_page(false)` hides it), so a mod with no UI code gets one. Portable parts in
+  `gridnode/config.hpp` (tested); host side `modsettings.cpp`. The detour demo declares five.
 - **Review fixes** (2026-11-03, untested in game). Before a mod or gridnode.dll is freed, every other
   thread is paused and checked for running in its code or having an address in it on its stack
   (`quiet.cpp`); still there after a few seconds: it stays in memory, inert (a mod: Unload tries

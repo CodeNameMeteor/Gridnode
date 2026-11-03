@@ -282,6 +282,7 @@ GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, vo
 }
 GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
 GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
+GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 } // namespace
 
 const gn_api* api() {
@@ -378,6 +379,13 @@ const gn_api* api() {
         a.mod_export = apiModExport;
         a.mod_import = apiModImport;
         a.mod_version = modVersion;
+        a.setting_add = apiSettingAdd;
+        a.setting_number = settingNumber;
+        a.setting_text = settingText;
+        a.setting_set_number = settingSetNumber;
+        a.setting_set_text = settingSetText;
+        a.setting_on_change = settingOnChange;
+        a.settings_page = settingsPage;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

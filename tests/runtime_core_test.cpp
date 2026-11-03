@@ -333,6 +333,45 @@ void testEventHash() {
     static_assert(gn::eventHash("StreamOut") == 0x21f3f677u, "usable at compile time");
 }
 
+void testDeclaredSettings() {
+    using namespace gn::config;
+    Decl f;
+    f.id = "speed", f.label = "Speed", f.description = "Metres per tick", f.kind = Kind::Float;
+    f.def = 20, f.min = 10, f.max = 0.5; // backwards, default outside
+    CHECK(normalize(f));
+    CHECK(f.min == 0.5 && f.max == 10 && f.def == 10);
+    CHECK(clamp(f, 99) == 10 && clamp(f, -1) == 0.5 && clamp(f, 2.25) == 2.25);
+    CHECK(format(f, 2.25) == "2.25");
+    CHECK(parseNumber(f, " 3 ") == 3 && parseNumber(f, "abc") == 10 && parseNumber(f, "") == 10 && parseNumber(f, "50") == 10);
+    CHECK(comment(f) == "Speed: Metres per tick. From 0.5 to 10, default 10.");
+
+    Decl i;
+    i.id = "count", i.kind = Kind::Int, i.def = 3.6, i.min = 0, i.max = 5;
+    CHECK(normalize(i) && i.def == 4);
+    CHECK(format(i, 2.4) == "2" && parseNumber(i, "7") == 5);
+
+    Decl b;
+    b.id = "on", b.kind = Kind::Bool, b.def = 5;
+    CHECK(normalize(b) && b.def == 1);
+    CHECK(parseNumber(b, "false") == 0 && parseNumber(b, "true") == 1 && parseNumber(b, "0") == 0 && format(b, 0.2) == "1");
+
+    Decl c;
+    c.id = "mode", c.label = "Mode", c.kind = Kind::Choice, c.choices = {"off", "slow", "fast"}, c.def = 1;
+    CHECK(normalize(c));
+    CHECK(parseNumber(c, "fast") == 2 && parseNumber(c, "9") == 2 && parseNumber(c, "1") == 1);
+    CHECK(comment(c) == "Mode. One of: 0 off, 1 slow, 2 fast. Default 1.");
+    Decl none;
+    none.kind = Kind::Choice;
+    CHECK(!normalize(none));
+    Decl bad;
+    bad.kind = static_cast<Kind>(9);
+    CHECK(!normalize(bad));
+
+    const std::string text = serialize({{"speed", "2"}, {"other", "x"}}, "Head", {{"speed", "Speed: fast.\nSecond line."}});
+    CHECK(text == "# Head\n\n# Speed: fast.\n# Second line.\nspeed=2\nother=x\n");
+    CHECK(*find(parse(text), "speed") == "2"); // the comments read back as nothing
+}
+
 void testModOrder() {
     using namespace gn::modorder;
     const Dep d = parseDep(" ?trainer >= 1.2 ");
@@ -368,6 +407,7 @@ void testModOrder() {
 
 int main() {
     testModOrder();
+    testDeclaredSettings();
     testRegistry();
     testHookTable();
     testDispatcher();

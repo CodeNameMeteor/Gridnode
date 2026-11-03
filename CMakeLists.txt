@@ -156,6 +156,7 @@ add_library(gridnode SHARED
   sdk/src/unload.cpp
   sdk/src/patches.cpp
   sdk/src/quiet.cpp
+  sdk/src/modsettings.cpp
   sdk/src/world.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp

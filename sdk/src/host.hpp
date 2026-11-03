@@ -91,6 +91,17 @@ void pollMods();                                     // GridNode's thread: reloa
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
 void* modImport(const void* caller, const char* modId, const char* name); // gn_api mod_import
 int modVersion(const char* modId, char* out, size_t size);               // gn_api mod_version
+
+// Declared mod settings (modsettings.cpp): gn_api setting_*; settingComments for the settings file.
+int settingAdd(const char* mod, const gn_setting* s, const void* caller);
+double settingNumber(const char* mod, const char* id);
+int settingText(const char* mod, const char* id, char* out, size_t size);
+int settingSetNumber(const char* mod, const char* id, double v);
+int settingSetText(const char* mod, const char* id, const char* v);
+int settingOnChange(const char* mod, const char* id, gn_setting_fn fn, void* user);
+int settingsPage(const char* mod, int shown);
+std::vector<std::pair<std::string, std::string>> settingComments(const std::string& mod);
+void drawSettingsPages(); // render thread, in the GridNode menu
 bool unloadAllMods(); // GridNode's thread, for a full unload: true when every mod was freed (the rest are inert)
 
 // A loaded module's code, to take out everything a mod registered when it is unloaded: each part of
@@ -99,6 +110,7 @@ struct CodeRange {
     uintptr_t begin = 0, end = 0;
     bool has(const void* p) const { return reinterpret_cast<uintptr_t>(p) >= begin && reinterpret_cast<uintptr_t>(p) < end; }
 };
+void forgetSettings(const CodeRange& r); // a mod's declared settings and listeners (modsettings.cpp)
 void forgetTicks(const CodeRange& r);    // at the next tick of each realm (server().removing())
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
 void forgetCreated(const CodeRange& r);

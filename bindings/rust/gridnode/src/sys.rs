@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 16;
+pub const GN_API_VERSION: u32 = 17;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -12,6 +12,12 @@ pub const GN_ERR_FULL: u32 = 4;
 pub const GN_ERR_UNAVAILABLE: u32 = 5;
 pub const GN_ERR_THREAD: u32 = 6;
 pub const GN_ERR_MISMATCH: u32 = 7;
+pub const GN_SETTING_BOOL: u32 = 1;
+pub const GN_SETTING_INT: u32 = 2;
+pub const GN_SETTING_FLOAT: u32 = 3;
+pub const GN_SETTING_CHOICE: u32 = 4;
+pub const GN_SETTING_TEXT: u32 = 5;
+pub const GN_SETTING_HIDDEN: u32 = 1;
 pub const GN_COMMAND_SETTING: u32 = 1;
 pub const GN_COMMAND_ONLINE: u32 = 2;
 pub const GN_MOVE_STATE: u32 = 0x1;
@@ -41,6 +47,7 @@ pub struct gn_type {
 }
 
 pub type gn_mod_info_fn = Option<unsafe extern "C" fn() -> *const gn_mod_manifest>;
+pub type gn_setting_fn = Option<unsafe extern "C" fn(id: *const c_char, user: *mut c_void)>;
 pub type gn_tick_fn = Option<unsafe extern "C" fn(dt: f32, user: *mut c_void)>;
 pub type gn_task_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_created_fn = Option<unsafe extern "C" fn(entity: *mut c_void, creation_info: *mut c_void, user: *mut c_void)>;
@@ -64,6 +71,24 @@ pub struct gn_mod_manifest {
     pub author: *const c_char,
     pub description: *const c_char,
     pub depends: *mut *const c_char,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_setting {
+    pub size: u32,
+    pub kind: i32,
+    pub id: *const c_char,
+    pub label: *const c_char,
+    pub description: *const c_char,
+    pub group: *const c_char,
+    pub def: f64,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub choices: *mut *const c_char,
+    pub def_text: *const c_char,
+    pub flags: u32,
 }
 
 #[repr(C)]
@@ -292,6 +317,13 @@ pub struct gn_api {
     pub mod_export: Option<unsafe extern "C" fn(name: *const c_char, fn_: *mut c_void) -> c_int>,
     pub mod_import: Option<unsafe extern "C" fn(mod_id: *const c_char, name: *const c_char) -> *mut c_void>,
     pub mod_version: Option<unsafe extern "C" fn(mod_id: *const c_char, out: *mut c_char, size: usize) -> c_int>,
+    pub setting_add: Option<unsafe extern "C" fn(mod_: *const c_char, setting: *const gn_setting) -> c_int>,
+    pub setting_number: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char) -> f64>,
+    pub setting_text: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, out: *mut c_char, size: usize) -> c_int>,
+    pub setting_set_number: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, value: f64) -> c_int>,
+    pub setting_set_text: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, value: *const c_char) -> c_int>,
+    pub setting_on_change: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, fn_: gn_setting_fn, user: *mut c_void) -> c_int>,
+    pub settings_page: Option<unsafe extern "C" fn(mod_: *const c_char, shown: c_int) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -299,6 +331,7 @@ pub type gn_mod_load_fn = unsafe extern "C" fn(api: *const gn_api) -> c_int;
 
 // Sizes from the C compiler (64-bit), checked at compile time.
 const _: () = assert!(core::mem::size_of::<gn_mod_manifest>() == 56);
+const _: () = assert!(core::mem::size_of::<gn_setting>() == 96);
 const _: () = assert!(core::mem::size_of::<gn_command>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_message_info>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
@@ -312,4 +345,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 712);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 768);

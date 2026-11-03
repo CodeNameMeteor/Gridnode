@@ -27,6 +27,35 @@ const std::string* find(const Entries& entries, const std::string& key);
 // Sets (or adds) the key; true when that changed the entries.
 bool set(Entries& entries, const std::string& key, const std::string& value);
 
+// Comment lines written above a key (each prefixed "# "): a declared setting's label and description.
+using Comments = std::vector<std::pair<std::string, std::string>>; // key -> text (lines split on '\n')
+std::string serialize(const Entries& entries, const std::string& header, const Comments& comments);
+
+// ---- declared settings (gn_api setting_add, API 17) ----------------------------------------------
+// A mod declares a setting once (its kind, default, range, label, description); GridNode keeps the
+// value in the mod's file as text, clamps it, and draws it on the mod's settings page.
+enum class Kind : int32_t { Bool = 1, Int = 2, Float = 3, Choice = 4, Text = 5 }; // GN_SETTING_*
+struct Decl {
+    std::string id, label, description, group;
+    Kind kind = Kind::Bool;
+    double def = 0, min = 0, max = 0, step = 0; // min == max: no range (Int, Float)
+    std::vector<std::string> choices;          // Choice: the labels; the value is the index
+    std::string defText;                       // Text
+    uint32_t flags = 0;                        // GN_SETTING_HIDDEN ...
+};
+// The declaration made usable: an unknown kind refused (false), Choice with no choices refused,
+// min / max swapped when backwards, the default clamped.
+bool normalize(Decl& d);
+// A number as the setting allows it: Bool 0 / 1, Int and Choice whole numbers, inside the range
+// (Choice: 0 to the last choice), NaN to the default.
+double clamp(const Decl& d, double v);
+// The file's text for a number ("1", "-3", "0.25"), and back: the default when it is not a number of
+// that kind (a Bool also reads "true" / "false"; a Choice also its label).
+std::string format(const Decl& d, double v);
+double parseNumber(const Decl& d, const std::string& text);
+// "Label: description. From 0 to 10, default 2." for the file.
+std::string comment(const Decl& d);
+
 } // namespace gn::config
 
 // (Not gn::movement: that is mod.hpp's reading of her movement.)

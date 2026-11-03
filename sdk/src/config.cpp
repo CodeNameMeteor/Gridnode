@@ -57,8 +57,10 @@ void write(const std::string& mod, ModConfig& c) {
     c.dirty = false;
     if (g_folder.empty()) return;
     const std::wstring path = pathOf(mod), tmp = path + L".tmp";
-    const std::string text = config::serialize(c.entries, "Settings of the mod " + mod + ", written by GridNode.\n"
-                                                           "Edit with the game closed, or GridNode writes over it.");
+    const std::string text = config::serialize(c.entries,
+                                               "Settings of the mod " + mod + ", written by GridNode.\n"
+                                               "Edit with the game closed, or GridNode writes over it.",
+                                               settingComments(mod)); // declared settings: their descriptions
     FILE* f = _wfopen(tmp.c_str(), L"wb");
     if (!f) {
         GN_LOG("config: cannot write the settings of %s", mod.c_str());

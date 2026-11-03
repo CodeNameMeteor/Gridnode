@@ -168,6 +168,27 @@ void closeMod(Mod& m, const std::string& why) {
     m.code = CodeRange{};
 }
 
+void forgetExports(const CodeRange& r, const std::string& id);
+
+// Everything the mod's code registered, taken out: hooks, patches, callbacks, keys, settings, exports
+// (an unload, or a gn_mod_load that failed half way). A hook with another mod's hook on top stays and
+// is listed in `refused`. How many hooks came out.
+size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::string>* refused) {
+    const size_t hooksOut = forgetHooks(code, refused);
+    forgetPatches(code);
+    forgetTicks(code);
+    forgetCreated(code);
+    forgetLevel(code);
+    forgetMessages(code);
+    forgetMovement(code);
+    forgetEvents(code);
+    hotkeys::forget(code);
+    forgetSettings(code);
+    ui::forgetUi(code);
+    forgetExports(code, id);
+    return hooksOut;
+}
+
 // Calls its gn_mod_load. The result is in m.info.
 void start(Mod& m) {
     const std::string name = m.info.file;
@@ -189,8 +210,14 @@ void start(Mod& m) {
     }
     m.info.loaded = r == GN_OK, m.info.result = r;
     const std::string who = m.info.version.empty() ? m.info.id : m.info.id + " " + m.info.version;
-    if (r == GN_OK) GN_LOG("mods: %s loaded (%s)%s", name.c_str(), who.c_str(), m.info.reloadable ? ", reloadable" : "");
-    else GN_LOG("mods: %s returned %d from gn_mod_load", name.c_str(), r);
+    if (r == GN_OK) {
+        GN_LOG("mods: %s loaded (%s)%s", name.c_str(), who.c_str(), m.info.reloadable ? ", reloadable" : "");
+    } else {
+        // What it set up before failing goes: a failed mod is not left half running (its detours stayed in, 2026-11-03).
+        const size_t hooks = takeOut(m.code, m.info.id, nullptr);
+        GN_LOG("mods: %s returned %d from gn_mod_load; what it had set up is taken out (%llu hooks)", name.c_str(), r,
+               static_cast<unsigned long long>(hooks));
+    }
 }
 
 // The loaded mods other than `self` (g_modsM held): for a reload's dependency check.
@@ -279,17 +306,7 @@ bool unload(Mod& m, bool all = false) {
     }
     const CodeRange code = imageOf(m.module);
     std::vector<std::string> refused;
-    const size_t hooksOut = forgetHooks(code, &refused);
-    forgetPatches(code);
-    forgetTicks(code);
-    forgetCreated(code);
-    forgetLevel(code);
-    forgetMessages(code);
-    forgetMovement(code);
-    forgetEvents(code);
-    hotkeys::forget(code);
-    ui::forgetUi(code);
-    forgetExports(code, m.info.id);
+    const size_t hooksOut = takeOut(code, m.info.id, &refused);
     configFlush(true);
     if (!refused.empty()) {
         // One of its hooks has another mod's hook on top: freeing it would send that hook into freed
@@ -452,17 +469,7 @@ bool unloadAllMods() {
         // Pinned (no gn_mod_unload): it cannot be freed or asked to stop. Everything it registered goes,
         // so GridNode no longer calls it; it may still have its own threads, so GridNode stays loaded.
         const CodeRange code = imageOf(m.module);
-        forgetHooks(code, nullptr);
-        forgetPatches(code);
-        forgetTicks(code);
-        forgetCreated(code);
-        forgetLevel(code);
-        forgetMessages(code);
-        forgetMovement(code);
-        forgetEvents(code);
-        hotkeys::forget(code);
-        ui::forgetUi(code);
-        forgetExports(code, m.info.id);
+        takeOut(code, m.info.id, nullptr);
         m.info.loaded = false;
         m.info.status = "taken out (no gn_mod_unload: it stays in memory)";
         GN_LOG("mods: %s has no gn_mod_unload: its callbacks and hooks are out, but it stays in memory", m.info.file.c_str());

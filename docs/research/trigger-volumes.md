@@ -120,6 +120,16 @@ world transform +0x50, enabled +0x95, the data's `HalfExtents` +0x60, and on
 `PamOBBCollisionEntityData` the can't stand / climb / vault / wall run flags at +0x90..0x93. The
 Volumes tab draws them too.
 
+## Interaction points
+
+A small trigger (4.7 m) at a mission marker (2026-11-03, the trainer's per-trigger log): it is
+inside `UI/Prefabs/PF_S_Ui_GenericMarkerInteractLogic`, its `OnEnter` fades a UI element out and
+leaves the blueprint as `OnInteract`, which in `Gameplay/Logic/PF_MissionInteraction` disables the
+other triggers of that mission's start, shows the mission UI (`PF_L_Ui_MissionMain.Show`), and goes
+on to a voice-over, an enemy spawn and the `SilverMissionMarker`. Silver markers are side missions
+(user), gold ones the story's. The Volumes tab sorts these as interaction points, with "(side
+mission)" or "(main mission)" from the marker their trail reaches.
+
 ## Safe spawn blockers
 
 Many triggers reach a `PamSafeSpawnLockerEntityData` (`BlockReturnTeleport` +0x18; see

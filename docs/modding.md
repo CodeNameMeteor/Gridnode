@@ -330,6 +330,36 @@ Recorder see these like any other event.
 In Rust: `gridnode::on_event`, `event_hash` (`const fn`), `event_name`, `send_event` and
 `send_event_to_class`.
 
+## Declared settings (API 17)
+
+A setting declared once gets everything else from GridNode: it is kept in the mod's settings file
+(`<mods folder>/<mod>.ini`, the same file as `gn::config`) with its label, description and range as a
+comment above it, it is clamped to its range, and it appears on the mod's page in the GridNode menu
+(**Mod settings**). The mod needs no UI code for it: a mod built against `gridnode/mod.hpp` alone
+(no Dear ImGui) still gets the page, drawn by GridNode. Without GridNode's menu, the file is where
+players change them.
+
+```cpp
+static gn::setting::Setting speed, mode;
+GN_MOD("my-mod") {
+    using namespace gn::setting;
+    speed = addFloat("speed", "Speed", 2.f, 0.1f, 10.f, {"Metres per tick", "Movement"});
+    mode = addChoice("mode", "Mode", 0, {"off", "slow", "fast"}, {"What it does"});
+    onChange("speed", [](const char*) { gn::log("speed %.2f", speed.value()); });
+    return true;
+}
+// anywhere, any thread: speed.value(), mode.integer(), on(), text(); speed.set(3.f)
+```
+
+Kinds: `addBool`, `addInt` and `addFloat` (a slider with a range, a box without; `Options::step` for
+its +/- buttons), `addChoice` (the value is the index), `addText` (one line). `Options` are the
+description (tooltip and file comment), a group (a heading on the page) and `GN_SETTING_HIDDEN` (in
+the file only). Right-click a setting on the page to put it back to its default. `onChange` runs on
+the client thread when a setting changes from the page or `set` (`nullptr`: any of the mod's). A mod
+with its own window for them can hide its page: `gn::setting::page(false)`. Declarations and
+listeners go when the mod is unloaded. Rust: `setting_add`, `setting_number`, `setting_text`,
+`setting_set`, `setting_on_change`, `settings_page`. See `examples/detour-demo`.
+
 ## Movement events, settings and hotkeys (API 9)
 
 - **Movement events.** `gn::onMovement(fn)` calls `fn(const gn::MovementEvent& e, const

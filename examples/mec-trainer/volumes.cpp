@@ -31,7 +31,7 @@ namespace volumes {
 namespace {
 
 // ---- categories ----------------------------------------------------------------------------------
-enum Cat { kChallenge, kTeleport, kKill, kCutscene, kCheckpoint, kSpawnLock, kBarrier, kMission, kCityAlert, kAi, kSound, kOther, kCats };
+enum Cat { kChallenge, kTeleport, kKill, kInteract, kCutscene, kCheckpoint, kSpawnLock, kBarrier, kMission, kCityAlert, kAi, kSound, kOther, kCats };
 struct CatInfo {
     const char* key;
     const char* label;
@@ -42,6 +42,7 @@ const CatInfo kCatInfo[kCats] = {
     {"challenge", "Dashes and challenges", IM_COL32(255, 150, 30, 240), true},
     {"teleport", "Teleports (fall catchers, skips)", IM_COL32(0, 255, 230, 240), true},
     {"kill", "Kill volumes", IM_COL32(255, 0, 60, 240), true},
+    {"interact", "Interaction points (mission starts, interact prompts)", IM_COL32(255, 255, 120, 230), true},
     {"cutscene", "Cutscenes and scripted scenes", IM_COL32(255, 80, 200, 230), true},
     {"checkpoint", "Checkpoints and spawns", IM_COL32(80, 255, 120, 230), true},
     {"spawn_lock", "Safe spawn blockers (no safe spawn set inside)", IM_COL32(210, 255, 140, 200), false},
@@ -60,7 +61,10 @@ int categoryOf(const std::string& s) {
     if (has("challenge") || has("dash") || has("sharedcontent") || has("timetrial") || has("finishline") || has("/race")) return kChallenge;
     if (has("teleportentitydata")) return kTeleport;
     // A trigger that switches a kill volume (the kill volumes themselves are drawn from their own cache).
-    if (has("killvolume")) return kKill; // Old Friends' fall catcher under the roofs (2026-11-02)
+    if (has("killvolume")) return kKill;
+    // The game's interact zones: a marker's prompt and what pressing it starts (a side mission at a
+    // silver marker, 2026-11-03: PF_S_Ui_GenericMarkerInteractLogic inside PF_MissionInteraction).
+    if (has("markerinteract") || has("pf_s_interact") || has("missioninteraction") || has("interactlogic")) return kInteract; // Old Friends' fall catcher under the roofs (2026-11-02)
     if (has("me_sound") || has("soundentity") || has("voiceover") || has("mixerentity") || has("/vo/") || has("music")) return kSound;
     if (has("timeline") || has("cinematic") || has("sequence") || has("cutscene") || has("animations/") || has("anim_")) return kCutscene;
     if (has("safespawnlocker")) return kSpawnLock; // PamSafeSpawnLocker: Faith sets no safe spawn inside (user, 2026-11-03)
@@ -406,6 +410,10 @@ void classify(void* e, Volume& v) {
     }
     if (!v.cats) v.cats = 1u << kOther;
     v.primary = best < kCats ? best : kOther;
+    if (v.primary == kInteract) { // which mission it starts: silver markers are side missions, gold the story's
+        if (v.hay.find("silvermissionmarker") != std::string::npos) v.why += " (side mission)";
+        else if (v.hay.find("goldmissionmarker") != std::string::npos) v.why += " (main mission)";
+    }
 }
 
 std::unordered_map<void*, Volume> g_all; // client thread

@@ -432,6 +432,83 @@ pub fn mod_version(mod_id: &str) -> Option<String> {
     }
 }
 
+// ---- declared settings (API 17) -------------------------------------------------------------------------
+/// What a declared setting holds, with its default (and range, `min == max`: none).
+pub enum SettingKind<'a> {
+    Bool(bool),
+    Int { def: i32, min: i32, max: i32 },
+    Float { def: f32, min: f32, max: f32 },
+    /// The value is the index of the choice.
+    Choice { def: i32, choices: &'a [&'a str] },
+    Text(&'a str),
+}
+/// Declares a setting: kept in the mod's settings file with its description, on its page in the
+/// GridNode menu (Mod settings). `description` and `group` may be empty.
+pub fn setting_add(id: &str, label: &str, kind: SettingKind, description: &str, group: &str) -> bool {
+    let (i, l, d, g) = (cstr(id), cstr(label), cstr(description), cstr(group));
+    let mut s: crate::sys::gn_setting = unsafe { core::mem::zeroed() };
+    s.size = core::mem::size_of::<crate::sys::gn_setting>() as u32;
+    s.id = i.as_ptr();
+    s.label = l.as_ptr();
+    s.description = if description.is_empty() { core::ptr::null() } else { d.as_ptr() };
+    s.group = if group.is_empty() { core::ptr::null() } else { g.as_ptr() };
+    let choices: Vec<CString>;
+    let mut ptrs: Vec<*const c_char>;
+    let text: CString;
+    match kind {
+        SettingKind::Bool(v) => (s.kind, s.def) = (crate::sys::GN_SETTING_BOOL as i32, v as i32 as f64),
+        SettingKind::Int { def, min, max } => (s.kind, s.def, s.min, s.max) = (crate::sys::GN_SETTING_INT as i32, def as f64, min as f64, max as f64),
+        SettingKind::Float { def, min, max } => (s.kind, s.def, s.min, s.max) = (crate::sys::GN_SETTING_FLOAT as i32, def as f64, min as f64, max as f64),
+        SettingKind::Choice { def, choices: c } => {
+            choices = c.iter().map(|x| cstr(x)).collect();
+            ptrs = choices.iter().map(|x| x.as_ptr()).collect();
+            ptrs.push(core::ptr::null());
+            (s.kind, s.def) = (crate::sys::GN_SETTING_CHOICE as i32, def as f64);
+            s.choices = ptrs.as_mut_ptr();
+        }
+        SettingKind::Text(t) => {
+            text = cstr(t);
+            s.kind = crate::sys::GN_SETTING_TEXT as i32;
+            s.def_text = text.as_ptr();
+        }
+    }
+    unsafe { (api().setting_add.unwrap())(name(), &s) == 0 }
+}
+/// A BOOL (0 / 1), INT, FLOAT or CHOICE (its index); None for an unknown id or a TEXT.
+pub fn setting_number(id: &str) -> Option<f64> {
+    let i = cstr(id);
+    let v = unsafe { (api().setting_number.unwrap())(name(), i.as_ptr()) };
+    (!v.is_nan()).then_some(v)
+}
+/// Any setting as text.
+pub fn setting_text(id: &str) -> Option<String> {
+    let i = cstr(id);
+    let mut b = [0 as c_char; 1024];
+    let r = unsafe { (api().setting_text.unwrap())(name(), i.as_ptr(), b.as_mut_ptr(), b.len()) };
+    (r == 0 || r as u32 == crate::sys::GN_ERR_FULL).then(|| unsafe { string(b.as_ptr()) })
+}
+/// Sets a number (clamped to its range); the mod's listeners are told.
+pub fn setting_set(id: &str, v: f64) -> bool {
+    let i = cstr(id);
+    unsafe { (api().setting_set_number.unwrap())(name(), i.as_ptr(), v) == 0 }
+}
+pub fn setting_set_text(id: &str, v: &str) -> bool {
+    let (i, t) = (cstr(id), cstr(v));
+    unsafe { (api().setting_set_text.unwrap())(name(), i.as_ptr(), t.as_ptr()) == 0 }
+}
+unsafe extern "C" fn setting_tramp<F: FnMut(&str)>(id: *const c_char, user: *mut c_void) {
+    let id = string(id);
+    guard("a setting listener", (), || (*(user as *mut F))(&id));
+}
+/// `f(id)` on the client thread when a setting changes (`id` None: any of the mod's settings).
+pub fn setting_on_change<F: FnMut(&str) + Send + 'static>(id: Option<&str>, f: F) -> bool {
+    let i = id.map(cstr);
+    let p = i.as_ref().map_or(core::ptr::null(), |c| c.as_ptr());
+    unsafe { (api().setting_on_change.unwrap())(name(), p, Some(setting_tramp::<F>), keep(f)) == 0 }
+}
+/// false: no page for this mod in the GridNode menu (its own window shows its settings).
+pub fn settings_page(shown: bool) { unsafe { (api().settings_page.unwrap())(name(), shown as c_int); } }
+
 // ---- the free camera (API 13) ---------------------------------------------------------------------
 pub use crate::sys::gn_freecam as Freecam;
 /// GridNode's free camera on / off (at the next frame); false without Faith.

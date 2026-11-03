@@ -2,7 +2,11 @@
 
 #include "gridnode/config.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace gn::config {
 namespace {
@@ -45,6 +49,103 @@ std::string serialize(const Entries& entries, const std::string& header) {
     }
     for (const auto& [k, v] : entries) o += k + "=" + v + "\n";
     return o;
+}
+
+std::string serialize(const Entries& entries, const std::string& header, const Comments& comments) {
+    std::string o = serialize(Entries{}, header);
+    for (const auto& [k, v] : entries) {
+        for (const auto& [ck, text] : comments) {
+            if (ck != k) continue;
+            o += "\n";
+            size_t pos = 0;
+            while (pos < text.size()) {
+                size_t end = text.find('\n', pos);
+                if (end == std::string::npos) end = text.size();
+                o += "# " + text.substr(pos, end - pos) + "\n";
+                pos = end + 1;
+            }
+            break;
+        }
+        o += k + "=" + v + "\n";
+    }
+    return o;
+}
+
+bool normalize(Decl& d) {
+    switch (d.kind) {
+    case Kind::Bool: case Kind::Int: case Kind::Float: case Kind::Text: break;
+    case Kind::Choice:
+        if (d.choices.empty()) return false;
+        break;
+    default:
+        return false;
+    }
+    if (d.min > d.max) std::swap(d.min, d.max);
+    if (!std::isfinite(d.def)) d.def = 0;
+    const double def = d.def;
+    d.def = 0; // clamp() falls back on the default
+    d.def = clamp(d, def);
+    return true;
+}
+
+double clamp(const Decl& d, double v) {
+    if (!std::isfinite(v)) return d.def;
+    switch (d.kind) {
+    case Kind::Bool: return v != 0 ? 1 : 0;
+    case Kind::Choice: return std::min(std::max(std::round(v), 0.0), double(d.choices.size() - 1));
+    case Kind::Int: v = std::round(v); break;
+    case Kind::Float: break;
+    case Kind::Text: return 0;
+    }
+    if (d.min < d.max) v = std::min(std::max(v, d.min), d.max);
+    return v;
+}
+
+std::string format(const Decl& d, double v) {
+    v = clamp(d, v);
+    char b[48];
+    if (d.kind == Kind::Float) snprintf(b, sizeof(b), "%.7g", v);
+    else snprintf(b, sizeof(b), "%.0f", v);
+    return b;
+}
+
+double parseNumber(const Decl& d, const std::string& text) {
+    const std::string t = trim(text);
+    if (d.kind == Kind::Bool) {
+        if (t == "true" || t == "on" || t == "yes") return 1;
+        if (t == "false" || t == "off" || t == "no") return 0;
+    }
+    if (d.kind == Kind::Choice)
+        for (size_t i = 0; i < d.choices.size(); ++i)
+            if (t == d.choices[i]) return double(i);
+    if (t.empty()) return d.def;
+    char* end = nullptr;
+    const double v = std::strtod(t.c_str(), &end);
+    if (!end || *end) return d.def;
+    return clamp(d, v);
+}
+
+std::string comment(const Decl& d) {
+    std::string c = d.label.empty() ? d.id : d.label;
+    if (!d.description.empty()) c += ": " + d.description;
+    if (!c.empty() && c.back() != '.') c += ".";
+    switch (d.kind) {
+    case Kind::Bool: c += std::string(" 1 or 0, default ") + (d.def ? "1." : "0."); break;
+    case Kind::Choice: {
+        c += " One of:";
+        for (size_t i = 0; i < d.choices.size(); ++i) c += " " + std::to_string(i) + " " + d.choices[i] + (i + 1 < d.choices.size() ? "," : ".");
+        c += " Default " + format(d, d.def) + ".";
+        break;
+    }
+    case Kind::Int: case Kind::Float:
+        if (d.min < d.max) c += " From " + format(d, d.min) + " to " + format(d, d.max) + ",";
+        c += " default " + format(d, d.def) + ".";
+        break;
+    case Kind::Text:
+        if (!d.defText.empty()) c += " Default: " + d.defText + ".";
+        break;
+    }
+    return c;
 }
 
 bool validKey(const std::string& key) {

@@ -356,7 +356,7 @@ Each milestone ends with something testable in game.
 | **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
-| **M9** | (1-3 done 2026-11-03: detours, manifests, crash notes) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
+| **M9** | (1-4 done 2026-11-03: detours, manifests, crash notes, declared settings) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
 
 ---
 
