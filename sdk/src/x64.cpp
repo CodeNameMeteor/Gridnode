@@ -64,12 +64,13 @@ bool modrmLen(const uint8_t* p, size_t avail, size_t& n, int& ripAt) {
 bool decode(const uint8_t* p, size_t avail, Insn& out) {
     out = Insn{};
     size_t i = 0;
-    bool opsize = false, rexW = false;
+    bool opsize = false, rexW = false, addr32 = false;
     // Legacy prefixes, then REX.
     for (; i < avail && i < 14; ++i) {
         const uint8_t b = p[i];
         if (b == 0x66) opsize = true;
-        else if (b == 0x67 || b == 0xf0 || b == 0xf2 || b == 0xf3 || b == 0x2e || b == 0x36 || b == 0x3e || b == 0x26 || b == 0x64 || b == 0x65) continue;
+        else if (b == 0x67) addr32 = true;
+        else if (b == 0xf0 || b == 0xf2 || b == 0xf3 || b == 0x2e || b == 0x36 || b == 0x3e || b == 0x26 || b == 0x64 || b == 0x65) continue;
         else break;
     }
     if (i < avail && (p[i] & 0xf0) == 0x40) rexW = (p[i++] & 8) != 0;
@@ -121,7 +122,7 @@ bool decode(const uint8_t* p, size_t avail, Insn& out) {
                  op == 0xcd || (op >= 0xb0 && op <= 0xb7) || (op >= 0xe4 && op <= 0xe7))
             imm = 1;
         else if (op >= 0xb8 && op <= 0xbf) imm = rexW ? 8 : immZ;
-        else if (op >= 0xa0 && op <= 0xa3) imm = 8; // moffs64
+        else if (op >= 0xa0 && op <= 0xa3) imm = addr32 ? 4 : 8; // moffs (32-bit with 0x67)
         else if (op == 0xc2 || op == 0xca) imm = 2;
         else if (op == 0xc8) imm = 3;
         else if (op >= 0x70 && op <= 0x7f) out.jcc = true, out.rel = int(i), out.relSize = 1, imm = 1;
@@ -145,6 +146,7 @@ bool decode(const uint8_t* p, size_t avail, Insn& out) {
     i += imm;
     if (i > avail || i > 15) return false;
     out.length = i;
+    out.addr32 = addr32;
     return true;
 }
 
@@ -171,6 +173,9 @@ bool trampoline(const uint8_t* code, size_t avail, uint64_t codeAddr, size_t min
         const uint64_t here = codeAddr + copied;
         if (starts) starts->push_back({copied, out.size()});
         if (in.loop) return fail("a loop / jrcxz in the first bytes");
+        // 32-bit addressing: an EIP-relative operand or a short absolute address cannot be re-aimed
+        // as the 64-bit ones are; never in the game's prologues, so refused (review, 2026-11-03).
+        if (in.addr32) return fail("an instruction with an address-size prefix (0x67) in the first bytes");
         if (in.ret && copied + in.length < minBytes) return fail("the function returns within its first bytes (too short)");
         if (in.rel >= 0) {
             int64_t disp = 0;

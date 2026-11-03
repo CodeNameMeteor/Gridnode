@@ -114,7 +114,8 @@ If something cannot be put back (another overlay or tool hooked over GridNode), 
 memory but inactive: nothing of it runs. The log says what kept it. Not put back: props and barriers
 moved by a saved layout (until the level reloads) and settings changed through the console. To load
 GridNode again, run `gridnode_inject.exe` or restart the game. When the earlier GridNode is still in
-memory (inactive), the injector loads a copy of it, `gridnode-2.dll`, from the same folder.
+memory (inactive), the injector loads a copy of it, `gridnode.copy-2.dll`, from the same folder (removed by a later
+injection once the game no longer has it).
 
 ## Threads
 

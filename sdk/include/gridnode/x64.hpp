@@ -22,6 +22,7 @@ struct Insn {
     bool call = false;  // call rel32
     bool jcc = false;   // a conditional branch (rel8 or rel32)
     bool loop = false;  // loop / jrcxz (rel8 only: cannot be moved)
+    bool addr32 = false; // a 0x67 address-size prefix: 32-bit addresses (moffs 4 bytes, EIP-relative)
 };
 
 // The instruction at p (at most `avail` bytes readable). False: not decoded (an opcode this

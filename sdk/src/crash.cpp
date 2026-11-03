@@ -9,12 +9,15 @@
 // stack for code addresses follows it.
 
 #include <windows.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <memory>
+#include <vector>
 
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
@@ -32,19 +35,33 @@ struct Module {
     bool game = false, mod = false; // the game's exe; a DLL in the mods folder
 };
 
+// The loaded modules, made outside the handler (refreshModules): GetModuleHandleEx and
+// GetModuleFileName take the loader lock, which another thread may hold while this one crashed
+// (review, 2026-11-03). A table replaced is kept: the handler may be reading it.
+struct ModuleRow {
+    uintptr_t base, end;
+    char name[64];
+    bool game, mod;
+};
+std::atomic<const std::vector<ModuleRow>*> g_modules{nullptr};
+using GetDesc = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+GetDesc g_getThreadDescription = nullptr;
+
 Module moduleOf(uintptr_t a) {
     Module m;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCSTR>(a), &m.handle) ||
-        !m.handle)
-        return Module{};
-    char path[MAX_PATH] = {};
-    GetModuleFileNameA(m.handle, path, MAX_PATH);
-    const char* name = path;
-    for (const char* p = path; *p; ++p)
-        if (*p == '\\' || *p == '/') name = p + 1;
-    snprintf(m.name, sizeof(m.name), "%s", name);
-    m.game = m.handle == GetModuleHandleA(nullptr);
-    m.mod = std::strstr(path, "\\mods\\") != nullptr; // mods\ or mods\.loaded\ (reloadable copies)
+    if (const std::vector<ModuleRow>* rows = g_modules.load(std::memory_order_acquire))
+        for (const ModuleRow& r : *rows)
+            if (a >= r.base && a < r.end) {
+                m.handle = reinterpret_cast<HMODULE>(r.base);
+                memcpy(m.name, r.name, sizeof(m.name));
+                m.game = r.game, m.mod = r.mod;
+                return m;
+            }
+    // Loaded since the last refresh: its base, without a name (VirtualQuery takes no loader lock).
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi)) || mbi.Type != MEM_IMAGE || !mbi.AllocationBase) return Module{};
+    m.handle = static_cast<HMODULE>(mbi.AllocationBase);
+    snprintf(m.name, sizeof(m.name), "module@%llx", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(mbi.AllocationBase)));
     return m;
 }
 
@@ -92,8 +109,7 @@ bool isCode(uintptr_t a) {
 void threadText(char* out, size_t n) {
     const char* role = isServerThread() ? "server" : isClientThread() ? "client" : ui::isRenderThread() ? "render" : nullptr;
     char desc[96] = {};
-    using GetDesc = HRESULT(WINAPI*)(HANDLE, PWSTR*);
-    if (auto get = reinterpret_cast<GetDesc>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription")))) {
+    if (auto get = g_getThreadDescription) { // looked up at install: no loader lock in the handler
         PWSTR w = nullptr;
         if (SUCCEEDED(get(GetCurrentThread(), &w)) && w) {
             if (*w) WideCharToMultiByte(CP_UTF8, 0, w, -1, desc, sizeof(desc) - 1, nullptr, nullptr);
@@ -185,7 +201,32 @@ void* g_handler = nullptr;
 
 } // namespace
 
-void install() { g_handler = AddVectoredExceptionHandler(0, &onException); }
+void refreshModules() {
+    auto rows = std::make_unique<std::vector<ModuleRow>>();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) return;
+    const uintptr_t game = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    MODULEENTRY32W me{};
+    me.dwSize = sizeof(me);
+    for (BOOL ok = Module32FirstW(snap, &me); ok; ok = Module32NextW(snap, &me)) {
+        ModuleRow r{};
+        r.base = reinterpret_cast<uintptr_t>(me.modBaseAddr), r.end = r.base + me.modBaseSize;
+        WideCharToMultiByte(CP_UTF8, 0, me.szModule, -1, r.name, sizeof(r.name) - 1, nullptr, nullptr);
+        r.game = r.base == game;
+        r.mod = wcsstr(me.szExePath, L"\\mods\\") != nullptr; // mods\ or mods\.loaded\ (reloadable copies)
+        rows->push_back(r);
+    }
+    CloseHandle(snap);
+    static std::vector<std::unique_ptr<std::vector<ModuleRow>>> kept; // GridNode's thread only
+    g_modules.store(rows.get(), std::memory_order_release);
+    kept.push_back(std::move(rows));
+}
+
+void install() {
+    refreshModules();
+    g_getThreadDescription = reinterpret_cast<GetDesc>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription")));
+    g_handler = AddVectoredExceptionHandler(0, &onException);
+}
 void uninstall() {
     if (g_handler) RemoveVectoredExceptionHandler(g_handler);
     g_handler = nullptr;

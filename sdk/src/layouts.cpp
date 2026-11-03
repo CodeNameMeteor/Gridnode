@@ -3408,7 +3408,7 @@ void clientTick() {
 // the active camera object a copy of its vtable whose +0x68 entry calls the game's own update and then
 // writes the free camera's transform: a pointer swap on that one object, no code is patched.
 // Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
-constexpr size_t kCamSlots = 160;     // entries copied; the camera classes have well under that
+constexpr size_t kCamSlots = 512;     // entries copied (the camera class seen has 30); more: not worn (vtableSlots)
 constexpr size_t kCamFrameSlot = 0x68 / 8;
 constexpr size_t kCamOutputSlot = 0x70 / 8; // computeTransforms(camera, info, LinearTransform out[2]) (MECMP)
 uintptr_t g_camFakeVtbl[kCamSlots + 1]; // [0] is the RTTI slot in front of the table
@@ -3498,6 +3498,20 @@ void unhookCamera() {
 }
 
 // Client thread: put the copy on the view manager's active camera (again after it changes).
+// How many entries the vtable at vt has: the run of pointers to executable code (a hook in a slot
+// counts, it is code too). Up to cap + 1, to tell "more than cap".
+size_t vtableSlots(uintptr_t vt, size_t cap) {
+    size_t n = 0;
+    for (; n <= cap; ++n) {
+        const uintptr_t fn = mem::readOr<uintptr_t>(vt + 8 * n);
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!fn || !VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+            !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            break;
+    }
+    return n;
+}
+
 void hookCamera() {
     if (g_released.load()) return;
     const uintptr_t mgr = firstViewManager();
@@ -3509,7 +3523,15 @@ void hookCamera() {
     if (cam != g_camObject) unhookCamera();
     if (!mem::inImage(vt)) return;
     if (vt != g_camOrigVtbl) {
-        // A new camera class: build its copy (only while no object wears the old one).
+        // A new camera class: build its copy (only while no object wears the old one). A class with more
+        // virtuals than the copy holds would call past its end: not worn then (review, 2026-11-03).
+        if (const size_t n = vtableSlots(vt, kCamSlots); n > kCamSlots) {
+            static bool said = false;
+            if (!said) GN_LOG("layouts: free camera: camera vtable %llx has more than %llu entries; not driven", static_cast<unsigned long long>(mem::va(vt)),
+                              static_cast<unsigned long long>(kCamSlots));
+            said = true;
+            return;
+        }
         for (size_t k = 0; k <= kCamSlots; ++k) g_camFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
         g_camOrigVtbl = vt;
         g_camOrigFrame = reinterpret_cast<CamFrameFn>(g_camFakeVtbl[1 + kCamFrameSlot]);
@@ -3531,7 +3553,7 @@ void hookCamera() {
 // While the free camera is on, Faith shows the third-person body (with her head) instead of the
 // first-person one: the same per-object vtable copy, on the character's view-mode interface, whose
 // getViewMode answers 1 (MECMP found the slot and the meaning). Its other entries are the originals.
-constexpr size_t kBodySlots = 96;
+constexpr size_t kBodySlots = 256;
 uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
 uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
 
@@ -3562,6 +3584,13 @@ void hookBody() {
         return;
     }
     const size_t slot = (slotAt - vt) / 8;
+    if (vtableSlots(vt, kBodySlots) > kBodySlots) {
+        static bool said = false;
+        if (!said) GN_LOG("layouts: free camera: Faith's view-mode vtable has more than %llu entries; keeping her first-person body",
+                          static_cast<unsigned long long>(kBodySlots));
+        said = true;
+        return;
+    }
     for (size_t k = 0; k <= kBodySlots; ++k) g_bodyFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
     g_bodyFakeVtbl[1 + slot] = reinterpret_cast<uintptr_t>(&bodyViewMode);
     g_bodyOrigVtbl = vt;
@@ -5968,7 +5997,10 @@ bool pickBarrier(const float* ray) {
     return true;
 }
 
+void snapshotView();
+
 void frame(bool menuOpen, bool editor) {
+    snapshotView(); // before the mods draw: they get this frame's view
     // What mods asked for (their hotkeys run on the client thread; the camera is this thread's).
     if (const int want = g_camWant.exchange(-1); want >= 0) {
         g_cam.enabled = want != 0;
@@ -6006,7 +6038,13 @@ void frame(bool menuOpen, bool editor) {
     }
 }
 
-bool view(gn_view& out) {
+namespace {
+// The view as this frame draws it (render thread): the camera and the display size. view() hands out
+// the copy, so a game or mod thread never reads the render thread's state (review, 2026-11-03).
+gn_view g_viewSnap{};
+bool g_viewSnapOk = false; // (g_viewM, with g_viewSnap)
+
+bool computeView(gn_view& out) {
     out = gn_view{};
     if (!ImGui::GetCurrentContext()) return false;
     const ImGuiIO& io = ImGui::GetIO();
@@ -6016,6 +6054,20 @@ bool view(gn_view& out) {
     out.fov_y = fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f; // as the editor's picking: 70 when unreadable
     out.width = io.DisplaySize.x, out.height = io.DisplaySize.y;
     return true;
+}
+} // namespace
+
+void snapshotView() {
+    gn_view v;
+    const bool ok = computeView(v);
+    std::lock_guard<std::mutex> lock(g_viewM);
+    g_viewSnap = v, g_viewSnapOk = ok;
+}
+
+bool view(gn_view& out) {
+    std::lock_guard<std::mutex> lock(g_viewM);
+    out = g_viewSnapOk ? g_viewSnap : gn_view{};
+    return g_viewSnapOk;
 }
 
 int freecamSet(bool on) {

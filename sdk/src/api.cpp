@@ -234,7 +234,8 @@ int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* use
     if (const char* why = commandOnline(l)) GN_LOG("[%s] console: \"%s\" (online: %s)", who.c_str(), l.c_str(), why);
     client().post([who, l, fn, user] {
         const std::string out = consoleRun(l);
-        if (fn) fn(out.c_str(), user);
+        // Queued, then its mod unloaded: its callback is gone with it (the command still ran).
+        if (fn && modCodeLive(reinterpret_cast<const void*>(fn))) fn(out.c_str(), user);
     });
     return GN_OK;
 }

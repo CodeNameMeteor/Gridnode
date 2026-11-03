@@ -275,10 +275,13 @@ void forgetCreated(const CodeRange& r) {
         s.listeners.erase(std::remove_if(s.listeners.begin(), s.listeners.end(),
                                          [&](const Listener* l) { return r.has(reinterpret_cast<void*>(l->fn)); }),
                           s.listeners.end());
-    // Kept, not freed: a creator wrapper may still be logging one of them (its owner) on a game thread.
-    static std::vector<std::unique_ptr<Listener>> gone;
+    // Freed 10 s later, not now: a creator wrapper may still be logging one of them (its owner) on a
+    // game thread (they were kept for good before, review 2026-11-03).
+    static std::vector<std::pair<std::unique_ptr<Listener>, ULONGLONG>> gone;
+    const ULONGLONG now = GetTickCount64();
+    gone.erase(std::remove_if(gone.begin(), gone.end(), [now](const auto& g) { return now - g.second > 10000; }), gone.end());
     for (auto& l : g_listeners)
-        if (r.has(reinterpret_cast<void*>(l->fn))) gone.push_back(std::move(l));
+        if (r.has(reinterpret_cast<void*>(l->fn))) gone.push_back({std::move(l), now});
     g_listeners.erase(std::remove(g_listeners.begin(), g_listeners.end(), nullptr), g_listeners.end());
 }
 

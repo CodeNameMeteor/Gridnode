@@ -267,6 +267,18 @@ int wmain(int argc, wchar_t** argv) {
     }
     wprintf(L"Game PID: %lu\n", game.pid);
 
+    {
+        // Copies made for an earlier GridNode kept in memory (below): those the game no longer has go.
+        const std::wstring dir(static_cast<const wchar_t*>(dll), fileName(dll));
+        WIN32_FIND_DATAW fd;
+        HANDLE h = FindFirstFileW((dir + L"gridnode.copy-*.dll").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do
+                if (loadedModule(game.pid, fd.cFileName).empty()) DeleteFileW((dir + fd.cFileName).c_str());
+            while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+    }
     const std::wstring already = loadedGridNode(game.pid);
     if (!already.empty()) {
         if (gridNodeActive(game.pid)) {
@@ -280,7 +292,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring dir(static_cast<const wchar_t*>(dll), fileName(dll));
         wchar_t copy[MAX_PATH] = L"";
         for (int k = 2; k < 100; ++k) {
-            swprintf(copy, MAX_PATH, L"%lsgridnode-%d.dll", dir.c_str(), k);
+            swprintf(copy, MAX_PATH, L"%lsgridnode.copy-%d.dll", dir.c_str(), k);
             if (!loadedModule(game.pid, fileName(copy)).empty()) continue;
             if (CopyFileW(dll, copy, FALSE)) break;
             copy[0] = 0;

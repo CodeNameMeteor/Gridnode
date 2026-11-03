@@ -1144,11 +1144,20 @@ std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() {
 }
 
 std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base) {
+    // In blocks, letting go of the lock between them: game threads take it for every entity they
+    // create (review, 2026-11-03). An entry moved by pruning meanwhile may be missed or seen twice.
     std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
     if (!base) return out;
-    std::lock_guard<std::mutex> lock(g_m);
-    for (const Tracked& t : g_entities)
-        if (t.type && registry().isKindOf(t.type, base)) out.push_back({t.ptr, t.type});
+    constexpr size_t kBlock = 8192;
+    for (size_t at = 0;; at += kBlock) {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (at >= g_entities.size()) break;
+        const size_t end = std::min(g_entities.size(), at + kBlock);
+        for (size_t i = at; i < end; ++i)
+            if (g_entities[i].type && registry().isKindOf(g_entities[i].type, base)) out.push_back({g_entities[i].ptr, g_entities[i].type});
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
 }
 
@@ -1174,7 +1183,9 @@ void start() {
     std::thread([] {
         BusyThread busy;
         while (!unloading()) {
-            Sleep(15);
+            // Each check is a kernel read: 4,000 every 15 ms was ~260,000 a second. Once the destructor
+            // hooks are seen marking entities dead, pruning is only a backstop (review, 2026-11-03).
+            Sleep(destroyedCount() ? 250 : 15);
             prune();
         }
     }).detach();

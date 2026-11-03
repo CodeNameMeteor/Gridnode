@@ -76,23 +76,36 @@ Plan plan(const std::vector<Entry>& mods) {
         }
     }
     // Kahn's algorithm, picking the lowest index ready each time (file name order otherwise).
-    std::vector<std::vector<size_t>> after(n); // i -> the mods that wait for it
+    // Optional dependencies only order: when the mods left wait on each other, their optional links
+    // are dropped and loading goes on (two mods that optionally need each other both loaded none,
+    // review 2026-11-03). Only required ones can make a cycle that stops a mod.
     std::vector<int> waiting(n, 0);
-    for (size_t i = 0; i < n; ++i)
+    std::vector<bool> done(n, false), softDropped(n, false);
+    const auto count = [&](size_t i) {
+        int w = 0;
         for (const Dep& d : mods[i].deps) {
             auto it = byId.find(d.id);
-            if (it == byId.end() || it->second == i) continue;
-            after[it->second].push_back(i);
-            ++waiting[i];
+            if (it == byId.end() || it->second == i || done[it->second] || (d.soft && softDropped[i])) continue;
+            ++w;
         }
-    std::vector<bool> done(n, false);
+        return w;
+    };
+    for (size_t i = 0; i < n; ++i) waiting[i] = count(i);
     for (size_t step = 0; step < n; ++step) {
         size_t pick = n;
         for (size_t i = 0; i < n && pick == n; ++i)
             if (!done[i] && waiting[i] == 0) pick = i;
-        if (pick == n) break; // the rest wait on each other
+        if (pick == n) { // the rest wait on each other: their optional links go, once
+            bool dropped = false;
+            for (size_t i = 0; i < n; ++i)
+                if (!done[i] && !softDropped[i]) softDropped[i] = dropped = true, waiting[i] = count(i);
+            if (!dropped) break; // a cycle of required dependencies
+            --step;
+            continue;
+        }
         done[pick] = true;
-        for (size_t j : after[pick]) --waiting[j];
+        for (size_t i = 0; i < n; ++i)
+            if (!done[i]) waiting[i] = count(i);
         if (!out.problem[pick].empty()) continue;
         // A hard dependency left out takes this one with it.
         for (const Dep& d : mods[pick].deps) {

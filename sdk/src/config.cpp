@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "gridnode/config.hpp"
 #include "gridnode/log.hpp"
@@ -52,12 +53,12 @@ ModConfig& load(const std::string& mod) {
     return c;
 }
 
-// (g_m) Written to a temporary file and renamed, so a crash never leaves half a file.
-void write(const std::string& mod, ModConfig& c) {
-    c.dirty = false;
-    if (g_folder.empty()) return;
-    const std::wstring path = pathOf(mod), tmp = path + L".tmp";
-    const std::string text = config::serialize(c.entries,
+// Written to a temporary file and renamed, so a crash never leaves half a file. Not under g_m: the
+// mods' settings are read every frame (a settings page, a mod's window) and a disk write could hold
+// them up (review, 2026-11-03).
+void writeFile(const std::string& mod, const std::wstring& path, const config::Entries& entries) {
+    const std::wstring tmp = path + L".tmp";
+    const std::string text = config::serialize(entries,
                                                "Settings of the mod " + mod + ", written by GridNode.\n"
                                                "Edit with the game closed, or GridNode writes over it.",
                                                settingComments(mod)); // declared settings: their descriptions
@@ -118,8 +119,19 @@ void configFlush(bool now) {
         lock.lock();
     }
     const ULONGLONG t = GetTickCount64();
+    struct Job {
+        std::string mod;
+        std::wstring path;
+        config::Entries entries;
+    };
+    std::vector<Job> jobs;
     for (auto& [mod, c] : g_mods)
-        if (c.dirty && (now || t - c.changedAt >= 1000)) write(mod, c);
+        if (c.dirty && (now || t - c.changedAt >= 1000)) {
+            c.dirty = false;
+            if (!g_folder.empty()) jobs.push_back({mod, pathOf(mod), c.entries});
+        }
+    lock.unlock(); // the files are written without it
+    for (const Job& j : jobs) writeFile(j.mod, j.path, j.entries);
 }
 
 } // namespace gn::host

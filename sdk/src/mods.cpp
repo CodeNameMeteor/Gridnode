@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -94,7 +95,8 @@ CodeRange imageOf(HMODULE m) {
     return {base, base + nt->OptionalHeader.SizeOfImage};
 }
 
-std::string str(const char* s) { return s ? s : ""; }
+// A string from a mod's manifest: at most 256 bytes read (a mod's data, not trusted to end).
+std::string str(const char* s) { return s ? std::string(s, strnlen(s, 256)) : std::string(); }
 
 // Who the mod says it is (gn_mod_info, optional): id (default: the file name), name, version, author,
 // description, dependencies.
@@ -107,11 +109,12 @@ void readManifest(Mod& m) {
     auto info = m.module ? reinterpret_cast<InfoFn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_info"))) : nullptr;
     const gn_mod_manifest* mf = info ? info() : nullptr;
     if (!mf || mf->size < sizeof(uint32_t) + 6 * sizeof(void*)) return;
-    if (mf->id && *mf->id) m.info.id = mf->id;
+    if (mf->id && *mf->id) m.info.id = str(mf->id);
     m.info.name = str(mf->name), m.info.version = str(mf->version), m.info.author = str(mf->author), m.info.description = str(mf->description);
-    for (const char* const* d = mf->depends; d && *d; ++d) {
-        m.deps.push_back(modorder::parseDep(*d));
-        m.info.depends += (m.info.depends.empty() ? "" : ", ") + std::string(*d);
+    int n = 0;
+    for (const char* const* d = mf->depends; d && *d && n < 64; ++d, ++n) { // at most 64
+        m.deps.push_back(modorder::parseDep(str(*d)));
+        m.info.depends += (m.info.depends.empty() ? "" : ", ") + str(*d);
     }
 }
 
@@ -192,6 +195,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
 // Calls its gn_mod_load. The result is in m.info.
 void start(Mod& m) {
     const std::string name = m.info.file;
+    crash::refreshModules(); // the crash notes name frames in it (and whatever it loads, next time)
     auto entry = reinterpret_cast<gn_mod_load_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load")));
     if (!m.info.reloadable) {
         // Never unloaded: their hooks and callbacks point into them.
@@ -523,6 +527,13 @@ void* modImport(const void* caller, const char* modId, const char* name) {
     if (it == g_exports.end()) return nullptr;
     if (!me.empty() && me != modId) g_importers[modId].insert(me); // it now needs that mod loaded
     return it->second.fn;
+}
+
+bool modCodeLive(const void* fn) {
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& m : g_mods)
+        if (m.module && m.code.has(fn)) return m.info.loaded && !m.inert;
+    return true; // not a mod's: GridNode's own, or the game's
 }
 
 int modVersion(const char* modId, char* out, size_t size) {

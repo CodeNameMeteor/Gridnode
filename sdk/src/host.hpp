@@ -34,9 +34,11 @@ struct ThreadsInCode {
     int threads = 0;
     unsigned long firstThread = 0;
     uintptr_t firstAt = 0;
-    bool onStack = false; // found by scanning a stack (maybe stale), not by unwinding it
+    bool onStack = false;    // found by scanning a stack (maybe stale), not by unwinding it
+    bool inRegister = false; // found in a register (about to be called)
+    unsigned long pausedMs = 0;
 };
-ThreadsInCode threadsInCode(void* module); // an HMODULE
+ThreadsInCode threadsInCode(void* module, bool registers); // an HMODULE; registers: check them too
 // Looks again every 100 ms for up to ms; false (logged, as `what`) when threads are still there.
 bool waitCodeQuiet(void* module, const char* what, unsigned long ms);
 
@@ -91,6 +93,8 @@ void pollMods();                                     // GridNode's thread: reloa
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
 void* modImport(const void* caller, const char* modId, const char* name); // gn_api mod_import
 int modVersion(const char* modId, char* out, size_t size);               // gn_api mod_version
+// A callback queued for later may only run while its mod is loaded: false once fn's mod was unloaded.
+bool modCodeLive(const void* fn);
 
 // Declared mod settings (modsettings.cpp): gn_api setting_*; settingComments for the settings file.
 int settingAdd(const char* mod, const gn_setting* s, const void* caller);
@@ -343,6 +347,7 @@ bool isRenderThread(); // the thread drawing the overlay (Present)
 // Inspector (inspector.cpp): start() tracks entities from then on; draw() on the render thread.
 namespace crash {
 void install(); // logs the first few faults: address, registers, the unwound call stack with names
+void refreshModules(); // the module table the handler names frames from (after modules load; not in a fault)
 void uninstall();
 }
 

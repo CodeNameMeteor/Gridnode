@@ -14,6 +14,16 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Review fixes, third round** (2026-11-03, untested in game). The "still in its code" check also
+  reads registers (first second only) and logs long pauses; optional dependencies never block a load;
+  `events::ensureHooked` keeps and repeats its result; pruning slows to every 250 ms once destructors
+  are seen; `trackedOf` scans in blocks of 8,192; `view()` returns a copy taken as the frame starts;
+  settings files are written outside their lock; replaced event and creation listener lists are freed
+  after 10 s; camera and body vtable copies check the real size (copies now 512 / 256 entries); a
+  read-only thunk page is reused with the threads paused; the crash handler names modules from a table
+  made outside it; the decoder refuses 0x67 in moved bytes; manifest strings and lists are bounded;
+  the injector names its copies `gridnode.copy-N.dll` and removes old ones; a queued console callback
+  of an unloaded mod is skipped.
 - **Declared settings (API 17, M9 item 4)** (2026-11-03, untested in game). `setting_add` and friends,
   `gn::setting::addBool / addInt / addFloat / addChoice / addText`: kept in the mod's ini with their
   description as a comment, clamped, and drawn by GridNode on a page per mod (menu, Mod settings;
@@ -39,7 +49,7 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   trainer address in a waiting thread kept it in memory for good; stacks are now unwound with the
   modules' unwind data (read by hand while threads are paused), scanning only past code with none.
   A GridNode kept in memory lets go of its instance mutex, and `gridnode_inject` then loads a copy
-  (`gridnode-2.dll`); mod copies in `mods\.loaded` skip names still mapped.
+  (`gridnode.copy-2.dll`); mod copies in `mods\.loaded` skip names still mapped.
 - **M9, first three items (API 16)** (2026-11-03, untested in game). Function detours (`hook_function`:
   the entry's instructions moved to a trampoline by `gn::x64`, a jump at the entry written with the
   other threads stopped, the detours chained in the hook table through a slot of ours; checked on the

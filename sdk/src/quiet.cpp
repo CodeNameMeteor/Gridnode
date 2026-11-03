@@ -108,7 +108,7 @@ struct ThreadBasicInformation {
 
 } // namespace
 
-ThreadsInCode threadsInCode(void* module) {
+ThreadsInCode threadsInCode(void* module, bool registers) {
     const HMODULE m = static_cast<HMODULE>(module);
     ThreadsInCode out;
     if (!m) return out;
@@ -143,6 +143,7 @@ ThreadsInCode threadsInCode(void* module) {
     }
     // Paused from here: no allocation, no logging.
     std::vector<bool> paused(threads.size(), false); // allocated before the pause
+    const ULONGLONG pausedAt = GetTickCount64();
     for (size_t i = 0; i < threads.size(); ++i) paused[i] = SuspendThread(threads[i].h) != DWORD(-1);
     for (size_t i = 0; i < threads.size(); ++i) {
         if (!paused[i]) continue;
@@ -152,8 +153,19 @@ ThreadsInCode threadsInCode(void* module) {
         const uintptr_t base = threads[i].stackBase;
         bool found = false, scan = false;
         uintptr_t at = 0;
+        // A thread that loaded a hook's address and has not called it yet holds it only in a register
+        // (review, 2026-11-03). Asked for in the first polls only: a register can also keep a stale value
+        // for good, while that window closes within microseconds.
+        if (registers)
+            for (const DWORD64 r : {ctx.Rax, ctx.Rbx, ctx.Rcx, ctx.Rdx, ctx.Rsi, ctx.Rdi, ctx.Rbp, ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12,
+                                    ctx.R13, ctx.R14, ctx.R15})
+                if (inside(code, static_cast<uintptr_t>(r))) {
+                    found = true, at = static_cast<uintptr_t>(r);
+                    out.inRegister = true;
+                    break;
+                }
         // The frames, innermost first.
-        for (int f = 0, leaves = 0; f < 512; ++f) {
+        for (int f = 0, leaves = 0; f < 512 && !found; ++f) {
             const auto pc = static_cast<uintptr_t>(ctx.Rip), sp = static_cast<uintptr_t>(ctx.Rsp);
             if (!pc) break; // the outermost frame
             if (inside(code, pc)) {
@@ -210,6 +222,7 @@ ThreadsInCode threadsInCode(void* module) {
     }
     for (size_t i = 0; i < threads.size(); ++i)
         if (paused[i]) ResumeThread(threads[i].h);
+    out.pausedMs = static_cast<unsigned long>(GetTickCount64() - pausedAt);
     for (const T& t : threads) CloseHandle(t.h);
     return out;
 }
@@ -217,9 +230,15 @@ ThreadsInCode threadsInCode(void* module) {
 bool waitCodeQuiet(void* m, const char* what, unsigned long ms) {
     const ULONGLONG start = GetTickCount64();
     ThreadsInCode t;
+    unsigned long longest = 0;
+    int polls = 0;
     for (;;) {
-        t = threadsInCode(m);
-        if (!t.threads) return true;
+        t = threadsInCode(m, GetTickCount64() - start < 1000);
+        ++polls, longest = std::max(longest, t.pausedMs);
+        if (!t.threads) {
+            if (longest >= 10) GN_LOG("%s: threads paused up to %lu ms to check it was left (%d checks)", what, longest, polls);
+            return true;
+        }
         if (GetTickCount64() - start >= ms) break;
         Sleep(100);
     }

@@ -48,7 +48,19 @@ std::array<uint64_t, kPool> g_orig{};
 std::atomic<Tap> g_tap{nullptr};
 std::atomic<const Listeners*> g_listeners{nullptr}; // replaced whole on each add; old lists are kept (a few)
 std::mutex g_addM;
-std::vector<std::unique_ptr<Listeners>> g_lists; // (g_addM) every list ever published
+// (g_addM) Lists replaced, with when: a game thread may still be walking one, so it is freed 10 s
+// later (a delivery takes microseconds). They were kept for good before (review, 2026-11-03).
+std::vector<std::pair<std::unique_ptr<Listeners>, ULONGLONG>> g_retired;
+std::unique_ptr<Listeners> g_current; // (g_addM) the list g_listeners points at
+
+// (g_addM) next becomes the list; the one before is retired.
+void publish(std::unique_ptr<Listeners> next) {
+    const ULONGLONG now = GetTickCount64();
+    g_retired.erase(std::remove_if(g_retired.begin(), g_retired.end(), [now](const auto& r) { return now - r.second > 10000; }), g_retired.end());
+    g_listeners.store(next && !next->empty() ? next.get() : nullptr, std::memory_order_release);
+    if (g_current) g_retired.push_back({std::move(g_current), now});
+    g_current = std::move(next);
+}
 std::atomic<bool> g_hooked{false};
 std::wstring g_namesFile; // recordings\event-names.txt (set at start)
 
@@ -95,7 +107,17 @@ void setTap(Tap tap) { g_tap = tap; }
 // Wraps onEvent in every vtable of an EntityBusPeer class (checked: its slot 0 says so, slot +0x20
 // is game code). Once.
 bool ensureHooked(const char* who) {
-    if (g_hooked.exchange(true)) return true;
+    // Done once; its result is what every later caller gets (it said "yes" after a failure until
+    // 2026-11-03, so on_event then never fired and nothing said why).
+    static std::mutex m;
+    static int result = 0; // 0 not tried, 1 hooked, -1 failed
+    std::lock_guard<std::mutex> lock(m);
+    if (result) {
+        if (result < 0) GN_LOG("events: events between entities are not available (asked by %s; see the first attempt above)", who);
+        return result > 0;
+    }
+    g_hooked = true;
+    result = -1;
     const Type* peer = registry().find("EntityBusPeer");
     if (!peer) {
         GN_LOG("events: no EntityBusPeer type; events between entities are not available (asked by %s)", who);
@@ -125,6 +147,7 @@ bool ensureHooked(const char* who) {
     }
     GN_LOG("events: onEvent wrapped in %llu entity vtables (%llu failed, %llu found; first asked by %s)",
            static_cast<unsigned long long>(used), static_cast<unsigned long long>(failed), static_cast<unsigned long long>(vtables.size()), who);
+    result = used > 0 ? 1 : -1;
     return used > 0;
 }
 
@@ -248,8 +271,7 @@ int onEvent(const std::string& mod, const char* event, const char* className, gn
     const events::Listeners* old = events::g_listeners.load();
     auto next = std::make_unique<events::Listeners>(old ? *old : events::Listeners{});
     next->push_back(l);
-    events::g_listeners.store(next.get(), std::memory_order_release);
-    events::g_lists.push_back(std::move(next));
+    events::publish(std::move(next));
     return GN_OK;
 }
 
@@ -268,9 +290,7 @@ void forgetEvents(const CodeRange& r) {
     auto next = std::make_unique<events::Listeners>();
     for (const events::Listener& l : *old)
         if (!r.has(reinterpret_cast<void*>(l.fn))) next->push_back(l);
-    // The old list is kept (g_lists): a game thread may still be walking it.
-    events::g_listeners.store(next->empty() ? nullptr : next.get(), std::memory_order_release);
-    events::g_lists.push_back(std::move(next));
+    events::publish(std::move(next)); // the old list is freed later: a game thread may still be walking it
 }
 
 int eventSend(const std::string& mod, void* entity, const char* event) {

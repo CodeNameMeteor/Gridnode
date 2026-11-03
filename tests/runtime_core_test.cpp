@@ -396,6 +396,10 @@ void testModOrder() {
     CHECK((p.order == std::vector<size_t>{0}));
     CHECK(p.problem[1].find("not there") != std::string::npos);
     CHECK(p.problem[2].find("did not load") != std::string::npos);
+    // Two mods that optionally need each other both load (in file order); a soft link into a hard
+    // cycle does not save the cycle.
+    p = plan({{"s1", "", {parseDep("?s2")}}, {"s2", "", {parseDep("?s1")}}, {"after", "", {parseDep("s2")}}});
+    CHECK((p.order == std::vector<size_t>{0, 1, 2}));
     // A cycle, and a duplicate id.
     p = plan({{"p", "", {parseDep("q")}}, {"q", "", {parseDep("p")}}, {"r", "", {}}, {"r", "", {}}});
     CHECK((p.order == std::vector<size_t>{2}));

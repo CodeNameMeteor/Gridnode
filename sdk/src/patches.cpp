@@ -37,6 +37,9 @@ std::vector<Patch> g_patches; // (g_m)
 
 // Every other thread of the game paused (handles in `out`, to resume). The list is made before the
 // first pause: nothing may allocate or log while threads are paused (one may hold the heap's lock).
+// GridNode's own threads are paused too; that is safe whatever locks the caller holds, because the
+// paused section (thread contexts, VirtualProtect, a memcpy, FlushInstructionCache) takes no lock
+// and so never waits on a paused thread (review, 2026-11-03).
 void pauseOthers(std::vector<HANDLE>& out) {
     std::vector<DWORD> ids;
     if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
@@ -152,7 +155,8 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused =
 std::mutex g_thunkM;
 uint8_t* g_thunkPage = nullptr; // (g_thunkM)
 size_t g_thunkUsed = 0;
-bool g_thunkWritable = false;   // the page is read-write-execute (more thunks can go on it)
+bool g_thunkWritable = false;   // the page is read-write-execute
+bool g_thunkSealed = false;     // (not writable) it was made executable: later writes need the threads paused
 
 constexpr int kMaxTries = 64;          // VirtualAlloc calls per search
 constexpr int kTriesPerRegion = 8;     // the lowest addresses of each free region
@@ -239,9 +243,9 @@ bool reaches(const uint8_t* p, uintptr_t site) { // a rel32 at site reaches the 
 uint8_t* codeRoom(uintptr_t site, size_t n) {
     n = (n + 15) & ~size_t(15);
     if (n > 0x1000) return nullptr;
-    if (!g_thunkPage || !g_thunkWritable || g_thunkUsed + n > 0x1000 || !reaches(g_thunkPage, site)) {
+    if (!g_thunkPage || g_thunkUsed + n > 0x1000 || !reaches(g_thunkPage, site)) {
         g_thunkPage = allocNear(site, true, g_thunkWritable);
-        g_thunkUsed = 0;
+        g_thunkUsed = 0, g_thunkSealed = false;
         if (!g_thunkPage) return nullptr;
     }
     uint8_t* t = g_thunkPage + g_thunkUsed;
@@ -249,12 +253,35 @@ uint8_t* codeRoom(uintptr_t site, size_t n) {
     return t;
 }
 
+// (g_thunkM) Writes code into room from codeRoom. A page that could not be had read-write-execute
+// is read-write until its first code is done, then executable: a later write makes it writable for
+// a moment with every other thread paused (thunks already on it may be running), instead of
+// searching for a new page for each thunk (up to 2 s each, review 2026-11-03).
+bool codeWrite(uint8_t* dst, const uint8_t* src, size_t n) {
+    if (g_thunkWritable || !g_thunkSealed) {
+        memcpy(dst, src, n);
+        return true;
+    }
+    std::vector<HANDLE> paused;
+    pauseOthers(paused);
+    DWORD old = 0, tmp = 0;
+    const bool ok = VirtualProtect(g_thunkPage, 0x1000, PAGE_READWRITE, &old) != 0;
+    if (ok) memcpy(dst, src, n);
+    const bool back = !ok || VirtualProtect(g_thunkPage, 0x1000, PAGE_EXECUTE_READ, &tmp) != 0;
+    resumeAll(paused);
+    if (!back) g_thunkPage = nullptr; // not executable any more: no further thunks on it
+    return ok && back;
+}
+
 bool codeDone(uint8_t* t, size_t n) { // (g_thunkM)
     DWORD tmp = 0;
-    if (!g_thunkWritable && !VirtualProtect(g_thunkPage, 0x1000, PAGE_EXECUTE_READ, &tmp)) {
-        GN_LOG("patches: the thunk page could not be made executable (error %lu)", static_cast<unsigned long>(GetLastError()));
-        g_thunkPage = nullptr;
-        return false;
+    if (!g_thunkWritable && !g_thunkSealed) {
+        if (!VirtualProtect(g_thunkPage, 0x1000, PAGE_EXECUTE_READ, &tmp)) {
+            GN_LOG("patches: the thunk page could not be made executable (error %lu)", static_cast<unsigned long>(GetLastError()));
+            g_thunkPage = nullptr;
+            return false;
+        }
+        g_thunkSealed = true;
     }
     FlushInstructionCache(GetCurrentProcess(), t, n);
     return true;
@@ -264,10 +291,9 @@ uint8_t* thunkTo(void* detour, uintptr_t site) {
     std::lock_guard<std::mutex> lock(g_thunkM);
     uint8_t* t = codeRoom(site, 16);
     if (!t) return nullptr;
-    const uint8_t jmp[6] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
-    memcpy(t, jmp, 6);
-    memcpy(t + 6, &detour, 8);
-    return codeDone(t, 16) ? t : nullptr;
+    uint8_t code[16] = {0xff, 0x25, 0, 0, 0, 0}; // jmp [rip+0]
+    memcpy(code + 6, &detour, 8);
+    return codeWrite(t, code, sizeof(code)) && codeDone(t, 16) ? t : nullptr;
 }
 
 bool overlaps(uintptr_t at, size_t n) { // g_m held
@@ -432,12 +458,12 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
     auto* slot = reinterpret_cast<uint64_t*>(g_slotPage + g_slotUsed);
     g_slotUsed += 8;
     *slot = reinterpret_cast<uint64_t>(room);
-    memcpy(room, tramp.data(), tramp.size());
+    uint8_t block[128] = {};
+    memcpy(block, tramp.data(), tramp.size());
     const int32_t toSlot = static_cast<int32_t>(reinterpret_cast<intptr_t>(slot) - reinterpret_cast<intptr_t>(stub + 6));
-    const uint8_t jmp[2] = {0xff, 0x25}; // jmp [rip+toSlot]
-    memcpy(stub, jmp, 2);
-    memcpy(stub + 2, &toSlot, 4);
-    if (!codeDone(room, 128)) return GN_ERR_UNAVAILABLE;
+    block[0x70] = 0xff, block[0x71] = 0x25; // jmp [rip+toSlot]
+    memcpy(block + 0x72, &toSlot, 4);
+    if (!codeWrite(room, block, sizeof(block)) || !codeDone(room, 128)) return GN_ERR_UNAVAILABLE;
     // The entry: jmp rel32 to the stub, GridNode's patch (undone when GridNode is unloaded).
     uint8_t entry[5] = {0xe9};
     const int32_t toStub = static_cast<int32_t>(reinterpret_cast<intptr_t>(stub) - static_cast<intptr_t>(fn + 5));

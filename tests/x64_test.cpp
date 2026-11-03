@@ -70,6 +70,10 @@ void lengths() {
     CHECK(decode(jmpm, 6, in) && in.jmp && in.ripDisp == 2);
     const uint8_t invalid[] = {0x06};
     CHECK(!decode(invalid, 1, in));
+    const uint8_t moffs32[] = {0x67, 0xa1, 1, 2, 3, 4}; // mov eax, [abs32] with an address-size prefix
+    CHECK(decode(moffs32, sizeof(moffs32), in) && in.length == 6 && in.addr32);
+    const uint8_t moffs64[] = {0x48, 0xa1, 1, 2, 3, 4, 5, 6, 7, 8};
+    CHECK(decode(moffs64, sizeof(moffs64), in) && in.length == 10 && !in.addr32);
 }
 
 int32_t rel32(const std::vector<uint8_t>& v, size_t at) {
@@ -116,6 +120,9 @@ void trampolines() {
     // A branch back into the moved bytes.
     const uint8_t f4[] = {0x90, 0x90, 0x90, 0x75, 0xfc, 0x90};
     CHECK(!trampoline(f4, sizeof(f4), code, 5, tramp, out, copied));
+    // An address-size prefix in the moved bytes.
+    const uint8_t f5[] = {0x67, 0x8b, 0x05, 1, 2, 3, 4, 0x90};
+    CHECK(!trampoline(f5, sizeof(f5), code, 5, tramp, out, copied));
     // A RIP-relative operand out of reach of the trampoline.
     CHECK(!trampoline(f1, sizeof(f1), code, 5, 0x7ff000000000ull, out, copied));
 }

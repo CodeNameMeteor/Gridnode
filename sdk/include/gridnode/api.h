@@ -524,8 +524,9 @@ typedef struct gn_api {
 
     /* ---- the view --------------------------------------------------------------------------------
      * The camera as the game draws this frame (the layout editor's free camera while it flies), with
-     * the screen size, for drawing at world positions. Render thread (a UI callback);
-     * GN_ERR_UNAVAILABLE with no camera (loading, menus) or no overlay. */
+     * the screen size, for drawing at world positions: a copy taken as the frame starts, so any
+     * thread may ask (a UI callback gets this frame's). GN_ERR_UNAVAILABLE with no camera (loading,
+     * menus) or no overlay. */
     int (*view_get)(gn_view* out);
 
     /* ==== GN_API_VERSION 11 =================================================================== */
