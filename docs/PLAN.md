@@ -392,6 +392,11 @@ Research tools on top of them:
 - **The game's debug drawing**: `ShowTriggerDebugText`, `DebugRenderSettings`, the Havok debug
   settings, if retail kept the renderer.
 
+From the cinematic tools' research (`research/ct-research.md`, 2026-11-03), in this order: the Havok
+body buffer fix and collision layers in ray hits; the trainer's game speed on top of the game's slow
+motion, and no fall death; collision boxes (`OBBCollisionEntity` or raw bodies); sounds and the
+destroy request as mod API.
+
 ### Settings, console and messages (decided 2026-10-19)
 
 Decision: expose everything; nothing is hidden. Settings and commands that touch online play
