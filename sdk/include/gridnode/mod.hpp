@@ -278,6 +278,30 @@ inline bool raycast(const Vec3& from, const Vec3& to, RayHit& hit, float radius 
     return api().raycast(a, b, radius, &hit) == GN_OK;
 }
 
+using ObjectHit = gn_ray_hit_ex;
+// A thin ray that also says what it hit: hit.entity (null for level geometry), hit.body, hit.part.
+// Server thread only; looks through the physics entities, so per click rather than per tick.
+inline bool raycastObject(const Vec3& from, const Vec3& to, ObjectHit& hit) {
+    const float a[3] = {from.x, from.y, from.z}, b[3] = {to.x, to.y, to.z};
+    hit = ObjectHit{};
+    hit.size = sizeof(ObjectHit);
+    return api().raycast_object(a, b, &hit) == GN_OK;
+}
+
+// ---- collision bodies -------------------------------------------------------------------------
+// A physics entity's collision body ids (empty if it is not one). Any thread.
+inline std::vector<uint32_t> entityBodies(void* entity) {
+    uint32_t ids[64];
+    const int n = api().entity_bodies(entity, ids, 64);
+    return n > 0 ? std::vector<uint32_t>(ids, ids + (n < 64 ? n : 64)) : std::vector<uint32_t>();
+}
+// Where a body's collision is, and moving it (a teleport). The entity's realm thread.
+inline bool bodyTransform(void* entity, uint32_t body, gn_transform& out) { return api().body_transform(entity, body, &out) == GN_OK; }
+inline int bodySetTransform(void* entity, uint32_t body, const gn_transform& to) { return api().body_set_transform(entity, body, &to); }
+// The same object in the other realm (its client half for a server entity, and back), or null. Faith
+// collides with the client half's bodies: move both. Any thread.
+inline void* entityOtherHalf(void* entity) { return api().entity_other_half(entity); }
+
 // ---- messages ---------------------------------------------------------------------------------
 // fn(const void* message, const gn_message_info& info) for every message of a type
 // ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"), on the sender's thread.

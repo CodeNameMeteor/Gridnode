@@ -457,6 +457,157 @@ int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintp
     return GN_OK;
 }
 
+// ---- collision bodies ----------------------------------------------------------------------------------
+// A physics entity's component lists its bodies by id; an id leads to its RigidBody through the
+// physics manager's owner table (bits 16..23) and that owner's object table (low 16 bits).
+std::vector<std::pair<uint32_t, uintptr_t>> physicsBodies(uintptr_t entity) {
+    namespace c = e::constant;
+    std::vector<std::pair<uint32_t, uintptr_t>> out;
+    static const reflect::Type* rigid = registry().find("RigidBody");
+    const uintptr_t comp = mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics);
+    if (!comp || !rigid) return out;
+    const uint16_t count = mem::readOr<uint16_t>(comp + c::PhysicsComponent_BodyCount);
+    const uintptr_t ids = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_BodyIds);
+    const uintptr_t manager = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_Manager);
+    const uintptr_t owners = manager ? mem::readOr<uintptr_t>(manager + c::PhysicsManager_Owners) : 0;
+    if (!ids || !owners || count > 64) return out;
+    for (uint16_t i = 0; i < count; ++i) {
+        const uint32_t id = mem::readOr<uint32_t>(ids + i * 4u, 0xffffffffu);
+        if (id == 0xffffffffu) continue;
+        const uintptr_t owner = mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8);
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects) : 0;
+        const uintptr_t body = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8) : 0;
+        const reflect::Type* bt = body ? registry().typeOf(mem::ProcessMemory(), body) : nullptr;
+        out.push_back({id, bt && registry().isKindOf(bt, rigid) ? body : 0});
+    }
+    return out;
+}
+
+std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
+    if (body == 0xffffffffu) return {0, nullptr};
+    static const reflect::Type* physicsEntity = registry().find("ServerPhysicsEntity");
+    if (!physicsEntity) return {0, nullptr};
+    for (const auto& [p, t] : inspector::trackedOf(physicsEntity)) {
+        if (!inspector::alive(p, t)) continue;
+        for (const auto& [id, rb] : physicsBodies(p))
+            if (id == body) return {p, t};
+    }
+    return {0, nullptr};
+}
+
+namespace {
+// A live physics entity (either realm), or null.
+const reflect::Type* physicsEntityType(void* entity) {
+    static const reflect::Type* server = registry().find("ServerPhysicsEntity");
+    static const reflect::Type* client = registry().find("ClientPhysicsEntity");
+    const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
+    const reflect::Type* t = p ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
+    if (!t || !((server && registry().isKindOf(t, server)) || (client && registry().isKindOf(t, client)))) return nullptr;
+    return inspector::alive(p, t) ? t : nullptr;
+}
+
+// The body's RigidBody, on the entity's realm thread; an error code when there is none to use.
+int bodyOf(void* entity, uint32_t id, uintptr_t& out) {
+    const reflect::Type* t = physicsEntityType(entity);
+    if (!t) return GN_ERR_ARGUMENT;
+    const bool client = t->name.rfind("Client", 0) == 0 || t->name.rfind("PamClient", 0) == 0;
+    if (client ? !isClientThread() : !isServerThread()) return GN_ERR_THREAD;
+    for (const auto& [i, rb] : physicsBodies(reinterpret_cast<uintptr_t>(entity)))
+        if (i == id) {
+            if (!rb) return GN_ERR_UNAVAILABLE;
+            out = rb;
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+template <class Fn>
+Fn bodyVirtual(uintptr_t body, uint32_t slot) {
+    const uintptr_t vt = mem::readOr<uintptr_t>(body);
+    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + slot) : 0;
+    return mem::inImage(fn) ? reinterpret_cast<Fn>(fn) : nullptr;
+}
+} // namespace
+
+int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out) {
+    if (!out || out->size < sizeof(gn_ray_hit_ex)) return GN_ERR_ARGUMENT;
+    gn_ray_hit hit{};
+    uintptr_t object = 0;
+    uint32_t body = 0xffffffffu, part = 0xffffffffu;
+    const int r = raycastObject(from, to, &hit, &object, &body, &part);
+    if (r != GN_OK) return r;
+    out->hit = hit;
+    out->body = body;
+    out->part = part;
+    out->reserved = 0;
+    out->physics_object = reinterpret_cast<void*>(object);
+    out->entity = reinterpret_cast<void*>(entityOfBody(body).first);
+    return GN_OK;
+}
+
+int apiEntityBodies(void* entity, uint32_t* ids, int max) {
+    if (max < 0 || (max > 0 && !ids) || !physicsEntityType(entity)) return -GN_ERR_ARGUMENT;
+    const auto bodies = physicsBodies(reinterpret_cast<uintptr_t>(entity));
+    for (int i = 0; i < max && i < static_cast<int>(bodies.size()); ++i) ids[i] = bodies[size_t(i)].first;
+    return static_cast<int>(bodies.size());
+}
+
+int apiBodyTransform(void* entity, uint32_t id, gn_transform* out) {
+    if (!out) return GN_ERR_ARGUMENT;
+    uintptr_t body = 0;
+    if (const int r = bodyOf(entity, id, body); r != GN_OK) return r;
+    const auto get = bodyVirtual<void* (*)(uintptr_t, gn_transform*)>(body, e::constant::RigidBody_vf_getTransform);
+    if (!get) return GN_ERR_UNAVAILABLE;
+    alignas(16) gn_transform t{};
+    get(body, &t);
+    if (!finite(t.right, 3) || !finite(t.up, 3) || !finite(t.forward, 3) || !finite(t.trans, 3)) return GN_ERR_UNAVAILABLE;
+    *out = t;
+    return GN_OK;
+}
+
+int apiBodySetTransform(void* entity, uint32_t id, const gn_transform* to) {
+    if (!to || !finite(to->right, 3) || !finite(to->up, 3) || !finite(to->forward, 3) || !finite(to->trans, 3)) return GN_ERR_ARGUMENT;
+    alignas(16) gn_transform t = *to;
+    for (float* row : {t.right, t.up, t.forward}) { // bodies carry no scale
+        const float n = std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+        if (!(n > 1e-4f)) return GN_ERR_ARGUMENT;
+        for (int k = 0; k < 3; ++k) row[k] /= n;
+        row[3] = 0.f;
+    }
+    t.trans[3] = 1.f;
+    uintptr_t body = 0;
+    if (const int r = bodyOf(entity, id, body); r != GN_OK) return r;
+    const auto set = bodyVirtual<void (*)(uintptr_t, const gn_transform*, bool)>(body, e::constant::RigidBody_vf_setTransform);
+    if (!set) return GN_ERR_UNAVAILABLE;
+    set(body, &t, true);
+    return GN_OK;
+}
+
+void* apiEntityOtherHalf(void* entity) {
+    const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
+    const reflect::Type* t = p ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
+    if (!t || !inspector::alive(p, t)) return nullptr;
+    // ServerX <-> ClientX, PamServerX <-> PamClientX.
+    std::string other = t->name;
+    const size_t pre = other.rfind("Pam", 0) == 0 ? 3 : 0;
+    if (other.compare(pre, 6, "Server") == 0) other.replace(pre, 6, "Client");
+    else if (other.compare(pre, 6, "Client") == 0) other.replace(pre, 6, "Server");
+    else return nullptr;
+    const reflect::Type* ot = registry().find(other);
+    gn_transform at{};
+    if (!ot || !entityTransform(entity, at)) return nullptr;
+    // By class and place, as the layout editor pairs them: the two halves do not keep their data at
+    // the same offset (a static model's halves did not match by +0x28, 2026-11-03).
+    for (const auto& [q, qt] : inspector::trackedOf(ot)) {
+        if (qt != ot || !inspector::alive(q, qt)) continue;
+        gn_transform o{};
+        if (!entityTransform(reinterpret_cast<void*>(q), o)) continue;
+        const float d = std::fabs(o.trans[0] - at.trans[0]) + std::fabs(o.trans[1] - at.trans[1]) + std::fabs(o.trans[2] - at.trans[2]);
+        if (d < 0.05f) return reinterpret_cast<void*>(q);
+    }
+    return nullptr;
+}
+
 // The local player's camera (the view the game renders), or false before there is one.
 bool cameraTransform(gn_transform& out) {
     namespace cv = e::st::ClientCameraViewManagers::off;

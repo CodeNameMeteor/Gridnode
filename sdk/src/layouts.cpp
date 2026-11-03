@@ -96,7 +96,6 @@ float dist2(const float* a, const float* b) {
     return dx * dx + dy * dy + dz * dz;
 }
 
-std::wstring widen(const std::string& s) { return std::wstring(s.begin(), s.end()); }
 std::string narrowName(const std::wstring& s) {
     std::string o;
     for (wchar_t c : s) o += c < 128 ? static_cast<char>(c) : '_';
@@ -278,24 +277,7 @@ void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& 
 // with RigidBody's own setTransform.
 template <class F>
 void forEachBody(uintptr_t entity, F&& fn) {
-    namespace c = e::constant;
-    static const reflect::Type* rigid = registry().find("RigidBody");
-    const uintptr_t comp = mem::readOr<uintptr_t>(entity + c::PhysicsEntity_Physics);
-    if (!comp || !rigid) return;
-    const uint16_t count = mem::readOr<uint16_t>(comp + c::PhysicsComponent_BodyCount);
-    const uintptr_t ids = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_BodyIds);
-    const uintptr_t manager = mem::readOr<uintptr_t>(comp + c::PhysicsComponent_Manager);
-    const uintptr_t owners = manager ? mem::readOr<uintptr_t>(manager + c::PhysicsManager_Owners) : 0;
-    if (!ids || !owners || count > 64) return;
-    for (uint16_t i = 0; i < count; ++i) {
-        const uint32_t id = mem::readOr<uint32_t>(ids + i * 4u, 0xffffffffu);
-        if (id == 0xffffffffu) continue;
-        const uintptr_t owner = mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8);
-        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects) : 0;
-        const uintptr_t body = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8) : 0;
-        const reflect::Type* bt = body ? registry().typeOf(mem::ProcessMemory(), body) : nullptr;
-        fn(id, bt && registry().isKindOf(bt, rigid) ? body : 0);
-    }
+    for (const auto& [id, body] : physicsBodies(entity)) fn(id, body);
 }
 
 // `p` (a point or a direction) from `from`'s frame into `to`'s. Rows may be scaled, so the local
@@ -1981,17 +1963,6 @@ void collectPair(Selected& s, const float* pos) {
 }
 
 // The entity whose collision a ray hit: the server physics entity that lists the hit body's id.
-std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
-    if (body == 0xffffffffu) return {0, nullptr};
-    static const reflect::Type* physicsEntity = registry().find("ServerPhysicsEntity");
-    for (const auto& [p, t] : inspector::tracked()) {
-        if (!t || !physicsEntity || !registry().isKindOf(t, physicsEntity)) continue;
-        bool match = false;
-        forEachBody(p, [&](uint32_t id, uintptr_t) { match = match || id == body; });
-        if (match) return {p, t};
-    }
-    return {0, nullptr};
-}
 
 void clearUndo();
 

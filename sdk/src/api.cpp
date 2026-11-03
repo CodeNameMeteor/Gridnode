@@ -387,6 +387,11 @@ const gn_api* api() {
         a.setting_set_text = settingSetText;
         a.setting_on_change = settingOnChange;
         a.settings_page = settingsPage;
+        a.raycast_object = apiRaycastObject;
+        a.entity_bodies = apiEntityBodies;
+        a.body_transform = apiBodyTransform;
+        a.body_set_transform = apiBodySetTransform;
+        a.entity_other_half = apiEntityOtherHalf;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 17;
+pub const GN_API_VERSION: u32 = 18;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -120,6 +120,18 @@ pub struct gn_ray_hit {
     pub normal: [f32; 3],
     pub distance: f32,
     pub fraction: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_ray_hit_ex {
+    pub size: u32,
+    pub body: u32,
+    pub part: u32,
+    pub reserved: u32,
+    pub entity: *mut c_void,
+    pub physics_object: *mut c_void,
+    pub hit: gn_ray_hit,
 }
 
 #[repr(C, align(16))]
@@ -324,6 +336,11 @@ pub struct gn_api {
     pub setting_set_text: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, value: *const c_char) -> c_int>,
     pub setting_on_change: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, fn_: gn_setting_fn, user: *mut c_void) -> c_int>,
     pub settings_page: Option<unsafe extern "C" fn(mod_: *const c_char, shown: c_int) -> c_int>,
+    pub raycast_object: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, out: *mut gn_ray_hit_ex) -> c_int>,
+    pub entity_bodies: Option<unsafe extern "C" fn(entity: *mut c_void, ids: *mut u32, max: c_int) -> c_int>,
+    pub body_transform: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, out: *mut gn_transform) -> c_int>,
+    pub body_set_transform: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, to: *const gn_transform) -> c_int>,
+    pub entity_other_half: Option<unsafe extern "C" fn(entity: *mut c_void) -> *mut c_void>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -335,6 +352,7 @@ const _: () = assert!(core::mem::size_of::<gn_setting>() == 96);
 const _: () = assert!(core::mem::size_of::<gn_command>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_message_info>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
+const _: () = assert!(core::mem::size_of::<gn_ray_hit_ex>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_transform>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
@@ -345,4 +363,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 768);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 808);

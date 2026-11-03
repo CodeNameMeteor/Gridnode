@@ -222,6 +222,7 @@ pub fn on_created<F: FnMut(*mut c_void) + Send + 'static>(class: &str, f: F) -> 
 // ---- world ----------------------------------------------------------------------------------------
 pub type Transform = sys::gn_transform;
 pub type RayHit = sys::gn_ray_hit;
+pub type ObjectHit = sys::gn_ray_hit_ex;
 
 /// Faith on the client (client thread: now; elsewhere: as of the last client tick).
 pub fn local_client_character() -> *mut c_void {
@@ -249,6 +250,36 @@ pub fn teleport(server_character: *mut c_void, to: &Transform) -> Result<(), u32
 pub fn raycast(from: [f32; 3], to: [f32; 3], radius: f32) -> Option<RayHit> {
     let mut h = RayHit { position: [0.0; 3], normal: [0.0; 3], distance: 0.0, fraction: 0.0 };
     (unsafe { (api().raycast.unwrap())(from.as_ptr(), to.as_ptr(), radius, &mut h) } == 0).then_some(h)
+}
+/// What a thin ray hit: the hit, the body, the part within it and the server entity that owns
+/// it (null for level geometry). Server thread only; per click rather than per tick.
+pub fn raycast_object(from: [f32; 3], to: [f32; 3]) -> Option<ObjectHit> {
+    let mut h: ObjectHit = unsafe { core::mem::zeroed() };
+    h.size = core::mem::size_of::<ObjectHit>() as u32;
+    (unsafe { (api().raycast_object.unwrap())(from.as_ptr(), to.as_ptr(), &mut h) } == 0).then_some(h)
+}
+/// A physics entity's collision body ids (empty if it is not one). Any thread.
+pub fn entity_bodies(entity: *mut c_void) -> Vec<u32> {
+    let mut ids = [0u32; 64];
+    let n = unsafe { (api().entity_bodies.unwrap())(entity, ids.as_mut_ptr(), 64) };
+    if n > 0 { ids[..(n as usize).min(64)].to_vec() } else { Vec::new() }
+}
+/// Where a body's collision is. The entity's realm thread.
+pub fn body_transform(entity: *mut c_void, body: u32) -> Option<Transform> {
+    let mut t: Transform = unsafe { core::mem::zeroed() };
+    (unsafe { (api().body_transform.unwrap())(entity, body, &mut t) } == 0).then_some(t)
+}
+/// Moves a body's collision (a teleport; rotation rows made unit length). The entity's realm thread.
+pub fn body_set_transform(entity: *mut c_void, body: u32, to: &Transform) -> Result<(), u32> {
+    match unsafe { (api().body_set_transform.unwrap())(entity, body, to) } {
+        0 => Ok(()),
+        e => Err(e as u32),
+    }
+}
+/// The same object in the other realm (server <-> client), or null. Faith collides with the client
+/// half's bodies: move both. Any thread.
+pub fn entity_other_half(entity: *mut c_void) -> *mut c_void {
+    unsafe { (api().entity_other_half.unwrap())(entity) }
 }
 pub fn level_name() -> String {
     let mut buf = [0 as c_char; 256];

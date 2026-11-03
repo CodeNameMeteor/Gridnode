@@ -269,7 +269,8 @@ BusLinks& linksOf(void* bus) {
     const size_t n = size_t(e - b) / 8;
     if (n > kConnsPerBus || g_connsTotal + n > kConnsTotal) {
         static int said = 0;
-        if (said++ < 5) gn::log("volumes: bus %p has %zu links: not read (cap %zu per bus, %zu in all; %zu cached)", bus, n, kConnsPerBus, kConnsTotal, g_connsTotal);
+        if (said++ < 5) gn::log("volumes: bus %p has %llu links: not read (cap %llu per bus, %llu in all; %llu cached)", bus, (unsigned long long)n,
+                                (unsigned long long)kConnsPerBus, (unsigned long long)kConnsTotal, (unsigned long long)g_connsTotal);
         return l;
     }
     std::vector<void*> recs(n);

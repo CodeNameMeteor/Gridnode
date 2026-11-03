@@ -14,6 +14,11 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **What a ray hit, collision bodies (API 18)** (2026-11-03, untested in game). `raycast_object`
+  (body, part, owning server entity), `entity_bodies`, `body_transform` / `body_set_transform`; the
+  body walk and `entityOfBody` moved from layouts.cpp to world.cpp. world-draw shows what the camera
+  looks at and can lift its collision 1 m. Next for physics: gravity, velocity and impulses, new
+  boxes (Ghidra first; a contributor has addresses to share).
 - **Review fixes, fourth round** (2026-11-03, untested in game). Layouts: group props keep their
   groups' classes and nothing is written or spawned through a group that streamed out (find,
   move, make standalone); a barrier's body is moved only when its owner's table holds a RigidBody;

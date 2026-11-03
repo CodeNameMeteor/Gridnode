@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 17 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings */
+#define GN_API_VERSION 18 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -144,6 +144,18 @@ typedef struct gn_ray_hit {
     float distance;    /* metres from the start of the ray */
     float fraction;    /* 0..1 along the ray */
 } gn_ray_hit;
+
+/* What a ray hit (raycast_object): the hit, and the body and entity. size: set it to
+ * sizeof(gn_ray_hit_ex) before the call (later versions may add fields at the end). */
+typedef struct gn_ray_hit_ex {
+    uint32_t size;
+    uint32_t body;        /* the collision body's id (entity_bodies lists an entity's); 0xffffffff: none */
+    uint32_t part;        /* within the body: a static model group's prop, a compound's piece; 0xffffffff: none */
+    uint32_t reserved;
+    void* entity;         /* the server entity that owns the body, or null (level geometry, or not found) */
+    void* physics_object; /* the game's object for the body (a RigidBody, or a group's body) */
+    gn_ray_hit hit;
+} gn_ray_hit_ex;
 
 /* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
  * 16-byte aligned, as the engine reads it with aligned loads. */
@@ -654,6 +666,34 @@ typedef struct gn_api {
     int (*setting_set_text)(const char* mod, const char* id, const char* value);
     int (*setting_on_change)(const char* mod, const char* id, gn_setting_fn fn, void* user);
     int (*settings_page)(const char* mod, int shown); /* shown 0: no page for this mod (its own window has them) */
+
+    /* ==== GN_API_VERSION 18 =================================================================== */
+
+    /* ---- what a ray hit, collision bodies ------------------------------------------------------
+     * raycast_object: like raycast (a thin ray, no radius), and says what it hit: the body, the
+     * part within it and the server entity that owns it (out->size must be set). Finding the
+     * entity walks the server's physics entities (about a millisecond in the city): fine per
+     * click, not every tick. Server thread. GN_ERR_NOT_FOUND: nothing hit; GN_ERR_UNAVAILABLE: no
+     * level (or the caster is not as expected).
+     * entity_bodies: the ids of a physics entity's collision bodies (ServerPhysicsEntity or
+     * ClientPhysicsEntity, e.g. a prop) into ids (up to max; may be null with max 0); returns how
+     * many it has (at most 64), or a negative error (-GN_ERR_ARGUMENT: not a physics entity, or
+     * destroyed). Any thread (it reads).
+     * body_transform / body_set_transform: one of the entity's bodies, where its collision is (a
+     * body keeps its own place: moving the entity with entity_set_transform does not move it).
+     * Set moves it as the game teleports a body (no sweep, no velocity), rotation rows unit
+     * length (bodies have no scale). The entity's realm thread (Server... on the server thread,
+     * Client... on the client thread): GN_ERR_THREAD otherwise. GN_ERR_NOT_FOUND: not one of its
+     * bodies; GN_ERR_UNAVAILABLE: the body is not a RigidBody (a static model group's shared body).
+     * Each realm has its own physics: Faith (on the client) walks into the client half's bodies, AI
+     * and the server's ray casts hit the server half's. Move both to move what she collides with.
+     * entity_other_half: the same object in the other realm (ServerX <-> ClientX at the same
+     * place, within 5 cm), or null. Any thread (it reads; looks through that class). */
+    int (*raycast_object)(const float from[3], const float to[3], gn_ray_hit_ex* out);
+    int (*entity_bodies)(void* entity, uint32_t* ids, int max);
+    int (*body_transform)(void* entity, uint32_t body, gn_transform* out);
+    int (*body_set_transform)(void* entity, uint32_t body, const gn_transform* to);
+    void* (*entity_other_half)(void* entity);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
