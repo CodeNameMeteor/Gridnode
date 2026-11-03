@@ -92,6 +92,7 @@ std::unordered_map<uint32_t, std::vector<Sub>> g_subs; // category -> subscriber
 std::set<uint32_t> g_wanted;                            // categories to listen to (g_subM)
 std::atomic<bool> g_monitor{false};
 std::atomic<MessageRecorder> g_recorder{nullptr};
+std::atomic<MessageRecorder> g_tap{nullptr}; // the recorder (recorder.cpp), independent of the inspector's
 
 // ---- the listener objects ------------------------------------------------------------------------
 // One per manager. The engine calls vtable[0](this, message) and vtable[1](this) for the order.
@@ -112,6 +113,7 @@ void dispatch(int manager, const uint8_t* msg) {
     memcpy(head, msg + e::st::Message::off::category, sizeof(head));
     if (MessageRecorder rec = g_recorder.load(std::memory_order_relaxed); rec && g_monitor.load(std::memory_order_relaxed))
         rec(manager, msg, head[0], head[1], head[2]);
+    if (MessageRecorder tap = g_tap.load(std::memory_order_relaxed)) tap(manager, msg, head[0], head[1], head[2]);
     std::vector<Sub> subs;
     {
         std::shared_lock<std::shared_mutex> lock(g_subM);
@@ -165,12 +167,29 @@ bool available() {
     return ok == 1;
 }
 
+std::atomic<bool> g_release{false};      // a full unload: take every registration out
+std::atomic<int> g_releasedMask{0};       // managers done (bit per manager)
+
 // On the realm's thread: register the wanted categories with this manager (again, if it was recreated).
 void sync(int manager) {
     if (!available()) return;
     const uintptr_t handle = managerHandle(manager);
     const uintptr_t impl = handle ? mem::readOr<uintptr_t>(handle) : 0;
     Registered& r = g_registered[manager];
+    if (g_release.load()) {
+        // Our listener object lives in gridnode.dll: the manager must not keep it.
+        if (impl && impl == r.impl && !r.categories.empty()) {
+            using UnregisterFn = void (*)(void* manager, uint32_t category, void* listener, uint32_t realm);
+            const auto unreg = reinterpret_cast<UnregisterFn>(mem::rva(e::function::MessageManager_unregisterListener));
+            for (uint32_t c : r.categories) unreg(reinterpret_cast<void*>(handle), c, &g_listeners[manager], 0xff);
+            GN_LOG("messages: %llu categor%s taken out of the %s message manager", static_cast<unsigned long long>(r.categories.size()),
+                   r.categories.size() == 1 ? "y" : "ies", manager == 0 ? "core" : manager == 1 ? "client" : "server");
+        }
+        r.categories.clear();
+        r.impl = 0;
+        g_releasedMask.fetch_or(1 << manager);
+        return;
+    }
     if (impl != r.impl) {
         r.impl = impl;
         r.categories.clear();
@@ -208,6 +227,9 @@ void messagesClientTick() {
     sync(1);
 }
 void messagesServerTick() { sync(2); }
+
+void messagesRelease() { g_release = true; }
+bool messagesReleased() { return !available() || g_releasedMask.load() == 7; }
 
 const std::vector<MessageType>& messageTypes() { return catalogue().types; }
 
@@ -255,6 +277,19 @@ void messageMonitor(bool on, MessageRecorder rec) {
     g_monitor = on;
 }
 
+void messageTap(MessageRecorder rec) {
+    if (rec && available())
+        for (const auto& kv : catalogue().categoryName) want(kv.first); // every category, from the next tick
+    g_tap = rec;
+}
+
 bool messagesAvailable() { return available(); }
+
+void forgetMessages(const CodeRange& r) {
+    std::unique_lock<std::shared_mutex> lock(g_subM);
+    for (auto& [category, subs] : g_subs)
+        subs.erase(std::remove_if(subs.begin(), subs.end(), [&](const Sub& s) { return r.has(reinterpret_cast<void*>(s.fn)); }), subs.end());
+    // The categories stay registered with the managers: GridNode's listener then finds nobody.
+}
 
 } // namespace gn::host

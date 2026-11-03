@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -156,6 +157,19 @@ class Errors(unittest.TestCase):
                 properties: [ { name: Visible, hash: 0x12345678 } ]
             """, "does not match djb2-xor")
 
+    def test_bad_event_hash(self):
+        self.assertError("""
+            events:
+              - { name: StartReplay, hash: 0x12345678 }
+            """, "does not match djb2-xor")
+
+    def test_duplicate_event(self):
+        self.assertError("""
+            events:
+              - { name: StartReplay }
+              - { name: StartReplay }
+            """, "already in")
+
     def test_wrong_vtable(self):
         self.assertError("""
             classes:
@@ -297,6 +311,48 @@ class GhidraSync(unittest.TestCase):
         self.assertTrue(any("::" in n for n in names) or names)  # virtuals as Class::name when annotated
         self.assertTrue(all("GridNode [" in f["comment"] for f in doc["functions"]))
 
+    def test_class_structs_and_vtables(self):
+        """Class entries carry their vtable and depth, and the annotated members of their base classes;
+        extra classes come from the dump."""
+        from gridnode_gen import ghidra_sync
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(os.path.join(FIXTURE, "annotations")):
+                shutil.copy(os.path.join(FIXTURE, "annotations", fn), d)
+            with open(os.path.join(d, "zz-base.yaml"), "w") as f:
+                f.write("classes:\n  - name: Entity\n    members: [ { offset: 0x8, name: owner, type: \"void*\" } ]\n")
+            db, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
+        doc = ghidra_sync.to_ghidra(db, self.r, classes=["MyData"])
+        by = {s["name"]: s for s in doc["structs"]}
+        me = by["MyEntity"]
+        self.assertEqual(me["vtable"], 0x140020400)
+        self.assertEqual(me["depth"], 2)
+        owner = [m for m in me["members"] if m["name"] == "owner"]
+        self.assertEqual(len(owner), 1)
+        self.assertIn("from Entity", owner[0]["comment"])
+        self.assertIn("Bases: Entity", me["comment"])
+        md = by["MyData"]  # not annotated: from the dump
+        self.assertEqual((md["vtable"], md["depth"], md["size"]), (0x140020200, 3, 128))
+
+    def test_shared_functions_merge(self):
+        """A function at one address gets one entry: the annotated name first, else the base class's
+        virtual; every comment is kept; sibling classes with no known common base get no prototype."""
+        from gridnode_gen import ghidra_sync
+        v = lambda cls, va, c: {"name": f"{cls}::f", "va": va, "signature": "", "comment": c,
+                                "proto": {"returns": "void", "params": [], "this": cls}}
+        plain = {"name": "Spawner_f", "va": 0x10, "signature": "", "comment": "plain",
+                 "proto": {"returns": "void", "params": [{"type": "Spawner*", "name": "s"}]}}
+        out = {f["va"]: f for f in ghidra_sync._merge_shared(
+            [v("PamSpawner", 0x10, "pam"), plain,
+             v("PamSpawner", 0x20, "pam"), v("Spawner", 0x20, "base"),
+             v("ServerThing", 0x30, "s"), v("ClientThing", 0x30, "c")], None)}
+        self.assertEqual(len(out), 3)
+        self.assertEqual(out[0x10]["name"], "Spawner_f")
+        self.assertIn("pam", out[0x10]["comment"])
+        self.assertIn("Also: PamSpawner::f", out[0x10]["comment"])
+        self.assertEqual((out[0x20]["name"], out[0x20]["proto"]["this"]), ("Spawner::f", "Spawner"))
+        self.assertNotIn("proto", out[0x30])
+
     def test_round_trip(self):
         """What Ghidra exports comes back as annotations that load next to the existing ones,
         and what GridNode already knows is not repeated."""
@@ -327,6 +383,75 @@ class GhidraSync(unittest.TestCase):
             _, p = annotations.load(d)
             self.assertEqual(p.errors, [])
 
+    def test_import_skips_gridnodes_own_members(self):
+        """`vtbl` at +0 and base members GridNodeSync copied into a subclass are not findings."""
+        from gridnode_gen import ghidra_sync
+        export = {"format": "gridnode-ghidra-export", "version": 1, "functions": [], "labels": [],
+                  "structs": [{"name": "MyEntity", "members": [
+                      {"offset": 0, "name": "vtbl", "type": "MyEntity_vtbl *"},
+                      {"offset": 0x8, "name": "owner", "type": "MyEntity *"},     # another class's annotated member
+                      {"offset": 0x60, "name": "speed", "type": "float"}]}]}     # a real finding
+        text, counts = ghidra_sync.from_ghidra(export, self.db)
+        self.assertEqual(counts["members"], 1)
+        self.assertIn("speed", text)
+        self.assertNotIn("vtbl", text)
+
+    def test_friend_import_and_relay(self):
+        """A friend's export: their name in sources and notes, their comment carried; relayed, it
+        becomes an import file for another Ghidra."""
+        from gridnode_gen import ghidra_sync
+        export = {"format": "gridnode-ghidra-export", "version": 1, "program": "MEC",
+                  "functions": [{"name": "Rope::swing", "va": 0x140223450, "prototype": "", "signatureUserDefined": False,
+                                 "comment": "launches Faith"}],
+                  "labels": [{"name": "g_rope", "va": 0x142000020, "type": "", "comment": ""}], "structs": []}
+        text, _ = ghidra_sync.from_ghidra(export, self.db, who="Alex")
+        self.assertIn("sources: [ghidra, alex]", text)
+        self.assertIn("Named in Alex's Ghidra as Rope::swing. Signature not known yet. launches Faith", text)
+        with tempfile.TemporaryDirectory() as d:
+            for fn in os.listdir(os.path.join(FIXTURE, "annotations")):
+                shutil.copy(os.path.join(FIXTURE, "annotations", fn), d)
+            with open(os.path.join(d, "zz.yaml"), "w") as f:
+                f.write(text)
+            _, p = annotations.load(d)
+            self.assertEqual(p.errors, [])
+        doc = ghidra_sync.relay(export, who="Alex")
+        self.assertEqual(doc["format"], "gridnode-ghidra")
+        self.assertEqual(doc["functions"][0]["name"], "Rope::swing")
+        self.assertTrue(doc["functions"][0]["comment"].startswith("GridNode [relay] (Alex's Ghidra)"))
+        self.assertIn("launches Faith", doc["functions"][0]["comment"])
+
+
+class AnnotationsDiff(unittest.TestCase):
+    def test_diff(self):
+        from gridnode_gen import annotations_diff
+        base = {"a.yaml": "defaults: { confidence: confirmed }\n"
+                          "functions:\n  - { name: f1, va: 0x140001000, signature: \"void()\" }\n"
+                          "  - { name: f2, va: 0x140002000 }\n  - { name: gone, va: 0x140003000 }\n"
+                          "classes:\n  - name: C\n    members:\n      - { offset: 0x10, name: m, type: u32 }\n"}
+        other = {"a.yaml": "defaults: { confidence: inferred }\n"
+                           "functions:\n  - { name: f1, va: 0x140001000, signature: \"i32()\" }\n"
+                           "  - { name: f2_better, va: 0x140002000 }\n  - { name: new, va: 0x140004000 }\n"
+                           "classes:\n  - name: C\n    members:\n      - { offset: 0x10, name: m, type: u64 }\n"
+                           "      - { offset: 0x18, name: n, type: f32 }\n"}
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            for d, files in ((a, base), (b, other)):
+                for n, t in files.items():
+                    with open(os.path.join(d, n), "w") as f:
+                        f.write(t)
+            d = annotations_diff.diff(a, b)
+            self.assertEqual([c.name for c in d.added], ["new"])
+            self.assertEqual([c.name for c in d.removed], ["gone"])
+            self.assertEqual([(c.base.name, c.name) for c in d.renamed], [("f2", "f2_better")])
+            changed = {c.name: c.what for c in d.changed}
+            self.assertIn("signature: 'void()' -> 'i32()'", changed["f1"])
+            self.assertIn("confidence: 'confirmed' -> 'inferred'", changed["f1"])
+            self.assertTrue(any("member 0x10 m: type 'u32' -> 'u64'" == w for w in changed["C"]))
+            self.assertTrue(any(w.startswith("member 0x18 n: only in other") for w in changed["C"]))
+            text = annotations_diff.inbox(d)
+            self.assertIn("va: 0x140004000", text)
+            self.assertIn("confidence: inferred", text)
+            annotations_diff.report(d)
+
 
 class OptionalSignature(unittest.TestCase):
     def test_function_without_signature(self):
@@ -339,3 +464,281 @@ class OptionalSignature(unittest.TestCase):
             self.assertEqual(p.errors, [])
             self.assertIsNone(db.functions["Mystery"].signature)
             self.assertIn("Mystery = 0x140001000", emit_engine.emit(db))
+
+
+def _fake_pe(path, code: bytes, rdata: bytes, base=0x140000000, pdata=None):
+    """A minimal 64-bit PE: .text at base+0x1000 (code), .rdata at base+0x2000 (rdata).
+    pdata: (rva, size) of an exception directory (the unwind table) inside .rdata."""
+    import struct
+    d = bytearray(0x3000)
+    d[0:2] = b"MZ"
+    struct.pack_into("<I", d, 0x3C, 0x40)
+    d[0x40:0x44] = b"PE\0\0"
+    struct.pack_into("<HHI", d, 0x44, 0x8664, 2, 0x12345678)
+    struct.pack_into("<H", d, 0x54, 0xF0)
+    opt = 0x58
+    struct.pack_into("<H", d, opt, 0x20B)
+    struct.pack_into("<Q", d, opt + 24, base)
+    struct.pack_into("<II", d, opt + 32, 0x1000, 0x1000)
+    struct.pack_into("<I", d, opt + 56, 0x3000)
+    if pdata:
+        struct.pack_into("<I", d, opt + 108, 16)
+        struct.pack_into("<II", d, opt + 112 + 3 * 8, *pdata)
+    sh = opt + 0xF0
+    for i, (name, rva, ch) in enumerate(((b".text", 0x1000, 0x60000020), (b".rdata", 0x2000, 0x40000040))):
+        h = sh + i * 40
+        d[h:h + 8] = name.ljust(8, b"\0")
+        struct.pack_into("<IIII", d, h + 8, 0x1000, rva, 0x1000, rva)
+        struct.pack_into("<I", d, h + 36, ch)
+    d[0x1000:0x1000 + len(code)] = code
+    d[0x2000:0x2000 + len(rdata)] = rdata
+    with open(path, "wb") as f:
+        f.write(d)
+
+
+def _unwind_pe(path):
+    """Unwind table: one function at 0x1000..0x1040, a second part of it at 0x1100..0x1120 (chained back
+    to the first), nothing at 0x1080."""
+    import struct
+    rdata = bytearray(0x400)
+    struct.pack_into("<III", rdata, 0x100, 0x1000, 0x1040, 0x2200)
+    struct.pack_into("<III", rdata, 0x10C, 0x1100, 0x1120, 0x2210)
+    rdata[0x200:0x204] = bytes([1, 0, 0, 0])                  # version 1, no flags
+    rdata[0x210:0x214] = bytes([1 | (0x4 << 3), 0, 0, 0])     # version 1, UNW_FLAG_CHAININFO, no codes
+    struct.pack_into("<III", rdata, 0x214, 0x1000, 0x1040, 0x2200)
+    _fake_pe(path, b"\x90" * 0x200, bytes(rdata), pdata=(0x2100, 24))
+
+
+class UnwindTable(unittest.TestCase):
+    def test_function_start(self):
+        from gridnode_gen import pe_image
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _unwind_pe(exe)
+            img = pe_image.PeImage(exe)
+            self.assertEqual(img.function_start(0x140001010), 0x140001000)
+            self.assertEqual(img.function_start(0x140001110), 0x140001000)   # through the chain
+            self.assertIsNone(img.function_start(0x140001080))
+            self.assertIsNone(img.function_start(0x140009000))
+
+    def test_recording_to_ghidra(self):
+        import json
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _unwind_pe(exe)
+            rec = os.path.join(d, "rec.jsonl")
+            evs = [{"kind": "header", "level": "Levels/Test", "events": 3},
+                   {"kind": "message", "t": 1.0, "type": "FooMessage", "stack": ["0x140001010", "0x140001110", "0x140001080"]},
+                   {"kind": "message", "t": 1.5, "type": "FooMessage", "stack": ["0x140001010"]},
+                   {"kind": "call", "t": 2.0, "class": "Thing", "slot": "0x20", "fn": "0x140001000", "skipped_before": 4,
+                    "stack": ["0x140001110"]}]
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            out = os.path.join(d, "g.json")
+            script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+            r = subprocess.run([sys.executable, script, rec, "--ghidra", out, "--exe", exe], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            doc = json.load(open(out))
+            self.assertEqual(doc["format"], "gridnode-ghidra")
+            self.assertEqual([c["va"] for c in doc["createFunctions"]], [0x140001000])
+            self.assertEqual(sorted(b["va"] for b in doc["bookmarks"]), [0x140001010, 0x140001080, 0x140001110])
+            self.assertTrue(all(b["afterCall"] for b in doc["bookmarks"]))
+            (c,) = doc["comments"]
+            self.assertEqual(c["va"], 0x140001000)
+            first, second = c["comment"].split("\n")[:2]
+            self.assertEqual(first, "GridNode [recording] (rec.jsonl)")
+            self.assertIn("In 3 recorded stacks", second)   # recursion through the chained part counts once
+            self.assertIn("2x  msg FooMessage", c["comment"])
+            self.assertIn("5x  call Thing::vf+0x20", c["comment"])   # traced, with skipped calls
+
+
+class RecordingObjects(unittest.TestCase):
+    """Recordings with destroyed entities, list watches and the object table (summarize.py)."""
+
+    def test_summarize_objects_and_lists(self):
+        import json
+        evs = [{"kind": "header", "level": "Levels/Test", "events": 6, "objects": 3},
+               {"kind": "created", "t": 0.5, "type": "PamServerCharacterEntity", "ptr": "0x1000", "blueprint": "Chars/Ghost", "obj": 2},
+               {"kind": "list", "t": 0.6, "field": "spawned (server)", "target": "ServerCharacterSpawnEntity", "ptr": "0x2000",
+                "obj": 1, "count": 1, "first": True, "items": [{"index": 0, "ptr": "0x1000", "type": "PamServerCharacterEntity", "obj": 2}]},
+               {"kind": "marker", "t": 1.0, "name": "despawn"},
+               {"kind": "event", "t": 1.1, "event": "StopReplay", "event_id": "d6a2182e", "target": "PamServerReplayEntity", "ptr": "0x3000", "obj": 3},
+               {"kind": "list", "t": 1.2, "field": "spawned (server)", "target": "ServerCharacterSpawnEntity", "ptr": "0x2000",
+                "obj": 1, "count": 0, "old_count": 1, "items": [],
+                "removed": [{"ptr": "0x1000", "type": "PamServerCharacterEntity", "obj": 2}]},
+               {"kind": "destroyed", "t": 1.25, "type": "PamServerCharacterEntity", "ptr": "0x1000", "obj": 2},
+               {"kind": "object", "id": 1, "ptr": "0x2000", "type": "ServerCharacterSpawnEntity", "created": None, "destroyed": None, "first_seen": 0.6},
+               {"kind": "object", "id": 2, "ptr": "0x1000", "type": "PamServerCharacterEntity", "blueprint": "Chars/Ghost",
+                "created": 0.5, "destroyed": 1.25, "first_seen": 0.5},
+               {"kind": "object", "id": 3, "ptr": "0x3000", "type": "PamServerReplayEntity", "created": None, "destroyed": None, "first_seen": 1.1}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            r = subprocess.run([sys.executable, script, rec, "--all"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("gone PamServerCharacterEntity [Chars/Ghost]", r.stdout)   # the blueprint from the object table
+            self.assertIn("list spawned (server) -> ServerCharacterSpawnEntity: -PamServerCharacterEntity", r.stdout)
+            self.assertIn("#2", r.stdout)
+            r = subprocess.run([sys.executable, script, rec, "--object", "0x1000"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("#2 PamServerCharacterEntity at 0x1000 [Chars/Ghost]", r.stdout)
+            self.assertIn("created 0.500 s, destroyed 1.250 s", r.stdout)
+            self.assertEqual(r.stdout.count("(points at it)"), 2)   # in the list, then removed from it
+            r = subprocess.run([sys.executable, script, rec, "--ghidra", os.path.join(d, "g.json")], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+
+class RecordingClasses(unittest.TestCase):
+    def test_traced_classes_get_structs(self):
+        """--ghidra adds class structs and vtables for the classes a recording traced or watched."""
+        import json
+        evs = [{"kind": "header", "events": 3},
+               {"kind": "call", "t": 1.0, "class": "ServerCharacterSpawnEntity", "slot": "0xd0", "fn": "0x143390830"},
+               {"kind": "list", "t": 1.1, "field": "spawned (client)", "target": "ClientSpawnEntity", "count": 0, "first": True, "items": []},
+               {"kind": "created", "t": 1.2, "type": "PamClientCharacterEntity", "ptr": "0x1000"}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            for mode, want in (("traced", {"ServerCharacterSpawnEntity", "ClientSpawnEntity"}),
+                               ("all", {"ServerCharacterSpawnEntity", "ClientSpawnEntity", "PamClientCharacterEntity"})):
+                out = os.path.join(d, f"g-{mode}.json")
+                r = subprocess.run([sys.executable, script, rec, "--ghidra", out, "--classes", mode,
+                                    "--reflected", os.path.join(d, "none.json")], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                doc = json.load(open(out))
+                self.assertEqual({s["name"] for s in doc["structs"]}, want)
+                by = {s["name"]: s for s in doc["structs"]}
+                self.assertEqual(by["ServerCharacterSpawnEntity"]["vtable"], 0x141b4e0c8)   # from the annotations
+
+
+class RecordingDiff(unittest.TestCase):
+    """summarize.py --diff: what one recording has that another does not."""
+
+    def test_compare_rates(self):
+        sys.path.insert(0, os.path.join(ROOT, "tools", "recording"))
+        import summarize
+        a = {"spawn": 3, "tick": 100, "boost": 40, "rare": 1}
+        b = {"tick": 50, "boost": 5, "rare": 1, "idle": 4}
+        only_a, more_a, only_b, more_b = summarize.compare(a, 10.0, b, 5.0)
+        self.assertEqual(only_a, [(3, "spawn")])
+        self.assertEqual([x[3] for x in more_a], ["boost"])   # 4/s vs 1/s; tick is 10/s in both
+        self.assertEqual(only_b, [(4, "idle")])
+        self.assertEqual(more_b, [])                           # rare: once each, not a pattern
+        self.assertEqual(summarize.compare({"x": 4}, 1.0, {"x": 2}, 1.0)[1], [])   # 4 against 2: not a pattern
+        marks = [{"kind": "marker", "t": t, "name": "m"} for t in (1.0, 1.5, 5.0)]
+        self.assertAlmostEqual(summarize._scope(marks, "*", 1.0)[1], 4.5)   # 0-2.5 and 4-6: overlap counted once
+
+    def test_diff_around_markers(self):
+        """Values do not split labels; each side is cut to its own marker's window."""
+        import json
+        def rec(path, evs):
+            with open(path, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in [{"kind": "header"}] + evs))
+        a = [{"kind": "anim", "t": 0.5, "property": "Speed", "value": 1.0, "target": "Faith"},
+             {"kind": "marker", "t": 10.0, "name": "go"},
+             {"kind": "event", "t": 10.2, "event": "StartReplay", "target": "PamServerReplayEntity",
+              "stack": ["0x14396d7a0"]},
+             {"kind": "anim", "t": 10.3, "property": "Speed", "value": 7.5, "target": "Faith"},
+             {"kind": "anim", "t": 30.0, "property": "Far", "value": 1, "target": "Faith"}]
+        b = [{"kind": "marker", "t": 5.0, "name": "nothing"},
+             {"kind": "anim", "t": 5.1, "property": "Speed", "value": 2.0, "target": "Faith"}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            ra, rb = os.path.join(d, "a.jsonl"), os.path.join(d, "b.jsonl")
+            rec(ra, a)
+            rec(rb, b)
+            r = subprocess.run([sys.executable, script, ra, "--diff", rb, "--marker", "go", "--diff-marker", "nothing",
+                                "--window", "1"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            only_a = r.stdout.split("Only in A")[1].split("More in A")[0]
+            self.assertIn("event StartReplay -> PamServerReplayEntity", only_a)
+            self.assertNotIn("Speed", only_a)        # in both: the value is left out
+            self.assertNotIn("Far", r.stdout)        # outside the window
+            self.assertIn("+0.200  event StartReplay", r.stdout)
+            self.assertIn("0x14396d7a0", r.stdout)   # the stack behind it
+            # Exported without Clear: the second recording starts with the first one.
+            first = [{"kind": "anim", "t": i * 0.01, "property": "P", "value": i, "target": "Faith"} for i in range(60)]
+            rec(ra, first + [{"kind": "marker", "t": 1.0, "name": "marker 1"}])
+            rec(rb, first + [{"kind": "marker", "t": 1.0, "name": "marker 1"},
+                             {"kind": "marker", "t": 9.0, "name": "marker 2"}])
+            r = subprocess.run([sys.executable, script, rb, "--diff", ra, "--marker", "marker 1"],
+                               capture_output=True, text=True)
+            self.assertIn("A's own markers: marker 2", r.stdout)
+            self.assertIn("B is all in the other one", r.stdout)
+            r = subprocess.run([sys.executable, script, ra, "--diff", rb, "--marker", "missing"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("no marker named 'missing'", r.stdout)
+
+
+class FrameNames(unittest.TestCase):
+    """summarize.py names each stack frame by its function, keeping the address first."""
+
+    def test_frames_line_and_annotated_events(self):
+        import json
+        evs = [{"kind": "header", "events": 2},
+               {"kind": "event", "t": 1.0, "event": "2734a476", "event_id": "2734a476", "target": "PamServerReplayEntity",
+                "stack": ["0x14314e759", "0x143999010"]},
+               {"kind": "marker", "t": 1.1, "name": "m"},
+               {"kind": "frames", "starts": {"0x14314e759": "0x14314e4a0", "0x143999010": "0x143999000"}}]
+        script = os.path.join(ROOT, "tools", "recording", "summarize.py")
+        with tempfile.TemporaryDirectory() as d:
+            rec = os.path.join(d, "rec.jsonl")
+            with open(rec, "w") as f:
+                f.write("\n".join(json.dumps(e) for e in evs))
+            r = subprocess.run([sys.executable, script, rec, "--all"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("event StartReplay -> PamServerReplayEntity", r.stdout)   # named from db/annotations/events.yaml
+            self.assertIn("0x14314e759 (EntityBus_fireEvent+0x2b9)", r.stdout)     # annotated function + offset
+            self.assertIn("0x143999010 (FUN_143999000+0x10)", r.stdout)            # unnamed: Ghidra's FUN_ name
+
+
+class Fingerprints(unittest.TestCase):
+    def test_gridnode_and_mecmp(self):
+        import struct
+        from gridnode_gen import fingerprint_gen, pe_image
+        code = bytes.fromhex("4C 89 CB 41 B9 0F A2 C3 90 C3") + b"\x90" * 6 + bytes.fromhex("48 89 E0 57 48 83 EC 70")
+        rdata = struct.pack("<Q", 0x140001000)  # a vtable slot holding the first function
+        with tempfile.TemporaryDirectory() as d:
+            exe = os.path.join(d, "game.exe")
+            _fake_pe(exe, code, rdata)
+            img = pe_image.PeImage(exe)
+            ann = os.path.join(d, "ann")
+            os.mkdir(ann)
+            with open(os.path.join(ann, "core.yaml"), "w") as f:
+                f.write("functions:\n  - { name: FnA, va: 0x140001000 }\n  - { name: FnB, va: 0x140001010 }\n")
+            fpy = os.path.join(ann, "fingerprint.yaml")
+            with open(fpy, "w") as f:
+                f.write('fingerprint:\n  code:\n    - { at: FnA, bytes: "49 8B D9 41 B9", note: "mov rbx,r9" }\n')
+            db, p = annotations.load(ann)
+            self.assertEqual(p.errors, [])
+            res = fingerprint_gen.check_gridnode(db, img)
+            self.assertEqual([r.ok for r in res], [False])
+            self.assertEqual(fingerprint_gen.write_gridnode(fpy, res), 1)
+            self.assertIn('bytes: "4C 89 CB 41 B9"', open(fpy).read())
+            fingerprint_gen.add_gridnode(fpy, annotations.load(ann)[0], img, "FnB", length=8)
+            db, p = annotations.load(ann)
+            self.assertEqual(p.errors, [])
+            self.assertTrue(all(r.ok for r in fingerprint_gen.check_gridnode(db, img)))
+            # MECMP
+            m = os.path.join(d, "mecmp", "src", "game")
+            os.makedirs(m)
+            with open(os.path.join(m, "engine.h"), "w") as f:
+                f.write("constexpr uintptr_t Fn_A = 0x140001000;\nconstexpr uintptr_t Fn_B = 0x140001010;\n"
+                        "constexpr uintptr_t Vtbl_X = 0x140002000;\nconstexpr size_t Off_A = 0x0, Off_B = 0x8;\n")
+            with open(os.path.join(m, "fingerprint.cpp"), "w") as f:
+                f.write('const Slot kSlots[] = {\n    {"X::a", Vtbl_X, Off_A, Fn_A},\n};\n'
+                        'const Code kCode[] = {\n    {"A", Fn_A, 0, {0x49, 0x8B, 0xD9}, 3},\n'
+                        '    {"B", Fn_B, 0,\n     {0x48, 0x8B, 0xC4, 0x57}, 4},\n};\n')
+            mres = fingerprint_gen.check_mecmp(os.path.join(d, "mecmp"), img)
+            self.assertEqual({r.what: r.ok for r in mres}, {"X::a": True, "A": False, "B": False})
+            self.assertEqual(fingerprint_gen.write_mecmp(os.path.join(d, "mecmp"), mres), 2)
+            text = open(os.path.join(m, "fingerprint.cpp")).read()
+            self.assertIn("{0x4C, 0x89, 0xCB}, 3}", text)
+            self.assertIn("{0x48, 0x89, 0xE0, 0x57}, 4}", text)
+            self.assertTrue(all(r.ok for r in fingerprint_gen.check_mecmp(os.path.join(d, "mecmp"), img)))

@@ -40,7 +40,7 @@ pub unsafe fn __load(api: *const sys::gn_api, name: &str, main: fn() -> bool) ->
     }
     let _ = API.set(Api(a));
     let _ = NAME.set(CString::new(name).unwrap_or_default());
-    if main() { 0 } else { 1 }
+    if guard("the mod's main", false, main) { 0 } else { 1 }
 }
 
 /// Defines the mod's entry point. The closure runs once, on GridNode's thread, and returns
@@ -51,6 +51,20 @@ macro_rules! gn_mod {
         #[no_mangle]
         pub unsafe extern "C" fn gn_mod_load(api: *const $crate::sys::gn_api) -> core::ffi::c_int {
             $crate::__load(api, $name, $main)
+        }
+    };
+}
+
+/// Optional: makes the mod reloadable while the game runs (GridNode's menu, Mods: Reload, or when its
+/// DLL changes). The closure runs before GridNode takes out the mod's callbacks and hooks and frees
+/// it: stop the mod's own threads; return true to go ahead, false to stay loaded.
+#[macro_export]
+macro_rules! gn_mod_unload {
+    ($unload:expr) => {
+        #[no_mangle]
+        pub unsafe extern "C" fn gn_mod_unload() -> core::ffi::c_int {
+            let f: fn() -> bool = $unload;
+            if f() { 0 } else { 1 }
         }
     };
 }
@@ -70,6 +84,19 @@ unsafe fn string(p: *const c_char) -> String {
 }
 
 // ---- callbacks: boxed closures kept for the life of the process (GridNode never drops them) ----
+/// Runs a mod's closure called from GridNode; a panic is logged and stops there, because unwinding
+/// out of an `extern "C"` function would abort the game.
+fn guard<R>(what: &str, fallback: R, f: impl FnOnce() -> R) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => {
+            if API.get().is_some() {
+                log(&format!("{} panicked; GridNode carries on", what));
+            }
+            fallback
+        }
+    }
+}
 fn keep<T>(v: T) -> *mut c_void {
     Box::into_raw(Box::new(v)) as *mut c_void
 }
@@ -93,7 +120,7 @@ pub fn rva(va: u64) -> u64 {
 
 // ---- threads --------------------------------------------------------------------------------
 unsafe extern "C" fn tick_tramp<F: FnMut(f32)>(dt: f32, user: *mut c_void) {
-    (*(user as *mut F))(dt)
+    guard("a tick callback", (), || (*(user as *mut F))(dt))
 }
 /// `f(dt)` every server tick, on the server game thread.
 pub fn on_server_tick<F: FnMut(f32) + Send + 'static>(f: F) -> bool {
@@ -105,7 +132,7 @@ pub fn on_client_tick<F: FnMut(f32) + Send + 'static>(f: F) -> bool {
 }
 unsafe extern "C" fn task_tramp<F: FnOnce()>(user: *mut c_void) {
     let f = Box::from_raw(user as *mut F);
-    f()
+    guard("a posted task", (), move || f())
 }
 /// `f()` once, at the next server tick (on the server thread).
 pub fn run_on_server<F: FnOnce() + Send + 'static>(f: F) {
@@ -183,7 +210,7 @@ pub fn get<T: Copy>(object: *const c_void, ty: Type, field: &str) -> Option<T> {
 
 // ---- entities -----------------------------------------------------------------------------------
 unsafe extern "C" fn created_tramp<F: FnMut(*mut c_void)>(e: *mut c_void, _ci: *mut c_void, user: *mut c_void) {
-    (*(user as *mut F))(e)
+    guard("an on_created callback", (), || (*(user as *mut F))(e))
 }
 /// `f(entity)` for every entity of `class` (or a subclass) the game creates from now on, on the
 /// thread that created it.
@@ -231,7 +258,7 @@ pub fn level_name() -> String {
     }
 }
 unsafe extern "C" fn level_tramp<F: FnMut(&str, bool)>(level: *const c_char, loaded: c_int, user: *mut c_void) {
-    (*(user as *mut F))(&string(level), loaded != 0)
+    guard("a level callback", (), || (*(user as *mut F))(&string(level), loaded != 0))
 }
 /// `f(level, loaded)` when a level starts or ends (GridNode's thread).
 pub fn on_level<F: FnMut(&str, bool) + Send + 'static>(f: F) -> bool {
@@ -259,6 +286,280 @@ pub fn movement() -> Option<Movement> {
 }
 /// Writes the fields in `fields` (`sys::GN_MOVE_*`).
 pub fn set_movement(m: &Movement, fields: u32) -> bool { unsafe { (api().movement_set.unwrap())(m, fields) == 0 } }
+pub use crate::sys::gn_landing as Landing;
+/// The game's own landing prediction for Faith (ticks to hit in 60ths of a second, hit height, soft
+/// landing); None until she has been in the air.
+pub fn landing_prediction() -> Option<Landing> {
+    let mut l: Landing = unsafe { core::mem::zeroed() };
+    (unsafe { (api().landing_prediction.unwrap())(&mut l) } == 0).then_some(l)
+}
+
+// ---- movement events, settings, hotkeys (API 9) ---------------------------------------------------
+pub use crate::sys::gn_movement_event as MovementEvent;
+unsafe extern "C" fn movement_tramp<F: FnMut(&MovementEvent, &Movement)>(e: *const MovementEvent, now: *const Movement, user: *mut c_void) {
+    guard("a movement callback", (), || (*(user as *mut F))(&*e, &*now))
+}
+/// `f(event, now)` for every landing, take-off and movement state change (`sys::GN_MOVE_EVENT_*`),
+/// on the client thread, on the tick it happens.
+pub fn on_movement<F: FnMut(&MovementEvent, &Movement) + Send + 'static>(f: F) -> bool {
+    unsafe { (api().on_movement.unwrap())(name(), Some(movement_tramp::<F>), keep(f)) == 0 }
+}
+/// The mod's setting `key` (kept in mods/<mod>.ini), or None when unset.
+pub fn config_get(key: &str) -> Option<String> {
+    let k = cstr(key);
+    let mut buf = [0 as c_char; 1024];
+    let r = unsafe { (api().config_get.unwrap())(name(), k.as_ptr(), buf.as_mut_ptr(), buf.len()) };
+    (r == 0 || r == crate::sys::GN_ERR_FULL as c_int).then(|| unsafe { string(buf.as_ptr()) })
+}
+/// Sets the mod's setting `key` (written to disk a second after the last change).
+pub fn config_set(key: &str, value: &str) -> bool {
+    let (k, v) = (cstr(key), cstr(value));
+    unsafe { (api().config_set.unwrap())(name(), k.as_ptr(), v.as_ptr()) == 0 }
+}
+unsafe extern "C" fn hotkey_tramp<F: FnMut()>(user: *mut c_void) {
+    guard("a hotkey callback", (), || (*(user as *mut F))())
+}
+/// A key the player can rebind (kept in the mod's settings as key.<id>); `f()` on the client thread
+/// when it goes down.
+/// `default_vk`: a Windows virtual-key code (`b'F' as i32`), 0 for none.
+pub fn hotkey<F: FnMut() + Send + 'static>(id: &str, label: &str, default_vk: i32, f: F) -> bool {
+    let (i, l) = (cstr(id), cstr(label));
+    unsafe { (api().hotkey_add.unwrap())(name(), i.as_ptr(), l.as_ptr(), default_vk, Some(hotkey_tramp::<F>), keep(f)) == 0 }
+}
+// ---- events between entities (API 11) -------------------------------------------------------------
+/// An event's id from its name, as the engine hashes it (djb2-xor).
+pub const fn event_hash(name: &str) -> u32 {
+    let b = name.as_bytes();
+    let (mut h, mut i) = (5381u32, 0);
+    while i < b.len() {
+        h = h.wrapping_mul(33) ^ b[i] as u32;
+        i += 1;
+    }
+    h
+}
+/// An id's name, or None for an unnamed one.
+pub fn event_name(id: u32) -> Option<String> {
+    let mut buf = [0 as c_char; 128];
+    (unsafe { (api().event_name.unwrap())(id, buf.as_mut_ptr(), buf.len()) } == 0).then(|| unsafe { string(buf.as_ptr()) })
+}
+unsafe extern "C" fn event_tramp<F: FnMut(*mut c_void, Type, u32)>(e: *mut c_void, t: *const crate::sys::gn_type, id: u32, user: *mut c_void) {
+    guard("an event callback", (), || (*(user as *mut F))(e, Type(t), id))
+}
+/// `f(entity, type, event_id)` for every event an entity receives (before it handles it), on the thread
+/// that delivers it. `event`: a name or "0x<hash>", "" for all; `class`: an entity class, "" for all.
+pub fn on_event<F: FnMut(*mut c_void, Type, u32) + Send + 'static>(event: &str, class: &str, f: F) -> bool {
+    let (e, c) = (cstr(event), cstr(class));
+    unsafe { (api().on_event.unwrap())(name(), e.as_ptr(), c.as_ptr(), Some(event_tramp::<F>), keep(f)) == 0 }
+}
+
+/// Sends an event to an entity as its bus would (at its realm's next tick). A name or "0x<hash>".
+pub fn send_event(entity: *mut c_void, event: &str) -> bool {
+    let e = cstr(event);
+    unsafe { (api().event_send.unwrap())(name(), entity, e.as_ptr()) == 0 }
+}
+/// Sends an event to every live entity of the class (and subclasses); how many, or None.
+pub fn send_event_to_class(class: &str, event: &str) -> Option<u32> {
+    let (c, e) = (cstr(class), cstr(event));
+    let n = unsafe { (api().event_send_class.unwrap())(name(), c.as_ptr(), e.as_ptr()) };
+    (n >= 0).then_some(n as u32)
+}
+
+// ---- entities of a class (API 14) ----------------------------------------------------------------
+unsafe extern "C" fn each_tramp<F: FnMut(*mut c_void, Type)>(e: *mut c_void, t: *const crate::sys::gn_type, user: *mut c_void) {
+    guard("an entity callback", (), || (*(user as *mut F))(e, Type(t)))
+}
+/// `f(entity, type)` for every live entity of the class (and subclasses), logic entities too; how
+/// many, or None for an unknown class. Entities made before GridNode loaded are not seen.
+pub fn entities_of_class<F: FnMut(*mut c_void, Type)>(class: &str, mut f: F) -> Option<u32> {
+    let c = cstr(class);
+    let n = unsafe { (api().entities_of_class.unwrap())(c.as_ptr(), Some(each_tramp::<F>), &mut f as *mut F as *mut c_void) };
+    (n >= 0).then_some(n as u32)
+}
+
+// ---- unloading (API 15) -------------------------------------------------------------------------
+/// This mod unloaded (its `gn_mod_unload!` runs, everything it registered goes) once the current
+/// callback returns; it stays unloaded until the GridNode menu's Load. False without `gn_mod_unload!`.
+pub fn unload_self() -> bool { unsafe { (api().mod_unload.unwrap())() == 0 } }
+/// Every mod and GridNode itself unloaded, the game put back as it was (the menu's Unload section).
+pub fn unload_gridnode() { unsafe { (api().gridnode_unload.unwrap())(); } }
+
+// ---- code patches (API 15) -----------------------------------------------------------------------
+/// The call or jmp at `site_va`, which must go to `expected_target_va`, goes to `detour`; `*original`
+/// receives the game's function. Undone when the mod is unloaded.
+/// # Safety
+/// `detour` must be an `extern "C"` function with the called function's signature.
+pub unsafe fn patch_call(site_va: u64, expected_target_va: u64, detour: *const c_void, original: *mut *mut c_void) -> bool {
+    (api().patch_call.unwrap())(name(), site_va, expected_target_va, detour as *mut c_void, original) == 0
+}
+/// `bytes` at `va`, only if `expected` is there now (the same length, at most 64). Undone when the mod
+/// is unloaded.
+pub fn patch_bytes(va: u64, expected: &[u8], bytes: &[u8]) -> bool {
+    if expected.len() != bytes.len() {
+        return false;
+    }
+    unsafe {
+        (api().patch_bytes.unwrap())(name(), va, expected.as_ptr() as *const c_void, bytes.as_ptr() as *const c_void, bytes.len()) == 0
+    }
+}
+
+// ---- function detours and other mods (API 16) ---------------------------------------------------------
+/// Calls to the game's function at `function_va` go to `detour`, with the same arguments; `*original`
+/// receives what to call for the game's behaviour. Taken out when the mod is unloaded.
+/// # Safety
+/// `detour` must be an `extern "C"` function with the game function's signature, safe on any thread.
+pub unsafe fn hook_function(function_va: u64, detour: *const c_void, original: *mut *mut c_void) -> bool {
+    (api().hook_function.unwrap())(name(), function_va, detour as *mut c_void, original) == 0
+}
+/// Offers a function of this mod to other mods as "<its id>.<name>".
+pub fn export_fn(fn_name: &str, f: *const c_void) -> bool {
+    let n = cstr(fn_name);
+    unsafe { (api().mod_export.unwrap())(n.as_ptr(), f as *mut c_void) == 0 }
+}
+/// Another mod's function (null when that mod is not loaded or does not offer it); cast it to its type.
+pub fn import_fn(mod_id: &str, fn_name: &str) -> *mut c_void {
+    let (m, n) = (cstr(mod_id), cstr(fn_name));
+    unsafe { (api().mod_import.unwrap())(m.as_ptr(), n.as_ptr()) }
+}
+/// The version of a loaded mod; None when it is not loaded.
+pub fn mod_version(mod_id: &str) -> Option<String> {
+    let m = cstr(mod_id);
+    let mut b = [0 as c_char; 64];
+    unsafe {
+        if (api().mod_version.unwrap())(m.as_ptr(), b.as_mut_ptr(), b.len()) != 0 {
+            return None;
+        }
+        Some(CStr::from_ptr(b.as_ptr()).to_string_lossy().into_owned())
+    }
+}
+
+// ---- declared settings (API 17) -------------------------------------------------------------------------
+/// What a declared setting holds, with its default (and range, `min == max`: none).
+pub enum SettingKind<'a> {
+    Bool(bool),
+    Int { def: i32, min: i32, max: i32 },
+    Float { def: f32, min: f32, max: f32 },
+    /// The value is the index of the choice.
+    Choice { def: i32, choices: &'a [&'a str] },
+    Text(&'a str),
+}
+/// Declares a setting: kept in the mod's settings file with its description, on its page in the
+/// GridNode menu (Mod settings). `description` and `group` may be empty.
+pub fn setting_add(id: &str, label: &str, kind: SettingKind, description: &str, group: &str) -> bool {
+    let (i, l, d, g) = (cstr(id), cstr(label), cstr(description), cstr(group));
+    let mut s: crate::sys::gn_setting = unsafe { core::mem::zeroed() };
+    s.size = core::mem::size_of::<crate::sys::gn_setting>() as u32;
+    s.id = i.as_ptr();
+    s.label = l.as_ptr();
+    s.description = if description.is_empty() { core::ptr::null() } else { d.as_ptr() };
+    s.group = if group.is_empty() { core::ptr::null() } else { g.as_ptr() };
+    let choices: Vec<CString>;
+    let mut ptrs: Vec<*const c_char>;
+    let text: CString;
+    match kind {
+        SettingKind::Bool(v) => (s.kind, s.def) = (crate::sys::GN_SETTING_BOOL as i32, v as i32 as f64),
+        SettingKind::Int { def, min, max } => (s.kind, s.def, s.min, s.max) = (crate::sys::GN_SETTING_INT as i32, def as f64, min as f64, max as f64),
+        SettingKind::Float { def, min, max } => (s.kind, s.def, s.min, s.max) = (crate::sys::GN_SETTING_FLOAT as i32, def as f64, min as f64, max as f64),
+        SettingKind::Choice { def, choices: c } => {
+            choices = c.iter().map(|x| cstr(x)).collect();
+            ptrs = choices.iter().map(|x| x.as_ptr()).collect();
+            ptrs.push(core::ptr::null());
+            (s.kind, s.def) = (crate::sys::GN_SETTING_CHOICE as i32, def as f64);
+            s.choices = ptrs.as_mut_ptr();
+        }
+        SettingKind::Text(t) => {
+            text = cstr(t);
+            s.kind = crate::sys::GN_SETTING_TEXT as i32;
+            s.def_text = text.as_ptr();
+        }
+    }
+    unsafe { (api().setting_add.unwrap())(name(), &s) == 0 }
+}
+/// A BOOL (0 / 1), INT, FLOAT or CHOICE (its index); None for an unknown id or a TEXT.
+pub fn setting_number(id: &str) -> Option<f64> {
+    let i = cstr(id);
+    let v = unsafe { (api().setting_number.unwrap())(name(), i.as_ptr()) };
+    (!v.is_nan()).then_some(v)
+}
+/// Any setting as text.
+pub fn setting_text(id: &str) -> Option<String> {
+    let i = cstr(id);
+    let mut b = [0 as c_char; 1024];
+    let r = unsafe { (api().setting_text.unwrap())(name(), i.as_ptr(), b.as_mut_ptr(), b.len()) };
+    (r == 0 || r as u32 == crate::sys::GN_ERR_FULL).then(|| unsafe { string(b.as_ptr()) })
+}
+/// Sets a number (clamped to its range); the mod's listeners are told.
+pub fn setting_set(id: &str, v: f64) -> bool {
+    let i = cstr(id);
+    unsafe { (api().setting_set_number.unwrap())(name(), i.as_ptr(), v) == 0 }
+}
+pub fn setting_set_text(id: &str, v: &str) -> bool {
+    let (i, t) = (cstr(id), cstr(v));
+    unsafe { (api().setting_set_text.unwrap())(name(), i.as_ptr(), t.as_ptr()) == 0 }
+}
+unsafe extern "C" fn setting_tramp<F: FnMut(&str)>(id: *const c_char, user: *mut c_void) {
+    let id = string(id);
+    guard("a setting listener", (), || (*(user as *mut F))(&id));
+}
+/// `f(id)` on the client thread when a setting changes (`id` None: any of the mod's settings).
+pub fn setting_on_change<F: FnMut(&str) + Send + 'static>(id: Option<&str>, f: F) -> bool {
+    let i = id.map(cstr);
+    let p = i.as_ref().map_or(core::ptr::null(), |c| c.as_ptr());
+    unsafe { (api().setting_on_change.unwrap())(name(), p, Some(setting_tramp::<F>), keep(f)) == 0 }
+}
+/// false: no page for this mod in the GridNode menu (its own window shows its settings).
+pub fn settings_page(shown: bool) { unsafe { (api().settings_page.unwrap())(name(), shown as c_int); } }
+
+// ---- the free camera (API 13) ---------------------------------------------------------------------
+pub use crate::sys::gn_freecam as Freecam;
+/// GridNode's free camera on / off (at the next frame); false without Faith.
+pub fn freecam(on: bool) -> bool { unsafe { (api().freecam_set.unwrap())(on as c_int) == 0 } }
+/// Whether it flies, and where it is.
+pub fn freecam_state() -> Option<Freecam> {
+    let mut f: Freecam = unsafe { core::mem::zeroed() };
+    (unsafe { (api().freecam_get.unwrap())(&mut f) } == 0).then_some(f)
+}
+/// Faith to where the free camera's crosshair points (`to_camera` false) or to the camera itself.
+pub fn freecam_teleport(to_camera: bool, keep_flying: bool) -> bool {
+    unsafe { (api().freecam_teleport.unwrap())(if to_camera { 2 } else { 1 }, keep_flying as c_int) == 0 }
+}
+
+// ---- the view (API 10) ----------------------------------------------------------------------------
+pub use crate::sys::gn_view as View;
+/// The camera as drawn this frame, with the screen size; None with no camera. Render thread.
+pub fn view() -> Option<View> {
+    let mut v: View = unsafe { core::mem::zeroed() };
+    (unsafe { (api().view_get.unwrap())(&mut v) } == 0).then_some(v)
+}
+/// A world point on the screen (pixels, y down), or None when it is behind the camera.
+pub fn to_screen(v: &View, p: [f32; 3]) -> Option<[f32; 2]> {
+    let q = [p[0] - v.position[0], p[1] - v.position[1], p[2] - v.position[2]];
+    let dot = |a: &[f32; 3]| q[0] * a[0] + q[1] * a[1] + q[2] * a[2];
+    let z = dot(&v.forward);
+    if z < 0.05 || v.height < 1.0 {
+        return None;
+    }
+    let th = (v.fov_y * core::f32::consts::PI / 360.0).tan();
+    let (x, y) = (dot(&v.right) / (z * th * v.width / v.height), dot(&v.up) / (z * th));
+    Some([(x + 1.0) * 0.5 * v.width, (1.0 - y) * 0.5 * v.height])
+}
+
+pub use crate::sys::gn_hotkey_info as HotkeyInfo;
+/// The hotkey as it is now (its key and name, the default, whether it waits for a key, clashes).
+pub fn hotkey_info(id: &str) -> Option<HotkeyInfo> {
+    let i = cstr(id);
+    let mut h: HotkeyInfo = unsafe { core::mem::zeroed() };
+    (unsafe { (api().hotkey_info.unwrap())(name(), i.as_ptr(), &mut h) } == 0).then_some(h)
+}
+/// Waits for the next key the player presses (Escape: none, Backspace: the default).
+pub fn hotkey_rebind(id: &str) -> bool {
+    let i = cstr(id);
+    unsafe { (api().hotkey_rebind.unwrap())(name(), i.as_ptr()) == 0 }
+}
+/// Sets the hotkey's key (a virtual-key code, 0 none, -1 the default).
+pub fn hotkey_set(id: &str, vk: i32) -> bool {
+    let i = cstr(id);
+    unsafe { (api().hotkey_set.unwrap())(name(), i.as_ptr(), vk) == 0 }
+}
 /// A movement tuning value by name (None until GridNode has verified it this session).
 pub fn tuning(name: &str) -> Option<f32> {
     unsafe {
@@ -314,7 +615,7 @@ pub fn settings(class: &str) -> *mut c_void {
 }
 unsafe extern "C" fn console_tramp<F: FnOnce(&str)>(out: *const c_char, user: *mut c_void) {
     let f = Box::from_raw(user as *mut F);
-    f(&string(out))
+    guard("a console callback", (), move || f(&string(out)))
 }
 /// Runs a console line (client thread); `f(output)` there.
 pub fn console<F: FnOnce(&str) + Send + 'static>(line: &str, f: F) -> bool {
@@ -340,7 +641,7 @@ unsafe extern "C" fn message_tramp<F: FnMut(*const c_void, &MessageInfo)>(m: *co
         category_id: i.category_id,
         manager: i.manager,
     };
-    (*(user as *mut F))(m, &info)
+    guard("a message callback", (), || (*(user as *mut F))(m, &info))
 }
 /// `f(message, info)` for a message type (`"ClientPlayerLocalSetMessage"`) or a category
 /// (`"ServerPlayer"`), on the thread that sent it. The message only lives during the call.

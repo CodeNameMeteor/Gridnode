@@ -1,0 +1,96 @@
+# Barriers and magropes (research, started 2026-10-22)
+
+Goal: place invisible barriers (with Catalyst's "can't stand / climb / vault / wallrun" flags) and
+magropes from the layout editor. Findings so far, from the reflected types and the executable.
+
+## Types
+
+| Class | Realms | Base | Creators |
+|---|---|---|---|
+| `PamOBBCollisionEntity` (0xa0 bytes, vtable 0x141c4e1a0) | client and server | `OBBCollisionEntity` < `Entity` (not a SpatialEntity) | client 0x142579a90, server 0x142579a60 |
+| `PamClientMagropeEntity` (0x68 bytes, vtable 0x141c619e0) | client only | `SpatialEntity` | 0x14257c648 |
+| `PamClientMagropeRenderEntity` (draws the rope) | client | `PamClientRopeRenderEntity` | 0x141c410f8 (vtable) |
+
+Data:
+
+- `PamOBBCollisionEntityData` (0xa0; TypeInfo 0x142881550): from `OBBCollisionEntityData` /
+  `SpatialEntityData`: `Transform` +0x20, `HalfExtents` +0x60, `PhysicsBodies` +0x70,
+  `CollisionLayer` +0x78, `Material` +0x7c, `Enabled` +0x80; its own `CantStand` +0x90,
+  `CantClimb` +0x91, `CantVault` +0x92, `CantWallrun` +0x93.
+- `PamMagropeEntityData` (0x90; TypeInfo 0x142884ce0): `Transform` +0x20, `GraphicsOffset` +0x60,
+  `MagropeType` +0x70, `Radius` +0x74, `VerticalStretch` +0x78, `Triggers` +0x80, `Enabled` +0x88.
+
+## A barrier's collision is built when it is enabled
+
+The barrier's init (vtable +0x78, 0x143335bc0; the client one is 0x143335c20) reads its `Enabled`
+property and, when set, enables it (0x143333310; client 0x143333590). That reads the data's
+`HalfExtents` (+0x60) and `PhysicsBodies` (+0x70), creates a physics body (0x1434ee7e0) and keeps
+its id at entity +0x90, then sets the body's transform and settings (0x1434f6d90, 0x1434f8930,
+0x1434f8980, 0x1434efca0). So the box comes from `HalfExtents` at runtime: a barrier made from a
+copy of a loaded barrier's data, with other `HalfExtents` and flags, should collide as edited.
+
+### Placement, moving and taking down (2026-10-22)
+
+- **Transform:** the enable resolves the data's `Transform` through the barrier's bus (0x143165bc0:
+  property context, so a blueprint's placement applies) and keeps it at entity **+0x50** (four
+  float4 rows). The box is `HalfExtents` about it.
+- **Body:** id at **+0x90** (-1 until first enabled); +0x95 is "enabled". The body is found like
+  any other: the game world's (by realm, `flags & 1`) physics manager at +0x50, its owner table
+  (+0xf0) by bits 16..23 of the id (0x1434ee790), that owner's object table by the low 16 bits.
+  The enable places it with 0x1434f6d90 (object vtable +0x250) and 0x1434f8930 (vtable +0x178,
+  then 0x1434f38e0) with the same transform.
+- **Moving:** GridNode writes +0x50 and makes those two calls, on the barrier's realm thread, for
+  both halves (client and server barriers made from the same data at the same place).
+- **Disable** (0x143335ff0): +0x95 = 0, body out of the world (0x1434f6610, 0x1434f65f0).
+- **Deinit** (vtable +0x88, 0x143335b30): disables, destroys the body (0x1434eba50(owner, id,
+  {realm, 1})), then the base deinit (0x143168770). Its +0x30 is an empty stub. Destroying a
+  barrier GridNode made will be: unlink from the owner list, this deinit, delete (+0x38).
+
+### Magropes (2026-10-22)
+
+`PamClientMagropeEntity` (0x68 bytes; constructor 0x1439b9b70) is a plain spatial entity with no
+transform space of its own:
+
+| Offset | What |
+|---|---|
+| +0x08 | owner link (like every entity) |
+| +0x18 | flags |
+| +0x20 | id |
+| +0x30 | its data (PamMagropeEntityData) |
+| +0x38 | a second vtable (0x141c61ab0, an interface) |
+| +0x40 / +0x48 | a list node, registered at creation (0x14316c0d0) |
+| +0x50 | a running number (from 0x14257c638) |
+| +0x58 / +0x60 | its Transform as a resolved property reference (0x1446513d0 through the bus's property context): +0x60 points at the value (the data's Transform, or a blueprint override) |
+
+The game reads a magrope's place through +0x60, so GridNode moves one by pointing +0x60 at a
+transform it owns (and puts the pointer back to undo). MagropeType is data +0x70, Radius +0x74.
+In game, 32 magropes were loaded around the start (2026-10-22).
+
+Confirmed in game (2026-10-22): a magrope moved and turned this way is used at its new place (and
+no longer at the old one). Its use direction is toward its trigger: each magrope's data has
+`Triggers` (+0x80, 0x60 bytes each: +0x00 `Target`, read as zero so far; +0x10 `LocalTransform`, in
+the magrope's frame; +0x50 `ShapeType`, 0 sphere / 1 box), and the first PullUps' triggers sit
+7..16 m below and 8..16 m out, where Faith stands. The volume is the unit box (or sphere) scaled by
+`LocalTransform`. `Target` is zero on pull-ups but not on swings, and read as a box's half extents
+it drew swing volumes far too big (seen in game 2026-10-22), so it is not a size. It is drawn as a
+point in the magrope's frame (probably where a swing sends Faith; to confirm), and the log names the
+first two triggers of each magrope type. GridNode's overlay draws an arrow from the magrope toward its first trigger
+(along the ground), its own axes, and its triggers. MagropeType 0/1/2 = Swing / PullUp / PullDown
+(by the order of the FBMagropeType names; PullUp confirmed).
+
+## Plan
+
+1. Show the barriers and magropes near the camera in the editor (boxes and circles drawn like the
+   selection outline), from the live entities of these classes. **Built 2026-10-22**: both are
+   selected by clicking and moved or turned with the move keys (not saved yet). Magrope moves
+   confirmed in game.
+2. Copy one: **built 2026-10-22**. A copy is spawned from its source's own data and bus (barriers on
+   both realms, magropes on the client), then placed (barriers: +0x50 and the body; magropes:
+   their transform reference). Its data is shared with the source, so size and flags are the
+   source's; editing them would need a cloned data object (later).
+3. Saved in layouts (**built 2026-10-22**): edit kinds `Barrier` / `Magrope` (an original moved,
+   keyed by its original position) and `BarrierCopy` / `MagropeCopy` (keyed by the source's
+   original position). A sweep every 2 s on the server thread moves originals found at an edit's
+   position and re-makes missing copies. Copies are destroyed with their own deinits (barrier
+   0x143335b30, magrope 0x143175390; +0x30 is the empty stub for both), after the owner-list unlink,
+   then the deleting destructor (+0x38).

@@ -3,6 +3,9 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <exception>
+
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -25,22 +28,38 @@ float dtOf(void* updateInfo) {
     return dt;
 }
 
+// Runs one of GridNode's tick steps; an exception never leaves into the engine's frames.
+template <class F> void guarded(const char* what, F&& f) {
+    try {
+        f();
+    } catch (const std::exception& e) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 20) GN_LOG("tick: %s threw (%s); ignored", what, e.what());
+    } catch (...) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 20) GN_LOG("tick: %s threw; ignored", what);
+    }
+}
+
 void serverPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_serverOrig)(world, updateInfo);
+    if (unloaded()) return; // kept in place by a hook over it: the game's update only
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
-    messagesServerTick();
-    layouts::serverTick();
-    server().dispatch(dtOf(updateInfo));
+    guarded("server messages", [] { messagesServerTick(); });
+    guarded("layouts (server)", [] { layouts::serverTick(); });
+    guarded("server dispatch", [&] { server().dispatch(dtOf(updateInfo)); });
 }
 
 void clientPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_clientOrig)(world, updateInfo);
+    if (unloaded()) return;
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
-    worldClientTick();
-    messagesClientTick();
-    faithClientTick();
-    layouts::clientTick();
-    client().dispatch(dtOf(updateInfo));
+    guarded("world", [] { worldClientTick(); });
+    guarded("client messages", [] { messagesClientTick(); });
+    guarded("faith", [] { faithClientTick(); });
+    guarded("movement events", [] { movementEventsClientTick(); });
+    guarded("layouts (client)", [] { layouts::clientTick(); });
+    guarded("client dispatch", [&] { client().dispatch(dtOf(updateInfo)); });
 }
 
 bool install(const engine::hook::Point& p, UpdateFn detour, uint64_t* original) {

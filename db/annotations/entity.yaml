@@ -1,6 +1,14 @@
 # Generic entity layout (Frostbite Entity / Component hierarchy).
 defaults: { confidence: confirmed, sources: [mecmp, research] }
 
+globals:
+  - name: EntityEvent_vtable
+    va: 0x141a4a8b0
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: "An EntityEvent is {vtable 0x141a4a8b0, u32 id (+8), u32 0 (+0xc)}, as EntityBus_postEvent builds one; delivered to an entity's onEvent (vtable +0x20)."
+
 classes:
   - name: ComponentEntity
     realm: any
@@ -18,6 +26,14 @@ classes:
       - { offset: 0x08, name: collection, type: "void**", note: "Owner's component collection; element [0] is the owner entity." }
 
 structs:
+  - name: EntityDeinitInfo
+    size: 0x8
+    note: "Built by the caller of an entity's deinit (+0x88)."
+    confidence: inferred
+    sources: [ghidra]
+    members:
+      - { offset: 0x0, name: realm, type: i32, note: "Index into the manager table at 0x1423e5710 (the entity's flags & 1)." }
+      - { offset: 0x4, name: removeFromManager, type: u8, note: "Base deinit removes the entity from that manager when set and flags & 0x30000; spatial entities clear it." }
   - name: EntityTransformSpace
     size: 0x10
     opaque: true
@@ -31,50 +47,166 @@ structs:
       - { offset: 0x0a, name: selectB, type: u8 }
 
 functions:
+  # Entity events (from the first recording, 2026-10-20; docs/research/recording-teleport.md).
+  - name: EntityBus_fireEvent
+    va: 0x14314e4a0
+    signature: "void(void* bus, void* sourcePeer, void* event)"
+    note: >-
+      Sends an event from a peer through its bus: walks the bus data's event connections (+0x68 ->
+      +0x120, or +0x148 when bus+0x3c bit 28) for the source and event id (event +8), sets the
+      target event id and delivers each (EntityBus_deliverEvent). Event ids are djb2-xor hashes of
+      the event names ("Out" = 0xb87df4b).
+    confidence: inferred
+    sources: [ghidra, recording]
+  - name: EntityBus_deliverEvent
+    va: 0x14314eac0
+    signature: "void(void* bus, void* connection, void* event)"
+    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent. A connection to the blueprint's interface (target == bus +0x68 -> +0xb8 -> +0x28) fires the event in the parent bus (+0x10, minus 8) from source bus +0x60 (low two bits masked): how a blueprint's output leaves it."
+    confidence: inferred
+    sources: [ghidra]
+  - name: EntityBusPeer_sendEvent
+    va: 0x143134460
+    signature: "void(i32 realm, void* peer, void* event)"
+    note: "Calls the peer's vtable +0x20 (its onEvent) on the right thread, or queues it for that realm (0x143127d20)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ServerEventSync_onReachedClient
+    va: 0x143364ba0
+    signature: "void(void* listener, const Message* message)"
+    note: >-
+      Server handler of EventSyncReachedClientMessage (type id 0x458f8b20) sent by a client when it
+      reaches an event sync point (e.g. confirming fast travel on the map): finds the sync entity by
+      the message's ids (+0x48, +0x50, +0x60) and fires its "Out" event.
+    confidence: inferred
+    sources: [ghidra, recording]
   - name: SpatialEntity_setTransform
     va: 0x1432eb1f0
     signature: "void(void* entity, const LinearTransform* transform, u8 notify)"
     note: >-
       Sets a spatial entity's world transform. If entity+0x18 bit 21 is set it goes through vtable
       +0xf0 instead; if bit 3 is set it notifies through vtable +0xe0. Game thread only.
+  # Destroying an entity (2026-10-21): unlink it from its owner (Entity_OwnerLink), then vtable
+  # +0x88 (deinit), +0x30 (destroy), +0x38 (delete). Without the unlink the owner destroyed it again
+  # when its part of the level unloaded (the game closed silently).
+  # Without the deinit the components stay registered in the world (the spatial grid queried by
+  # 0x1436d1dd0 then calls into freed memory: crashed in game).
+  - name: SpatialEntity_deinit
+    va: 0x1432e3b80
+    signature: "void(void* entity, EntityDeinitInfo* info)"
+    note: >-
+      Vtable +0x88 of spatial entities, the counterpart of init (+0x78): if flags bit 23, +0x1a8
+      (components' +0xd0: out of the world); +0x1b0 (the class's own teardown: physics, the client
+      context's list); clears info.removeFromManager; then the base deinit 0x143175390 (unregisters
+      from the bus, flag 4; clears the initialised flag 8).
+    confidence: inferred
+    sources: [ghidra, game]
+  - name: SpatialEntity_destroy
+    va: 0x1432e3c10
+    signature: "void(void* entity)"
+    note: >-
+      Vtable +0x30 of spatial entities (ServerStaticModelEntity, ClientStaticModelEntity and many
+      more): sets the destroyed flag (+0x18 |= 0x2000000) and destroys the entity's components
+      (ComponentEntity_destroyComponents), which takes away its physics and render parts. The
+      object stays allocated until vtable +0x38 deletes it. Game thread of the entity's realm.
+    confidence: inferred
+    sources: [ghidra]
+  - name: ComponentEntity_destroyComponents
+    va: 0x1431634a0
+    signature: "void(void* entity)"
+    note: "For each component in the collection at +0x38 (count at +8, 0x20-byte entries from +0x10): vtable +0x30 (destroy), then +0x38 with 1 (delete); clears the count."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Entity_dtor
+    va: 0x143117610
+    signature: "void(void* entity)"
+    note: "Base destructor (end of every entity's +0x38): frees the peer data at +0x28 and releases the entity's bus (+0x20) with EntityBus_release. An entity holds a reference to its bus, so a bus is freed once its entities are gone."
+    confidence: inferred
+    sources: [ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: entityObject_initWithParentTransform
     va: 0x1431411d0
-    note: "Named in Ghidra as entityObject_initWithParentTransform. Signature not known yet."
+    signature: "i64(void*, u64, void*, void*, u32, i32, void*)"
+    note: "Named in Ghidra as entityObject_initWithParentTransform; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: findObjectVariationInParentChain
     va: 0x14314bf90
-    note: "Named in Ghidra as findObjectVariationInParentChain. Signature not known yet."
+    signature: "i64(void*)"
+    note: "Named in Ghidra as findObjectVariationInParentChain; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_Component_ctor
     va: 0x14315f9e0
-    note: "Named in Ghidra as fb_Component_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, void*, void*, u64)"
+    note: "Named in Ghidra as fb_Component_ctor; checked in the decompiler (2026-10-30): sets the Component vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: Entity_sendMessageToComponents
     va: 0x14316bec0
-    note: "Named in Ghidra as Entity_sendMessageToComponents. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as Entity_sendMessageToComponents; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Updater_ctor
     va: 0x143170780
-    note: "Named in Ghidra as Updater_ctor. Signature not known yet."
+    signature: "void*(void* self, i32, u64, u32)"
+    note: "Named in Ghidra as Updater_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_UpdateManager_runPass
     va: 0x143176840
-    note: "Named in Ghidra as fb_UpdateManager_runPass. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as fb_UpdateManager_runPass; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientGameComponent_ctor
     va: 0x1431c0490
-    note: "Named in Ghidra as ClientGameComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ClientGameComponent_ctor; checked in the decompiler (2026-10-30): sets the ClientGameComponent vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: GameComponent_ctor
     va: 0x1432db630
-    note: "Named in Ghidra as GameComponent_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as GameComponent_ctor; checked in the decompiler (2026-10-30): sets the GameComponent vtable."
+    confidence: inferred
     sources: [ghidra]
+  # The user's research, checked in Ghidra 2026-10-21; signatures corrected.
+  - name: EntityBus_postEvent
+    va: 0x14314a9c0
+    signature: "void(void* busPeer, void* source, u32 eventId, void* a4)"
+    note: "Builds an EntityEvent on the stack (id at +8) and fires it: EntityBus_fireEvent(busPeer - 8, source, &event, a4) on the bus's own thread, else queues it (bus +0x50). busPeer is the bus's interface at bus + 8. Takes the event hash, not an event."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: EntityBusPeer_queueEvent
+    va: 0x143127d20
+    signature: "void(void* queue, void* target, void* event)"
+    note: "Appends {kind, target, event} to a chunked queue (0x1800-byte blocks of 0x18-byte entries, count at +0x808); an EntityEvent is stored by id (kind 7), anything else cloned (vtable +8, kind 8)."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: EntityBus_getPropertyContext
+    va: 0x143149080
+    signature: "u64(void* self, u64)"
+    note: "The user's name. It calls one of two functions by the bus's realm bit (+0x34 bit 27) and returns its second argument unchanged; what it does is not clear yet; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra, user]
+  - name: PropertyValue_set
+    va: 0x142a464e0
+    signature: "void(void* property, const void* value)"
+    note: "The user's research names it Entity_postPropertyChange. Copies the value (0x142a47650, 0x40 bytes max) and delivers the change now, or queues it when deliveries are deferred. Its first argument is a property object, not an entity."
+    confidence: hypothesis
+    sources: [ghidra, user]
+  - name: PropertyDispatcher_deliver
+    va: 0x142a42890
+    signature: "void(void* dispatcher, const void* change, u8 flags)"
+    note: "The user's research names it Entity_deliverPropertyChange. Calls each listener's vtable +0x10 with the change; the dispatcher is one of two globals (0x14215d050)."
+    confidence: hypothesis
+    sources: [ghidra, user]
+
+constants:
+  - { name: Entity_OwnerLink, value: 0x8, confidence: inferred, sources: [ghidra, game], note: "Node {prev node, next node} in the entity's EntityOwner list (the owner destroys its entities when it goes, e.g. a sublevel streaming out). Entity_dtor does not unlink it: unlink before deleting an entity yourself. Moved between owners by 0x143161be0 (flag 0x4000); EntityOwnerRange markers (flags 0x802) bound ranges in it (0x143163270)." }
+  - { name: Entity_vf_deinit, value: 0x88, confidence: inferred, sources: [ghidra], note: "SpatialEntity_deinit for spatial entities." }
+  - { name: Entity_FlagInitialised, value: 0x8, confidence: inferred, sources: [ghidra] }
+  - { name: Entity_vf_destroy, value: 0x30, confidence: inferred, sources: [ghidra], note: "SpatialEntity_destroy for spatial entities." }
+  - { name: Entity_vf_delete, value: 0x38, confidence: inferred, sources: [ghidra], note: "Scalar deleting destructor: (entity, 1) destroys and frees." }
+  - { name: Entity_FlagDestroyed, value: 0x2000000, confidence: inferred, sources: [ghidra], note: "In the flags at +0x18, set by vtable +0x30." }

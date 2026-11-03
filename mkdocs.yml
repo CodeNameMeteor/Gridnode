@@ -32,12 +32,18 @@ markdown_extensions:
 
 not_in_nav: |
   PLAN.md
+  progress.md
+  handover.md
 
 nav:
   - Home: index.md
   - Guides:
       - getting-started.md
       - modding.md
+      - shipping.md
+      - layout-editor.md
+      - custom-meshes.md
+      - recording.md
       - building.md
       - contributing.md
   - Engine notes:
@@ -49,5 +55,15 @@ nav:
       - dump-format.md
   - Plans:
       - assets-assessment.md
+      - research/barriers-and-magropes.md
+      - research/city-alert.md
+      - research/replay-ghosts.md
+      - research/startup-sequence.md
+      - research/destroying-entities.md
+      - research/zone-streaming.md
       - research/frosty-unity-pipeline.md
+      - research/mecmp-camera-and-collision.md
+      - research/recording-teleport.md
+      - research/render-objects.md
+      - research/trigger-volumes.md
   # @generated-nav

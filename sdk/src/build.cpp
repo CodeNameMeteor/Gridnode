@@ -91,6 +91,14 @@ Result check() {
     }
     for (const fp::Slot& s : fp::slots) {
         uintptr_t got = 0;
+        std::string module;
+        if (mem::read(mem::rva(s.slot), got) && got != mem::rva(s.fn) && mem::foreignCode(got, &module)) {
+            // Another mod (MECMP) hooked it first: GridNode chains to that hook (see HookTable).
+            ++r.warnings;
+            line(r, "warning: %s is hooked by %s (0x%llx); GridNode will chain to it", s.what, module.c_str(),
+                 static_cast<unsigned long long>(got));
+            continue;
+        }
         if (!mem::read(mem::rva(s.slot), got) || got != mem::rva(s.fn)) {
             ++r.failed;
             line(r, "%s holds 0x%llx, expected 0x%llx", s.what, static_cast<unsigned long long>(got ? mem::va(got) : 0),

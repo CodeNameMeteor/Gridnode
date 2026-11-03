@@ -104,7 +104,7 @@ functions:
     signature: "void(i64* character, void* inputState, f32 dt, f32 scale)"
     confidence: inferred
     sources: [gridnode, ghidra]
-    note: "Per character: reads the move and look actions (analog) and the button actions (digital) and hands them to the ANT input (0x142b8a7a0, 0x142bc5540). Named in Ghidra; first GridNodeSync round trip."
+    note: "Per character: reads the move and look actions (analog) and the button actions (digital) and hands them to the ANT input (0x142b8a7a0, 0x142bc5540). Named in Ghidra; first GridNodeSync round trip. The buttons go in as held / not held (a 0x100-byte block copied into ANT each tick; jump 0xb5a0a981 is its byte +0x39): ANT's graph makes its own presses from them, so a jump press made in the air is spent there (bhops, 2026-10-30)."
   - name: PamClientAntInputComponent_onInput
     va: 0x143911c80
     signature: "void(void* inputListener, EntryInputState* state, void* player)"
@@ -119,72 +119,86 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: InputManMouse_getLevelImpl
     va: 0x1431afaa0
-    note: "Named in Ghidra as InputManMouse_getLevelImpl. Signature not known yet."
+    signature: "u64(void* self, void*)"
+    note: "Named in Ghidra as InputManMouse_getLevelImpl; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManMouse_getLevelInternal
     va: 0x1431b0350
-    note: "Named in Ghidra as InputManMouse_getLevelInternal. Signature not known yet."
+    signature: "f32(void* self, u32, f32, u8, i8)"
+    note: "Named in Ghidra as InputManMouse_getLevelInternal; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManMouse_getLevelJoySim
     va: 0x1431b0600
-    note: "Named in Ghidra as InputManMouse_getLevelJoySim. Signature not known yet."
+    signature: "u64(void* self, u32)"
+    note: "Named in Ghidra as InputManMouse_getLevelJoySim; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientPlayerInput_initDevicesAndBindings
     va: 0x1431b94a0
-    note: "Named in Ghidra as ClientPlayerInput_initDevicesAndBindings. Signature not known yet."
+    signature: "void(MessageListener*)"
+    note: "Named in Ghidra as ClientPlayerInput_initDevicesAndBindings; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputMappings_evalDigitalAction
     va: 0x1431b9c90
-    note: "Named in Ghidra as InputMappings_evalDigitalAction. Signature not known yet."
+    signature: "void(i64, i64, u32, void*, void*, i8, i8)"
+    note: "Named in Ghidra as InputMappings_evalDigitalAction; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientPlayerInput_evalActionByConcept
     va: 0x1431ba230
-    note: "Named in Ghidra as ClientPlayerInput_evalActionByConcept. Signature not known yet."
+    signature: "u64(void* self, u32, u8)"
+    note: "Named in Ghidra as ClientPlayerInput_evalActionByConcept; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: mouseImpl_processExcessInput
     va: 0x1431bb850
-    note: "Named in Ghidra as mouseImpl_processExcessInput. Signature not known yet."
+    signature: "void(i8, void*, void*, void*)"
+    note: "Named in Ghidra as mouseImpl_processExcessInput; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputManager_updateAllDevices
     va: 0x1431be660
-    note: "Named in Ghidra as InputManager_updateAllDevices. Signature not known yet."
+    signature: "void(f32)"
+    note: "Named in Ghidra as InputManager_updateAllDevices; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: EntryInputState_ctor
     va: 0x1432f8aa0
-    note: "Named in Ghidra as EntryInputState_ctor. Signature not known yet."
+    signature: "i64(void* self)"
+    note: "Named in Ghidra as EntryInputState_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: EntryInputActionRegistry_set
     va: 0x1432fd340
-    note: "Named in Ghidra as EntryInputActionRegistry_set. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as EntryInputActionRegistry_set; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: loadVertexShaderTableAndInputLayouts
     va: 0x14359b800
-    note: "Named in Ghidra as loadVertexShaderTableAndInputLayouts. Signature not known yet."
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadVertexShaderTableAndInputLayouts; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputDevices_ctor
     va: 0x1437b7ba0
-    note: "Named in Ghidra as InputDevices_ctor. Signature not known yet."
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as InputDevices_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: XInput_loadFunctions
     va: 0x1437ba6c0
-    note: "Named in Ghidra as XInput_loadFunctions. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as XInput_loadFunctions; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: InputDevice_pollPad
     va: 0x1437bbdd0
-    note: "Named in Ghidra as InputDevice_pollPad. Signature not known yet."
+    signature: "void(void* self, u64)"
+    note: "Named in Ghidra as InputDevice_pollPad; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
 
@@ -197,4 +211,13 @@ constants:
   - { name: InputFlag_OverrideMade, value: 0x20 }
   - { name: EntryInputState_Size, value: 0x530 }
   - { name: EntryInputState_Digital, value: 0x4b8 }
-  - { name: Action_Jump, value: 0xb5a0a981, note: "Digital action 38 (bit 32). Probe F12, 2026-10-20: the only bit Space sets, in both states." }
+  - { name: Action_Jump, value: 0xb5a0a981, note: "EIAKeyboardSpace (djb2-xor). Digital action 38 (bit 32). Probe F12, 2026-10-20: the only bit Space sets, in both states." }
+  # Action ids read by PamClientAntInput_processCharacter, named by their hash (checked 2026-10-21).
+  - { name: Action_LeftStickX, value: 0x1dcfd4cd, note: "EIALeftStickX (move)." }
+  - { name: Action_LeftStickY, value: 0x1dcfd4cc, note: "EIALeftStickY (move)." }
+  - { name: Action_RightStickX, value: 0x436f6516, note: "EIARightStickX (look yaw)." }
+  - { name: Action_RightStickY, value: 0x436f6517, note: "EIARightStickY (look pitch)." }
+  - { name: Action_KeyboardCtrl, value: 0x578abcc, note: "EIAKeyboardCtrl." }
+  - { name: Action_KeyboardShift, value: 0xb5adb0e5, note: "EIAKeyboardShift." }
+  - { name: Action_Unnamed_04120d12, value: 0x4120d12, confidence: hypothesis, note: "The user's research: mouse look X. Name not found from its hash." }
+  - { name: Action_Unnamed_03bad4d3, value: 0x3bad4d3, confidence: hypothesis, note: "The user's research: mouse look Y. Name not found from its hash." }

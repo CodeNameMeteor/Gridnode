@@ -5,11 +5,15 @@
   gridnode types --reflected FILE --out FILE  write gridnode/generated/types.hpp
   gridnode setup --dump FILE                  install your dump and generate types.hpp
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
+  gridnode fingerprint IMAGE [--write] [--mecmp DIR] [--add NAME]
+                                              fingerprint bytes from a dump of the game (GridNode and MECMP)
   gridnode compare GRIDNODE_JSON GHIDRA_JSON  compare with a FrostbiteTypeDumper dump
   gridnode rust [--out FILE] [--check]       Rust bindings (bindings/rust/gridnode/src/sys.rs) from api.h
   gridnode docs [--reflected FILE] [--build]   the docs site (with a dump: the full reference, local)
   gridnode ghidra-export [--out FILE]          annotations for GridNodeSync.java to apply in Ghidra
-  gridnode ghidra-import FILE [--out FILE]     what was named in Ghidra, as annotations to review
+  gridnode ghidra-import FILE [--who NAME]     what was named in Ghidra (yours or a friend's), to review
+  gridnode ghidra-relay FILE [--who NAME]      a friend's Ghidra export, to import into your own Ghidra
+  gridnode annotations-diff OTHER [--base B]   compare two annotation sets (folders or git:REF)
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
 """
@@ -110,6 +114,16 @@ def _main(argv=None) -> int:
     vi = sub.add_parser("verify-image", help="check the annotations against a PE dump of the game")
     vi.add_argument("image")
 
+    fp = sub.add_parser("fingerprint", help="check / write fingerprint bytes from a dump of the game (GridNode menu -> Game image)")
+    fp.add_argument("image", help="the dump (bin/dumps/MirrorsEdgeCatalyst-*.exe)")
+    fp.add_argument("--write", action="store_true", help="put the image's bytes into the entries that differ")
+    fp.add_argument("--mecmp", help="also MECMP's src/game/fingerprint.cpp, in this MECMP checkout")
+    fp.add_argument("--add", metavar="NAME", help="add a code entry for this function / code site (or address)")
+    fp.add_argument("--skip", type=lambda v: int(v, 0), default=0, help="with --add: bytes to skip at the start")
+    fp.add_argument("--length", type=int, default=16, help="with --add: how many bytes (1..32, default 16)")
+    fp.add_argument("--required", action="store_true", help="with --add: a mismatch stops GridNode (default: optional)")
+    fp.add_argument("--note", default="", help="with --add: a note")
+
     c = sub.add_parser("compare", help="compare a GridNode dump with a FrostbiteTypeDumper dump")
     c.add_argument("gridnode")
     c.add_argument("ghidra")
@@ -127,10 +141,21 @@ def _main(argv=None) -> int:
 
     ge = sub.add_parser("ghidra-export", help="annotations as JSON for GridNodeSync.java (import into Ghidra)")
     ge.add_argument("--out", default=os.path.join(ROOT, "build", "gridnode-ghidra.json"))
-    ge.add_argument("--reflected", default=DEFAULT_DUMP, help="dump for class sizes (optional)")
+    ge.add_argument("--reflected", default=DEFAULT_DUMP, help="dump for class sizes, base classes and vtables (optional)")
+    ge.add_argument("--class", dest="classes", action="append", default=[], metavar="NAME",
+                    help="also a struct and vtable type for this class (repeat; needs the dump)")
     gi = sub.add_parser("ghidra-import", help="GridNodeSync.java's export -> annotations to review")
     gi.add_argument("file")
     gi.add_argument("--out", default=os.path.join(ROOT, "db", "ghidra-inbox.yaml"))
+    gi.add_argument("--who", help="whose Ghidra it came from (a friend's name): added to sources and notes")
+    gr = sub.add_parser("ghidra-relay", help="a GridNodeSync export -> a file GridNodeSync imports into another Ghidra")
+    gr.add_argument("file")
+    gr.add_argument("--who", help="whose Ghidra it came from (shown in the comments)")
+    gr.add_argument("--out", default=os.path.join(ROOT, "build", "gridnode-ghidra-relay.json"))
+    ad = sub.add_parser("annotations-diff", help="compare two annotation sets")
+    ad.add_argument("other", help="annotation folder, or git:REF (e.g. git:origin/main)")
+    ad.add_argument("--base", help="annotation folder or git:REF to compare against (default: --annotations)")
+    ad.add_argument("--inbox", help="also write the other set's new and changed entries to this YAML file")
 
     h = sub.add_parser("hash", help="Frostbite name hash (h = 5381; h = h*33 ^ c) of each name")
     h.add_argument("names", nargs="+")
@@ -183,7 +208,11 @@ def _main(argv=None) -> int:
         db, r, p = _load(a.annotations, dump, quiet=True)
         if p.errors:
             return 1
-        doc = ghidra_sync.to_ghidra(db, r)
+        missing = [n for n in a.classes if n not in db.classes and (r is None or n not in r.by_name)]
+        if missing:
+            print(f"ghidra-export: unknown class(es) {', '.join(missing)}" + ("" if r else " (no dump: only annotated classes)"))
+            return 1
+        doc = ghidra_sync.to_ghidra(db, r, a.classes)
         _write(a.out, json.dumps(doc, indent=1) + "\n")
         print(f"ghidra-export: {len(doc['structs'])} structs, {len(doc['functions'])} functions, {len(doc['labels'])} labels "
               f"-> {a.out}\n  In Ghidra: Script Manager -> GridNode -> GridNodeSync, choose Import, pick this file.")
@@ -197,7 +226,7 @@ def _main(argv=None) -> int:
         if p.errors:
             return 1
         with open(_find(a.file, "GridNodeSync export"), encoding="utf-8") as f:
-            text, counts = ghidra_sync.from_ghidra(json.load(f), db)
+            text, counts = ghidra_sync.from_ghidra(json.load(f), db, who=a.who)
         # The result must load next to the existing annotations before it is written.
         with tempfile.TemporaryDirectory() as d:
             for fn in os.listdir(a.annotations):
@@ -213,6 +242,38 @@ def _main(argv=None) -> int:
         _write(a.out, text)
         print(f"ghidra-import: {counts['functions']} functions, {counts['globals']} globals, {counts['members']} members, "
               f"{counts['renamed']} named differently -> {a.out}\n  Review them and move each into its annotation file.")
+        return 0
+
+    if a.cmd == "ghidra-relay":
+        import json
+        from . import ghidra_sync
+        with open(_find(a.file, "GridNodeSync export"), encoding="utf-8") as f:
+            doc = ghidra_sync.relay(json.load(f), who=a.who)
+        _write(a.out, json.dumps(doc, indent=1) + "\n")
+        print(f"ghidra-relay: {len(doc['functions'])} functions, {len(doc['labels'])} labels -> {a.out}\n"
+              "  In your Ghidra: GridNodeSync, choose Import, pick this file. Names you gave yourself are kept.")
+        return 0
+
+    if a.cmd == "annotations-diff":
+        from . import annotations_diff
+
+        def side(spec: str) -> tuple[str, str]:
+            if spec.startswith("git:"):
+                ref = spec[4:]
+                sub_dir = os.path.relpath(os.path.abspath(a.annotations), ROOT).replace(os.sep, "/")
+                return annotations_diff.checkout(ref, ROOT, sub_dir), ref
+            path = spec if os.path.isdir(spec) else os.path.join(ROOT, spec)
+            if not os.path.isdir(path):
+                raise UserError(f"annotation folder not found: {spec}")
+            return path, spec
+
+        base_dir, base_label = side(a.base) if a.base else (a.annotations, "repo")
+        other_dir, other_label = side(a.other)
+        d = annotations_diff.diff(base_dir, other_dir, base_label, other_label)
+        print(annotations_diff.report(d), end="")
+        if a.inbox:
+            _write(a.inbox, annotations_diff.inbox(d))
+            print(f"inbox: {len(d.added) + len(d.renamed) + len(d.changed)} entries -> {a.inbox}")
         return 0
 
     if a.cmd == "hash":
@@ -253,7 +314,7 @@ def _main(argv=None) -> int:
         db, r, p = _load(a.annotations, _find(a.reflected, "dump"))
         n = len(db.classes) + len(db.structs) + len(db.globals) + len(db.functions) + len(db.hooks)
         print(f"{len(db.files)} files, {len(db.classes)} classes, {len(db.structs)} structs, {len(db.globals)} globals, "
-              f"{len(db.functions)} functions, {len(db.hooks)} hooks ({n} items): "
+              f"{len(db.functions)} functions, {len(db.hooks)} hooks, {len(db.events)} events ({n} items): "
               f"{len(p.errors)} errors, {len(p.warnings)} warnings" + (" (checked against the dump)" if r else ""))
         return 1 if p.errors or (a.strict and p.warnings) else 0
 
@@ -298,6 +359,41 @@ def _main(argv=None) -> int:
         print(f"{n} checks against {os.path.basename(a.image)} (timestamp {img.timestamp:#x}): "
               f"{len(q.errors)} errors, {len(q.warnings)} warnings")
         return 1 if q.errors else 0
+
+    if a.cmd == "fingerprint":
+        from . import fingerprint_gen, pe_image
+        db, _, p = _load(a.annotations, None, quiet=True)
+        if p.errors:
+            return 1
+        img = pe_image.PeImage(_find(a.image, "image"))
+        fp_yaml = os.path.join(a.annotations, "fingerprint.yaml")
+        if a.add:
+            try:
+                line = fingerprint_gen.add_gridnode(fp_yaml, db, img, a.add, a.skip, a.length, a.required, a.note)
+            except ValueError as e:
+                raise UserError(str(e))
+            print(f"added to {fp_yaml}:\n{line}", end="")
+            db, _, p = _load(a.annotations, None, quiet=True)
+            if p.errors:
+                return 1
+        bad = 0
+        res = fingerprint_gen.check_gridnode(db, img)
+        print(fingerprint_gen.report(res, "GridNode fingerprint.yaml"), end="")
+        bad += sum(1 for r in res if not r.ok and r.required)
+        if a.write:
+            n = fingerprint_gen.write_gridnode(fp_yaml, res)
+            print(f"  {n} code entr{'y' if n == 1 else 'ies'} rewritten from the image" + (" (check their notes)" if n else ""))
+        if a.mecmp:
+            try:
+                mres = fingerprint_gen.check_mecmp(a.mecmp, img)
+            except ValueError as e:
+                raise UserError(str(e))
+            print(fingerprint_gen.report(mres, "MECMP fingerprint.cpp"), end="")
+            bad += sum(1 for r in mres if not r.ok and r.required)
+            if a.write:
+                n = fingerprint_gen.write_mecmp(a.mecmp, mres)
+                print(f"  {n} code entr{'y' if n == 1 else 'ies'} rewritten from the image" + (" (check the comments above them)" if n else ""))
+        return 1 if bad and not a.write else 0
 
     if a.cmd == "compare":
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

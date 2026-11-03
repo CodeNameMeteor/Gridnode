@@ -26,6 +26,18 @@ functions:
     signature: "void*(void** arenaMember, u64 size, u64 align)"
     note: Allocates from the arena held in *arenaMember. Used to give a replay component its pose buffer.
     sources: [mecmp]
+  - name: Arena_allocAligned
+    va: 0x142a77780
+    signature: "void*(void* arena, u64 size, u64 align)"
+    note: "Allocates from an arena, dispatching on its kind (+0x8; 1-11 are built-in allocators, others through vtable +0x8). 517 callers, the replay keyframe ring among them (align 16). Named in the user's Ghidra; checked 2026-10-29."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Heap_FreeChunk
+    va: 0x142c7be80
+    signature: "void(i64, i64)"
+    note: "Named in the user's Ghidra (2026-10-29); 4 callers, all near it. Not checked; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
   - name: RbTree_increment
     va: 0x142a34820
     signature: "void*(void* node)"
@@ -39,47 +51,56 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: emptyStub
     va: 0x142a1c590
-    note: "Named in Ghidra as emptyStub. Signature not known yet."
+    signature: "void()"
+    note: "Named in Ghidra as emptyStub; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: identityPassthrough
     va: 0x142a1e1d0
-    note: "Named in Ghidra as identityPassthrough. Signature not known yet."
+    signature: "u64(u64)"
+    note: "Named in Ghidra as identityPassthrough; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: introSortRange
     va: 0x142a22af0
-    note: "Named in Ghidra as introSortRange. Signature not known yet."
+    signature: "void(void*, i64, u8)"
+    note: "Named in Ghidra as introSortRange; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: notifyListenersPair
     va: 0x142a2eda0
-    note: "Named in Ghidra as notifyListenersPair. Signature not known yet."
+    signature: "void(void*, u8, u8)"
+    note: "Named in Ghidra as notifyListenersPair; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: notifyListenersSingle
     va: 0x142a2ee40
-    note: "Named in Ghidra as notifyListenersSingle. Signature not known yet."
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as notifyListenersSingle; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: poolAlloc
     va: 0x142a770c0
-    note: "Named in Ghidra as poolAlloc. Signature not known yet."
+    signature: "void(u64, void*)"
+    note: "Named in Ghidra as poolAlloc; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: poolFree
     va: 0x142a78220
-    note: "Named in Ghidra as poolFree. Signature not known yet."
+    signature: "void(void*, i64)"
+    note: "Named in Ghidra as poolFree; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: returnFalse
     va: 0x143207f00
-    note: "Named in Ghidra as returnFalse. Signature not known yet."
+    signature: "u8()"
+    note: "Named in Ghidra as returnFalse; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: forEachStridedElement
     va: 0x143c88338
-    note: "Named in Ghidra as forEachStridedElement. Signature not known yet."
+    signature: "void(i64, i64, i32, void*)"
+    note: "Named in Ghidra as forEachStridedElement; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
 

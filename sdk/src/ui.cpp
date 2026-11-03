@@ -26,6 +26,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "backends/imgui_impl_dx11.h"
@@ -78,7 +79,11 @@ const KeyName kKeyNames[] = {
     {"F8", VK_F8}, {"F9", VK_F9}, {"F10", VK_F10}, {"F11", VK_F11}, {"F12", VK_F12},
     {"NUM0", VK_NUMPAD0}, {"NUM1", VK_NUMPAD1}, {"NUM2", VK_NUMPAD2}, {"NUM3", VK_NUMPAD3}, {"NUM4", VK_NUMPAD4},
     {"NUM5", VK_NUMPAD5}, {"NUM6", VK_NUMPAD6}, {"NUM7", VK_NUMPAD7}, {"NUM8", VK_NUMPAD8}, {"NUM9", VK_NUMPAD9},
-    {"BACKTICK", VK_OEM_3},
+    {"BACKTICK", VK_OEM_3}, {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT}, {"UP", VK_UP}, {"DOWN", VK_DOWN},
+    {"BACKSPACE", VK_BACK}, {"TAB", VK_TAB}, {"ENTER", VK_RETURN}, {"SPACE", VK_SPACE},
+    {"LBRACKET", VK_OEM_4}, {"RBRACKET", VK_OEM_6}, {"COMMA", VK_OEM_COMMA}, {"PERIOD", VK_OEM_PERIOD},
+    {"SLASH", VK_OEM_2}, {"SEMICOLON", VK_OEM_1}, {"QUOTE", VK_OEM_7}, {"MINUS", VK_OEM_MINUS}, {"EQUALS", VK_OEM_PLUS},
+    {"MOUSE3", VK_MBUTTON}, {"MOUSE4", VK_XBUTTON1}, {"MOUSE5", VK_XBUTTON2},
 };
 
 bool typesCharacter(int vk) { return MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_CHAR) != 0; }
@@ -107,7 +112,11 @@ std::atomic<uint32_t> g_btnDown{0}, g_btnUp{0};
 std::atomic<int> g_wheel{0};
 // Free-camera look (layouts): while on, raw mouse movement turns the camera, not the cursor.
 std::atomic<bool> g_lookCapture{false};
+std::atomic<bool> g_pointer{false}; // the free camera's pointer mode: the cursor shows with the menu closed
 std::atomic<float> g_lookX{0}, g_lookY{0};
+// Free camera with the menu closed: the game gets no keyboard or mouse, GridNode takes them as if
+// the menu were open (keys still reach ImGui), and the mouse always looks.
+std::atomic<bool> g_capture{false};
 
 void refreshMouseScale() {
     int speed = 10;
@@ -177,6 +186,27 @@ void handleRawMouse(LPARAM l) {
     g_rawMouse = true;
 }
 
+// While the free camera flies, or the menu is open with raw mouse input (which moves GridNode's own
+// cursor), the hidden system cursor stays in the middle of the game's window, so a click cannot
+// land on another window.
+void holdCursor(bool hold) {
+    static bool held = false;
+    if (hold && g_window && GetForegroundWindow() == g_window) {
+        RECT rc{};
+        GetClientRect(g_window, &rc);
+        POINT tl{rc.left, rc.top}, br{rc.right, rc.bottom};
+        ClientToScreen(g_window, &tl);
+        ClientToScreen(g_window, &br);
+        const RECT clip{tl.x, tl.y, br.x, br.y};
+        ClipCursor(&clip);
+        SetCursorPos((tl.x + br.x) / 2, (tl.y + br.y) / 2);
+        held = true;
+    } else if (held) {
+        ClipCursor(nullptr);
+        held = false;
+    }
+}
+
 void applyRawMouse() {
     ImGuiIO& io = ImGui::GetIO();
     io.AddMousePosEvent(g_cursorX, g_cursorY);
@@ -191,6 +221,29 @@ void applyRawMouse() {
     if (const int w = g_wheel.exchange(0)) io.AddMouseWheelEvent(0.f, static_cast<float>(w) / WHEEL_DELTA);
 }
 
+// A mouse button let go while the menu is closed and nothing is captured still reaches ImGui, or a
+// button pressed while it was (the free camera's key on a mouse button turning it off) stays down
+// there for good, and ImGui ignores every window while a button pressed outside them is held: the
+// menu could not be clicked (2026-11-03, the free camera on MOUSE5).
+void rawMouseUps(LPARAM l) {
+    RAWINPUT ri{};
+    UINT size = sizeof(ri);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) return;
+    if (ri.header.dwType != RIM_TYPEMOUSE) return;
+    const USHORT b = ri.data.mouse.usButtonFlags;
+    uint32_t up = 0;
+    if (b & RI_MOUSE_LEFT_BUTTON_UP) up |= 1;
+    if (b & RI_MOUSE_RIGHT_BUTTON_UP) up |= 2;
+    if (b & RI_MOUSE_MIDDLE_BUTTON_UP) up |= 4;
+    if (b & RI_MOUSE_BUTTON_4_UP) up |= 8;
+    if (b & RI_MOUSE_BUTTON_5_UP) up |= 16;
+    if (up) g_btnUp |= up;
+}
+
+bool isButtonUp(UINT msg) {
+    return msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP;
+}
+
 // 1 = key press, 2 = key release, 0 = not the keyboard.
 int rawKeyEvent(LPARAM l) {
     RAWINPUT ri{};
@@ -201,7 +254,11 @@ int rawKeyEvent(LPARAM l) {
     return (ri.data.keyboard.Flags & RI_KEY_BREAK) ? 2 : 1;
 }
 
+std::atomic<int> g_releaseState{0}; // a full unload (release()): 0 running, 1 wanted, 2 under way, 3 done
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    // Left in place by a window procedure set over it: the overlay is gone, the game gets everything.
+    if (g_releaseState.load() >= 2) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
     // Alt+F4 always reaches the game.
     if (msg == WM_SYSKEYDOWN && static_cast<int>(w) == VK_F4) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
     const bool keyUp = msg == WM_KEYUP || msg == WM_SYSKEYUP;
@@ -214,7 +271,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     if (msg == WM_DEVICECHANGE && g_ready) queueImGui(hwnd, msg, w, l);
-    if (g_open && g_ready) {
+    if (!(g_open || g_capture) && g_ready) { // releases still reach ImGui (rawMouseUps)
+        if (msg == WM_INPUT) rawMouseUps(l);
+        else if (isButtonUp(msg)) queueImGui(hwnd, msg, w, l);
+    }
+    if ((g_open || g_capture) && g_ready) {
         // Key releases still reach the game, so a key held when the menu opened is released there.
         if (keyUp) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
         if (msg == WM_INPUT) {
@@ -360,6 +421,7 @@ bool g_showInspector = false;
 bool g_showConsole = false;
 bool g_showMetrics = false;
 bool g_showLayouts = false;
+bool g_showRecorder = false;
 
 void drawMain() {
     ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
@@ -372,20 +434,62 @@ void drawMain() {
         ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
         ImGui::Separator();
         if (g_settings.inspector) ImGui::Checkbox("Inspector", &g_showInspector);
-        ImGui::Checkbox("Console", &g_showConsole);
-        ImGui::Checkbox("Layout editor", &g_showLayouts);
-        ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
+        if (g_settings.console) ImGui::Checkbox("Console", &g_showConsole);
+        if (g_settings.editor) ImGui::Checkbox("Layout editor", &g_showLayouts);
+        if (g_settings.recorder) ImGui::Checkbox("Recorder", &g_showRecorder);
+        if (g_settings.devInfo) ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
+        if (g_settings.inspector || g_settings.console || g_settings.editor || g_settings.recorder || g_settings.devInfo) ImGui::Separator();
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
             if (mods.empty()) ImGui::TextDisabled("No mods loaded.");
             for (const ModInfo& m : mods) {
-                ImGui::BulletText("%s", m.file.c_str());
+                ImGui::PushID(m.file.c_str());
+                if (m.name.empty() && m.version.empty()) ImGui::BulletText("%s", m.file.c_str());
+                else ImGui::BulletText("%s %s", m.name.empty() ? m.id.c_str() : m.name.c_str(), m.version.c_str());
+                if (ImGui::IsItemHovered() && (!m.description.empty() || !m.author.empty() || !m.depends.empty()))
+                    ImGui::SetTooltip("%s\nid %s%s%s%s%s%s%s", m.file.c_str(), m.id.c_str(), m.author.empty() ? "" : "\nby ", m.author.c_str(),
+                                      m.description.empty() ? "" : "\n", m.description.c_str(), m.depends.empty() ? "" : "\nneeds: ", m.depends.c_str());
                 ImGui::SameLine();
                 if (m.loaded) ImGui::TextDisabled("loaded");
-                else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "failed (%d)", m.result);
+                else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), m.result ? "failed (%d)" : "unloaded", m.result);
+                if (m.reloadable && !m.inMemory) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Load")) modLoad(m.file);
+                    if (!m.status.empty()) ImGui::TextDisabled("    %s", m.status.c_str());
+                } else if (!m.inMemory && !m.status.empty()) { // not started: a dependency is missing
+                    ImGui::TextDisabled("    %s", m.status.c_str());
+                } else if (m.reloadable) {
+                    // A mod that exports gn_mod_unload: rebuilt while the game runs, then reloaded, or
+                    // unloaded until Load (everything it changed put back).
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reload")) modReload(m.file);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Unload")) modUnload(m.file);
+                    ImGui::SameLine();
+                    bool autoReload = m.autoReload;
+                    if (ImGui::Checkbox("when changed", &autoReload)) modAutoReload(m.file, autoReload);
+                    if (!m.status.empty()) ImGui::TextDisabled("    %s", m.status.c_str());
+                }
+                ImGui::PopID();
             }
         }
-        if (ImGui::CollapsingHeader("World")) {
+        drawSettingsPages(); // the mods' declared settings (modsettings.cpp)
+        if (ImGui::CollapsingHeader("Unload")) {
+            static bool sure = false;
+            if (unloadRequested()) {
+                ImGui::TextDisabled("Unloading...");
+            } else {
+                ImGui::TextWrapped("Unloads every mod and GridNode itself and puts back what they changed (the free camera, "
+                                   "god mode, hooks, this overlay). The game carries on as if GridNode had never loaded. "
+                                   "Props moved by a saved layout stay until the level reloads.");
+                ImGui::Checkbox("I am sure", &sure);
+                ImGui::BeginDisabled(!sure);
+                if (ImGui::Button("Unload GridNode and every mod")) unloadRequest();
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("To load it again: gridnode_inject.exe, or restart the game.");
+            }
+        }
+        if (g_settings.devInfo && ImGui::CollapsingHeader("World")) {
             void* cc = localClientCharacter();
             void* sc = localServerCharacter();
             gn_transform t{};
@@ -396,17 +500,78 @@ void drawMain() {
             if (sc && entityTransform(sc, t)) ImGui::Text("  at %.2f, %.2f, %.2f", t.trans[0], t.trans[1], t.trans[2]);
             else if (sc) ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), "  position unreadable");
         }
-        if (ImGui::CollapsingHeader("Hooks")) {
+        if (g_settings.devInfo && ImGui::CollapsingHeader("Game image")) {
+            ImGui::TextWrapped("Saves the running game's code and data as a file (dumps\\*.exe next to gridnode.dll) for "
+                               "gridnode.py fingerprint and verify-image. About 115 MB. Never share or commit it.");
+            static std::atomic<int> state{0}; // 0 idle, 1 writing, 2 done, 3 failed
+            static std::mutex textM;
+            static std::string text;
+            ImGui::BeginDisabled(state.load() == 1);
+            if (ImGui::Button("Dump the game image")) {
+                state = 1;
+                std::thread([] {
+                    BusyThread busy; // a full unload waits for the dump
+                    wchar_t mod[MAX_PATH] = {};
+                    HMODULE self = nullptr;
+                    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(&mem::dumpImage), &self);
+                    GetModuleFileNameW(self, mod, MAX_PATH);
+                    std::wstring dir(mod);
+                    dir = dir.substr(0, dir.find_last_of(L"\\/") + 1) + L"dumps";
+                    CreateDirectoryW(dir.c_str(), nullptr);
+                    SYSTEMTIME t;
+                    GetLocalTime(&t);
+                    wchar_t name[64];
+                    swprintf(name, 64, L"\\MirrorsEdgeCatalyst-%04u%02u%02u-%02u%02u%02u.exe", t.wYear, t.wMonth, t.wDay, t.wHour,
+                             t.wMinute, t.wSecond);
+                    const std::wstring path = dir + name;
+                    std::string why;
+                    // The game's own pointers in the slots GridNode hooked (the first hook's "previous"; a slot
+                    // another mod had hooked first keeps that mod's pointer, and the check reports it as such).
+                    std::vector<std::pair<uintptr_t, uint64_t>> restore;
+                    for (const auto& [slot, chain] : hooks().snapshot())
+                        if (!chain.empty() && !isDetourSlot(slot)) restore.push_back({static_cast<uintptr_t>(slot), chain.front().previous});
+                    for (const auto& r : patchOriginals()) restore.push_back(r); // and the game's code bytes under patches
+                    const bool ok = mem::dumpImage(path, &why, restore);
+                    std::lock_guard<std::mutex> lock(textM);
+                    char buf[600];
+                    if (ok) snprintf(buf, sizeof(buf), "Written: %ls", path.c_str());
+                    else snprintf(buf, sizeof(buf), "Failed: %s", why.c_str());
+                    text = buf;
+                    state = ok ? 2 : 3;
+                }).detach();
+            }
+            ImGui::EndDisabled();
+            if (state.load() == 1) ImGui::TextDisabled("Writing...");
+            else if (state.load() >= 2) {
+                std::lock_guard<std::mutex> lock(textM);
+                ImGui::TextWrapped("%s", text.c_str());
+            }
+        }
+        if (g_settings.devInfo && ImGui::CollapsingHeader("Hooks")) {
             ImGui::Text("%llu pointer hooks installed", static_cast<unsigned long long>(hooks().count()));
+            const std::vector<PatchInfo> patches = patchList();
+            ImGui::Text("%llu code patches", static_cast<unsigned long long>(patches.size()));
+            for (const PatchInfo& p : patches)
+                ImGui::BulletText("%s: %llx, %llu bytes (%s)", p.mod.c_str(), static_cast<unsigned long long>(p.va),
+                                  static_cast<unsigned long long>(p.size), p.what.c_str());
+            for (const auto& [slot, chain] : hooks().snapshot()) {
+                const uint64_t fn = detourFunction(slot);
+                if (!fn || chain.empty()) continue;
+                std::string who;
+                for (const hook::Entry& e : chain) who += (who.empty() ? "" : " < ") + e.owner;
+                ImGui::BulletText("function %llx detoured by %s", static_cast<unsigned long long>(fn), who.c_str());
+            }
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));
             ImGui::Text("Client ticks: %llu", static_cast<unsigned long long>(client().ticks()));
         }
     }
     ImGui::End();
     if (g_showInspector && g_settings.inspector) inspector::draw(&g_showInspector);
-    if (g_showConsole) inspector::drawConsole(&g_showConsole);
-    if (g_showMetrics) ImGui::ShowMetricsWindow(&g_showMetrics);
-    if (g_showLayouts) layouts::draw(&g_showLayouts);
+    if (g_showConsole && g_settings.console) inspector::drawConsole(&g_showConsole);
+    if (g_showMetrics && g_settings.devInfo) ImGui::ShowMetricsWindow(&g_showMetrics);
+    if (g_showLayouts && g_settings.editor) layouts::draw(&g_showLayouts);
+    if (g_showRecorder && g_settings.recorder) recorder::draw(&g_showRecorder);
 }
 
 void callMods(bool open) {
@@ -418,13 +583,77 @@ void callMods(bool open) {
     for (const UiListener& l : ls) {
         ImGuiErrorRecoveryState state;
         ImGui::ErrorRecoveryStoreState(&state);
-        l.fn(open ? 1 : 0, l.user);
+        try {
+            l.fn(open ? 1 : 0, l.user);
+        } catch (...) {
+            static int said = 0;
+            if (said++ < 10) GN_LOG("ui: a mod's UI callback threw; ignored");
+        }
         ImGui::ErrorRecoveryTryToRecoverState(&state); // closes what the mod left open
         ImGui::SetCurrentContext(g_imgui.load());     // in case the mod switched it
     }
 }
 
+std::atomic<uint64_t> g_frames{0}; // frames drawn (a mod being unloaded waits for a few)
+std::atomic<DWORD> g_renderThread{0}; // the thread that draws the overlay (the crash notes name it)
+
+// A full unload (release()): the render thread closes the overlay and puts the slots back at its
+// next Present; with no frames coming (minimised), GridNode's thread puts them back without closing
+// Dear ImGui (its device objects belong to the render thread).
+void** g_presentSlot = nullptr;
+void** g_resizeSlot = nullptr;
+std::atomic<bool> g_releaseOk{true};
+HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags);
+HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags);
+
+void shutdownOverlay() { // render thread
+    if (!g_ready) return;
+    ImGui::SetCurrentContext(g_imgui.load());
+    ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+    g_imgui = nullptr;
+    if (g_rtv) g_rtv->Release(), g_rtv = nullptr;
+    if (g_context) g_context->Release(), g_context = nullptr;
+    if (g_device) g_device->Release(), g_device = nullptr;
+    g_ready = false;
+}
+
+void putBack() {
+    if (g_window && g_origWndProc) {
+        if (GetWindowLongPtrW(g_window, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&wndProc)) {
+            SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_origWndProc));
+        } else {
+            GN_LOG("ui: the game window's procedure was replaced after GridNode's; it stays (GridNode stays loaded)");
+            g_releaseOk = false;
+        }
+    }
+    g_open = false, g_capture = false, g_lookCapture = false, g_pointer = false;
+    ClipCursor(nullptr);
+    auto slot = [](void** at, void* mine, void* original, const char* what) {
+        if (!at) return;
+        if (*at == mine) {
+            uintptr_t old = 0;
+            if (mem::patchModulePointer(reinterpret_cast<uintptr_t>(at), reinterpret_cast<uintptr_t>(original), &old)) return;
+            GN_LOG("ui: %s could not be put back", what);
+        } else {
+            GN_LOG("ui: %s was hooked again after GridNode (another overlay); it stays (GridNode stays loaded)", what);
+        }
+        g_releaseOk = false;
+    };
+    slot(g_presentSlot, reinterpret_cast<void*>(&presentHook), reinterpret_cast<void*>(g_origPresent), "Present");
+    slot(g_resizeSlot, reinterpret_cast<void*>(&resizeHook), reinterpret_cast<void*>(g_origResize), "ResizeBuffers");
+}
+
 HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags) {
+    if (g_releaseState.load() != 0) {
+        if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
+            shutdownOverlay();
+            putBack();
+            g_releaseState = 3;
+        }
+        return g_origPresent(sc, sync, flags);
+    }
     if (flags & DXGI_PRESENT_TEST) return g_origPresent(sc, sync, flags);
     if (!g_ready && !g_swapChain) g_ready = init(sc);
     if (g_ready && sc == g_swapChain && g_rtv) {
@@ -433,11 +662,24 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui_ImplDX11_NewFrame();
         deliverImGuiMsgs();
         ImGui_ImplWin32_NewFrame();
-        if (g_open && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
+        if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
         const bool open = g_open.load();
-        layouts::frame(open); // the free camera
-        ImGui::GetIO().MouseDrawCursor = open;
+        {
+            ImGuiErrorRecoveryState state;
+            ImGui::ErrorRecoveryStoreState(&state);
+            try {
+                layouts::frame(open, g_settings.editor); // the free camera (mods use it too); with the editor, its keys
+                if (g_settings.recorder) recorder::frame();
+                hotkeys::frame(open);
+            } catch (...) { // never into the game's Present
+                ImGui::ErrorRecoveryTryToRecoverState(&state);
+                static int said = 0;
+                if (said++ < 10) GN_LOG("ui: an editor or recorder frame threw; ignored");
+            }
+        }
+        holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
+        ImGui::GetIO().MouseDrawCursor = open || (g_capture.load() && g_pointer.load());
         {
             static DWORD scaleAt = 0;
             if (GetTickCount() - scaleAt > 500) {
@@ -445,8 +687,20 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
                 refreshMouseScale();
             }
         }
-        if (open) drawMain();
+        if (open) {
+            ImGuiErrorRecoveryState state;
+            ImGui::ErrorRecoveryStoreState(&state);
+            try {
+                drawMain();
+            } catch (...) {
+                ImGui::ErrorRecoveryTryToRecoverState(&state);
+                static int said = 0;
+                if (said++ < 10) GN_LOG("ui: the menu threw while drawing; ignored");
+            }
+        }
         callMods(open);
+        g_frames.fetch_add(1, std::memory_order_relaxed);
+        g_renderThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
         g_typing = ImGui::GetIO().WantTextInput;
         ImGui::Render();
         // The backend restores most pipeline state, but not the render targets: put the game's back.
@@ -464,6 +718,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
 }
 
 HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UINT h, DXGI_FORMAT fmt, UINT flags) {
+    if (g_releaseState.load() != 0) return g_origResize(sc, count, w, h, fmt, flags);
     if (sc == g_swapChain && g_rtv) {
         g_rtv->Release();
         g_rtv = nullptr;
@@ -478,7 +733,10 @@ HRESULT STDMETHODCALLTYPE resizeHook(IDXGISwapChain* sc, UINT count, UINT w, UIN
 template <class Fn> bool swapSlot(void** slot, Fn detour, Fn* original) {
     *original = reinterpret_cast<Fn>(*slot); // published before the swap
     uintptr_t old = 0;
-    if (!mem::patchPointer(reinterpret_cast<uintptr_t>(slot), reinterpret_cast<uintptr_t>(detour), &old)) return false;
+    if (!mem::patchModulePointer(reinterpret_cast<uintptr_t>(slot), reinterpret_cast<uintptr_t>(detour), &old)) {
+        GN_LOG("ui: swap chain slot %p is not in a loaded module's data; not hooking it", static_cast<void*>(slot));
+        return false;
+    }
     *original = reinterpret_cast<Fn>(old);
     return true;
 }
@@ -492,6 +750,15 @@ std::string keyName(int vk) {
     char buf[8];
     snprintf(buf, sizeof(buf), "VK_%02X", vk & 0xFF);
     return buf;
+}
+
+std::vector<std::pair<int, std::string>> reservedKeys() {
+    std::vector<std::pair<int, std::string>> r{{g_settings.menuKey, "the menu"}};
+    if (g_settings.recorder)
+        r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"}),
+            r.push_back({VK_END, "Recorder: save the last seconds"});
+    if (g_settings.editor) r.push_back({VK_F7, "free camera (default)"});
+    return r;
 }
 
 int keyFromName(const std::string& n) {
@@ -521,8 +788,19 @@ void toggleMenu() {
 }
 
 bool menuOpen() { return g_open.load(); }
+bool gameFocused() { return g_window && GetForegroundWindow() == g_window; }
 void setLookCapture(bool on) {
     if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;
+}
+void setInputCapture(bool on) { g_capture = on; }
+void setPointer(bool on) {
+    if (on && !g_pointer.load() && g_window) { // from the middle of the window, where the crosshair was
+        RECT rc{};
+        GetClientRect(g_window, &rc);
+        g_cursorX = (rc.right - rc.left) * 0.5f;
+        g_cursorY = (rc.bottom - rc.top) * 0.5f;
+    }
+    g_pointer = on;
 }
 void takeLook(float& dx, float& dy) {
     dx = g_lookX.exchange(0.f);
@@ -597,6 +875,7 @@ bool install(const Settings& s) {
     }
     void** vtbl = *reinterpret_cast<void***>(sc);
     const bool ok = swapSlot(&vtbl[8], &presentHook, &g_origPresent) && swapSlot(&vtbl[13], &resizeHook, &g_origResize);
+    if (ok) g_presentSlot = &vtbl[8], g_resizeSlot = &vtbl[13];
     sc->Release();
     ctx->Release();
     dev->Release();
@@ -608,6 +887,29 @@ bool install(const Settings& s) {
     }
     GN_LOG("ui: Present hooked; the overlay starts with the next frame");
     return true;
+}
+
+void forgetUi(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_uiM);
+    g_ui.erase(std::remove_if(g_ui.begin(), g_ui.end(), [&](const UiListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }), g_ui.end());
+}
+
+uint64_t frameCount() { return g_frames.load(std::memory_order_relaxed); }
+bool isRenderThread() { return g_renderThread.load(std::memory_order_relaxed) == GetCurrentThreadId(); }
+
+bool release() {
+    if (!g_presentSlot) return true; // never hooked
+    if (int running = 0; g_releaseState.compare_exchange_strong(running, 1)) {
+        const ULONGLONG start = GetTickCount64();
+        while (g_releaseState.load() != 3 && GetTickCount64() - start < 2000) Sleep(20);
+        if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
+            GN_LOG("ui: no frame came (the game minimised?): the slots go back without closing the overlay");
+            putBack();
+            g_releaseState = 3;
+        }
+    }
+    while (g_releaseState.load() != 3) Sleep(10); // the render thread is at it
+    return g_releaseOk.load();
 }
 
 } // namespace gn::host::ui

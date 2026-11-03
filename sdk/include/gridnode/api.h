@@ -6,7 +6,24 @@
  *
  * GridNode calls it on its own thread once the build check has passed and the engine's types
  * are known. Return 0 on success. Keep `api`: it stays valid for the life of the process.
- * Mods are never unloaded.
+ *
+ * A mod that also exports
+ *
+ *     GN_MOD_EXPORT int gn_mod_unload(void);
+ *
+ * can be reloaded while the game runs (the GridNode menu's Mods list, or when its DLL changes): it
+ * is loaded from a copy in mods/.loaded/, so the DLL can be rebuilt meanwhile. gn_mod_unload runs on
+ * GridNode's thread before the mod is unloaded: stop the mod's own threads, undo what GridNode cannot
+ * see, return 0 (anything else: it stays loaded). GridNode then takes out every callback and hook
+ * whose code is in the mod, waits for the game's threads to leave it, frees it, and loads it again.
+ * Other mods are never unloaded.
+ *
+ * A mod may also say who it is (API 16):
+ *
+ *     GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info(void);
+ *
+ * called before gn_mod_load: its id, version and dependencies. Mods are loaded dependencies first,
+ * otherwise in file name order; a mod whose hard dependency is missing or too old is not started.
  *
  * The API is a table of function pointers, so a mod can be built with any compiler (MSVC,
  * MinGW, clang) and needs no import library. C++ mods should use gridnode/mod.hpp, which wraps
@@ -25,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 7 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7) */
+#define GN_API_VERSION 17 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -44,6 +61,43 @@ extern "C" {
 #define GN_ERR_MISMATCH 7      /* the mod was built against a different Dear ImGui */
 
 typedef struct gn_type gn_type; /* a runtime TypeInfo / ClassInfo of the engine */
+
+/* What gn_mod_info returns (API 16; static, it is read before gn_mod_load). Every string may be null. */
+typedef struct gn_mod_manifest {
+    uint32_t size;              /* sizeof(gn_mod_manifest) */
+    const char* id;             /* unique, e.g. "mec-trainer"; null: the file name without .dll */
+    const char* name;           /* shown in the Mods list */
+    const char* version;        /* dotted numbers, "1.2.0" */
+    const char* author;
+    const char* description;
+    const char* const* depends; /* null-terminated: "id" (needed), "id>=1.2" (that version or newer),
+                                   "?id" (optional: loaded after it when it is there) */
+} gn_mod_manifest;
+typedef const gn_mod_manifest* (*gn_mod_info_fn)(void);
+
+/* A declared setting (API 17, setting_add). Copied: the strings need not stay. */
+#define GN_SETTING_BOOL 1   /* a checkbox: 0 or 1 */
+#define GN_SETTING_INT 2    /* a whole number (a slider when min < max) */
+#define GN_SETTING_FLOAT 3  /* a number (a slider when min < max) */
+#define GN_SETTING_CHOICE 4 /* one of `choices`: the value is its index */
+#define GN_SETTING_TEXT 5   /* one line of text (def_text) */
+#define GN_SETTING_HIDDEN 1 /* flags: only in the file, not on the settings page */
+typedef struct gn_setting {
+    uint32_t size;              /* sizeof(gn_setting) */
+    int32_t kind;               /* GN_SETTING_* */
+    const char* id;             /* its key in the mod's settings file */
+    const char* label;          /* on the page (null: the id) */
+    const char* description;    /* a tooltip, and a comment in the file (may be null) */
+    const char* group;          /* settings with the same group are shown under one heading (may be null) */
+    double def;                 /* default (BOOL 0 / 1, CHOICE an index) */
+    double min;                 /* range (min == max: no range) */
+    double max;
+    double step;                /* INT / FLOAT without a range: the +/- buttons' step (0: none) */
+    const char* const* choices; /* CHOICE: null-terminated labels */
+    const char* def_text;       /* TEXT: the default */
+    uint32_t flags;             /* GN_SETTING_HIDDEN */
+} gn_setting;
+typedef void (*gn_setting_fn)(const char* id, void* user);
 
 typedef void (*gn_tick_fn)(float dt, void* user);
 typedef void (*gn_task_fn)(void* user);
@@ -106,6 +160,8 @@ typedef struct gn_transform {
     float trans[4];
 } gn_transform;
 
+/* An entity found by entities_of_class: it and its type. */
+typedef void (*gn_entity_each_fn)(void* entity, const gn_type* type, void* user);
 /* An entity found by entities_near: its type, its world transform, its distance. */
 typedef void (*gn_entity_fn)(void* entity, const gn_type* type, const gn_transform* at, float distance, void* user);
 
@@ -130,23 +186,86 @@ typedef struct gn_field {
     const gn_type* owner;     /* the class or value type that declares it (may be a base class) */
 } gn_field;
 
-/* Faith's movement (movement_get / movement_set). */
+/* Faith's movement (movement_get / movement_set).
+ * Threads: movement_set, position_set, time_of_day_set, tuning_set, key_press and action_press write
+ * at once, on the calling thread (the values are single words the game reads each tick). Values that
+ * are not finite are refused with GN_ERR_ARGUMENT. */
 typedef struct gn_movement {
-    int32_t state;          /* the movement state (MEC_Trainer: 2 standing/running, 3-4 wall moves, 8 jumping...) */
+    int32_t state;          /* the movement state: 1 on the ground, 2 jumping, 8 wall run (and the jump off it, until
+                               landing), 3-4 other wall moves... (recorded 2026-10-30) */
     int32_t wall_count;     /* walls used since the ground */
     int32_t wall_climbs;    /* wall climbs used */
     int32_t wall_runs;      /* wall runs used */
     float last_ground_y;    /* height of the last ground; falls are measured from it (fall damage, stumbles) */
-    int32_t on_ground;
+    int32_t on_ground;      /* 1 while she is in the AIR, 0 on the ground (the name is historical; recorded 2026-10-30) */
     float speed;            /* horizontal speed, m/s */
     float camera_forward[3];
 } gn_movement;
+/* The game's own landing prediction for Faith (landing_prediction): what the animation system works
+ * out every tick while she is in the air (PositionPredictionProcessorAsset). */
+typedef struct gn_landing {
+    float ticks_to_hit;   /* 60ths of a second until she hits the ground. In testing it read 0.74-1.54 on
+                             the tick before the landing (2-3 two ticks before): the tick to press jump on
+                             for a bhop. Not reliable near walls and edges (it can drop early and hover). */
+    float hit_height;     /* world height (Y) of the predicted hit */
+    int32_t soft_landing; /* the game expects a soft landing: she cannot jump out of it (no bhop) */
+    uint32_t age_ms;      /* since the game last predicted for her (it only does while she is in the air) */
+    uint32_t count;       /* predictions so far: changes each time the game predicts */
+} gn_landing;
+
 #define GN_MOVE_STATE 0x1u
 #define GN_MOVE_WALL_COUNT 0x2u
 #define GN_MOVE_WALL_CLIMBS 0x4u
 #define GN_MOVE_WALL_RUNS 0x8u
 #define GN_MOVE_LAST_GROUND_Y 0x10u
 #define GN_MOVE_SPEED 0x20u
+
+/* A change in Faith's movement (on_movement), seen on a client tick. On one tick a landing or take-off
+ * comes first, then the state change: a bhop's landing tick is LANDED then STATE (8 -> 0). */
+#define GN_MOVE_EVENT_STATE 1    /* the movement state changed: old_state -> state */
+#define GN_MOVE_EVENT_LANDED 2   /* she touched the ground (in the air -> not) */
+#define GN_MOVE_EVENT_AIRBORNE 3 /* she left the ground */
+typedef struct gn_movement_event {
+    int32_t kind;      /* GN_MOVE_EVENT_* */
+    int32_t state;     /* the movement state now */
+    int32_t old_state; /* the movement state at the tick before */
+    int32_t in_air;    /* 1 in the air now, 0 on the ground */
+} gn_movement_event;
+typedef void (*gn_movement_fn)(const gn_movement_event* e, const gn_movement* now, void* user);
+
+/* The camera as drawn this frame (view_get), to put world points on the screen: gridnode/projection.hpp
+ * does the math, gn::ui::line3d and friends (gridnode/ui.hpp) draw with it. Frostbite is y up. */
+typedef struct gn_view {
+    float position[3]; /* the camera, world space */
+    float forward[3];  /* the way it looks (unit) */
+    float right[3];    /* unit */
+    float up[3];       /* unit */
+    float fov_y;       /* vertical field of view, degrees */
+    float width;       /* the screen, pixels (the overlay's display size) */
+    float height;
+} gn_view;
+
+/* An event an entity received (on_event), before it handles it: the entity, its type (null if unknown)
+ * and the event's id (the djb2-xor hash of its name; gn::eventHash in mod.hpp). On the thread that
+ * delivered it, usually the entity's realm thread (server or client); keep it short. */
+typedef void (*gn_event_fn)(void* entity, const gn_type* type, uint32_t event_id, void* user);
+
+/* GridNode's free camera (freecam_get): the one the layout editor flies. */
+typedef struct gn_freecam {
+    int32_t on;        /* flying now */
+    float position[3]; /* where it is (world) */
+} gn_freecam;
+
+/* A mod's hotkey went down (hotkey_add). Client thread. */
+typedef void (*gn_hotkey_fn)(void* user);
+/* A hotkey as it is now (hotkey_info), for the mod's own UI. */
+typedef struct gn_hotkey_info {
+    int32_t vk;         /* its key (a Windows virtual-key code), 0 for none */
+    int32_t default_vk; /* the key the mod gave it */
+    int32_t waiting;    /* 1 while hotkey_rebind waits for a key */
+    char name[32];      /* the key's name: "F", "F8", "none" */
+    char clash[192];    /* what else is on that key ("Save position, other-mod: X, GridNode: the menu"), "" for nothing */
+} gn_hotkey_info;
 
 /* Input actions (action_press). */
 #define GN_ACTION_JUMP 0xb5a0a981u
@@ -194,7 +313,8 @@ typedef struct gn_api {
      * expected_va: what the slot must hold before any hook (an image VA); 0 accepts any function
      * in the game image. Hooks on the same slot chain: *original receives what the slot held
      * (the game's function or the previous mod's detour); always call through it.
-     * Game code is never patched. Hooks stay for the life of the process. */
+     * This changes a pointer, not code (for code: patch_call, patch_bytes). Hooks stay until the mod is
+     * unloaded (or GridNode is). */
     int (*hook_slot)(const char* mod, uint64_t slot_va, uint64_t expected_va, void* detour, void** original);
 
     /* ---- reflection ----------------------------------------------------------------------- */
@@ -361,6 +481,178 @@ typedef struct gn_api {
      * on its realm's thread (server entities: server thread; client: client thread). */
     int (*entities_near)(const float pos[3], float radius, gn_entity_fn fn, void* user);
     int (*entity_set_transform)(void* entity, const gn_transform* to);
+
+    /* ==== GN_API_VERSION 8 ==================================================================== */
+
+    /* ---- landing prediction ----------------------------------------------------------------------
+     * The latest landing prediction the game made for Faith (gn_landing). The first call wraps the
+     * prediction (pointer swaps); GN_ERR_UNAVAILABLE until the game has predicted for her (she has
+     * been in the air) or if it cannot be read in this build. Any thread (it reads). */
+    int (*landing_prediction)(gn_landing* out);
+
+    /* ==== GN_API_VERSION 9 ==================================================================== */
+
+    /* ---- mod settings ----------------------------------------------------------------------------
+     * Values a mod keeps between runs, as key=value lines in <mods folder>/<mod>.ini (the mod name
+     * made file-safe). Read when the mod first asks, written a second after the last change and when
+     * the game closes. Keys: not empty, no '=' or line break, no spaces at either end; values: one
+     * line (spaces at either end are dropped). config_get: GN_ERR_NOT_FOUND when unset (out is ""),
+     * GN_ERR_FULL when out was too small (the value is cut to fit). Any thread. */
+    int (*config_get)(const char* mod, const char* key, char* out, size_t size);
+    int (*config_set)(const char* mod, const char* key, const char* value);
+
+    /* ---- hotkeys ---------------------------------------------------------------------------------
+     * A key the player can rebind, kept in the mod's own settings as key.<id>; the mod shows it in its
+     * own window (gn::ui::hotkeyButton in gridnode/ui.hpp), so its players need no GridNode tool.
+     * default_vk: a Windows virtual-key code ('F', 0x70 for F1), 0 for none. fn runs on the client
+     * thread when the key goes down, while the game window has focus and the menu is closed (keys are
+     * read every frame, so a short tap is seen). The same id again replaces the hotkey.
+     * hotkey_rebind: waits for the next key the player presses (Escape: none, Backspace: the
+     * default); hotkey_set: a key directly (-1: the default). GN_ERR_NOT_FOUND for no such hotkey.
+     * Any thread. Needs the overlay ([ui] enabled, the default). */
+    int (*hotkey_add)(const char* mod, const char* id, const char* label, int default_vk, gn_hotkey_fn fn, void* user);
+    int (*hotkey_info)(const char* mod, const char* id, gn_hotkey_info* out);
+    int (*hotkey_rebind)(const char* mod, const char* id);
+    int (*hotkey_set)(const char* mod, const char* id, int vk);
+
+    /* ---- movement events -------------------------------------------------------------------------
+     * fn for every change in Faith's movement (gn_movement_event), on the client thread, on the tick it
+     * happens; `now` is her movement on that tick. Read only while some mod listens. */
+    int (*on_movement)(const char* mod, gn_movement_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 10 =================================================================== */
+
+    /* ---- the view --------------------------------------------------------------------------------
+     * The camera as the game draws this frame (the layout editor's free camera while it flies), with
+     * the screen size, for drawing at world positions. Render thread (a UI callback);
+     * GN_ERR_UNAVAILABLE with no camera (loading, menus) or no overlay. */
+    int (*view_get)(gn_view* out);
+
+    /* ==== GN_API_VERSION 11 =================================================================== */
+
+    /* ---- events between entities -----------------------------------------------------------------
+     * Entities talk through events on their buses ("StartReplay", "OnTriggered", "StreamIn"...): logic
+     * fires one, the bus delivers it to each connected entity's onEvent. on_event calls fn for every
+     * event delivered that matches: event, a name or its hash as hex ("0x2734a476"), null or "" for
+     * every event; class_name, an entity class ("PamServerReplayEntity"; subclasses too), null or ""
+     * for every class. GN_ERR_NOT_FOUND for an unknown class. The first call wraps onEvent in every
+     * entity class (pointer swaps, shared with the Recorder). Every event of every entity is a lot:
+     * filter by name where you can. Any thread.
+     * event_name: an id's name, from the engine's type, field and enum names, our annotations and
+     * recordings/event-names.txt; GN_ERR_NOT_FOUND (out "") for an unnamed id. Any thread. */
+    int (*on_event)(const char* mod, const char* event, const char* class_name, gn_event_fn fn, void* user);
+    int (*event_name)(uint32_t id, char* out, size_t size);
+
+    /* ==== GN_API_VERSION 12 =================================================================== */
+
+    /* ---- sending events --------------------------------------------------------------------------
+     * Delivers an event to an entity as its bus would (its onEvent, with the event's id), on the
+     * entity's realm thread at its next tick: the game acts on it as on one its own logic sent
+     * ("StartReplay" to a PamServerReplayEntity spawns its ghost). event: a name or "0x<hash>".
+     * event_send: one entity; GN_ERR_NOT_FOUND when it is not a live entity GridNode has seen.
+     * event_send_class: every live entity of the class and its subclasses; how many, or -GN_ERR_*.
+     * on_event listeners (and the Recorder) see it like any other. Any thread. */
+    int (*event_send)(const char* mod, void* entity, const char* event);
+    int (*event_send_class)(const char* mod, const char* class_name, const char* event);
+
+    /* ==== GN_API_VERSION 13 =================================================================== */
+
+    /* ---- the free camera -------------------------------------------------------------------------
+     * GridNode's free camera (the layout editor's), for mods: the view leaves Faith and flies (mouse
+     * looks, W A S D Q E fly, Shift / Ctrl faster / slower, wheel: speed); the game gets no input
+     * while it flies with the menu closed, mods' hotkeys still work. freecam_set: on / off, at the
+     * next frame (GN_ERR_UNAVAILABLE without Faith). teleport: Faith to where the free camera's
+     * crosshair points (to = 1: on what it hits within 200 m, else the camera) or to the camera itself
+     * (to = 2), facing the way it looks, at the next frame; keep_flying 0 goes back to her view.
+     * GN_ERR_UNAVAILABLE while the camera is not flying. Any thread. */
+    int (*freecam_set)(int on);
+    int (*freecam_get)(gn_freecam* out);
+    int (*freecam_teleport)(int to, int keep_flying);
+
+    /* ==== GN_API_VERSION 14 =================================================================== */
+
+    /* ---- entities of a class ---------------------------------------------------------------------
+     * fn for every live entity of the class and its subclasses that GridNode saw created (logic
+     * entities too: triggers, checkpoints, which have no place of their own and so never show in
+     * entities_near). How many, or -GN_ERR_NOT_FOUND for an unknown class. Entities made before
+     * GridNode loaded are not seen (inject it before the level loads). Any thread (it reads). */
+    int (*entities_of_class)(const char* class_name, gn_entity_each_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 15 =================================================================== */
+
+    /* ---- unloading -------------------------------------------------------------------------------
+     * mod_unload: unloads the mod that calls it (found by the calling code's address), on GridNode's
+     * thread once the current callback has returned: its gn_mod_unload runs, then GridNode takes out
+     * everything it registered and frees it, as the GridNode menu's Unload does. It stays unloaded
+     * until the menu's Load or a restart. GN_ERR_UNAVAILABLE for a mod without gn_mod_unload;
+     * GN_ERR_NOT_FOUND when not called from a mod. For an "Unload" button in a mod's own window.
+     * gridnode_unload: unloads every mod and GridNode itself, putting the game back as it was (the
+     * menu's Unload section). Any thread; both return at once. */
+    int (*mod_unload)(void);
+    int (*gridnode_unload)(void);
+
+    /* ---- code patches ----------------------------------------------------------------------------
+     * For what no pointer reaches (a direct call); prefer hook_slot. Every patch is listed (the GridNode
+     * menu's Hooks section) and undone when the mod that made it is unloaded, or GridNode is. Patches
+     * may not overlap (GN_ERR_SLOT).
+     * patch_bytes: `size` bytes (at most 64) at va become `bytes`, only if they are `expected` now
+     * (GN_ERR_SLOT otherwise: another game build).
+     * patch_call: the call or jmp rel32 at site_va, which must go to expected_target_va, goes to detour
+     * instead (through a thunk GridNode puts near the image); *original receives the target: call
+     * through it. GN_ERR_SLOT: no call or jmp there, or it goes elsewhere.
+     * Any thread. The bytes change in one store when they fit in an aligned 8 or 16 bytes (a call's
+     * rel32 nearly always does); longer ones are written with the game's other threads paused and
+     * none about to run them. Either way a thread running the code sees the old or the new, never
+     * half. */
+    int (*patch_bytes)(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size);
+    int (*patch_call)(const char* mod, uint64_t site_va, uint64_t expected_target_va, void* detour, void** original);
+
+    /* ==== GN_API_VERSION 16 =================================================================== */
+
+    /* ---- function detours ------------------------------------------------------------------------
+     * Any function of the game, not only a virtual one: calls to function_va go to detour, which gets
+     * the function's own arguments; *original receives what to call for the game's behaviour (call
+     * it before, after, or not at all). The function's first instructions are moved to a trampoline
+     * near the image and a jump put at its entry, once per function; several mods may detour the
+     * same function (each gets the one below as its original, as with hook_slot). Taken out when the
+     * mod is unloaded; the entry jump goes when GridNode is. GN_ERR_SLOT when the entry cannot be
+     * moved (the function is shorter than 5 bytes, or starts with a jump back into itself);
+     * GN_ERR_ARGUMENT when function_va is not in the game's code. Any thread. A detour runs on
+     * whatever thread calls the function: keep it short and thread safe. */
+    int (*hook_function)(const char* mod, uint64_t function_va, void* detour, void** original);
+
+    /* ---- functions between mods ------------------------------------------------------------------
+     * mod_export: offers fn (in the calling mod's code) to other mods as "<its id>.<name>".
+     * mod_import: another mod's function, or null (not loaded, or not offered); call it from
+     * gn_mod_load or later, after declaring that mod a dependency so it loads first. A mod that
+     * imported from another keeps it loaded: that one cannot be unloaded on its own.
+     * mod_version: GN_OK and its version (into out, may be null) when that mod is loaded,
+     * GN_ERR_NOT_FOUND otherwise (an optional dependency's check). Any thread. */
+    int (*mod_export)(const char* name, void* fn);
+    void* (*mod_import)(const char* mod_id, const char* name);
+    int (*mod_version)(const char* mod_id, char* out, size_t size);
+
+    /* ==== GN_API_VERSION 17 =================================================================== */
+
+    /* ---- declared settings -----------------------------------------------------------------------
+     * A setting declared once with its kind, default, range and description. GridNode keeps it in the
+     * mod's settings file (the same file as config_get / config_set, its key the setting's id, with
+     * its label and description as a comment above it), clamps what is set to the range, and draws
+     * it on the mod's page in the GridNode menu (Mod settings), which every mod with declared settings
+     * gets unless it hides it (settings_page). Without GridNode's menu the file is the way to change
+     * them. The same id again replaces the declaration (a reload).
+     * setting_number: the value of a BOOL, INT, FLOAT or CHOICE (the index); NaN for an unknown id or
+     * a TEXT. setting_text: any setting as text (out cut to fit: GN_ERR_FULL). setting_set_*: clamped
+     * to the range, and the mod's listeners told (setting_on_change: fn(id, user) on the client
+     * thread; id null: any of the mod's settings). Declarations and listeners go when the mod is
+     * unloaded. Any thread. */
+    int (*setting_add)(const char* mod, const gn_setting* setting);
+    double (*setting_number)(const char* mod, const char* id);
+    int (*setting_text)(const char* mod, const char* id, char* out, size_t size);
+    int (*setting_set_number)(const char* mod, const char* id, double value);
+    int (*setting_set_text)(const char* mod, const char* id, const char* value);
+    int (*setting_on_change)(const char* mod, const char* id, gn_setting_fn fn, void* user);
+    int (*settings_page)(const char* mod, int shown); /* shown 0: no page for this mod (its own window has them) */
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

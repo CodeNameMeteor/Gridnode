@@ -120,6 +120,22 @@ def emit(db: Database) -> str:
         if not rows:
             w("    {nullptr, nullptr, 0, nullptr, nullptr},\n")
         w("};\n")
+    # Named functions by address (functions and runtime classes' virtuals), for naming code addresses
+    # (the crash notes).
+    named: dict[int, str] = {}
+    for f in db.functions.values():
+        named.setdefault(f.va, f.name)
+    for c in db.classes.values():
+        for v in c.virtuals:
+            if v.va and v.name:
+                named.setdefault(v.va, f"{c.name}::{v.name}")
+    w("struct NamedFunction { uint64_t va; const char* name; };\n")
+    w("inline constexpr NamedFunction functionsByAddress[] = {\n")
+    for va in sorted(named):
+        w(f"    {{{va:#x}, {_cstr(named[va])}}},\n")
+    if not named:
+        w("    {0, nullptr},\n")
+    w("};\n")
     w("} // namespace meta\n\n")
 
     w("// ---- Property / event name hashes (djb2-xor) -------------------------------------------------\n")
@@ -128,8 +144,19 @@ def emit(db: Database) -> str:
     for c in db.classes.values():
         for pr in c.properties:
             props.setdefault(pr.name, pr)
+    for e in db.events.values():
+        props.setdefault(e.name, e)
     for name in sorted(props):
-        w(f"inline constexpr uint32_t {name} = {props[name].hash:#010x};\n")
+        if name.isidentifier():
+            w(f"inline constexpr uint32_t {name} = {props[name].hash:#010x};\n")
+    # Every name above by its hash, for naming hashes at runtime (the Recorder names events with it).
+    w("struct Name { uint32_t hash; const char* name; };\n")
+    w("inline constexpr Name names[] = {\n")
+    for name in sorted(props):
+        w(f"    {{{props[name].hash:#010x}, {_cstr(name)}}},\n")
+    if not props:
+        w("    {0, nullptr},\n")
+    w("};\n")
     w("} // namespace hash\n\n")
 
     w("// ---- Constants ------------------------------------------------------------------------------\n")

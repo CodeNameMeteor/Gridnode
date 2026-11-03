@@ -54,7 +54,7 @@ have to rediscover them.
 
 | Rule | Why (source) |
 |---|---|
-| **Hooks are pointer swaps only**: vtable slots, entity-creator slots, and game-owned function pointers (e.g. the stored `XInputGetState`). No inline/trampoline hooks by default. | The PC exe is Denuvo-protected and some functions are virtualised; MECMP never patches code (ARCHITECTURE.md "Rules"). An aligned 8-byte slot store is atomic on x64. |
+| **Hooks are pointer swaps first**: vtable slots, entity-creator slots, and game-owned function pointers (e.g. the stored `XInputGetState`). Code patches (`patch_call`, `patch_bytes`, API 15) only for what no pointer reaches; every one is listed and undone on unload (user, 2026-11-01). | The PC exe is Denuvo-protected and some functions are virtualised; MECMP never patches code (ARCHITECTURE.md "Rules"). An aligned 8-byte slot store is atomic on x64. |
 | **Build check before anything is touched.** Compare known vtable slots and the first bytes of directly called functions; if anything differs, stay passive. | `fingerprint.cpp`. The EA app build loads at 0x140000000 with PE timestamp 0x5762e3b7 and SizeOfImage 0x727b000. |
 | **One build, fixed addresses.** Store image VAs and rebase at runtime. The build check is only a safety net: on an unexpected exe GridNode stays passive instead of crashing. | The game is no longer updated. PS4 layouts differ from PC (Itanium tail padding vs MSVC), so PS4 offsets are never used. |
 | **Engine calls happen on a game thread.** Server-side calls go inside the server tick; client-side writes inside the client updater. | Poses written from the render thread were read half old, half new (hooks.cpp comment). |
@@ -356,8 +356,41 @@ Each milestone ends with something testable in game.
 | **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
 | **M7** | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
+| **M9** | (1-4 done 2026-11-03: detours, manifests, crash notes, declared settings) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
 
 ---
+
+### M9 plan: a loader like the others
+
+Already there: a mods folder, ticks, per-mod unload and hot reload, chained vtable hooks with undo,
+code patches, per-mod settings and rebindable keys, the overlay, the inspector, reflection by name,
+messages and events, Rust bindings. What the others have and we do not, most useful first:
+
+1. **Function detours** (Harmony / MonoMod): code before, after or instead of any function, not only
+   virtual ones. A trampoline at the function's entry, chained between mods, undone on unload.
+2. **Mod manifests, dependencies and load order** (BepInEx's plugin info): an id, a version, hard and
+   soft dependencies; mods load in dependency order, a missing one is a clear error; mods offer
+   functions to each other by name.
+3. **A crash reporter that unwinds**: the game ships its unwind tables (`.pdata`), so a real call
+   stack, each frame named from our annotations, the thread named, and the mod whose code is on it.
+4. **Settings declared once, with a page drawn for every mod** (ConfigEntry + ConfigurationManager):
+   type, default, range and description.
+5. **A scripting console** (Lua, as UE4SS and MelonLoader mods use): reflection and events from a
+   console in the overlay; small mods without a compiler.
+6. **Packaging**: a mod template (CMake, Cargo), a zip layout the loader reads, versioned SDK releases.
+7. **Asset swaps at load** (BepInEx preloader patchers): textures, meshes, data replaced as the game
+   loads them. Large research; overlaps M7.
+
+Research tools on top of them:
+
+- **Bus graph** tab: what any entity's events reach, across blueprints (the Volumes tab's walker).
+- **Function tracer**: pick an address, log each call (arguments, the object's type, the caller);
+  uses the detours.
+- **Typed memory scan**: search by value, results as "object of type, field"; pointer paths from
+  known statics.
+- **Field diff**: snapshot an object, act in game, snapshot again, see what changed.
+- **The game's debug drawing**: `ShowTriggerDebugText`, `DebugRenderSettings`, the Havok debug
+  settings, if retail kept the renderer.
 
 ### Settings, console and messages (decided 2026-10-19)
 
@@ -406,15 +439,151 @@ Decided 2026-10-20: custom maps are layouts GridNode applies at runtime, not rep
 5. **Editor** in the overlay: select, move (numeric and "to the camera"), spawn from a searchable
    list of loaded blueprints, delete, undo, save.
 6. **Blender add-on**: layout <-> glTF (placeholders, entity data in `extras`).
-7. **Editing on the go** (asked for 2026-10-20): a free camera (detached from Faith, WASD + mouse,
-   Faith frozen in place) and mouse selection (a ray from the cursor through the view, outlined
-   selection), with a move / rotate gizmo (ImGuizmo) instead of number fields. First version
-   2026-10-20: the free camera works while the menu is open (the game gets no input then): right
-   mouse to look (raw mouse diverted from the overlay cursor), WASD/QE; it is applied by a node
-   GridNode links into the view manager's post-update listener list (+0x1b90), writing the view
-   transform (+0x90) and the active camera's (+0x10). Left click on the world picks along the
-   cursor ray (FOV +0x80, aspect from the display). The engine's own FreeCamera (GameView +0xc8,
-   activated through a camera context) is an alternative not used.
+7. **Editing on the go** (asked for 2026-10-20; free camera **confirmed in game** 2026-10-20): a
+   free camera detached from Faith, F7 or the editor's checkbox. It flies with the menu closed
+   (mouse looks, the game gets no input, Faith stays put) and keeps its place with the menu open
+   (right mouse to look, left click picks along the cursor ray). It is applied through a copy of
+   the active camera's vtable on that one object: +0x70 (computeTransforms, the slot MECMP's
+   third person uses) and +0x68 (its update) return the free camera, and Faith's view-mode
+   interface (+0x1d8) answers 1, so her third-person body shows. Writing the view manager's
+   copies from the post-update listeners did nothing: the renderer asks the camera itself.
+   Still to do: a move / rotate gizmo (ImGuizmo). The selection outline is done (step 9).
+8. **Keys, copies and steps** (asked for 2026-10-20, first version done): rebindable keys
+   (`layouts/settings.txt`): F7 free camera; while it flies R or a click picks at the crosshair, C
+   copies, V pastes at the crosshair, arrows / PageUp / PageDown move the selection relative to
+   the view, Z / X turn it (Shift 4 steps, Ctrl a quarter); the editor has the same as buttons and
+   a Duplicate in place. A copy is a new entity made from the source's data on its entity buses
+   (static models: StaticModelEntityData and the buses recorded at creation; group props: the
+   member's MemberType). Layout files save it as `kind: Copy` with `source` (the source's kind or
+   `GroupProp`) and `at` (its level position); copies are placed before group props are made
+   standalone so their sources are still found. Removing a copy parks it 15 km below for reuse
+   (entities cannot be destroyed yet). Next: a library of copied objects that lasts across levels.
+   Also done 2026-10-20: tilt / tip / flip upside down / stand upright (N M K L H U), undo (Ctrl+Z;
+   a held key is one step), teleport Faith to the crosshair (T; the game's own
+   ServerCharacterEntity_teleport) and named teleport points per level
+   (`layouts/<level>/teleports.txt`). Copies made in a part of the level that streams out are
+   destroyed with it; GridNode places them again when that part loads (confirmed in game). It
+   looks for their sources only when a model or group has been created since the last look, and
+   never more often than 25 times what the last look took (the first version searched every 2 s
+   while a source was away, which dropped the game to 2 fps).
+9. **Selection outline** (asked for 2026-10-20, done; fit **confirmed in game** 2026-10-21): a box
+   around the selection with its axes (X red, Y green, Z blue, from the box's middle; a dot marks
+   the pivot), shown while the free camera is on. The box is the mesh's own local box, read from
+   the render object that draws the selection (`RigidMeshEntity`, see
+   `docs/research/render-objects.md`), in that object's transform. A group prop's render object
+   is its member block's list entry for the copy (block +0xc8), or asked of the game on the client
+   thread (the physics component's vtable +0x210); a standalone model's is found from its client
+   entity. Only a render object drawn where the selection is counts (within 0.75 m). Until it is
+   found the box is the group's collision (the compound shape's instance tree), which can be
+   larger than the mesh.
+10. **Multiple selection** (asked for 2026-10-21, confirmed in game): Shift + click
+   (or Shift + R) adds an object to the selection or takes it out. The first picked leads (yellow
+   outline, axes); the rest (light blue) move and turn with it about its pivot. Copy takes them
+   all (Paste places the lead at the crosshair and the rest where they were from it), Duplicate,
+   Put back and Undo work on all of them, as one undo step. Group props can be in the selection
+   and copied, but move only once made standalone.
+12. **Move / rotate handles** (2026-10-21, confirmed in game; group props are made standalone on the first move): arrows and rings on the
+   leading selection, from its box's middle, along its own or the world's axes; dragged with the
+   cursor (menu open, or pointer mode with the menu closed: Tab), Ctrl snaps, one undo step per
+   drag, the rest of the selection follows. Drawn and hit-tested by GridNode (no ImGuizmo): a move
+   follows the closest point of the cursor ray on the axis, a turn the cursor's angle about the
+   handles' centre on screen (its direction found by turning a point a little and projecting it).
+13. **Teleport without the reload** (2026-10-21, user's idea, confirmed in game): T teleports Faith
+   and keeps the free camera, which keeps copies alive; Shift + T goes back to her view as well
+   (the old way, which reloads the area). See `docs/research/recording-teleport.md`.
+14. **Object library** (asked for 2026-10-21; step 1 built, not yet tested in game). Entries by
+   name in `layouts/library.txt`, each a list of parts: mesh (MeshAsset name), offset from the first
+   part, rotation rows. Placing one copies any loaded object drawn with that mesh
+   (`resolveByMesh`: standalone models by their StaticModelEntityData's Mesh, group members by
+   their MeshAsset); saved copies now carry `mesh:` so they are found by it when their own source
+   is gone. Next steps:
+   1. **Loaded on demand** (built 2026-10-21, not yet tested in game). A mesh is only there while
+      the part of the level (sublevel) it belongs to is loaded. `ServerSubLevelEntity`'s onEvent
+      (vtable +0x20, 0x14335efb0) handles StreamIn (0xd27bc17e: load) and StreamOut (0x21f3f677:
+      unload); its content's bus is +0x88, its data a SubWorldReferenceObjectData (BundleName +0x90).
+      GridNode wraps that onEvent and drops StreamOut for pinned sublevels (those whose bus holds a
+      copy's source), and streams one in to place a library part from far away (a StreamIn event
+      made with the vtable of one the game sent). Library parts now save their bundle. Library confirmed
+      working in game 2026-10-21 near the source. Far away it does not: the city's districts are
+      zone-streamed (`CentralCityBuildings_ZS`: a ZoneStreamer loads zones inside it around Faith),
+      so dropping a sublevel's StreamOut keeps nothing, and a StreamIn on it loads nothing.
+      `ZoneStreamerSettings.PinVisitedZones` is never read (no effect). Done: GridNode registers
+      focus points of its own with every zone streamer (`docs/research/zone-streaming.md`), at
+      copies' sources and library placements. Confirmed in game 2026-10-21: copies kept, and a
+      library entry placed 1.1 km from its source.
+   2. ~~Other levels~~: not needed. Catalyst has one level (the city); its sublevels are streamed
+      in on demand (step 1), so every library entry can be placed. Confirmed 2026-10-21: a group's
+      bus is a child of its sublevel's bus (+0x88); the lookup walks EntityBus +0x08 (parent).
+   3. **Custom meshes** (`docs/custom-meshes.md`). Two routes: (a) meshes made with Frosty (FBX
+      import into a MeshSet, in a mod the Frosty Mod Manager installs). Phase 1, replacing an
+      existing prop's mesh, works now; phase 2, a new mesh beside the originals, needs GridNode to
+      place a mesh by name (find the MeshAsset, clone a static model's data with that mesh, spawn
+      it); (b)
+      meshes built at runtime from glTF (vertex / index buffers, a MeshSet and its render object
+      made in memory), a research track of its own (renderer, shaders, materials), later.
+   4. **Copy a whole group prop** (idea from the user, 2026-10-22): copy every member of a
+      StaticModelGroupEntity (a building and its parts, often hundreds of instances) as one
+      selection, moved together. The single-member route (a standalone StaticModelEntity per
+      instance) works but would mean hundreds of entities per copy; a cheaper route is a second
+      group entity spawned from the same StaticModelGroupEntityData with its own transform (one
+      entity, one physics compound, render objects made by the group itself, 0x1431841f0).
+      Needs: how a group entity is created and placed from its data, and whether two groups can
+      share the member data. Later; intensive.
+   5. **Move group props in place** (2026-10-22, confirmed in game): moves a member's render object
+      without making it standalone (set-transform, vtable +0x10, which also moves its culling
+      sphere and streaming entry, then a render update with the fields the group sets when it
+      makes the object: view mask, factory value, placement hash; without them it was drawn in no
+      view). The collision stays; next: move the collision instance too, and save these moves in
+      layouts.
+   6. **Barriers and magropes** (2026-10-22, in progress; `docs/research/barriers-and-magropes.md`):
+      shown in the overlay, selected by clicking, moved with the move keys (barriers: transform
+      and body; magropes: their transform reference pointed at GridNode's). Next: the magrope's
+      facing axis, saving these moves in layouts, then copies.
+   7. **Occluders: show them** (asked 2026-10-22, after the magrope work): draw
+      `OccluderVolumeEntity` and `OccluderPlaneEntity` in the overlay, as barriers are (data:
+      `CoverageValue` +0x60, `OccluderHighPriority` +0x64, `OccluderIsConservative` +0x65,
+      `Visible` +0x66; planes `DoubledSided` +0x66, `Visible` +0x67; `OccluderMeshEntityData.Mesh`
+      +0x60). Why: a building moved or removed leaves its occluder behind, still culling what is
+      behind it. Later, if needed: toggle `OcclusionSettings.Enable` to check culling, and move an
+      occluder with its building.
+11. **Event names** (2026-10-21): `tools/events/build_names.py` names the event and property
+   hashes (djb2-xor) from an EBX XML dump (names Frosty resolved, checked), GridNode's reflected
+   dump, the executable's strings and earlier recordings, and guesses more (common prefixes and
+   suffixes, two common words joined); it writes `recordings/event-names.txt`, which the Recorder
+   and `summarize.py` read. A first run on part of the dump (102 files) and two recordings named
+   302 of 807 hashes seen (55 of them guesses), among them `StreamIn` / `StreamOut` on
+   `ServerBlueprintEntity` and `ServerSubLevelEntity` (parts of the level loading). See
+   `docs/recording.md`.
+
+### M8 plan (recordings for research), asked for 2026-10-20
+
+First version done 2026-10-20 (`sdk/src/recorder.cpp`, menu → Recorder): F8 records / pauses,
+Home drops a marker (with Faith's position), Export writes `recordings/<time>-<name>.jsonl`
+(a header line, then one event per line). Messages carry their reflected fields, the type of
+whatever their other slots point to, and the raw bytes; entity creations carry the class, data
+type, the bus's blueprint name and position; every event has the game's call stack as image
+VAs. `tools/recording/summarize.py` lists what is unusual around each marker and its stacks.
+Animation flags (asked for 2026-10-21, built, not yet tested in game): changes to ANT game state
+values, written by WriteAntGameState entities (the Write<Type>GameState data objects' vtable
++0x18, wrapped per class) or by game code (the ANT writer interface's +8, wrapped when first met),
+with the value, the property, the animated object and its position; only changes are recorded.
+Events between entities were added the same day (onEvent wrapped per entity vtable); their names
+come from `recordings/event-names.txt` (M7 step 11). Not yet: entity destruction and naming stack
+frames by their containing function.
+
+Record what the game does around an event (a KSEC, a door, a checkpoint) instead of guessing:
+start recording, play, pause, export, and comb the export with Ghidra.
+
+1. **Message recorder**: every message on the three message managers with its time, category,
+   type name, the realm, and its reflected fields (values, and pointers named by their type);
+   a ring buffer with a pause, and an export to `recordings/<time>.jsonl`.
+2. **Entity events**: entities created and destroyed (type, data name, blueprint, transform),
+   and events between entities (the event connections the engine fires, by name hash and target).
+3. **Markers**: a key that drops a named marker into the recording ("got KSEC here").
+4. **Calls**: optionally which engine functions ran, from GridNode's existing hooks (creators,
+   ticks), with return addresses so Ghidra can find the callers.
+5. **Reading it back**: a tool that summarises an export (counts per type, what changed around a
+   marker) and maps addresses to the annotations, so a recording can go straight to Ghidra work.
 
 Findings while doing steps 2 and 5:
 

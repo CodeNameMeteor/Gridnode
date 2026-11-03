@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(GRIDNODE_BUILD_TESTS "Build the host-side tests" ON)
+# A player build: gridnode.dll as a mod loader only (the API, mods and their windows, saved layouts),
+# without the inspector, console, Layout editor, free camera, Recorder or the type dump.
+option(GRIDNODE_PLAYER_BUILD "Build gridnode.dll without the developer tools" OFF)
 
 if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>") # no VC++ redistributable needed
@@ -30,6 +33,9 @@ add_library(gn_reflect STATIC
   sdk/src/reflect/registry.cpp
   sdk/src/hook_table.cpp
   sdk/src/dispatch.cpp
+  sdk/src/config_core.cpp
+  sdk/src/x64.cpp
+  sdk/src/mod_order.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -42,6 +48,9 @@ if(GRIDNODE_BUILD_TESTS)
   add_executable(runtime_core_test tests/runtime_core_test.cpp)
   target_link_libraries(runtime_core_test PRIVATE gn_reflect)
   add_test(NAME runtime_core COMMAND runtime_core_test)
+  add_executable(x64_test tests/x64_test.cpp)
+  target_link_libraries(x64_test PRIVATE gn_reflect)
+  add_test(NAME x64 COMMAND x64_test)
   find_package(Threads REQUIRED)
   target_link_libraries(runtime_core_test PRIVATE Threads::Threads)
 endif()
@@ -144,14 +153,23 @@ add_library(gridnode SHARED
   sdk/src/ticks.cpp
   sdk/src/entities.cpp
   sdk/src/mods.cpp
+  sdk/src/unload.cpp
+  sdk/src/patches.cpp
+  sdk/src/quiet.cpp
+  sdk/src/modsettings.cpp
   sdk/src/world.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
   sdk/src/settings.cpp
   sdk/src/messages.cpp
   sdk/src/faith.cpp
+  sdk/src/landing.cpp
+  sdk/src/config.cpp
+  sdk/src/hotkeys.cpp
+  sdk/src/events.cpp
   sdk/src/assets.cpp
   sdk/src/layouts.cpp
+  $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>
     sdk/src/crash.cpp
   third_party/imgui/backends/imgui_impl_dx11.cpp
   third_party/imgui/backends/imgui_impl_win32.cpp
@@ -160,7 +178,12 @@ set_source_files_properties(third_party/imgui/backends/imgui_impl_dx11.cpp third
                             PROPERTIES COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/W0,-w>")
 target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src third_party/imgui)
 target_link_libraries(gridnode PRIVATE gn_reflect gn_engine gn_imgui d3d11 dxgi d3dcompiler gdi32 dwmapi)
+if(NOT MSVC)
+  # cmpxchg16b for a detour's entry jump (patches.cpp); every CPU 64-bit Windows 8.1+ runs on has it.
+  set_source_files_properties(sdk/src/patches.cpp PROPERTIES COMPILE_OPTIONS -mcx16)
+endif()
 set_target_properties(gridnode PROPERTIES OUTPUT_NAME "gridnode" PREFIX "")
+target_compile_definitions(gridnode PRIVATE GRIDNODE_PLAYER_BUILD=$<BOOL:${GRIDNODE_PLAYER_BUILD}>)
 
 # --- gridnode_inject.exe: loads gridnode.dll into the running game (development) -------------------
 add_executable(gridnode_inject sdk/loader/inject.cpp)
@@ -187,10 +210,20 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_include_directories(probe PRIVATE sdk/include)
   set_target_properties(probe PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
-  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp)
+  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp examples/mec-trainer/volumes.cpp)
   target_include_directories(mec_trainer PRIVATE sdk/include)
-  target_link_libraries(mec_trainer PRIVATE gn_imgui)
+  target_link_libraries(mec_trainer PRIVATE gn_imgui gn_engine)
   set_target_properties(mec_trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                               RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(world_draw SHARED examples/world-draw/world_draw.cpp)
+  target_include_directories(world_draw PRIVATE sdk/include)
+  target_link_libraries(world_draw PRIVATE gn_imgui)
+  set_target_properties(world_draw PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                              RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  add_library(detour_demo SHARED examples/detour-demo/detour_demo.cpp)
+  target_include_directories(detour_demo PRIVATE sdk/include)
+  target_link_libraries(detour_demo PRIVATE gn_imgui gn_engine)
+  set_target_properties(detour_demo PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                                RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
   add_library(trainer SHARED examples/trainer/trainer.cpp)
   target_include_directories(trainer PRIVATE sdk/include)

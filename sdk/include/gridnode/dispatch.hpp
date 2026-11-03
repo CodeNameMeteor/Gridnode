@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,13 +20,17 @@ public:
 
     void addListener(std::string owner, Tick fn);
     void post(Task fn);
+    // Takes out the listeners `which` picks (a mod being unloaded) at the start of the next tick:
+    // the listeners belong to the tick thread. removing() is true until that tick has run.
+    void removeListeners(std::function<bool(const Tick&)> which);
+    bool removing() const;
     // Called on the realm's thread once per tick: queued tasks first, then listeners.
     // A listener that throws is reported and removed; a task that throws is reported.
     void dispatch(float dt);
 
     void setErrorSink(ErrorSink sink) { errors_ = std::move(sink); }
     size_t listenerCount() const;
-    uint64_t ticks() const { return ticks_; }
+    uint64_t ticks() const { return ticks_.load(std::memory_order_relaxed); }
 
 private:
     struct Listener {
@@ -37,8 +42,9 @@ private:
     std::vector<Listener> listeners_;
     std::vector<Listener> added_;
     std::vector<Task> tasks_;
+    std::vector<std::function<bool(const Tick&)>> removals_;
     ErrorSink errors_;
-    uint64_t ticks_ = 0;
+    std::atomic<uint64_t> ticks_{0}; // written on the tick thread, read by the UI
 };
 
 } // namespace gn::thread

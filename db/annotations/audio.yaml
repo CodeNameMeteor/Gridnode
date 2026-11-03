@@ -15,46 +15,55 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: fb_SoundEntity_SoundEntity_onEvent
     va: 0x14301a170
-    note: "Named in Ghidra as fb::SoundEntity::SoundEntity_onEvent. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(SoundEntity* self, i64, u64, void*)"
+    note: "Named in Ghidra as fb::SoundEntity::SoundEntity_onEvent; checked in the decompiler (2026-10-30): uses SoundEntity:: members."
+    confidence: inferred
     sources: [ghidra]
   - name: VoiceOverSystem_cancelConversation
     va: 0x143042720
-    note: "Named in Ghidra as VoiceOverSystem_cancelConversation. Signature not known yet."
+    signature: "void(u64, u64)"
+    note: "Named in Ghidra as VoiceOverSystem_cancelConversation; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: VoiceOverSystem_setPronunciation
     va: 0x143046760
-    note: "Named in Ghidra as VoiceOverSystem_setPronunciation. Signature not known yet."
+    signature: "void(void* self, i64, u32)"
+    note: "Named in Ghidra as VoiceOverSystem_setPronunciation; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: VoiceOverSystem_setSources
     va: 0x1430467f0
-    note: "Named in Ghidra as VoiceOverSystem_setSources. Signature not known yet."
+    signature: "void(void* self, i64, void*, i32, u32)"
+    note: "Named in Ghidra as VoiceOverSystem_setSources; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: VoiceOverSystem_setTakeControls
     va: 0x143046940
-    note: "Named in Ghidra as VoiceOverSystem_setTakeControls. Signature not known yet."
+    signature: "void(void* self, i64, void*, i32, u32)"
+    note: "Named in Ghidra as VoiceOverSystem_setTakeControls; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: VoiceOverSystem_submitConversation
     va: 0x1430477f0
-    note: "Named in Ghidra as VoiceOverSystem_submitConversation. Signature not known yet."
+    signature: "void(void* self, void*, u16, void*)"
+    note: "Named in Ghidra as VoiceOverSystem_submitConversation; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: fb_VoiceOverConversationEntity_VoiceOverConversationEntity_onEvent
     va: 0x1432bc760
-    note: "Named in Ghidra as fb::VoiceOverConversationEntity::VoiceOverConversationEntity_onEvent. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(VoiceOverConversationEntity* self, i64)"
+    note: "Named in Ghidra as fb::VoiceOverConversationEntity::VoiceOverConversationEntity_onEvent; checked in the decompiler (2026-10-30): uses VoiceOverConversationEntity:: members."
+    confidence: inferred
     sources: [ghidra]
   - name: initDecodeChannelsAndTables
     va: 0x143444020
-    note: "Named in Ghidra as initDecodeChannelsAndTables. Signature not known yet."
+    signature: "void(u64, u64, void*)"
+    note: "Named in Ghidra as initDecodeChannelsAndTables; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: initDecodeTablesNoChannels
     va: 0x1434456e0
-    note: "Named in Ghidra as initDecodeTablesNoChannels. Signature not known yet."
+    signature: "void(void*)"
+    note: "Named in Ghidra as initDecodeTablesNoChannels; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]

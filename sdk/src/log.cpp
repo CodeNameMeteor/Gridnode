@@ -69,6 +69,38 @@ void close() {
     g_mutex.unlock();
 }
 
+// The formatted line out (g_mutex held).
+void emitLocked(const char* msg, size_t len) {
+    OutputDebugStringA("[GridNode] ");
+    OutputDebugStringA(msg);
+    if (g_file && !g_full) {
+        if (g_written + len + 1 > kMaxLogBytes) {
+            fputs("[log] gridnode.log reached 16 MB; nothing more is written to it this session\n", g_file);
+            g_full = true;
+        } else {
+            fputs(msg, g_file);
+            g_written += len + 1;
+        }
+        fflush(g_file);
+    }
+}
+
+// For the crash handler: never waits for the log's lock (the faulting thread may hold it), so a
+// line is lost rather than the game deadlocked.
+void writeTry(const char* fmt, ...) {
+    char msg[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg) - 2, fmt, ap);
+    va_end(ap);
+    const size_t len = strlen(msg);
+    msg[len] = '\n';
+    msg[len + 1] = 0;
+    if (!g_mutex.try_lock()) return;
+    emitLocked(msg, len);
+    g_mutex.unlock();
+}
+
 void write(const char* fmt, ...) {
     char msg[2048];
     SYSTEMTIME st;
@@ -83,18 +115,7 @@ void write(const char* fmt, ...) {
     msg[len + 1] = 0;
 
     std::lock_guard<std::mutex> lock(g_mutex);
-    OutputDebugStringA("[GridNode] ");
-    OutputDebugStringA(msg);
-    if (g_file && !g_full) {
-        if (g_written + len + 1 > kMaxLogBytes) {
-            fputs("[log] gridnode.log reached 16 MB; nothing more is written to it this session\n", g_file);
-            g_full = true;
-        } else {
-            fputs(msg, g_file);
-            g_written += len + 1;
-        }
-        fflush(g_file);
-    }
+    emitLocked(msg, len);
 }
 
 } // namespace gn::log

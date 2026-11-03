@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 7;
+pub const GN_API_VERSION: u32 = 17;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -12,6 +12,12 @@ pub const GN_ERR_FULL: u32 = 4;
 pub const GN_ERR_UNAVAILABLE: u32 = 5;
 pub const GN_ERR_THREAD: u32 = 6;
 pub const GN_ERR_MISMATCH: u32 = 7;
+pub const GN_SETTING_BOOL: u32 = 1;
+pub const GN_SETTING_INT: u32 = 2;
+pub const GN_SETTING_FLOAT: u32 = 3;
+pub const GN_SETTING_CHOICE: u32 = 4;
+pub const GN_SETTING_TEXT: u32 = 5;
+pub const GN_SETTING_HIDDEN: u32 = 1;
 pub const GN_COMMAND_SETTING: u32 = 1;
 pub const GN_COMMAND_ONLINE: u32 = 2;
 pub const GN_MOVE_STATE: u32 = 0x1;
@@ -20,6 +26,9 @@ pub const GN_MOVE_WALL_CLIMBS: u32 = 0x4;
 pub const GN_MOVE_WALL_RUNS: u32 = 0x8;
 pub const GN_MOVE_LAST_GROUND_Y: u32 = 0x10;
 pub const GN_MOVE_SPEED: u32 = 0x20;
+pub const GN_MOVE_EVENT_STATE: u32 = 1;
+pub const GN_MOVE_EVENT_LANDED: u32 = 2;
+pub const GN_MOVE_EVENT_AIRBORNE: u32 = 3;
 pub const GN_ACTION_JUMP: u32 = 0xb5a0a981;
 
 pub const GN_CATEGORY_UNKNOWN: c_int = 0;
@@ -37,6 +46,8 @@ pub struct gn_type {
     _private: [u8; 0],
 }
 
+pub type gn_mod_info_fn = Option<unsafe extern "C" fn() -> *const gn_mod_manifest>;
+pub type gn_setting_fn = Option<unsafe extern "C" fn(id: *const c_char, user: *mut c_void)>;
 pub type gn_tick_fn = Option<unsafe extern "C" fn(dt: f32, user: *mut c_void)>;
 pub type gn_task_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_created_fn = Option<unsafe extern "C" fn(entity: *mut c_void, creation_info: *mut c_void, user: *mut c_void)>;
@@ -44,7 +55,41 @@ pub type gn_level_fn = Option<unsafe extern "C" fn(level: *const c_char, loaded:
 pub type gn_ui_fn = Option<unsafe extern "C" fn(menu_open: c_int, user: *mut c_void)>;
 pub type gn_console_fn = Option<unsafe extern "C" fn(output: *const c_char, user: *mut c_void)>;
 pub type gn_message_fn = Option<unsafe extern "C" fn(message: *const c_void, info: *const gn_message_info, user: *mut c_void)>;
+pub type gn_entity_each_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, user: *mut c_void)>;
 pub type gn_entity_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, at: *const gn_transform, distance: f32, user: *mut c_void)>;
+pub type gn_movement_fn = Option<unsafe extern "C" fn(e: *const gn_movement_event, now: *const gn_movement, user: *mut c_void)>;
+pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, event_id: u32, user: *mut c_void)>;
+pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_mod_manifest {
+    pub size: u32,
+    pub id: *const c_char,
+    pub name: *const c_char,
+    pub version: *const c_char,
+    pub author: *const c_char,
+    pub description: *const c_char,
+    pub depends: *mut *const c_char,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_setting {
+    pub size: u32,
+    pub kind: i32,
+    pub id: *const c_char,
+    pub label: *const c_char,
+    pub description: *const c_char,
+    pub group: *const c_char,
+    pub def: f64,
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+    pub choices: *mut *const c_char,
+    pub def_text: *const c_char,
+    pub flags: u32,
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -109,6 +154,54 @@ pub struct gn_movement {
     pub on_ground: i32,
     pub speed: f32,
     pub camera_forward: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_landing {
+    pub ticks_to_hit: f32,
+    pub hit_height: f32,
+    pub soft_landing: i32,
+    pub age_ms: u32,
+    pub count: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_movement_event {
+    pub kind: i32,
+    pub state: i32,
+    pub old_state: i32,
+    pub in_air: i32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_view {
+    pub position: [f32; 3],
+    pub forward: [f32; 3],
+    pub right: [f32; 3],
+    pub up: [f32; 3],
+    pub fov_y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_freecam {
+    pub on: i32,
+    pub position: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_hotkey_info {
+    pub vk: i32,
+    pub default_vk: i32,
+    pub waiting: i32,
+    pub name: [c_char; 32],
+    pub clash: [c_char; 192],
 }
 
 #[repr(C)]
@@ -199,18 +292,57 @@ pub struct gn_api {
     pub asset_release: Option<unsafe extern "C" fn(asset: *mut c_void)>,
     pub entities_near: Option<unsafe extern "C" fn(pos: *const f32, radius: f32, fn_: gn_entity_fn, user: *mut c_void) -> c_int>,
     pub entity_set_transform: Option<unsafe extern "C" fn(entity: *mut c_void, to: *const gn_transform) -> c_int>,
+    pub landing_prediction: Option<unsafe extern "C" fn(out: *mut gn_landing) -> c_int>,
+    pub config_get: Option<unsafe extern "C" fn(mod_: *const c_char, key: *const c_char, out: *mut c_char, size: usize) -> c_int>,
+    pub config_set: Option<unsafe extern "C" fn(mod_: *const c_char, key: *const c_char, value: *const c_char) -> c_int>,
+    pub hotkey_add: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, label: *const c_char, default_vk: c_int, fn_: gn_hotkey_fn, user: *mut c_void) -> c_int>,
+    pub hotkey_info: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, out: *mut gn_hotkey_info) -> c_int>,
+    pub hotkey_rebind: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char) -> c_int>,
+    pub hotkey_set: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, vk: c_int) -> c_int>,
+    pub on_movement: Option<unsafe extern "C" fn(mod_: *const c_char, fn_: gn_movement_fn, user: *mut c_void) -> c_int>,
+    pub view_get: Option<unsafe extern "C" fn(out: *mut gn_view) -> c_int>,
+    pub on_event: Option<unsafe extern "C" fn(mod_: *const c_char, event: *const c_char, class_name: *const c_char, fn_: gn_event_fn, user: *mut c_void) -> c_int>,
+    pub event_name: Option<unsafe extern "C" fn(id: u32, out: *mut c_char, size: usize) -> c_int>,
+    pub event_send: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, event: *const c_char) -> c_int>,
+    pub event_send_class: Option<unsafe extern "C" fn(mod_: *const c_char, class_name: *const c_char, event: *const c_char) -> c_int>,
+    pub freecam_set: Option<unsafe extern "C" fn(on: c_int) -> c_int>,
+    pub freecam_get: Option<unsafe extern "C" fn(out: *mut gn_freecam) -> c_int>,
+    pub freecam_teleport: Option<unsafe extern "C" fn(to: c_int, keep_flying: c_int) -> c_int>,
+    pub entities_of_class: Option<unsafe extern "C" fn(class_name: *const c_char, fn_: gn_entity_each_fn, user: *mut c_void) -> c_int>,
+    pub mod_unload: Option<unsafe extern "C" fn() -> c_int>,
+    pub gridnode_unload: Option<unsafe extern "C" fn() -> c_int>,
+    pub patch_bytes: Option<unsafe extern "C" fn(mod_: *const c_char, va: u64, expected: *const c_void, bytes: *const c_void, size: usize) -> c_int>,
+    pub patch_call: Option<unsafe extern "C" fn(mod_: *const c_char, site_va: u64, expected_target_va: u64, detour: *mut c_void, original: *mut *mut c_void) -> c_int>,
+    pub hook_function: Option<unsafe extern "C" fn(mod_: *const c_char, function_va: u64, detour: *mut c_void, original: *mut *mut c_void) -> c_int>,
+    pub mod_export: Option<unsafe extern "C" fn(name: *const c_char, fn_: *mut c_void) -> c_int>,
+    pub mod_import: Option<unsafe extern "C" fn(mod_id: *const c_char, name: *const c_char) -> *mut c_void>,
+    pub mod_version: Option<unsafe extern "C" fn(mod_id: *const c_char, out: *mut c_char, size: usize) -> c_int>,
+    pub setting_add: Option<unsafe extern "C" fn(mod_: *const c_char, setting: *const gn_setting) -> c_int>,
+    pub setting_number: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char) -> f64>,
+    pub setting_text: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, out: *mut c_char, size: usize) -> c_int>,
+    pub setting_set_number: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, value: f64) -> c_int>,
+    pub setting_set_text: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, value: *const c_char) -> c_int>,
+    pub setting_on_change: Option<unsafe extern "C" fn(mod_: *const c_char, id: *const c_char, fn_: gn_setting_fn, user: *mut c_void) -> c_int>,
+    pub settings_page: Option<unsafe extern "C" fn(mod_: *const c_char, shown: c_int) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
 pub type gn_mod_load_fn = unsafe extern "C" fn(api: *const gn_api) -> c_int;
 
 // Sizes from the C compiler (64-bit), checked at compile time.
+const _: () = assert!(core::mem::size_of::<gn_mod_manifest>() == 56);
+const _: () = assert!(core::mem::size_of::<gn_setting>() == 96);
 const _: () = assert!(core::mem::size_of::<gn_command>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_message_info>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_transform>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
+const _: () = assert!(core::mem::size_of::<gn_landing>() == 20);
+const _: () = assert!(core::mem::size_of::<gn_movement_event>() == 16);
+const _: () = assert!(core::mem::size_of::<gn_view>() == 60);
+const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
+const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 512);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 768);

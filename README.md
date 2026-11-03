@@ -82,8 +82,9 @@ In game, **INSERT** opens the GridNode menu (settings: `[ui]` in `gridnode.ini`,
 
 ## Rules GridNode follows
 
-- Game code is never patched. Hooks only swap pointers in vtables and creator tables (and the
-  overlay swaps two slots of DXGI's swap chain vtable, as MECMP does).
+- Hooks swap pointers in vtables and creator tables (and the overlay swaps two slots of DXGI's swap
+  chain vtable, as MECMP does). Game code is patched only where no pointer reaches (a direct call),
+  through GridNode, which lists every patch and undoes it on unload.
 - Nothing is done until the build check passes; on any other build GridNode stays passive.
 - Nothing from the game is committed: each user generates their own reflected data.
 - Online services, Denuvo and the EA app are left alone.

@@ -1,6 +1,9 @@
 // The gn_api table handed to mods, and the runtime's singletons.
 
 #include <windows.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include <cstring>
 
@@ -11,6 +14,11 @@
 
 namespace gn::host {
 
+void logHookException(const char* where, const char* what) {
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 50) GN_LOG("%s threw%s%s%s; ignored (the game's own code went on)", where, what ? " (" : "", what ? what : "", what ? ")" : "");
+}
+
 reflect::Registry& registry() {
     static reflect::Registry r;
     return r;
@@ -19,12 +27,31 @@ reflect::Registry& registry() {
 hook::HookTable& hooks() {
     static hook::HookTable t({
         [](uint64_t slot, uint64_t& v) { return mem::read(static_cast<uintptr_t>(slot), v); },
-        [](uint64_t slot, uint64_t v) { return mem::patchPointer(static_cast<uintptr_t>(slot), static_cast<uintptr_t>(v), nullptr); },
+        [](uint64_t slot, uint64_t v) {
+            if (isDetourSlot(slot)) { // a function detour's slot: GridNode's own read-write data
+                InterlockedExchange64(reinterpret_cast<volatile LONG64*>(slot), static_cast<LONG64>(v));
+                return true;
+            }
+            return mem::patchPointer(static_cast<uintptr_t>(slot), static_cast<uintptr_t>(v), nullptr);
+        },
         [](uint64_t fn) {
             if (!mem::inImage(static_cast<uintptr_t>(fn))) return false;
             for (const mem::Section& s : mem::imageSections())
                 if (s.region.code && fn >= s.region.begin && fn < s.region.end) return true;
             return false;
+        },
+        [](uint64_t fn) {
+            // Another module's code in the slot: taken as its hook and chained over (GridNode and MECMP in
+            // either order). Said each time, with the module, since any module passes (an overlay too).
+            if (!mem::foreignCode(static_cast<uintptr_t>(fn))) return false;
+            HMODULE m = nullptr;
+            char path[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCSTR>(static_cast<uintptr_t>(fn)), &m))
+                GetModuleFileNameA(m, path, MAX_PATH);
+            GN_LOG("hooks: a slot holds %llx, in %s: taken as that module's hook, GridNode's goes on top of it",
+                   static_cast<unsigned long long>(fn), path);
+            return true;
         },
     });
     return t;
@@ -105,6 +132,11 @@ int apiIsClientThread() { return isClientThread() ? 1 : 0; }
 
 int apiHookSlot(const char* mod, uint64_t slotVa, uint64_t expectedVa, void* detour, void** original) {
     if (!detour || !original || !slotVa) return GN_ERR_ARGUMENT;
+    if (!mem::patchableSlot(mem::rva(slotVa))) {
+        GN_LOG("[%s] hook refused: 0x%llx is not a pointer slot in the game's data (aligned, in the image, outside code)", mod ? mod : "?",
+               static_cast<unsigned long long>(slotVa));
+        return GN_ERR_SLOT;
+    }
     std::string why;
     const auto r = hooks().install(mod ? mod : "?", mem::rva(slotVa), expectedVa ? mem::rva(expectedVa) : 0,
                                    reinterpret_cast<uint64_t>(detour), reinterpret_cast<uint64_t*>(original), &why);
@@ -170,6 +202,11 @@ size_t apiLevelName(char* out, size_t size) {
     return n.size();
 }
 int apiOnLevel(const char* mod, gn_level_fn fn, void* user) { return onLevel(mod ? mod : "?", fn, user); }
+int apiOnEvent(const char* mod, const char* event, const char* cls, gn_event_fn fn, void* user) {
+    return onEvent(mod ? mod : "?", event, cls, fn, user);
+}
+int apiViewGet(gn_view* out) { return out && layouts::view(*out) ? GN_OK : out ? GN_ERR_UNAVAILABLE : GN_ERR_ARGUMENT; }
+int apiOnMovement(const char* mod, gn_movement_fn fn, void* user) { return onMovement(mod ? mod : "?", fn, user); }
 int apiOnUi(const char* mod, gn_ui_fn fn, void* user) { return ui::onUi(mod ? mod : "?", fn, user); }
 void* apiUiContext() { return ui::context(); }
 void apiUiAllocators(void** a, void** f, void** u) { ui::allocators(a, f, u); }
@@ -219,6 +256,33 @@ int apiOnMessage(const char* mod, const char* name, gn_message_fn fn, void* user
 
 int apiRaycast(const float* from, const float* to, float radius, gn_ray_hit* out) { return raycast(from, to, radius, out); }
 
+} // namespace
+
+namespace {
+// The mod is the one whose code called: the return address is in its image (a direct call through
+// the table, so never inlined into the mod's caller).
+#if defined(_MSC_VER)
+__declspec(noinline) int apiModUnload() { return modUnloadAt(_ReturnAddress()); }
+#else
+__attribute__((noinline)) int apiModUnload() { return modUnloadAt(__builtin_return_address(0)); }
+#endif
+#if defined(_MSC_VER)
+#define GN_CALLER _ReturnAddress()
+#define GN_NOINLINE __declspec(noinline)
+#else
+#define GN_CALLER __builtin_return_address(0)
+#define GN_NOINLINE __attribute__((noinline))
+#endif
+// A patch belongs to the code that made it (undone when that mod is unloaded).
+GN_NOINLINE int apiPatchBytes(const char* mod, uint64_t va, const void* expected, const void* bytes, size_t size) {
+    return patchBytes(mod, va, expected, bytes, size, GN_CALLER);
+}
+GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, void* detour, void** original) {
+    return patchCall(mod, site, target, detour, original, GN_CALLER);
+}
+GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
+GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
+GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 } // namespace
 
 const gn_api* api() {
@@ -289,9 +353,59 @@ const gn_api* api() {
         a.asset_release = assetRelease;
         a.entities_near = entitiesNear;
         a.entity_set_transform = entitySetTransform;
+        a.landing_prediction = landingPrediction;
+        a.config_get = configGet;
+        a.config_set = configSet;
+        a.hotkey_add = hotkeyAdd;
+        a.hotkey_info = hotkeyInfo;
+        a.hotkey_rebind = hotkeyRebind;
+        a.hotkey_set = hotkeySet;
+        a.on_movement = apiOnMovement;
+        a.view_get = apiViewGet;
+        a.on_event = apiOnEvent;
+        a.event_name = eventName;
+        a.event_send = [](const char* mod, void* entity, const char* event) { return eventSend(mod ? mod : "?", entity, event); };
+        a.entities_of_class = entitiesOfClass;
+        a.freecam_set = [](int on) { return layouts::freecamSet(on != 0); };
+        a.freecam_get = layouts::freecamGet;
+        a.freecam_teleport = [](int to, int keep) { return layouts::teleportRequest(to, keep != 0); };
+        a.event_send_class = [](const char* mod, const char* cls, const char* event) { return eventSendClass(mod ? mod : "?", cls, event); };
+        a.mod_unload = apiModUnload;
+        a.patch_bytes = apiPatchBytes;
+        a.patch_call = apiPatchCall;
+        a.hook_function = [](const char* mod, uint64_t fn, void* detour, void** original) {
+            return hookFunction(mod ? mod : "?", fn, detour, original);
+        };
+        a.mod_export = apiModExport;
+        a.mod_import = apiModImport;
+        a.mod_version = modVersion;
+        a.setting_add = apiSettingAdd;
+        a.setting_number = settingNumber;
+        a.setting_text = settingText;
+        a.setting_set_number = settingSetNumber;
+        a.setting_set_text = settingSetText;
+        a.setting_on_change = settingOnChange;
+        a.settings_page = settingsPage;
+        a.gridnode_unload = [] {
+            unloadRequest();
+            return GN_OK;
+        };
         return a;
     }();
     return &table;
+}
+
+void forgetTicks(const CodeRange& r) {
+    auto mine = [r](const thread::Dispatcher::Tick& t) {
+        const CallTick* c = t.target<CallTick>();
+        return c && r.has(reinterpret_cast<void*>(c->fn));
+    };
+    server().removeListeners(mine);
+    client().removeListeners(mine);
+}
+
+size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused) {
+    return hooks().remove([&](const hook::Entry& e) { return r.has(reinterpret_cast<void*>(e.detour)); }, refused);
 }
 
 } // namespace gn::host

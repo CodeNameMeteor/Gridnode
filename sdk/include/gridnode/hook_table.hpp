@@ -17,12 +17,18 @@ struct SlotAccess {
     std::function<bool(uint64_t slot, uint64_t value)> write;
     // Is this a function in the game image? (used when no expected value is given)
     std::function<bool(uint64_t fn)> isGameCode;
+    // Optional: is this another mod's hook (code of another loaded module)? Such a slot is chained
+    // instead of refused, so GridNode and MECMP can be loaded in either order. The expected-value
+    // check is skipped for it on purpose: what the game had is that hook's business (GridNode logs
+    // the module each time, since any loaded module passes this test).
+    std::function<bool(uint64_t fn)> isForeignHook;
 };
 
 struct Entry {
     std::string owner;
     uint64_t detour = 0;
-    uint64_t previous = 0; // what the slot held before this hook (the "original" it calls)
+    uint64_t previous = 0;      // what the slot held before this hook (the "original" it calls)
+    uint64_t* original = nullptr; // where the hook keeps it (rewritten when the hook below it goes)
 };
 
 enum class Result { Ok = 0, Argument = 1, Slot = 3 };
@@ -34,9 +40,16 @@ public:
     // slot and expected are runtime addresses. expected = 0: any game function.
     // A slot may be hooked several times: each hook receives the previous one as its original.
     // Refused when the slot does not hold the expected game function (first hook) or no longer
-    // holds the last hook GridNode installed (someone else changed it).
+    // holds the last hook GridNode installed (someone else changed it), unless what it holds is
+    // another mod's hook (isForeignHook): then GridNode goes on top and calls that hook.
     Result install(const std::string& owner, uint64_t slot, uint64_t expected, uint64_t detour, uint64_t* original,
                    std::string* why = nullptr);
+
+    // Takes out every hook `which` picks (a mod being unloaded): the slot, or the hook above it in
+    // the chain, then calls what the removed hook called. A hook with another mod's hook directly
+    // above it cannot be taken out (that hook's original is not ours to change): it stays, and is
+    // listed in `refused`. Returns how many were taken out.
+    size_t remove(const std::function<bool(const Entry&)>& which, std::vector<std::string>* refused = nullptr);
 
     std::vector<std::pair<uint64_t, std::vector<Entry>>> snapshot() const;
     size_t count() const;

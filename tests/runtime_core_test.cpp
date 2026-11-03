@@ -9,8 +9,12 @@
 #include <thread>
 #include <vector>
 
+#include "gridnode/config.hpp"
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
+#include "gridnode/mod.hpp"
+#include "gridnode/mod_order.hpp"
+#include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
 
 using namespace gn;
@@ -131,10 +135,72 @@ void testHookTable() {
     mem[0x1000] = 0xEE;
     CHECK(t.install("d", 0x1000, 0xA0, 0xD5, &orig3, &why) == hook::Result::Slot);
     CHECK(why.find("changed outside GridNode") != std::string::npos);
+    // Another mod's hook (foreign code) in a fresh slot or on top of ours: chained, not refused
+    hook::HookTable f({[&](uint64_t s, uint64_t& v) {
+                           auto it = mem.find(s);
+                           if (it == mem.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           mem[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; },
+                       [](uint64_t fn) { return fn >= 0xF00 && fn < 0xF10; }});
+    mem[0x1018] = 0xF01; // e.g. MECMP's tick hook, installed before GridNode
+    uint64_t origF = 0;
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD6, &origF, &why) == hook::Result::Ok && origF == 0xF01 && mem[0x1018] == 0xD6);
+    mem[0x1018] = 0xF02; // another mod went on top of GridNode's hook
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD7, &origF, &why) == hook::Result::Ok && origF == 0xF02 && mem[0x1018] == 0xD7);
+    mem[0x1018] = 0x55; // not code at all: still refused
+    CHECK(f.install("g", 0x1018, 0xA0, 0xD8, &origF, &why) == hook::Result::Slot);
     // Bad arguments
     CHECK(t.install("e", 0x1004, 0, 0xD6, &orig3, &why) == hook::Result::Argument); // misaligned
     CHECK(t.install("e", 0x2000, 0, 0xD6, &orig3, &why) == hook::Result::Slot);     // unreadable
     CHECK(t.count() == 3);
+
+    // Taking hooks out (a mod unloaded). Top of the chain: the slot gets back what it held.
+    std::map<uint64_t, uint64_t> m2{{0x3000, 0xA0}};
+    hook::HookTable r({[&](uint64_t s, uint64_t& v) {
+                           auto it = m2.find(s);
+                           if (it == m2.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           m2[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; },
+                       [](uint64_t fn) { return fn >= 0xF00 && fn < 0xF10; }});
+    uint64_t o1 = 0, o2 = 0, o3 = 0;
+    CHECK(r.install("gridnode", 0x3000, 0xA0, 0xD1, &o1) == hook::Result::Ok);
+    CHECK(r.install("mod", 0x3000, 0, 0xD2, &o2) == hook::Result::Ok && o2 == 0xD1);
+    CHECK(r.install("gridnode", 0x3000, 0, 0xD3, &o3) == hook::Result::Ok && o3 == 0xD2);
+    // In the middle: the hook above it now calls what it called.
+    std::vector<std::string> refused;
+    CHECK(r.remove([](const hook::Entry& e) { return e.owner == "mod"; }, &refused) == 1 && refused.empty());
+    CHECK(o3 == 0xD1 && m2[0x3000] == 0xD3 && r.count() == 2);
+    // On top: the slot gets the hook below back.
+    CHECK(r.remove([](const hook::Entry& e) { return e.detour == 0xD3; }) == 1 && m2[0x3000] == 0xD1 && r.count() == 1);
+    // Another mod's hook on top of ours: ours stays (its original is not ours to change).
+    m2[0x3000] = 0xF01;
+    CHECK(r.remove([](const hook::Entry&) { return true; }, &refused) == 0 && refused.size() == 1 && r.count() == 1);
+    // The last one out: the slot is the game's again.
+    m2[0x3000] = 0xD1;
+    CHECK(r.remove([](const hook::Entry&) { return true; }) == 1 && m2[0x3000] == 0xA0 && r.count() == 0);
+
+    // A full unload: every owner at once, chains of several hooks on several slots, all back to the game's.
+    m2[0x4000] = 0xB0;
+    uint64_t p1 = 0, p2 = 0, p3 = 0, q1 = 0;
+    CHECK(r.install("gridnode", 0x3000, 0xA0, 0xD1, &p1) == hook::Result::Ok);
+    CHECK(r.install("mod", 0x3000, 0, 0xD2, &p2) == hook::Result::Ok);
+    CHECK(r.install("recorder", 0x3000, 0, 0xD3, &p3) == hook::Result::Ok);
+    CHECK(r.install("events", 0x4000, 0xB0, 0xD4, &q1) == hook::Result::Ok);
+    refused.clear();
+    CHECK(r.remove([](const hook::Entry&) { return true; }, &refused) == 4 && refused.empty());
+    CHECK(m2[0x3000] == 0xA0 && m2[0x4000] == 0xB0 && r.count() == 0);
 }
 
 void testDispatcher() {
@@ -171,14 +237,184 @@ void testDispatcher() {
     done = true;
     tick.join();
     CHECK(ran == 1000);
+
+    // Listeners taken out (a mod unloaded): at the next tick, the others stay.
+    thread::Dispatcher r;
+    struct Tagged {
+        int tag;
+        int* calls;
+        void operator()(float) const { ++calls[tag]; }
+    };
+    int calls[2] = {};
+    r.addListener("a", Tagged{0, calls});
+    r.addListener("b", Tagged{1, calls});
+    r.dispatch(0.f);
+    r.removeListeners([](const thread::Dispatcher::Tick& t) { const Tagged* g = t.target<Tagged>(); return g && g->tag == 1; });
+    CHECK(r.removing());
+    r.dispatch(0.f);
+    CHECK(!r.removing() && calls[0] == 2 && calls[1] == 1 && r.listenerCount() == 1);
+    // One not yet handed to the tick thread goes at once.
+    r.addListener("c", Tagged{1, calls});
+    r.removeListeners([](const thread::Dispatcher::Tick& t) { return t.target<Tagged>() != nullptr && t.target<Tagged>()->tag == 1; });
+    r.dispatch(0.f);
+    CHECK(calls[1] == 1 && calls[0] == 3);
+}
+
+void testConfig() {
+    // Comments, blank lines, spaces and lines without '=' are skipped; a later key wins.
+    const config::Entries e = config::parse("# header\n\n bhop.below = 1.66 \r\nnoise\n;x=1\nkey.arm=F\nbhop.below=1.7\nempty=\n");
+    CHECK(e.size() == 3);
+    CHECK(config::find(e, "bhop.below") && *config::find(e, "bhop.below") == "1.7");
+    CHECK(config::find(e, "key.arm") && *config::find(e, "key.arm") == "F");
+    CHECK(config::find(e, "empty") && config::find(e, "empty")->empty());
+    CHECK(!config::find(e, "x"));
+    // Written and read back gives the same entries; the header lines are comments.
+    const std::string text = config::serialize(e, "two\nlines");
+    CHECK(text.rfind("# two\n# lines\n", 0) == 0);
+    CHECK(config::parse(text) == e);
+    // set: changed or not, and values on one line.
+    config::Entries f;
+    CHECK(config::set(f, "a", "1"));
+    CHECK(!config::set(f, "a", " 1 "));
+    CHECK(config::set(f, "a", "x\ny"));
+    CHECK(*config::find(f, "a") == "x y");
+    CHECK(config::validKey("key.arm") && !config::validKey("") && !config::validKey(" a") && !config::validKey("a=b") &&
+          !config::validKey("#a") && !config::validKey("a\nb"));
+    // File names stay inside the mods folder.
+    CHECK(config::fileName("mec-trainer") == "mec-trainer");
+    CHECK(config::fileName("../x y") == ".._x_y");
+    CHECK(config::fileName("..") == "_..");
+    CHECK(config::fileName("") == "_");
+}
+
+void testMovementEvents() {
+    using namespace moveevents;
+    // A bhop's landing tick: in the air in state 8 -> on the ground in state 0: landed, then the state.
+    std::vector<Event> ev = diff({8, true}, {0, false});
+    CHECK(ev.size() == 2);
+    CHECK(ev[0].kind == kEventLanded && ev[0].state == 0 && ev[0].oldState == 8);
+    CHECK(ev[1].kind == kEventState && ev[1].state == 0 && ev[1].oldState == 8);
+    // Off again in the wall-run state.
+    ev = diff({0, false}, {8, true});
+    CHECK(ev.size() == 2 && ev[0].kind == kEventAirborne && ev[1].kind == kEventState);
+    // Nothing changed: nothing.
+    CHECK(diff({1, false}, {1, false}).empty());
+    // A state change in the air alone.
+    ev = diff({2, true}, {8, true});
+    CHECK(ev.size() == 1 && ev[0].kind == kEventState && ev[0].oldState == 2);
+}
+
+void testProjection() {
+    // At the origin looking along +z, 90 degrees high, a 200 x 100 screen.
+    gn_view v{};
+    v.forward[2] = 1.f, v.right[0] = 1.f, v.up[1] = 1.f;
+    v.fov_y = 90.f, v.width = 200.f, v.height = 100.f;
+    auto approx = [](float a, float b) { return a > b - 0.01f && a < b + 0.01f; };
+    float s[2] = {};
+    const float ahead[3] = {0.f, 0.f, 10.f}, right[3] = {10.f, 0.f, 10.f}, up[3] = {0.f, 10.f, 10.f}, behind[3] = {0.f, 0.f, -1.f};
+    CHECK(projection::toScreen(v, ahead, s) && approx(s[0], 100.f) && approx(s[1], 50.f));
+    CHECK(projection::toScreen(v, right, s) && approx(s[0], 150.f) && approx(s[1], 50.f)); // half the width (aspect 2)
+    CHECK(projection::toScreen(v, up, s) && approx(s[0], 100.f) && approx(s[1], 0.f));     // the top edge, y down
+    CHECK(!projection::toScreen(v, behind, s));
+    CHECK(approx(projection::depth(v, ahead), 10.f) && projection::depth(v, behind) < 0.f);
+    // A segment through the camera is cut at the near plane; one wholly behind is not drawn.
+    float a[2] = {}, b[2] = {};
+    const float from[3] = {1.f, 0.f, -5.f}, to[3] = {1.f, 0.f, 5.f}, back1[3] = {0.f, 0.f, -2.f}, back2[3] = {1.f, 1.f, -3.f};
+    CHECK(projection::segmentToScreen(v, from, to, a, b));
+    CHECK(approx(b[0], 110.f) && a[0] > 200.f); // the cut end is just in front of the camera: far off to the right
+    CHECK(!projection::segmentToScreen(v, back1, back2, a, b));
+}
+
+void testEventHash() {
+    // Ids named in db/annotations/events.yaml (checked against the game there).
+    CHECK(gn::eventHash("StartReplay") == 0x2734a476u);
+    CHECK(gn::eventHash("StopReplay") == 0xd6a2182eu);
+    CHECK(gn::eventHash("PlayerTriggeredSafeHouse") == 0x18c33d9au);
+    static_assert(gn::eventHash("StreamOut") == 0x21f3f677u, "usable at compile time");
+}
+
+void testDeclaredSettings() {
+    using namespace gn::config;
+    Decl f;
+    f.id = "speed", f.label = "Speed", f.description = "Metres per tick", f.kind = Kind::Float;
+    f.def = 20, f.min = 10, f.max = 0.5; // backwards, default outside
+    CHECK(normalize(f));
+    CHECK(f.min == 0.5 && f.max == 10 && f.def == 10);
+    CHECK(clamp(f, 99) == 10 && clamp(f, -1) == 0.5 && clamp(f, 2.25) == 2.25);
+    CHECK(format(f, 2.25) == "2.25");
+    CHECK(parseNumber(f, " 3 ") == 3 && parseNumber(f, "abc") == 10 && parseNumber(f, "") == 10 && parseNumber(f, "50") == 10);
+    CHECK(comment(f) == "Speed: Metres per tick. From 0.5 to 10, default 10.");
+
+    Decl i;
+    i.id = "count", i.kind = Kind::Int, i.def = 3.6, i.min = 0, i.max = 5;
+    CHECK(normalize(i) && i.def == 4);
+    CHECK(format(i, 2.4) == "2" && parseNumber(i, "7") == 5);
+
+    Decl b;
+    b.id = "on", b.kind = Kind::Bool, b.def = 5;
+    CHECK(normalize(b) && b.def == 1);
+    CHECK(parseNumber(b, "false") == 0 && parseNumber(b, "true") == 1 && parseNumber(b, "0") == 0 && format(b, 0.2) == "1");
+
+    Decl c;
+    c.id = "mode", c.label = "Mode", c.kind = Kind::Choice, c.choices = {"off", "slow", "fast"}, c.def = 1;
+    CHECK(normalize(c));
+    CHECK(parseNumber(c, "fast") == 2 && parseNumber(c, "9") == 2 && parseNumber(c, "1") == 1);
+    CHECK(comment(c) == "Mode. One of: 0 off, 1 slow, 2 fast. Default 1.");
+    Decl none;
+    none.kind = Kind::Choice;
+    CHECK(!normalize(none));
+    Decl bad;
+    bad.kind = static_cast<Kind>(9);
+    CHECK(!normalize(bad));
+
+    const std::string text = serialize({{"speed", "2"}, {"other", "x"}}, "Head", {{"speed", "Speed: fast.\nSecond line."}});
+    CHECK(text == "# Head\n\n# Speed: fast.\n# Second line.\nspeed=2\nother=x\n");
+    CHECK(*find(parse(text), "speed") == "2"); // the comments read back as nothing
+}
+
+void testModOrder() {
+    using namespace gn::modorder;
+    const Dep d = parseDep(" ?trainer >= 1.2 ");
+    CHECK(d.soft && d.id == "trainer" && d.minVersion == "1.2");
+    CHECK(!parseDep("core").soft && parseDep("core").minVersion.empty());
+    CHECK(compareVersions("1.2", "1.2.0") == 0);
+    CHECK(compareVersions("1.10", "1.9") > 0);
+    CHECK(compareVersions("2-beta", "2.0") == 0);
+    CHECK(compareVersions("0.9", "1") < 0);
+
+    // a needs c; b soft-needs a; c alone: c, a, b.
+    std::vector<Entry> mods = {{"a", "1.0", {parseDep("c>=2")}}, {"b", "1", {parseDep("?a")}}, {"c", "2.1", {}}};
+    Plan p = plan(mods);
+    CHECK((p.order == std::vector<size_t>{2, 0, 1}));
+    // c too old: a out, b still loads (soft).
+    mods[2].version = "1.5";
+    p = plan(mods);
+    CHECK((p.order == std::vector<size_t>{2, 1}));
+    CHECK(p.problem[0].find("2 or newer") != std::string::npos);
+    // A missing soft dependency is fine; a missing hard one is not, and takes its dependents.
+    p = plan({{"x", "", {parseDep("?nothere")}}, {"y", "", {parseDep("nothere")}}, {"z", "", {parseDep("y")}}});
+    CHECK((p.order == std::vector<size_t>{0}));
+    CHECK(p.problem[1].find("not there") != std::string::npos);
+    CHECK(p.problem[2].find("did not load") != std::string::npos);
+    // A cycle, and a duplicate id.
+    p = plan({{"p", "", {parseDep("q")}}, {"q", "", {parseDep("p")}}, {"r", "", {}}, {"r", "", {}}});
+    CHECK((p.order == std::vector<size_t>{2}));
+    CHECK(p.problem[0] == "in a dependency cycle" && p.problem[1] == "in a dependency cycle");
+    CHECK(p.problem[3].find("already taken") != std::string::npos);
 }
 
 } // namespace
 
 int main() {
+    testModOrder();
+    testDeclaredSettings();
     testRegistry();
     testHookTable();
     testDispatcher();
+    testConfig();
+    testMovementEvents();
+    testProjection();
+    testEventHash();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

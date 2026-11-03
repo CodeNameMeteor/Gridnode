@@ -37,7 +37,7 @@ from the game: annotations hold our own findings only.
 ## Ghidra (GridNodeSync)
 
 `tools/ghidra/GridNodeSync.java` keeps Ghidra and the annotations in step, both ways. It needs
-Ghidra 12 (checked against 12.0.3): copy it into one of your script folders (Script Manager → Manage
+Ghidra 12 (run on 12.1.4): copy it into one of your script folders (Script Manager → Manage
 Script Directories).
 
 **Annotations into Ghidra.**
@@ -51,6 +51,14 @@ and struct becomes a struct in `/GridNode` with its members; functions, virtual 
 (`Class::name`), globals, code sites, vtables (`Class::vftable`) and hook slots are named, with
 GridNode's confidence, source and note as a comment. Names you gave yourself are never changed, and
 your own comments are kept above GridNode's.
+
+Functions with a known signature also get it as their prototype (a virtual's first parameter is
+`self`, a pointer to its class), so the decompiler shows `spawner->listenersBegin` instead of
+`*(param_1 + 0xe8)`. A prototype you set yourself is kept. Where several entries share one function
+(an annotated function that is also a virtual, or a base class's function in a subclass's vtable)
+the function gets one name and prototype: the annotated function's, else the base class's (from your
+dump, or `PamX` deriving from `X`), else none for sibling classes with no known common base; the
+comment keeps every entry's text (`Also: ...`). Importing the same file again changes nothing.
 
 **Your Ghidra names into annotations.**
 
@@ -66,3 +74,72 @@ Everything is `inferred` from `ghidra` until checked. Move each item into the an
 belongs to.
 
 Export before importing again if you edited the `/GridNode` structs in Ghidra: an import replaces them.
+
+**A friend's Ghidra.** They run GridNodeSync → *Export* in their Ghidra and send you the file. Either
+review their findings as annotations, or put their names straight into your Ghidra:
+
+```text
+python tools/gen/gridnode.py ghidra-import alex-names.json --who Alex   # db/ghidra-inbox.yaml, sources [ghidra, alex]
+python tools/gen/gridnode.py ghidra-relay alex-names.json --who Alex    # build/gridnode-ghidra-relay.json
+```
+
+Import the relay file with GridNodeSync → *Import*. Their names go where you have none of your own
+(yours are kept; a name an earlier GridNode import set is replaced, so import GridNode's file again
+after a relay if you prefer its names), and their comments go in a `GridNode [relay] (Alex's Ghidra)` block that a later
+relay from them replaces; your own text, GridNode's block and other friends' blocks stay. Exports now
+carry the comments you wrote (plate comments of functions, plate or end-of-line comments of labels).
+
+**Classes and vtables.** Every class with a vtable (annotated, or from your dump) also gets a
+`<Class>_vtbl` struct in `/GridNode/vtables`, built in Ghidra from what the vtable holds: each slot is
+named after the function it points to (or `vf_0xNN` when it has no name, or is a tiny shared stub), and
+typed with that function's prototype when one is set. The vtable is typed with it in the listing, and
+the class struct gets `vtbl` at +0 and the annotated members of its base classes too. The first
+parameter of each class's virtual functions becomes a pointer to the class, so the decompiler shows
+`this->spawnedBegin` and `(*this->vtbl->unspawn)(...)`. Your own prototypes are never changed; where a
+function has no stored parameters, the decompiler's own are committed first (ANALYSIS); a function
+several classes share gets the most basic class, and a later import (a narrow recording, say) never
+moves `this` from a class to one of its subclasses. More classes:
+
+```text
+python tools/gen/gridnode.py ghidra-export --class PamServerReplayEntity --class PamClientReplayEntity
+```
+
+**Without the dialogs.** GridNodeSync also takes script arguments, `import FILE` or `export FILE`,
+for a headless Ghidra or a run through the Ghidra MCP plugin (which needs `GHIDRA_MCP_ALLOW_SCRIPTS=1`).
+
+**Recordings into Ghidra.** `summarize.py --ghidra` turns a recording into a file GridNodeSync imports
+the same way (see [Recording](recording.md#into-ghidra)): functions made where Ghidra has none, a
+bookmark at each call site, and a comment per function with what went through it.
+
+**Two sets of annotations.** To see how another copy differs from the repository (a fork, another
+checkout, what another tool wrote):
+
+```text
+python tools/gen/gridnode.py annotations-diff D:/other/db/annotations                 # against db/annotations
+python tools/gen/gridnode.py annotations-diff git:origin/main --base D:/mine/annotations
+python tools/gen/gridnode.py annotations-diff OTHER --inbox db/annotations-inbox.yaml  # their new and changed entries
+```
+
+Entries are matched by section and name, and functions, globals, code sites and hooks also by address
+(a rename at the same address shows as one). Classes and structs are compared member by member,
+virtual by virtual. The inbox keeps each entry's confidence and sources and notes what changed.
+
+## Fingerprints from the game
+
+Fingerprint bytes come from the game, not from a disassembly listing: an instruction can be encoded
+several ways (`mov rbx,r9` is `49 8B D9` or `4C 89 CB`), and a listing does not say which one the game uses.
+
+1. In game: GridNode menu → **Game image** → **Dump the game image**. It writes
+   `bin/dumps/MirrorsEdgeCatalyst-<time>.exe`, the running game's code and data (about 115 MB). It
+   is game data: never share or commit it.
+2. Check, and put the image's bytes into the entries that differ:
+
+```text
+python tools/gen/gridnode.py fingerprint bin/dumps/MirrorsEdgeCatalyst-....exe                  # check
+python tools/gen/gridnode.py fingerprint DUMP --write                                           # fix fingerprint.yaml
+python tools/gen/gridnode.py fingerprint DUMP --add Console_executeCommand --length 16          # a new entry
+python tools/gen/gridnode.py fingerprint DUMP --mecmp D:/Dev/MECMP [--write]                    # MECMP's fingerprint.cpp too
+```
+
+Slots (vtable entries, hooks) are checked as well. After `--write`, read the notes and comments next
+to the rewritten entries: they may still describe the old bytes.

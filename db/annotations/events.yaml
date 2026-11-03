@@ -1,0 +1,30 @@
+# Entity events named by our research. Frostbite keeps event ids as djb2-xor hashes of their names;
+# each name here is checked against its hash. The Recorder (through engine.hpp) and summarize.py name
+# recorded events from this list, next to recordings/event-names.txt.
+defaults: { confidence: confirmed, sources: [research] }
+
+events:
+  - name: StartReplay
+    hash: 0x2734a476
+    sent_to: [PamServerReplayEntity]
+    note: "Spawns the replay's ghost through the linked character spawner (docs/research/replay-ghosts.md)."
+  - name: StopReplay
+    hash: 0xd6a2182e
+    sent_to: [PamServerReplayEntity]
+    note: "Flags the replay entity; its updater unspawns the ghost (spawner vtable +0x108)."
+  - name: CharacterSpawned
+    hash: 0xa29c98e6
+    sent_to: [PamClientReplayEntity]
+    note: "The client ghost exists: its replay player component gets the recording and starts playing it."
+  - name: StreamIn
+    hash: 0xd27bc17e
+    sent_to: [ServerSubLevelEntity, ServerBlueprintEntity]
+    note: "A part of the level loads (ServerSubLevelEntity vtable +0x20)."
+  - name: StreamOut
+    hash: 0x21f3f677
+    sent_to: [ServerSubLevelEntity, ServerBlueprintEntity]
+    note: "A part of the level unloads."
+  - name: PlayerTriggeredSafeHouse
+    hash: 0x18c33d9a
+    sent_to: [PamCityAlertTelemetryEventEntity]
+    note: "Sent when Faith reaches a safehouse during a city alert (docs/research/city-alert.md)."

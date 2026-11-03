@@ -19,6 +19,7 @@ classes:
     vtable: 0x141b4e0c8
     virtuals:
       - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)", note: "Spawns at info->transform. Server game thread." }
+      - { offset: 0x108, name: unspawn, va: 0x14338e4c0, signature: "void(void* character, bool destroy, void* a4)", note: "ServerCharacterSpawnEntity_unspawn." }
       - { offset: 0x120, name: update, va: 0x143391d70, signature: "void(void* updateInfo)", confidence: inferred }
 
   - name: PamServerCharacterSpawnEntity
@@ -27,6 +28,27 @@ classes:
     note: Every character spawner in the city is one of these (993 created when the city loads).
     virtuals:
       - { offset: 0xd0, name: spawn, va: 0x143390830, signature: "void*(SpawnInfo* info)" }
+      - { offset: 0x108, name: unspawn, va: 0x14338e4c0, signature: "void(void* character, bool destroy, void* a4)" }
+
+  - name: ClientSpawnEntity
+    realm: client
+    vtable: 0x141b10de8
+    confidence: inferred
+    note: "The client side of a spawner (ClientSpawnEntity_ctor)."
+    members:
+      - { offset: 0xb0, name: spawnedBegin, type: "void**", confidence: confirmed, note: "vector<character*> of the characters this spawner has (last = newest). Watched in game 2026-10-29: changes with the server list." }
+      - { offset: 0xb8, name: spawnedEnd, type: "void**", confidence: confirmed }
+      - { offset: 0xd0, name: lastSpawnedBus, type: "void*", note: "The last character's bus (+0x28), or 0." }
+      - { offset: 0x140, name: listenersBegin, type: "void**" }
+      - { offset: 0x148, name: listenersEnd, type: "void**" }
+    virtuals:
+      - { offset: 0xd8, name: addSpawned, va: 0x143239bb0, signature: "bool(void* character)", note: "ClientCharacterSpawnEntity overrides it (onCharacterSpawned)." }
+      - { offset: 0xe0, name: removeSpawned, va: 0x143234e20, signature: "void(void* character)", confidence: confirmed }
+
+  - name: ClientCharacterSpawnEntity
+    realm: client
+    vtable: 0x141b2ac20
+    note: "0x170 bytes, created by ClientCharacterSpawnEntity_create; vtable +0xd8 is ClientCharacterSpawnEntity_onCharacterSpawned (ClientSpawnEntity_addSpawned in the base)."
 
 structs:
   - name: SpawnInfo
@@ -74,12 +96,12 @@ hooks:
 functions:
   - name: ServerCharacterSpawnEntity_createCharacter
     va: 0x143390a30
-    signature: "void*(void* spawner, SpawnInfo* info)"
+    signature: "void*(ServerCharacterSpawnEntity* spawner, SpawnInfo* info)"
     confidence: inferred
     note: Blueprint = vtable +0x138 override, else spawnerData+0x18. Wraps generic blueprint instantiation.
   - name: ServerSpawnEntity_getLastSpawnedCharacter
     va: 0x143381080
-    signature: "void*(void* spawner)"
+    signature: "void*(ServerSpawnEntity* spawner)"
     confidence: inferred
   - name: EntityBus_create
     va: 0x143146e90
@@ -91,6 +113,7 @@ functions:
   - name: EntityBus_release
     va: 0x1431547b0
     signature: "void(void* bus)"
+    note: "Drops a reference; at zero, unlinks the bus from its parent, frees it and releases the parent. It does not destroy the bus's entities: each holds a reference and releases it in its destructor (Entity_dtor), so releasing the bus of a live entity frees it under that entity."
   - name: ServerEntityCreationInfo_ctor
     va: 0x14335cab0
     signature: "void(EntityCreationInfo* ci, void* data, void* bus, const LinearTransform* transform)"
@@ -143,37 +166,44 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: spawnSingleEntityFromSublevelData
     va: 0x142ca6260
-    note: "Named in Ghidra as spawnSingleEntityFromSublevelData. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*)"
+    note: "Named in Ghidra as spawnSingleEntityFromSublevelData; checked in the decompiler (2026-10-30): builds a ServerEntityCreationInfo from the data at +0x28 +0x90 and spawns it (entityCreator_spawnIntoBus)."
+    confidence: inferred
     sources: [ghidra]
   - name: entityBus_createForLayerOrBlueprint
     va: 0x143146140
-    note: "Named in Ghidra as entityBus_createForLayerOrBlueprint. Signature not known yet."
-    confidence: hypothesis
+    signature: "i64(void*, i64, u64, void*, void*)"
+    note: "Named in Ghidra as entityBus_createForLayerOrBlueprint; checked in the decompiler (2026-10-30): checks the data against TI_LayerData and allocates the bus."
+    confidence: inferred
     sources: [ghidra]
   - name: EntityCreator_ctor
     va: 0x14315fed0
-    note: "Named in Ghidra as EntityCreator_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, i32, u64, i8, u32)"
+    note: "Named in Ghidra as EntityCreator_ctor; checked in the decompiler (2026-10-30): 1,091 callers (one per creator class) and sets the creator vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: EntityCreators_bindRealm
     va: 0x143161af0
-    note: "Named in Ghidra as EntityCreators_bindRealm. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(i32)"
+    note: "Named in Ghidra as EntityCreators_bindRealm; checked in the decompiler (2026-10-30): walks the realm's creator list and binds each creator (the user's note)."
+    confidence: inferred
     sources: [ghidra]
   - name: fb_EntityCreationInfo_baseCtor
     va: 0x1432db740
-    note: "Named in Ghidra as fb_EntityCreationInfo_baseCtor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, u64, u64, u32)"
+    note: "Named in Ghidra as fb_EntityCreationInfo_baseCtor; checked in the decompiler (2026-10-30): fills an identity transform and the realm defaults."
+    confidence: inferred
     sources: [ghidra]
   - name: levelLoad_spawnFromRecords
     va: 0x14333f9b0
-    note: "Named in Ghidra as levelLoad_spawnFromRecords. Signature not known yet."
+    signature: "void(void*, void*, u64)"
+    note: "Named in Ghidra as levelLoad_spawnFromRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelLoad_collectSpawnRecords
     va: 0x143343580
-    note: "Named in Ghidra as levelLoad_collectSpawnRecords. Signature not known yet."
+    signature: "void(void*, i64, u64)"
+    note: "Named in Ghidra as levelLoad_collectSpawnRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: entityCreator_spawnIntoBus
@@ -187,91 +217,223 @@ functions:
     sources: [ghidra]
   - name: fb_Blueprint_instantiateImpl
     va: 0x14335e400
-    note: "Named in Ghidra as fb_Blueprint_instantiateImpl. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(u64, void*, u64, void*, u64)"
+    note: "Named in Ghidra as fb_Blueprint_instantiateImpl; checked in the decompiler (2026-10-30): creates the bus and instantiates the contents; in 354 recorded creation stacks."
+    confidence: inferred
     sources: [ghidra]
   - name: entityCreator_spawnWithLinearTransform
     va: 0x14335eb70
-    note: "Named in Ghidra as entityCreator_spawnWithLinearTransform. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, void*, u64, void*, void*, void*, i64)"
+    note: "Named in Ghidra as entityCreator_spawnWithLinearTransform; checked in the decompiler (2026-10-30): creates the bus and spawns; in 129 recorded creation stacks."
+    confidence: inferred
     sources: [ghidra]
   - name: blueprint_instantiateContents
     va: 0x143361260
-    note: "Named in Ghidra as blueprint_instantiateContents. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void*, void*, void*, i64, i64, i64)"
+    note: "Named in Ghidra as blueprint_instantiateContents; checked in the decompiler (2026-10-30): in 359 recorded creation stacks, under fb_Blueprint_instantiateImpl."
+    confidence: inferred
     sources: [ghidra]
   - name: spawnEntityFromRecord_LinearTransform
     va: 0x143363a40
-    note: "Named in Ghidra as spawnEntityFromRecord_LinearTransform. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, i64, void*)"
+    note: "Named in Ghidra as spawnEntityFromRecord_LinearTransform; checked in the decompiler (2026-10-30): calls entityCreator_spawnWithLinearTransform; in recorded static model spawns."
+    confidence: inferred
     sources: [ghidra]
   - name: entityLoader_resolveBlueprintThenSpawn
     va: 0x143366660
-    note: "Named in Ghidra as entityLoader_resolveBlueprintThenSpawn. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as entityLoader_resolveBlueprintThenSpawn; checked in the decompiler (2026-10-30): calls spawnEntityFromRecord_LinearTransform; in recorded static model spawns."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_ctor
     va: 0x14337c600
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_ctor; checked in the decompiler (2026-10-30): sets the ServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_dtor
     va: 0x14337d620
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_dtor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_dtor; checked in the decompiler (2026-10-30): sets the ServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_belowMaxCount
     va: 0x1433804a0
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_belowMaxCount. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(void* self, u64)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_belowMaxCount; checked in the decompiler (2026-10-30): compares the spawned count (+0xf4) with an Int32 property (its value at +0x270; below 0 means no limit)."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerCharacterSpawnEntity_clearSpawnArea
     va: 0x143381b10
-    note: "Named in Ghidra as ServerCharacterSpawnEntity_clearSpawnArea. Signature not known yet."
+    signature: "void(void* self)"
+    note: "Named in Ghidra as ServerCharacterSpawnEntity_clearSpawnArea; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevelRecord_spawnWithTableTransform
     va: 0x1433a61a0
-    note: "Named in Ghidra as sublevelRecord_spawnWithTableTransform. Signature not known yet."
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as sublevelRecord_spawnWithTableTransform; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevelHierarchy_spawnBangerGroupEntry
     va: 0x1433e71d0
-    note: "Named in Ghidra as sublevelHierarchy_spawnBangerGroupEntry. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void*, void*, u64, u64, LinearTransform*)"
+    note: "Named in Ghidra as sublevelHierarchy_spawnBangerGroupEntry; checked in the decompiler (2026-10-30): builds a ServerEntityCreationInfo and calls fb_Blueprint_instantiate."
+    confidence: inferred
     sources: [ghidra]
   - name: sublevel_spawnGroupIntoNewBus
     va: 0x1433e72b0
-    note: "Named in Ghidra as sublevel_spawnGroupIntoNewBus. Signature not known yet."
+    signature: "void(void*, u32, u32, u32, u64, u32)"
+    note: "Named in Ghidra as sublevel_spawnGroupIntoNewBus; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: sublevel_spawnGroupDefaultBus
     va: 0x1433e73d0
-    note: "Named in Ghidra as sublevel_spawnGroupDefaultBus. Signature not known yet."
+    signature: "void(void*, u32, u64, u64, u32, u64, u64, u64)"
+    note: "Named in Ghidra as sublevel_spawnGroupDefaultBus; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: levelSublevel_spawnEntityGroup
     va: 0x1433e7480
-    note: "Named in Ghidra as levelSublevel_spawnEntityGroup. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(u64, void*, u32, u32, i8, LinearTransform*, void*, i32, void*, void*, i64)"
+    note: "Named in Ghidra as levelSublevel_spawnEntityGroup; checked in the decompiler (2026-10-30): spawns each entry (entityCreator_spawnIntoBus) and inits it (Entity_init)."
+    confidence: inferred
     sources: [ghidra]
   - name: sublevelRecord_spawnNextInChain
     va: 0x1438fe430
-    note: "Named in Ghidra as sublevelRecord_spawnNextInChain. Signature not known yet."
+    signature: "void(void*, u64)"
+    note: "Named in Ghidra as sublevelRecord_spawnNextInChain; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: PamServerCharacterSpawnEntity_ctor
     va: 0x143953860
-    note: "Named in Ghidra as PamServerCharacterSpawnEntity_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as PamServerCharacterSpawnEntity_ctor; checked in the decompiler (2026-10-30): sets the PamServerCharacterSpawnEntity vtable."
+    confidence: inferred
     sources: [ghidra]
   - name: PamServerCustomizeProjectionCharacterEntity_factory
     va: 0x143a7b5a0
-    note: "Named in Ghidra as PamServerCustomizeProjectionCharacterEntity_factory. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(i64)"
+    note: "Named in Ghidra as PamServerCustomizeProjectionCharacterEntity_factory; checked in the decompiler (2026-10-30): checks TI_PamServerCustomizeProjectionCharacterEntity."
+    confidence: inferred
     sources: [ghidra]
+
+  # Character spawners and replays (research 2026-10-22/23, docs/research/replay-ghosts.md; checked in Ghidra).
+  - name: ServerCharacterSpawnEntity_unspawn
+    va: 0x14338e4c0
+    signature: "void(ServerCharacterSpawnEntity* spawner, void* character, bool destroy, void* a4)"
+    note: "Vtable +0x108 of both server character spawner classes. Releases a player made for the character, takes it out of the spawner's list (+0x148/+0x150) and destroys it (0x14338e5d0). Does nothing for a character not in the list."
+    confidence: confirmed
+    sources: [research]
+  - name: ServerCharacterSpawnEntity_removeSpawned
+    va: 0x14338e5d0
+    signature: "void(ServerCharacterSpawnEntity* spawner, void* character, bool destroy, void* a4)"
+    note: "unspawn's second step: out of the list (+0x148/+0x150) and destroyed (flag bit 23) or pooled at +0x250; an empty list unregisters the spawner's listener."
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_ctor
+    va: 0x14322d7d0
+    signature: "ClientSpawnEntity*(ClientSpawnEntity* self, void* info, void* a3)"
+    note: "The client side of a spawner (vtable ClientSpawnEntity 0x141b10de8). Its spawned characters are a vector at +0xb0/+0xb8, the last one's bus at +0xd0, listeners at +0x140/+0x148."
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_lastSpawned
+    va: 0x1432347b0
+    signature: "void*(ClientSpawnEntity* spawner)"
+    note: "*(+0xb8 - 8), or 0 when +0xb0 == +0xb8."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_addSpawned
+    va: 0x143239bb0
+    signature: "bool(ClientSpawnEntity* spawner, void* character)"
+    note: "Appends to +0xb0, sets +0xd0 to the last one's bus (+0x28), tells the listeners (0x1432348e0 with 1). Called by ClientCharacterSpawnEntity_onCharacterSpawned."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_removeSpawned
+    va: 0x143234e20
+    signature: "void(ClientSpawnEntity* spawner, void* character)"
+    note: "Vtable +0xe0 (both client spawner classes; checked in the image and in traces 2026-10-29). Finds it in +0xb0, tells the listeners (0x1432348e0 with 0), swaps the last one in, shortens the list, +0xd0 = the new last one's bus or 0."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientSpawnEntity_notifyListeners
+    va: 0x1432348e0
+    signature: "void(ClientSpawnEntity* spawner, void* character, bool spawned)"
+    confidence: inferred
+    sources: [research]
+  - name: ClientSpawnEntity_createFromNetwork
+    va: 0x143234ed0
+    signature: "void*(ClientSpawnEntity* spawner, void* a2, u32 a3)"
+    note: "Creates a client character for a network ghost (0x143469110, the ghost factory)."
+    confidence: inferred
+    sources: [research]
+  - name: ClientCharacterSpawnEntity_create
+    va: 0x1432a67c0
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: "Creator of ClientCharacterSpawnEntity (0x170 bytes, vtable 0x141b2ac20); creator slot 0x141b2ad88 (MECMP hooks it)."
+    confidence: confirmed
+    sources: [research, mecmp]
+  - name: ClientCharacterSpawnEntity_onCharacterSpawned
+    va: 0x1432aa460
+    signature: "bool(ClientCharacterSpawnEntity* spawner, void* character)"
+    note: "Vtable +0xd8 (overrides ClientSpawnEntity_addSpawned there; checked in the image and in traces 2026-10-29). Applies the spawn template's settings to the client character, sends it a message, then ClientSpawnEntity_addSpawned. Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientCharacterSpawnEntity_lastCharacter
+    va: 0x1432a60e0
+    signature: "void*(ClientCharacterSpawnEntity* spawner)"
+    note: "ClientSpawnEntity_lastSpawned when it is a ClientCharacterEntity. The map's echo and the Your Echo screen take their character with it."
+    confidence: confirmed
+    sources: [research]
+  - name: ClientCharacterSpawnEntity_lastSpawnedTarget
+    va: 0x1432a92f0
+    signature: "void(ClientCharacterSpawnEntity* spawner, void** out)"
+    note: "Vtable +0x50. Fills out[1] with the last spawned client character's +0x218 (ClientSpawnEntity_lastSpawned); what a connection into a spawned blueprint resolves through (Entity_resolveLinkedEntity). Seen in a trace (2026-10-23) when the map opened."
+    confidence: inferred
+    sources: [research]
+  - name: Entity_resolveLinkedEntity
+    va: 0x142d46db0
+    signature: "void*(void* entity, u32 linkId, void* out)"
+    note: "Finds the GameObjectData entity linked to an entity (its bus +0x20, data +0x28, a link id). A ReferenceObjectData target gives its bus; any other (a spawner) is asked through vtable +0x50 for its last spawned target, then the object is looked up in that bus (0x143145050). So connections into a spawner's blueprint reach its *last* spawned character. Called from property delivery (0x142a4298b)."
+    confidence: inferred
+    sources: [research]
+  - name: PamServerReplayEntity_onEvent
+    va: 0x14396d750
+    signature: "void(PamServerReplayEntity* entity, void* event)"
+    note: "Vtable +0x20. StartReplay (0x2734a476) -> PamServerReplayEntity_startReplay; StopReplay (0xd6a2182e) flags the entity for its updater, which unspawns. Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
+  - name: PamServerReplayEntity_startReplay
+    va: 0x14396e8b0
+    signature: "void*(PamServerReplayEntity* entity)"
+    note: "Finds the linked CharacterSpawnReferenceObjectData entity (link 0xa695a747, by data in the bus); spawns (vtable +0xd0) only when its last spawned character is null. Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
+  - name: PamServerReplayEntity_update
+    va: 0x1439724d0
+    signature: "void(PamServerReplayEntity* entity)"
+    confidence: inferred
+    sources: [research]
+  - name: PamServerReplayEntity_stopReplay
+    va: 0x1439741d0
+    signature: "void(PamServerReplayEntity* entity)"
+    note: "The spawner lookup again, its last spawned character, then the spawner's unspawn (vtable +0x108). Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
+  - name: PamClientReplayEntity_onEvent
+    va: 0x14394ab60
+    signature: "bool(PamClientReplayEntity* entity, void* event)"
+    note: "Vtable +0x20. On CharacterSpawned (0xa29c98e6): the linked client spawner's last character's PamClientReplayPlayerComponent (PamClientReplayEntity_findPlayerComponent) gets the replay's recording and starts playing it. Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
+  - name: PamClientReplayEntity_findPlayerComponent
+    va: 0x14394b1d0
+    signature: "void*(PamClientReplayEntity* entity)"
+    note: "Linked CharacterSpawnReferenceObjectData entity (link 0xa695a747) -> ClientCharacterSpawnEntity_lastCharacter -> getComponent(PamClientReplayPlayerComponent). Signature from the decompiler, 2026-10-29 (inferred)."
+    confidence: confirmed
+    sources: [research]
 
 globals:
   - name: BlueprintInstantiationEnabled
     va: 0x1425476c0
     type: bool
+    note: "Read by Blueprint_instantiate and entityCreator_spawnIntoBus, written by 0x14335e810 / 0x14335ea10. Named g_entitySpawningEnabled in the user's Ghidra."

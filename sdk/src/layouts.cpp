@@ -19,14 +19,17 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -34,6 +37,12 @@
 #include "imgui.h"
 
 namespace gn::host::layouts {
+void clearRopeMoves();
+bool nudgeSpecial(int dir, float scale); // a selected barrier or magrope (defined with them)
+void specialSweep();                      // barrier and magrope edits (server thread)
+void unloadSpecial();
+void clearSpecialCopies();
+void clearSpecialSelection();
 namespace {
 
 namespace e = gn::engine;
@@ -45,7 +54,16 @@ struct Edit {
     gn_transform to{};  // where it should be
     gn_transform from{}; // the level's own placement (rotation included), for putting it back
     bool haveFrom = false; // false for layout files written before `from` was saved
+    // kind "Copy": a new object made from another one. `source` is that object's kind ("GroupProp" for
+    // a prop in a static model group) and `at` its level position; copyId tells copies apart (not saved).
+    std::string source;
+    std::string mesh;   // "Copy": the source's mesh (MeshAsset name): found by it when the source is not
+    int copyId = -1;
 };
+
+// Where removed copies and hidden group copies go (entities cannot be destroyed yet): this far
+// below where they were, out of sight and out of reach (Frosty-Unity Pipeline uses the same).
+constexpr float kParkDepth = 15000.f;
 
 std::mutex g_m;
 std::string g_level;            // the level the edits are for (g_m)
@@ -54,6 +72,7 @@ bool g_dirty = false;           // unsaved changes (g_m)
 std::wstring g_dir;             // layouts folder
 std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
 std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
+int g_nextCopyId = 0;           // (g_m)
 
 std::atomic<bool> g_sweptThisLevel{false}; // existing objects matched since the level started
 constexpr float kMatch = 0.05f; // metres: how close a created object must be to an edit's position
@@ -129,14 +148,6 @@ std::vector<std::string> listLayouts(const std::string& level) {
 }
 
 // Small settings: auto-load (layouts\settings.txt) and each level's last used layout (last.txt).
-bool readFlag(const std::wstring& file) {
-    FILE* f = _wfopen(file.c_str(), L"rb");
-    if (!f) return false;
-    char b[64] = {};
-    fgets(b, sizeof(b), f);
-    fclose(f);
-    return strstr(b, "autoload=1") != nullptr;
-}
 std::string readLine(const std::wstring& file) {
     FILE* f = _wfopen(file.c_str(), L"rb");
     if (!f) return {};
@@ -154,6 +165,79 @@ void writeLine(const std::wstring& file, const std::string& line) {
     fclose(f);
 }
 std::atomic<bool> g_autoload{false};
+// Experimental (2026-10-21): move group props where they are (collision instance, render object and
+// mesh streaming position) instead of making them standalone first. Not saved in layouts yet.
+std::atomic<bool> g_inPlaceGroups{false};
+
+// Key binds (layouts\settings.txt, "key_<id>=<name>"). Free-camera binds work only while it flies.
+struct Bind {
+    const char* id;
+    const char* label;
+    int def;
+    bool freeCamOnly;
+    bool repeat; // repeats while held
+    int vk;
+};
+Bind g_binds[] = {
+    {"freecam", "Free camera on / off", VK_F7, false, false, VK_F7},
+    {"pick", "Pick what the crosshair points at", 'R', true, false, 'R'},
+    {"copy", "Copy the selected object", 'C', true, false, 'C'},
+    {"paste", "Paste a copy at the crosshair", 'V', true, false, 'V'},
+    {"duplicate", "Duplicate the selected object in place", 'G', true, false, 'G'},
+    {"forward", "Move away from the camera", VK_UP, true, true, VK_UP},
+    {"back", "Move toward the camera", VK_DOWN, true, true, VK_DOWN},
+    {"left", "Move left", VK_LEFT, true, true, VK_LEFT},
+    {"right", "Move right", VK_RIGHT, true, true, VK_RIGHT},
+    {"up", "Move up", VK_PRIOR, true, true, VK_PRIOR},
+    {"down", "Move down", VK_NEXT, true, true, VK_NEXT},
+    {"turnleft", "Turn left", 'Z', true, true, 'Z'},
+    {"turnright", "Turn right", 'X', true, true, 'X'},
+    {"tiltleft", "Tilt left", 'N', true, true, 'N'},
+    {"tiltright", "Tilt right", 'M', true, true, 'M'},
+    {"tipaway", "Tip away", 'K', true, true, 'K'},
+    {"tiptoward", "Tip toward", 'L', true, true, 'L'},
+    {"flip", "Flip upside down", 'H', true, false, 'H'},
+    {"upright", "Stand upright again", 'U', true, false, 'U'},
+    {"undo", "Undo (with Ctrl; also with the menu open)", 'Z', true, false, 'Z'},
+    {"teleport", "Teleport Faith to the crosshair (Shift: and go back to her)", 'T', true, false, 'T'},
+    {"pointer", "Mouse: look / pointer (to drag the handles)", VK_TAB, true, false, VK_TAB},
+    {"handles", "Handles: move / rotate", 'Y', true, false, 'Y'},
+    {"library_add", "Add the selection to the library", 'B', true, false, 'B'},
+};
+enum BindId { kFreeCam, kPick, kCopy, kPaste, kDuplicate, kFwd, kBack, kLeft, kRight, kUp, kDown, kTurnL, kTurnR, kTiltL, kTiltR, kTipAway, kTipToward, kFlip, kUpright, kUndo, kTeleport, kPointer, kHandles, kLibAdd, kBindCount };
+static_assert(sizeof(g_binds) / sizeof(g_binds[0]) == kBindCount, "binds and their ids");
+float g_nudge = 0.5f;     // metres per move step
+float g_turnStep = 15.f;  // degrees per turn step
+
+void saveSettings() {
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    std::string o = g_autoload.load() ? "autoload=1\n" : "autoload=0\n";
+    char b[64];
+    snprintf(b, sizeof(b), "nudge=%.3f\nturn=%.1f\n", g_nudge, g_turnStep);
+    o += b;
+    for (const Bind& k : g_binds) o += std::string("key_") + k.id + "=" + (k.vk ? ui::keyName(k.vk) : "NONE") + "\n";
+    writeLine(g_dir + L"settings.txt", o);
+}
+
+void loadSettings() {
+    FILE* f = _wfopen((g_dir + L"settings.txt").c_str(), L"rb");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        const size_t eq = l.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
+        if (k == "autoload") g_autoload = v == "1";
+        else if (k == "nudge") g_nudge = std::clamp(static_cast<float>(atof(v.c_str())), 0.01f, 100.f);
+        else if (k == "turn") g_turnStep = std::clamp(static_cast<float>(atof(v.c_str())), 0.1f, 180.f);
+        else if (k.rfind("key_", 0) == 0)
+            for (Bind& b : g_binds)
+                if (k.substr(4) == b.id) b.vk = v == "NONE" ? 0 : (ui::keyFromName(v) ? ui::keyFromName(v) : b.vk);
+    }
+    fclose(f);
+}
 
 // ---- moves, done on the right thread ----------------------------------------------------------------
 struct Move {
@@ -164,7 +248,9 @@ struct Move {
 std::mutex g_qm;
 std::deque<Move> g_serverQ, g_clientQ; // (g_qm)
 
+bool usableTransform(const gn_transform& t);
 void queueMove(uintptr_t entity, const reflect::Type* type, const gn_transform& to) {
+    if (!entity || !type || !usableTransform(to)) return;
     std::lock_guard<std::mutex> lock(g_qm);
     (isServerClass(type->name) ? g_serverQ : g_clientQ).push_back({entity, type, to});
 }
@@ -215,8 +301,21 @@ void reframe(const gn_transform& from, const gn_transform& to, const float* p, b
 
 void normalize(float* v) {
     const float n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (n > 1e-6f)
+    if (n > 1e-6f && std::isfinite(n))
         for (int k = 0; k < 3; ++k) v[k] /= n;
+}
+
+// A transform GridNode may hand to the game: every row finite, the rotation rows not degenerate.
+bool usableTransform(const gn_transform& t) {
+    const float* rows[4] = {t.right, t.up, t.forward, t.trans};
+    for (const float* r : rows)
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(r[k]) || std::fabs(r[k]) > 1e7f) return false;
+    for (int i = 0; i < 3; ++i) {
+        const float* r = rows[i];
+        if (r[0] * r[0] + r[1] * r[1] + r[2] * r[2] < 1e-8f) return false;
+    }
+    return true;
 }
 
 // Moves the bodies of `entity` from `before` to `after`, each keeping its place relative to the
@@ -239,11 +338,12 @@ void moveBodies(uintptr_t entity, const reflect::Type* t, const gn_transform& be
         reframe(before, after, was.forward, false, now.forward);
         reframe(before, after, was.trans, true, now.trans);
         normalize(now.right), normalize(now.up), normalize(now.forward); // bodies carry no scale
+        if (!usableTransform(now)) return;
         reinterpret_cast<void (*)(uintptr_t, const gn_transform*, bool)>(set)(body, &now, true);
         ++moved;
     });
     static std::atomic<int> said{0};
-    if (moved != total || said.fetch_add(1) < 40)
+    if (moved != total || said.fetch_add(1) < 2)
         GN_LOG("layouts: %s %llx: moved %d of %d collision bodies", t->name.c_str(), static_cast<unsigned long long>(entity), moved, total);
 }
 
@@ -255,7 +355,7 @@ void runQueue(std::deque<Move>& q) {
     }
     for (const Move& m : work) {
         // Still the same object (not destroyed and reused since)?
-        if (registry().typeOf(mem::ProcessMemory(), m.entity) != m.type) continue;
+        if (!inspector::alive(m.entity, m.type)) continue;
         gn_transform before{};
         const bool had = entityTransform(reinterpret_cast<void*>(m.entity), before);
         entitySetTransform(reinterpret_cast<void*>(m.entity), &m.to);
@@ -271,9 +371,14 @@ const Edit* editFor(const std::string& cls, const float* at) {
     return nullptr;
 }
 
+void recordBus(uintptr_t entity, uintptr_t bus);
+std::atomic<uint32_t> g_groupGen{0}; // bumped when a model or group is created (part of the level loaded)
+
 // Creation of a static model (any realm): match against the layout by its creation transform.
 void onCreatedModel(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
+    recordBus(reinterpret_cast<uintptr_t>(entity), mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10)); // for copies
+    g_groupGen.fetch_add(1);
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
     if (!t) return;
     float at[3];
@@ -283,7 +388,7 @@ void onCreatedModel(void* entity, void* ci, void*) {
     if (const Edit* ed = editFor(t->name, at)) queueMove(reinterpret_cast<uintptr_t>(entity), t, ed->to);
 }
 
-void applyGroupEdits(const std::vector<Edit>& edits);
+void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing = false);
 
 // Objects that already exist when a layout is loaded: matched by where they are now.
 void applyToExisting() {
@@ -337,6 +442,8 @@ bool save(const std::string& name) {
     o += "level: " + level + "\nedits:\n";
     for (const Edit& ed : edits) {
         o += "  - kind: " + ed.kind + "\n";
+        if (!ed.source.empty()) o += "    source: " + ed.source + "\n";
+        if (!ed.mesh.empty()) o += "    mesh: " + ed.mesh + "\n";
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -402,6 +509,14 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         while (!val.empty() && val[0] == ' ') val.erase(0, 1);
         if (item) flush();
         bool ok = true;
+        if (key == "source") {
+            cur.source = val;
+            continue;
+        }
+        if (key == "mesh") {
+            cur.mesh = val;
+            continue;
+        }
         if (key == "kind") cur.kind = val, ok = !val.empty();
         else if (key == "at") ok = parseVec(val, cur.at);
         else if (key == "right") ok = parseVec(val, cur.to.right);
@@ -420,11 +535,30 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     }
     flush();
     fclose(f);
-    for (Edit& ed : out)
-        if (!ed.haveFrom) { // older files: the level position with the edit's rotation
+    for (Edit& ed : out) {
+        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") { // a copy has no level placement: putting it back removes it
+            ed.from = ed.to;
+            ed.haveFrom = true;
+            std::lock_guard<std::mutex> lock(g_m);
+            ed.copyId = g_nextCopyId++;
+        } else if (!ed.haveFrom) { // older files: the level position with the edit's rotation
             ed.from = ed.to;
             memcpy(ed.from.trans, ed.at, sizeof(ed.at));
         }
+        if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
+    }
+    out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
+    // Values the game must never be given (nan / inf from a hand-edited file, a zero row).
+    const size_t before = out.size();
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [](const Edit& ed) {
+                                 return !usableTransform(ed.to) || !usableTransform(ed.from) || !std::isfinite(ed.at[0]) || !std::isfinite(ed.at[1]) ||
+                                        !std::isfinite(ed.at[2]);
+                             }),
+              out.end());
+    if (out.size() != before)
+        GN_LOG("layouts: %s: %llu edits with values that are not usable (nan, inf, a zero row) skipped", level.c_str(),
+               static_cast<unsigned long long>(before - out.size()));
     return out;
 }
 
@@ -517,7 +651,7 @@ bool readInstance(uintptr_t inst, gn_transform& out) {
 // Writes rotation (unit rows), scale and translation; the w lanes (other data) are kept.
 void writeInstance(uintptr_t inst, const gn_transform& t) {
     float m[20];
-    if (!inst || !mem::read(inst, m, sizeof(m))) return;
+    if (!inst || !usableTransform(t) || !mem::read(inst, m, sizeof(m))) return;
     const float* rows[3] = {t.right, t.up, t.forward};
     for (int r = 0; r < 3; ++r) {
         const float n = std::sqrt(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
@@ -556,56 +690,165 @@ bool memberOf(uintptr_t clientGroup, uint32_t part, uintptr_t& member, uint32_t&
 
 // The member's own InstanceTransforms entry for the copy, if the member has them (0 if not).
 uintptr_t memberTransform(uintptr_t member, uint32_t copy) {
-    static const uint32_t off = memberField("InstanceTransforms");
+    static const uint32_t off = memberField("InstanceTransforms"), countOff = memberField("InstanceCount");
     const uintptr_t arr = member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
     const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
-    return copy < n ? arr + copy * 0x40u : 0;
+    const uint32_t copies = countOff != 0xffffffffu ? mem::readOr<uint32_t>(member + countOff) : 0;
+    // Both counts from the game: the array's own and the member's copies; the smaller bounds the index.
+    return copy < std::min(n, copies) && n <= 100000 ? arr + copy * 0x40u : 0;
 }
+
+} // namespace
+bool isMeshEntity(uintptr_t p); // (with the outline, outside the anonymous namespace)
+namespace {
 
 // The render object of the copy (client thread): the block's cached list, or the physics
 // component's object for the copy's first part (how 0x14318fbc0 gathers them).
 uintptr_t renderObjectOf(const GroupProp& g) {
-    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance");
+    static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
+                          countOff = memberField("InstanceCount");
     if (!g.block || !g.member) return 0;
-    if (const uintptr_t list = mem::readOr<uintptr_t>(g.block + 0xc8)) return mem::readOr<uintptr_t>(list + g.copy * 8u);
-    const uintptr_t comp = mem::readOr<uintptr_t>(g.block + 0x20);
+    const uint32_t copies = countOff != 0xffffffffu ? mem::readOr<uint32_t>(g.member + countOff) : 0;
+    if (g.copy >= copies || copies > 100000) return 0; // the list has one entry per copy
+    if (const uintptr_t list = mem::readOr<uintptr_t>(g.block + e::constant::GroupMemberBlock_RenderObjects)) {
+        const uintptr_t ro = mem::readOr<uintptr_t>(list + g.copy * 8u);
+        return isMeshEntity(ro) ? ro : 0;
+    }
+    const uintptr_t comp = mem::readOr<uintptr_t>(g.block + e::constant::GroupMemberBlock_Physics);
     const uintptr_t vt = comp ? mem::readOr<uintptr_t>(comp) : 0;
-    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + 0x210) : 0;
+    const uintptr_t fn = vt ? mem::readOr<uintptr_t>(vt + e::constant::PhysicsComponent_vf_renderObjectOfPart) : 0;
     if (!mem::inImage(fn)) return 0;
     const uint32_t part = mem::readOr<uint32_t>(g.member + partRange) + mem::readOr<uint32_t>(g.member + perCopy) * g.copy;
-    return reinterpret_cast<uintptr_t (*)(uintptr_t, uint32_t)>(fn)(comp, part);
+    const uintptr_t ro = reinterpret_cast<uintptr_t (*)(uintptr_t, uint32_t)>(fn)(comp, part);
+    return isMeshEntity(ro) ? ro : 0;
+}
+
+// The parts of a group member's render update the builder (0x143769330) does not fill, as the
+// group sets them when it makes the member's render object (0x1431841f0, called from 0x143185940):
+//   +0x78  16 bytes: 0x143b722e0(out, mesh asset - 0x10 or null, world transform), a hash of the
+//          asset and the placement (kept from the original placement here);
+//   +0x8a  u16: the group's render factory (block +0xb8), vtable +0x18 (factory, has a RigidMeshAsset);
+//   +0x8c  per-view mask from the member data's per-copy settings (+0x18, 12 bytes a copy: a, b, c):
+//          a 0/1/2 -> 1/3/2, c 0/1/2 -> 4/0xc/8, b 0/1/2 -> 0x20/0x30/0x10;
+//   +0x8d  |= 4 (and 2).
+// The group's re-place (0x14318fbc0) leaves them unset; sent as zeros, the mask said "no view" and the
+// moved prop was not drawn (2026-10-22).
+std::mutex g_origM;
+std::unordered_map<uintptr_t, std::array<uint8_t, 16>> g_origHash; // render object -> hash at its original placement
+void fillGroupUpdate(const GroupProp& g, uintptr_t obj, uint8_t* update) {
+    const uintptr_t memberData = mem::readOr<uintptr_t>(g.block + 0x18);
+    int32_t abc[3] = {0, 0, 0};
+    if (const uintptr_t arr = memberData ? mem::readOr<uintptr_t>(memberData + 0x18) : 0) {
+        const uint32_t count = mem::readOr<uint32_t>(arr - 4);
+        if (g.copy < count && count < 100000) mem::read(arr + uintptr_t(g.copy) * 12, abc, sizeof(abc));
+    }
+    const int32_t a = abc[0], b = abc[1], c = abc[2];
+    uint8_t mask = a == 0 ? 1 : a == 1 ? 3 : a == 2 ? 2 : 0;
+    mask |= c == 0 ? 4 : c == 1 ? 0xc : c == 2 ? 8 : 0;
+    mask |= b == 0 ? 0x20 : b == 1 ? 0x30 : b == 2 ? 0x10 : 0;
+    update[0x8c] = mask;
+    update[0x8d] = 2 | 4;
+    // The mesh asset (member data +0x38), as the group passes it.
+    static const reflect::Type* rma = registry().find("RigidMeshAsset");
+    const uintptr_t asset = memberData ? mem::readOr<uintptr_t>(memberData + 0x38) : 0;
+    const reflect::Type* at = asset ? registry().typeOf(mem::ProcessMemory(), asset) : nullptr;
+    const bool isRigid = at && rma && registry().isKindOf(at, rma);
+    uint16_t factoryValue = 0;
+    const uintptr_t factory = mem::readOr<uintptr_t>(g.block + 0xb8);
+    const uintptr_t fvt = factory ? mem::readOr<uintptr_t>(factory) : 0;
+    const uintptr_t ffn = fvt ? mem::readOr<uintptr_t>(fvt + 0x18) : 0;
+    if (mem::inImage(ffn)) factoryValue = reinterpret_cast<uint16_t (*)(uintptr_t, bool)>(ffn)(factory, isRigid);
+    memcpy(update + 0x8a, &factoryValue, 2);
+    std::array<uint8_t, 16> hash{};
+    bool have = false;
+    {
+        std::lock_guard<std::mutex> lock(g_origM);
+        if (auto it = g_origHash.find(obj); it != g_origHash.end()) hash = it->second, have = true;
+    }
+    if (!have && isRigid) { // first move: hashed at the placement it still has
+        alignas(16) float t[16];
+        if (mem::read(obj + 0x10, t, sizeof(t))) {
+            const uintptr_t src = (mem::readOr<uint16_t>(asset + 10) & 0x100) ? asset - 0x10 : 0;
+            alignas(16) uint8_t out[16] = {};
+            reinterpret_cast<void (*)(uint8_t*, uintptr_t, float*)>(mem::rva(0x143b722e0))(out, src, t);
+            memcpy(hash.data(), out, 16);
+            have = true;
+            std::lock_guard<std::mutex> lock(g_origM);
+            g_origHash.emplace(obj, hash);
+        }
+    }
+    if (have) memcpy(update + 0x78, hash.data(), 16);
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 1)
+        GN_LOG("layouts: in place: render update view mask %02x (copy settings %d %d %d), factory value %04x, hash %s", mask, a, b, c, factoryValue,
+               have ? "kept" : "none (not a RigidMeshAsset)");
 }
 
 // Client thread: moves only this copy's render object, as 0x14318fbc0 does for each copy: set its
 // transform (vtable +0x10), build an update (0x143769330) and hand it to the render world
 // (0x1436d6ce0 with *(0x1424a9b98)+0x48).
-void placeCopy(const GroupProp& g, const gn_transform& world) {
+void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = false, const gn_transform* fromWorld = nullptr) {
+    // The render-object functions it calls must be the ones this was worked out on.
+    static const bool known = build::codeMatches("RenderObject_buildUpdate") && build::codeMatches("RenderWorld_submitUpdate");
+    if (!known) return;
     const uintptr_t obj = renderObjectOf(g);
     const uintptr_t vt = obj ? mem::readOr<uintptr_t>(obj) : 0;
     const uintptr_t setT = vt ? mem::readOr<uintptr_t>(vt + 0x10) : 0;
-    const uintptr_t renderRoot = mem::readOr<uintptr_t>(mem::rva(e::global::RenderRoot));
+    const uintptr_t renderRoot = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds)); // the client world
     const uintptr_t renderWorld = renderRoot ? mem::readOr<uintptr_t>(renderRoot + 0x48) : 0;
     if (!mem::inImage(setT) || !renderWorld) return;
     alignas(16) gn_transform t = world;
+    // The render object is drawn with its own transform, which need not be the collision
+    // instance's (`world`). Moved from `fromWorld`: the same move is applied to the render
+    // object's current transform (+0x10), so whatever differs between the two is kept.
+    alignas(16) gn_transform cur{};
+    if (fromWorld && mem::read(obj + 0x10, &cur, sizeof(cur)) && finite(cur.right, 3) && finite(cur.trans, 3)) {
+        static std::atomic<int> said{0};
+        if (streaming && said.fetch_add(1) < 1)
+            GN_LOG("layouts: in place: render object at (%.2f %.2f %.2f) right (%.3f %.3f %.3f) up (%.3f %.3f %.3f); collision at (%.2f %.2f %.2f) right (%.3f %.3f %.3f) up (%.3f %.3f %.3f)",
+                   cur.trans[0], cur.trans[1], cur.trans[2], cur.right[0], cur.right[1], cur.right[2], cur.up[0], cur.up[1], cur.up[2],
+                   fromWorld->trans[0], fromWorld->trans[1], fromWorld->trans[2], fromWorld->right[0], fromWorld->right[1], fromWorld->right[2],
+                   fromWorld->up[0], fromWorld->up[1], fromWorld->up[2]);
+        reframe(*fromWorld, world, cur.right, false, t.right);
+        reframe(*fromWorld, world, cur.up, false, t.up);
+        reframe(*fromWorld, world, cur.forward, false, t.forward);
+        reframe(*fromWorld, world, cur.trans, true, t.trans);
+    }
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     reinterpret_cast<void (*)(uintptr_t, gn_transform*)>(setT)(obj, &t);
     alignas(16) uint8_t update[0x100] = {};
     // Set before building, as 0x14318fbc0 does (offsets from its local at rsp-0x148).
-    const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(0x141a4e8dc));
+    const uint32_t lodScale = mem::readOr<uint32_t>(mem::rva(e::global::StaticModelGroup_LodScale));
     memcpy(update + 0x60, &lodScale, 4);
     update[0x88] = update[0x89] = 0;
     update[0x8d] = 2;
     update[0x8e] = 0;
+    if (streaming) fillGroupUpdate(g, obj, update);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderObject_buildUpdate))(obj, update);
     const uintptr_t objPlus8 = obj + 8;
     memcpy(update + 0x70, &objPlus8, 8);
     const uint32_t tag = mem::readOr<uint32_t>(obj + 0x8c);
     memcpy(update + 0x90, &tag, 4);
     reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::RenderWorld_submitUpdate))(renderWorld, update);
+    // The set-transform (vtable +0x10, 0x14376c060 for a RigidMeshEntity) already updates the
+    // object's culling sphere (+0x50, and its visibility entry +0x84 through 0x14357b970) and its
+    // streaming entry (+0x78, MeshStreaming_setTransform with the game's own value from 0x1419fd590).
+    // An extra MeshStreaming_setTransform with a scale of 1 (what this did before 2026-10-22)
+    // overwrote that value, and moved props went invisible.
+    if (streaming) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 1) {
+            float sphere[4] = {};
+            mem::read(obj + 0x50, sphere, sizeof(sphere));
+            GN_LOG("layouts: group prop moved in place: render object %llx, sphere (%.2f %.2f %.2f) r %.2f, visibility %08x, streaming %08x",
+                   static_cast<unsigned long long>(obj), sphere[0], sphere[1], sphere[2], sphere[3],
+                   mem::readOr<uint32_t>(obj + 0x84, 0xffffffffu), mem::readOr<uint32_t>(obj + e::constant::RigidMeshEntity_StreamingHandle, 0xffffffffu));
+        }
+    }
 }
 
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
-void moveGroupProp(const GroupProp& g, const gn_transform& world) {
+void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming = false) {
     gn_transform G{};
     if (!entityTransform(reinterpret_cast<void*>(g.serverGroup), G)) return;
     alignas(16) gn_transform local{};
@@ -617,6 +860,16 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     reframe(G, I, world.trans, true, local.trans);
     const uintptr_t si = groupInstance(g.serverBody, g.part);
     const uintptr_t ci = groupInstance(g.clientBody, g.part);
+    // Where it was (world), for moving the render object by the same amount.
+    gn_transform oldLocal{}, oldWorld{};
+    bool haveOld = si && readInstance(si, oldLocal);
+    if (haveOld) {
+        reframe(I, G, oldLocal.right, false, oldWorld.right);
+        reframe(I, G, oldLocal.up, false, oldWorld.up);
+        reframe(I, G, oldLocal.forward, false, oldWorld.forward);
+        reframe(I, G, oldLocal.trans, true, oldWorld.trans);
+        haveOld = finite(oldWorld.right, 3) && finite(oldWorld.up, 3) && finite(oldWorld.forward, 3) && finite(oldWorld.trans, 3);
+    }
     writeInstance(si, local);
     if (ci && ci != si) writeInstance(ci, local);
     if (const uintptr_t mt = memberTransform(g.member, g.copy)) {
@@ -626,7 +879,8 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world) {
     }
     const GroupProp gp = g;
     alignas(16) gn_transform w = world;
-    client().post([gp, w] { placeCopy(gp, w); });
+    alignas(16) gn_transform from = oldWorld;
+    client().post([gp, w, streaming, haveOld, from] { placeCopy(gp, w, streaming, haveOld ? &from : nullptr); });
 }
 
 // Server thread, from a pick that hit a group: fills `g` and the copy's world transform.
@@ -652,7 +906,7 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
     const uintptr_t data = dataOf(serverGroup, "StaticModelGroupEntityData");
     static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
     for (const auto& [p, t] : inspector::tracked())
-        if (t && cg && registry().isKindOf(t, cg) && data && dataOf(p, "StaticModelGroupEntityData") == data) {
+        if (t && cg && registry().isKindOf(t, cg) && data && inspector::alive(p, t) && dataOf(p, "StaticModelGroupEntityData") == data) {
             g.clientGroup = p;
             break;
         }
@@ -680,6 +934,15 @@ struct Spawned {
     uintptr_t server = 0, client = 0;
     const reflect::Type* serverType = nullptr;
     const reflect::Type* clientType = nullptr;
+    // What it was made from (for copying it again).
+    uintptr_t data = 0, serverBus = 0, clientBus = 0;
+    int copyId = -1;              // >= 0: a copy (Edit kind "Copy"); -1: stands in for a group prop
+    bool hidden = false;          // a removed copy, parked below the level for reuse
+    std::string source;           // a copy's source kind and level position
+    float sourceAt[3] = {};
+    // The entities the data and buses belong to (a group or a static model): when the part of the
+    // level they are in streams out, the data and buses go with it.
+    uintptr_t ownerServer = 0, ownerClient = 0;
 };
 std::mutex g_spawnM;
 std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
@@ -687,8 +950,21 @@ std::vector<Spawned> g_spawned; // standalone copies made this level (g_spawnM)
 std::mutex g_busM;
 std::unordered_map<uintptr_t, uintptr_t> g_groupBus; // group entity -> its bus (g_busM)
 
+void recordBus(uintptr_t entity, uintptr_t bus);
+void onCreatedSpecial(void* entity, void* ci, void*) {
+    if (entity && ci) recordBus(reinterpret_cast<uintptr_t>(entity), mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10));
+}
+
+void recordBus(uintptr_t entity, uintptr_t bus) {
+    if (!entity || !bus) return;
+    std::lock_guard<std::mutex> lock(g_busM);
+    g_groupBus[entity] = bus;
+}
+
+
 void onCreatedGroup(void* entity, void* ci, void*) {
     if (!entity || !ci) return;
+    g_groupGen.fetch_add(1);
     const uintptr_t bus = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ci) + 0x10);
     if (!bus) return;
     std::lock_guard<std::mutex> lock(g_busM);
@@ -704,6 +980,36 @@ uintptr_t busOf(uintptr_t group) {
 uintptr_t memberType(uintptr_t member) {
     static const uint32_t off = memberField("MemberType");
     return member && off != 0xffffffffu ? mem::readOr<uintptr_t>(member + off) : 0;
+}
+
+// An Asset's Name (Asset +0x10, a CString), e.g. a MeshAsset's "Whitebox/Railing/.../railing_01_256_Mesh".
+std::string assetName(uintptr_t asset) {
+    static const reflect::Type* assetT = registry().find("Asset");
+    const reflect::Type* t = asset ? registry().typeOf(mem::ProcessMemory(), asset) : nullptr;
+    if (!t || !assetT || !registry().isKindOf(t, assetT)) return {};
+    const uintptr_t p = mem::readOr<uintptr_t>(asset + 0x10);
+    char b[256] = {};
+    if (!p || !mem::read(p, b, sizeof(b) - 1)) return {};
+    b[sizeof(b) - 1] = 0;
+    std::string n = b;
+    for (char c : n)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) return {};
+    return n;
+}
+
+// The mesh an entity data draws (its reflected "Mesh" field), by name; empty when it has none.
+std::string meshOfData(uintptr_t data) {
+    const reflect::Type* t = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    reflect::FieldInfo fi;
+    if (!t || !registry().findField(t, "Mesh", fi)) return {};
+    return assetName(mem::readOr<uintptr_t>(data + fi.field->offset));
+}
+
+// A group member's mesh: its MeshAsset, else its member type's.
+std::string meshOfMember(uintptr_t member) {
+    static const uint32_t off = memberField("MeshAsset");
+    std::string n = member && off != 0xffffffffu ? assetName(mem::readOr<uintptr_t>(member + off)) : std::string();
+    return n.empty() ? meshOfData(memberType(member)) : n;
 }
 
 // Creates and initialises an entity from `data` on the server (as levelSublevel_spawnEntityGroup
@@ -741,7 +1047,10 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
 // Server thread: hide the group copy (whose own placement is `orig`) and put a standalone entity of
 // its member type at `to`; `select` makes it the editor's selection.
 void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_transform& to, bool select) {
-    const uintptr_t data = memberType(g.member);
+    static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    uintptr_t data = memberType(g.member);
+    const reflect::Type* checked = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    if (!checked || !smd || !registry().isKindOf(checked, smd)) data = 0; // only a static model's data is spawned from
     const uintptr_t sbus = busOf(g.serverGroup), cbus = busOf(g.clientGroup);
     const reflect::Type* dt = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
     GN_LOG("layouts: make standalone: part %u, data %llx (%s), server bus %llx, client bus %llx", g.part, static_cast<unsigned long long>(data),
@@ -759,7 +1068,7 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
     }
     // Hide the group copy: its collision and render object far below the level.
     gn_transform away = orig;
-    away.trans[1] -= 15000.f;
+    away.trans[1] -= kParkDepth;
     moveGroupProp(g, away);
     alignas(16) gn_transform o = orig, w = to;
     client().post([g, data, cbus, o, w, se, select] {
@@ -775,6 +1084,10 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
             sp.client = ce;
             sp.serverType = registry().typeOf(mem::ProcessMemory(), se);
             sp.clientType = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+            sp.data = data;
+            sp.serverBus = busOf(g.serverGroup);
+            sp.clientBus = cbus;
+            sp.ownerServer = g.serverGroup, sp.ownerClient = g.clientGroup;
             g_spawned.push_back(sp);
         }
         if (select) selectSpawned(se, ce, o, w);
@@ -790,16 +1103,35 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
     static const uint32_t partRange = memberField("PhysicsPartRange"), perCopy = memberField("PhysicsPartCountPerInstance"),
                           copies = memberField("InstanceCount");
     if (!sg || !cg || partRange == 0xffffffffu) return false;
-    const auto tracked = inspector::tracked();
-    for (const auto& [server, st] : tracked) {
-        if (!st || !registry().isKindOf(st, sg)) continue;
-        const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
-        uintptr_t client = 0;
-        for (const auto& [p, t] : tracked)
-            if (t && registry().isKindOf(t, cg) && data && dataOf(p, "StaticModelGroupEntityData") == data) {
-                client = p;
-                break;
+    // Client groups by their data, and the server groups: found from the tracked list at most once a
+    // second (applying a layout looks for many props in a row).
+    static std::mutex cacheM;
+    static std::unordered_map<uintptr_t, uintptr_t> clientByDataCache;
+    static std::vector<uintptr_t> serversCache;
+    static ULONGLONG cachedAt = 0;
+    std::unordered_map<uintptr_t, uintptr_t> clientByData;
+    std::vector<uintptr_t> servers;
+    {
+        std::lock_guard<std::mutex> lock(cacheM);
+        if (GetTickCount64() - cachedAt > 1000) {
+            clientByDataCache.clear();
+            serversCache.clear();
+            for (const auto& [p, t] : inspector::tracked()) {
+                if (!t || !inspector::alive(p, t)) continue;
+                if (registry().isKindOf(t, cg)) {
+                    if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByDataCache.emplace(d, p);
+                } else if (registry().isKindOf(t, sg))
+                    serversCache.push_back(p);
             }
+            cachedAt = GetTickCount64();
+        }
+        clientByData = clientByDataCache;
+        servers = serversCache;
+    }
+    for (const uintptr_t server : servers) {
+        const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
+        const auto ci = data ? clientByData.find(data) : clientByData.end();
+        const uintptr_t client = ci == clientByData.end() ? 0 : ci->second;
         const uintptr_t serverBody = groupBodyOf(server);
         gn_transform G{};
         if (!client || !serverBody || !entityTransform(reinterpret_cast<void*>(server), G)) continue;
@@ -837,9 +1169,647 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
     return false;
 }
 
-// Server thread: the level's saved standalone copies of group props.
-void applyGroupEdits(const std::vector<Edit>& edits) {
-    int made = 0, missing = 0;
+// ---- copies: new objects made from an existing one --------------------------------------------------
+// A template is what a new copy is made from: the object's data (its StaticModelEntityData) and the
+// entity buses of its server and client halves, plus where it came from, which is how a layout file
+// names it (the source's kind and level position).
+struct Template {
+    uintptr_t data = 0, serverBus = 0, clientBus = 0;
+    std::string source;   // "GroupProp" or the object's kind
+    std::string mesh;     // its mesh (MeshAsset name), when it has one
+    float at[3] = {};     // the source's level position
+    gn_transform place{}; // the source's placement when copied (rotation for pasting)
+    std::string label;
+    uintptr_t ownerServer = 0, ownerClient = 0; // whose data and buses these are (see Spawned)
+    const reflect::Type* ownerServerType = nullptr;
+    const reflect::Type* ownerClientType = nullptr;
+};
+
+void setOwners(Template& t, uintptr_t server, uintptr_t client) {
+    t.ownerServer = server, t.ownerClient = client;
+    t.ownerServerType = server ? registry().typeOf(mem::ProcessMemory(), server) : nullptr;
+    t.ownerClientType = client ? registry().typeOf(mem::ProcessMemory(), client) : nullptr;
+}
+
+// Still usable: its owners are alive (an entity's vtable still says its class) and its data is
+// still a StaticModelEntityData. A streamed-out part of the level frees all three.
+bool templateAlive(const Template& t) {
+    static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    if (!t.ownerServer || !t.ownerClient || !t.ownerServerType || !t.ownerClientType) return false;
+    if (!inspector::alive(t.ownerServer, t.ownerServerType) || !inspector::alive(t.ownerClient, t.ownerClientType)) return false;
+    const reflect::Type* dt = t.data ? registry().typeOf(mem::ProcessMemory(), t.data) : nullptr;
+    return dt && smd && registry().isKindOf(dt, smd);
+}
+
+void selectCopy(const Spawned& sp, const gn_transform& now, bool add = false);
+void hideCopy(int copyId);
+
+// The template for a source named in a layout file (server thread).
+bool resolveSource(const std::string& source, const float* at, Template& t) {
+    t = Template{};
+    t.source = source;
+    memcpy(t.at, at, sizeof(t.at));
+    if (source == "GroupProp") {
+        {   // made standalone already: its group copy is hidden, the standalone copy knows the data
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId < 0 && dist2(sp.orig.trans, at) <= kMatch * kMatch && sp.data) {
+                    t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus, t.place = sp.orig;
+                    setOwners(t, sp.ownerServer, sp.ownerClient);
+                    return templateAlive(t);
+                }
+        }
+        GroupProp g;
+        gn_transform orig{};
+        if (!findGroupProp(at, g, orig)) return false;
+        t.data = memberType(g.member);
+        t.serverBus = busOf(g.serverGroup);
+        t.clientBus = busOf(g.clientGroup);
+        t.place = orig;
+        setOwners(t, g.serverGroup, g.clientGroup);
+        return t.data && t.serverBus && t.clientBus && templateAlive(t);
+    }
+    // A standalone object of the level: where it is now (moved by an edit, or where the level put it).
+    float now[3] = {at[0], at[1], at[2]};
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == source && dist2(ed.at, at) <= kMatch * kMatch) memcpy(now, ed.to.trans, sizeof(now));
+    }
+    uintptr_t server = 0, client = 0;
+    for (const auto& [p, ty] : inspector::tracked()) {
+        if (!ty || kindOf(ty->name) != source) continue;
+        gn_transform tr{};
+        if (!entityTransform(reinterpret_cast<void*>(p), tr) || dist2(tr.trans, now) > kMatch * kMatch) continue;
+        (isServerClass(ty->name) ? server : client) = p;
+        if (isServerClass(ty->name)) t.place = tr;
+    }
+    t.data = server ? dataOf(server, "StaticModelEntityData") : 0;
+    t.serverBus = server ? busOf(server) : 0;
+    t.clientBus = client ? busOf(client) : 0;
+    setOwners(t, server, client);
+    return t.data && t.serverBus && t.clientBus && templateAlive(t);
+}
+
+uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle = nullptr);
+
+// Whether a source is a backdrop (a distant view's version of an object, in a Backdrops sublevel):
+// used only when nothing else has the mesh.
+bool isBackdrop(uintptr_t serverBus) {
+    std::string b;
+    subLevelOfBus(serverBus, &b);
+    return b.find("/Backdrops/") != std::string::npos;
+}
+
+// Server thread: a template for any loaded object drawn with `mesh` (a standalone model, or a prop in
+// a static model group), wherever it is. Used by the library, and for saved copies whose own source
+// is not found.
+bool resolveByMesh(const std::string& mesh, Template& t, bool quiet = false) {
+    namespace c = e::constant;
+    if (mesh.empty()) return false;
+
+    static const reflect::Type* sg = registry().find("ServerStaticModelGroupEntity");
+    static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
+    const auto tracked = inspector::tracked();
+    Template backdrop;
+    bool haveBackdrop = false;
+    // Standalone models first: data, buses and owners of both halves.
+    std::unordered_map<uintptr_t, uintptr_t> clientByData, clientGroupByData;
+    for (const auto& [p, ty] : tracked) {
+        if (!ty || isServerClass(ty->name) || !inspector::alive(p, ty)) continue; // dead ones would hide live ones with the same data
+        if (cg && registry().isKindOf(ty, cg)) {
+            if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientGroupByData.emplace(d, p);
+        } else if (ty->name.find("StaticModelEntity") != std::string::npos) {
+            if (const uintptr_t d = dataOf(p, "StaticModelEntityData")) clientByData.emplace(d, p);
+        }
+    }
+    for (const auto& [p, ty] : tracked) {
+        if (!ty || !isServerClass(ty->name) || ty->name.find("StaticModelEntity") == std::string::npos || !inspector::alive(p, ty)) continue;
+        const uintptr_t d = dataOf(p, "StaticModelEntityData");
+        if (!d || meshOfData(d) != mesh) continue;
+        const auto ci = clientByData.find(d);
+        if (ci == clientByData.end()) continue;
+        Template x;
+        x.data = d, x.serverBus = busOf(p), x.clientBus = busOf(ci->second);
+        if (!x.serverBus || !x.clientBus) continue;
+        x.source = kindOf(ty->name), x.mesh = mesh;
+        if (!entityTransform(reinterpret_cast<void*>(p), x.place)) continue;
+        memcpy(x.at, x.place.trans, sizeof(x.at));
+        setOwners(x, p, ci->second);
+        if (!templateAlive(x)) continue;
+        if (isBackdrop(x.serverBus)) {
+            if (!haveBackdrop) backdrop = x, haveBackdrop = true;
+            continue;
+        }
+        t = x;
+        return true;
+    }
+    // Then group members (the copies' placement is not needed: a library object is placed upright).
+    int groups = 0, paired = 0, matched = 0, noBus = 0, dead = 0;
+    for (const auto& [server, ty] : tracked) {
+        if (!ty || !sg || !registry().isKindOf(ty, sg) || !inspector::alive(server, ty)) continue;
+        ++groups;
+        const uintptr_t gd = dataOf(server, "StaticModelGroupEntityData");
+        const auto cgi = gd ? clientGroupByData.find(gd) : clientGroupByData.end();
+        if (cgi == clientGroupByData.end()) continue;
+        ++paired;
+        const uintptr_t client = cgi->second;
+        const uintptr_t blocks = mem::readOr<uintptr_t>(client + c::ClientStaticModelGroup_Members);
+        const int32_t count = mem::readOr<int32_t>(client + c::ClientStaticModelGroup_MemberCount);
+        for (int32_t b = 0; blocks && b < count && b < 4096; ++b) {
+            const uintptr_t m = mem::readOr<uintptr_t>(blocks + static_cast<uintptr_t>(b) * c::GroupMemberBlock_Size + c::GroupMemberBlock_Member);
+            if (!m || meshOfMember(m) != mesh) continue;
+            ++matched;
+            Template x;
+            x.data = memberType(m), x.serverBus = busOf(server), x.clientBus = busOf(client);
+            if (!x.data || !x.serverBus || !x.clientBus) {
+                ++noBus;
+                continue;
+            }
+            x.source = "GroupProp", x.mesh = mesh;
+            x.place = gn_transform{};
+            x.place.right[0] = x.place.up[1] = x.place.forward[2] = 1.f;
+            x.place.trans[3] = 1.f;
+            setOwners(x, server, client);
+            if (!templateAlive(x)) {
+                ++dead;
+                continue;
+            }
+            if (isBackdrop(x.serverBus)) {
+                if (!haveBackdrop) backdrop = x, haveBackdrop = true;
+                continue;
+            }
+            t = x;
+            return true;
+        }
+    }
+    if (haveBackdrop) {
+        t = backdrop;
+        return true;
+    }
+    if (!quiet) GN_LOG("layouts: no loaded object with mesh %s (%llu entities tracked, %llu client models, %d groups, %d paired, %d members with it, %d "
+           "without buses, %d not usable)",
+           mesh.c_str(), static_cast<unsigned long long>(tracked.size()), static_cast<unsigned long long>(clientByData.size()), groups, paired,
+           matched, noBus, dead);
+    return false;
+}
+
+
+// ---- keeping parts of the level loaded -----------------------------------------------------------
+// A level is split into sublevels (ServerSubLevelEntity, data SubWorldReferenceObjectData with the
+// sublevel's BundleName) that logic streams in and out as Faith moves, by sending the entity the
+// events StreamIn (0xd27bc17e) and StreamOut (0x21f3f677); its onEvent (vtable +0x20, 0x14335efb0)
+// loads or unloads the bundle. Entities made on a sublevel's bus (+0x88 of the sublevel entity) go
+// with it, copies included. GridNode wraps that onEvent (a pointer swap, once) and drops StreamOut
+// for the sublevels it has pinned: those holding the source of a copy or a library placement. It
+// can also stream one in by sending it StreamIn, using an event object of the game's own kind
+// (its vtable, seen on a real stream event).
+constexpr uint32_t kStreamIn = static_cast<uint32_t>(e::constant::Event_StreamIn), kStreamOut = static_cast<uint32_t>(e::constant::Event_StreamOut);
+using SubEventFn = void (*)(void* entity, void* event);
+uint64_t g_subOrig = 0;
+std::atomic<uintptr_t> g_streamEventVtbl{0}; // a stream event's vtable, as the game makes them
+std::mutex g_pinM;
+std::unordered_map<uintptr_t, std::string> g_pinned; // (g_pinM) sublevel entity -> its bundle
+std::atomic<bool> g_subHooked{false};
+
+void subLevelEventDetour(void* entity, void* event) {
+    const uint32_t id = event ? mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(event) + 8) : 0;
+    if (id == kStreamIn || id == kStreamOut) g_streamEventVtbl = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(event));
+    if (id == kStreamOut) {
+        std::string bundle;
+        bool pinned = false;
+        try {
+            std::lock_guard<std::mutex> lock(g_pinM);
+            const auto it = g_pinned.find(reinterpret_cast<uintptr_t>(entity));
+            pinned = it != g_pinned.end();
+            if (pinned) bundle = it->second;
+        } catch (...) { // not ours to break: the game's own handling goes on
+        }
+        if (pinned) {
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 50) GN_LOG("layouts: kept %s loaded (it holds copies' sources)", bundle.c_str());
+            return;
+        }
+    }
+    reinterpret_cast<SubEventFn>(g_subOrig)(entity, event);
+}
+
+void hookSubLevels() {
+    if (g_subHooked.exchange(true)) return;
+    if (!build::codeMatches("ServerSubLevelEntity_onEvent"))
+        return GN_LOG("layouts: ServerSubLevelEntity's onEvent is not as expected; parts of the level are not kept loaded");
+    const reflect::Type* t = registry().find("ServerSubLevelEntity");
+    if (!t || t->vtables.empty()) return GN_LOG("layouts: no ServerSubLevelEntity vtable; parts of the level cannot be kept loaded");
+    const uintptr_t vt = static_cast<uintptr_t>(t->vtables[0] - 0x140000000ull) + mem::moduleBase();
+    std::string why;
+    const auto r = hooks().install("layouts", vt + 0x20, mem::rva(e::function::ServerSubLevelEntity_onEvent), reinterpret_cast<uint64_t>(&subLevelEventDetour),
+                                   &g_subOrig, &why); // only if the slot holds the function this was worked out on
+    GN_LOG("layouts: sublevel stream events %s%s", r == hook::Result::Ok ? "watched" : "not watched: ", r == hook::Result::Ok ? "" : why.c_str());
+}
+
+std::string bundleOf(uintptr_t subLevel) {
+    const uintptr_t d = dataOf(subLevel, "SubWorldReferenceObjectData");
+    const uintptr_t p = d ? mem::readOr<uintptr_t>(d + 0x90) : 0; // BundleName
+    char b[256] = {};
+    if (!p || !mem::read(p, b, sizeof(b) - 1)) return {};
+    std::string n = b;
+    for (char c : n)
+        if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e) return {};
+    return n;
+}
+
+// The live server sublevel entities.
+std::vector<uintptr_t> subLevels() {
+    static const reflect::Type* st = registry().find("ServerSubLevelEntity");
+    static std::vector<uintptr_t> cache;
+    static ULONGLONG at = 0;
+    if (GetTickCount64() - at < 1000) { // the tracked list is long: looked through at most once a second
+        std::vector<uintptr_t> live;
+        for (uintptr_t p : cache)
+            if (registry().typeOf(mem::ProcessMemory(), p) && registry().isKindOf(registry().typeOf(mem::ProcessMemory(), p), st)) live.push_back(p);
+        return live;
+    }
+    std::vector<uintptr_t> out;
+    for (const auto& [p, ty] : inspector::tracked())
+        if (ty && st && registry().isKindOf(ty, st) && inspector::alive(p, ty)) out.push_back(p);
+    cache = out;
+    at = GetTickCount64();
+    return out;
+}
+
+// The sublevel `bus` belongs to: the nearest bus up its parent chain (an object is usually on a
+// blueprint's or layer's bus inside the sublevel's own) that is a sublevel's bus. 0 if none is.
+uintptr_t subLevelOfBus(uintptr_t bus, std::string* bundle) {
+    std::unordered_map<uintptr_t, uintptr_t> byBus; // sublevel bus -> sublevel
+    for (uintptr_t sl : subLevels())
+        if (const uintptr_t b = mem::readOr<uintptr_t>(sl + e::constant::ServerSubLevelEntity_Bus)) byBus.emplace(b, sl);
+    for (int depth = 0; bus && depth < 32; ++depth) {
+        if (const auto it = byBus.find(bus); it != byBus.end()) {
+            if (bundle) *bundle = bundleOf(it->second);
+            return it->second;
+        }
+        bus = mem::readOr<uintptr_t>(bus + e::constant::EntityBus_Parent);
+    }
+    return 0;
+}
+
+// Server thread: keeps the sublevel holding `bus` loaded; its bundle name ("" if none was found).
+std::string pinBus(uintptr_t bus) {
+    hookSubLevels();
+    std::string bundle;
+    const uintptr_t sl = bus ? subLevelOfBus(bus, &bundle) : 0;
+    if (!sl) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 10) {
+            std::string chain;
+            uintptr_t b = bus;
+            for (int d = 0; b && d < 12; ++d) {
+                char x[24];
+                snprintf(x, sizeof(x), "%s%llx", d ? " > " : "", static_cast<unsigned long long>(b));
+                chain += x;
+                b = mem::readOr<uintptr_t>(b + e::constant::EntityBus_Parent);
+            }
+            GN_LOG("layouts: bus %llx is in no sublevel this found (%llu sublevels; bus chain %s); its part of the level cannot be kept loaded",
+                   static_cast<unsigned long long>(bus), static_cast<unsigned long long>(subLevels().size()), chain.c_str());
+        }
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(g_pinM);
+    if (g_pinned.emplace(sl, bundle).second) GN_LOG("layouts: keeping %s loaded (sublevel %llx)", bundle.c_str(), static_cast<unsigned long long>(sl));
+    return bundle;
+}
+
+// Server thread: asks the sublevel with `bundle` to stream in (and keeps it). False if there is no
+// such sublevel, or no stream event has been seen yet to copy.
+bool streamIn(const std::string& bundle) {
+    hookSubLevels();
+    if (!g_subOrig) return false;
+    const uintptr_t vtbl = g_streamEventVtbl.load();
+    for (uintptr_t sl : subLevels()) {
+        if (bundleOf(sl) != bundle) continue;
+        {
+            std::lock_guard<std::mutex> lock(g_pinM);
+            g_pinned.emplace(sl, bundle);
+        }
+        if (!vtbl) {
+            GN_LOG("layouts: cannot stream %s in yet: no stream event seen to copy (move around a little first)", bundle.c_str());
+            return false;
+        }
+        alignas(16) uint8_t ev[0x40] = {};
+        memcpy(ev, &vtbl, 8);
+        const uint32_t id = kStreamIn;
+        memcpy(ev + 8, &id, 4);
+        GN_LOG("layouts: streaming in %s (sublevel %llx)", bundle.c_str(), static_cast<unsigned long long>(sl));
+        reinterpret_cast<SubEventFn>(g_subOrig)(reinterpret_cast<void*>(sl), ev);
+        return true;
+    }
+    GN_LOG("layouts: no sublevel with bundle %s in this level", bundle.c_str());
+    return false;
+}
+
+void clearPins() {
+    std::lock_guard<std::mutex> lock(g_pinM);
+    g_pinned.clear();
+}
+
+// ---- zone focus points ------------------------------------------------------------------------------
+// The city's districts are zone-streamed: a ZoneStreamerEntity loads the zones around its focus points
+// (Faith, normally). Its focus manager (+0x280) keeps records {u64, focus, -1, flags} (+0x08, count
+// +0x48); each frame it calls focus->vtable[0](focus, record[0], out) for a position and direction
+// (0x143c81850). GridNode adds focus objects of its own (a vtable with that one function, in its own
+// static memory, so a record may point at them until the streamer drops it) with the streamer's own
+// add (0x143c7e7c0), at the sources of the level's copies and, for a while, where a library entry
+// is being placed from. Removing marks GridNode's record removed (bit 0 of +0x14) as the game's
+// remove does, but only once found: the game's writes out of bounds for a record it does not find.
+struct alignas(16) ZoneFocus {
+    void* vtbl;
+    uint64_t pad;
+    float pos[4];
+    float dir[4];
+};
+void zoneFocusGet(ZoneFocus* self, uint64_t, float* out) {
+    memcpy(out, self->pos, sizeof(self->pos));
+    memcpy(out + 4, self->dir, sizeof(self->dir));
+}
+void* g_zoneFocusVtbl[1] = {reinterpret_cast<void*>(&zoneFocusGet)};
+constexpr int kMaxFocus = 8;
+ZoneFocus g_focus[kMaxFocus];
+struct FocusWant {
+    float at[3];
+    ULONGLONG until; // 0: as long as it is wanted (a copy's source)
+};
+std::mutex g_focusM;
+std::vector<FocusWant> g_focusTemp;                // (g_focusM) library placements under way
+std::unordered_map<uintptr_t, uint32_t> g_focusReg; // (g_focusM) streamer -> slots GridNode registered
+int g_focusCount = 0;                              // (g_focusM) slots in use
+
+// Where the free camera is, for the server thread (render thread writes it each frame it is on).
+std::mutex g_viewM;
+float g_viewCam[3] = {};
+bool g_viewCamOn = false;
+constexpr float kFocusNear = 400.f; // a copy's source is kept loaded while the copy is this close to Faith or the camera
+
+bool focusKnown() {
+    static const bool known = build::codeMatches("ZoneStreamerFocus_add");
+    return known;
+}
+
+// The record of `f` in the focus manager `mgr` that is not marked removed, or 0.
+uintptr_t focusRecord(uintptr_t mgr, const ZoneFocus* f) {
+    namespace c = e::constant;
+    const uintptr_t recs = mem::readOr<uintptr_t>(mgr + c::FocusManager_Records);
+    const uint32_t n = mem::readOr<uint32_t>(mgr + c::FocusManager_Count);
+    for (uint32_t i = 0; recs && i < n && i < 256; ++i) {
+        const uintptr_t r = recs + static_cast<uintptr_t>(i) * c::FocusRecord_Size;
+        if (mem::readOr<uintptr_t>(r + c::FocusRecord_Focus) == reinterpret_cast<uintptr_t>(f) &&
+            !(mem::readOr<uint32_t>(r + c::FocusRecord_Flags) & 1))
+            return r;
+    }
+    return 0;
+}
+
+// On the streamer's own thread: GridNode's slots in `mask` registered with it, the others not.
+void focusApply(uintptr_t streamer, const reflect::Type* type, uint32_t mask) {
+    if (!inspector::alive(streamer, type)) {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        g_focusReg.erase(streamer);
+        return;
+    }
+    const uintptr_t mgr = streamer + e::constant::ZoneStreamer_FocusManager;
+    using AddFn = void (*)(uintptr_t, uint64_t, ZoneFocus*);
+    for (int i = 0; i < kMaxFocus; ++i) {
+        const uintptr_t rec = focusRecord(mgr, &g_focus[i]);
+        if ((mask >> i) & 1) {
+            if (!rec) reinterpret_cast<AddFn>(mem::rva(e::function::ZoneStreamerFocus_add))(mgr, 0, &g_focus[i]);
+        } else if (rec) {
+            *reinterpret_cast<volatile uint32_t*>(rec + e::constant::FocusRecord_Flags) |= 1;
+        }
+    }
+    std::lock_guard<std::mutex> lock(g_focusM);
+    g_focusReg[streamer] = mask;
+}
+
+// Asks for the zones around `at` to be loaded for `seconds` (a library placement from far away).
+void zoneFocusRequest(const float* at, int seconds) {
+    std::lock_guard<std::mutex> lock(g_focusM);
+    FocusWant w{};
+    memcpy(w.at, at, sizeof(w.at));
+    w.until = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
+    g_focusTemp.push_back(w);
+}
+
+// The live zone streamers. They are not made through a creator GridNode hooks, so they are found
+// as the game's own focus entities find them (0x143c7d800): each game world (client, server) keeps
+// a list per class, its first node at ClassInfo + (world's list index (+0x28) + 6) * 0x10; a
+// ZoneStreamerEntity's node is at +0x268, and a node's first field is the next node.
+std::vector<std::pair<uintptr_t, const reflect::Type*>> zoneStreamers() {
+    namespace c = e::constant;
+    static const reflect::Type* zs = registry().find("ZoneStreamerEntity");
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
+    if (!zs) return out;
+    const uintptr_t ti = mem::rva(e::global::ZoneStreamerEntity_TypeInfo);
+    for (int realm = 0; realm < 2; ++realm) {
+        const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds) + static_cast<uintptr_t>(realm) * 8);
+        if (!world) continue;
+        const int32_t index = mem::readOr<int32_t>(world + c::GameWorld_ClassListIndex);
+        if (index < 0 || index > 64) continue;
+        uintptr_t node = mem::readOr<uintptr_t>(ti + (static_cast<uintptr_t>(index) + 6) * 0x10);
+        for (int n = 0; node && n < 64; ++n) {
+            const uintptr_t ent = node - c::ZoneStreamerEntity_ClassLink;
+            const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+            if (ty && registry().isKindOf(ty, zs) &&
+                std::find_if(out.begin(), out.end(), [&](const auto& s) { return s.first == ent; }) == out.end())
+                out.push_back({ent, ty});
+            node = mem::readOr<uintptr_t>(node);
+        }
+    }
+    return out;
+}
+
+// Server thread, every 2 s: the focus points wanted now (library placements first, then the
+// sources of the level's copies, within 60 m of each other counted once), registered with every
+// zone streamer on its own thread. A streamer whose grid does not hold a point finds no zone for it.
+void zoneFocusSync() {
+    if (!focusKnown()) return;
+    std::vector<std::array<float, 3>> want;
+    const auto addWant = [&](const float* p) {
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(p[k]) || std::fabs(p[k]) > 1e6f) return;
+        if (p[0] == 0.f && p[1] == 0.f && p[2] == 0.f) return;
+        for (const auto& w : want)
+            if ((w[0] - p[0]) * (w[0] - p[0]) + (w[1] - p[1]) * (w[1] - p[1]) + (w[2] - p[2]) * (w[2] - p[2]) < 60.f * 60.f) return;
+        if (want.size() < kMaxFocus) want.push_back({p[0], p[1], p[2]});
+    };
+    {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        const ULONGLONG now = GetTickCount64();
+        g_focusTemp.erase(std::remove_if(g_focusTemp.begin(), g_focusTemp.end(), [&](const FocusWant& w) { return w.until <= now; }),
+                          g_focusTemp.end());
+        for (const FocusWant& w : g_focusTemp) addWant(w.at);
+    }
+    // Where someone is looking from: Faith, and the free camera while it is on.
+    std::vector<std::array<float, 3>> viewers;
+    if (void* faith = localServerCharacter()) {
+        gn_transform ft{};
+        if (entityTransform(faith, ft)) viewers.push_back({ft.trans[0], ft.trans[1], ft.trans[2]});
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        if (g_viewCamOn) viewers.push_back({g_viewCam[0], g_viewCam[1], g_viewCam[2]});
+    }
+    const auto nearViewer = [&](const float* p) {
+        for (const auto& v : viewers)
+            if ((v[0] - p[0]) * (v[0] - p[0]) + (v[1] - p[1]) * (v[1] - p[1]) + (v[2] - p[2]) * (v[2] - p[2]) < kFocusNear * kFocusNear) return true;
+        return false;
+    };
+    {   // a copy's source, while the copy (not its source) is near: going to the copy loads its source
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Copy" && nearViewer(ed.to.trans)) addWant(ed.at);
+    }
+    for (size_t i = 0; i < want.size(); ++i) {
+        ZoneFocus& f = g_focus[i];
+        f.vtbl = g_zoneFocusVtbl;
+        f.pos[0] = want[i][0], f.pos[1] = want[i][1], f.pos[2] = want[i][2], f.pos[3] = 1.f;
+        f.dir[0] = 0.f, f.dir[1] = 0.f, f.dir[2] = 1.f, f.dir[3] = 0.f;
+    }
+    const uint32_t mask = want.empty() ? 0u : ((1u << want.size()) - 1u);
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        changed = g_focusCount != static_cast<int>(want.size());
+        g_focusCount = static_cast<int>(want.size());
+    }
+    const auto streamers = zoneStreamers();
+    if (changed) GN_LOG("layouts: %llu zone focus points (copies' sources and placements) on %llu zone streamers",
+                        static_cast<unsigned long long>(want.size()), static_cast<unsigned long long>(streamers.size()));
+    for (const auto& [s, ty] : streamers) {
+        uint32_t had = ~0u;
+        {
+            std::lock_guard<std::mutex> lock(g_focusM);
+            const auto it = g_focusReg.find(s);
+            if (it != g_focusReg.end()) had = it->second;
+        }
+        if (had == mask) continue;
+        const uintptr_t streamer = s;
+        const reflect::Type* type = ty;
+        const bool serverRealm = mem::readOr<uint32_t>(s + 0x18) & 1; // the realm bit of an entity's flags
+        if (serverRealm) server().post([streamer, type, mask] { focusApply(streamer, type, mask); });
+        else client().post([streamer, type, mask] { focusApply(streamer, type, mask); });
+    }
+}
+
+void clearZoneFocus() { // a new level: its streamers are new
+    std::lock_guard<std::mutex> lock(g_focusM);
+    g_focusTemp.clear();
+    g_focusReg.clear();
+    g_focusCount = 0;
+}
+
+// Server thread: a copy of `t` at `to`. A removed copy of the same object is reused when there is one.
+void spawnCopy(const Template& t, const gn_transform& to, int copyId, bool select, bool addSel = false) {
+    if (!templateAlive(t)) {
+        if (select) GN_LOG("layouts: copy %d of %s: the part of the level it comes from is no longer loaded", copyId, t.source.c_str());
+        if (select) setStatus("That object's part of the level is no longer loaded (it streams in and out as you move). "
+                              "Fly back to it and copy it again.");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (Spawned& sp : g_spawned)
+            if (sp.hidden && sp.data == t.data && sp.serverType && inspector::alive(sp.server, sp.serverType)) {
+                sp.hidden = false;
+                sp.copyId = copyId;
+                sp.source = t.source;
+                memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
+                if (sp.serverType) queueMove(sp.server, sp.serverType, to);
+                if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, to);
+                if (select) {
+                    const Spawned copy = sp;
+                    client().post([copy, to, addSel] { selectCopy(copy, to, addSel); });
+                }
+                return;
+            }
+    }
+    pinBus(t.serverBus); // its source's part of the level stays loaded, so the copy does too
+    const uintptr_t se = spawnServer(t.data, t.serverBus, to);
+    GN_LOG("layouts: copy %d of %s at (%.2f, %.2f, %.2f): server entity %llx", copyId, t.source.c_str(), to.trans[0], to.trans[1], to.trans[2],
+           static_cast<unsigned long long>(se));
+    if (!se) {
+        if (select) setStatus("Paste: the server did not create the entity");
+        return;
+    }
+    Spawned sp;
+    sp.server = se;
+    sp.serverType = registry().typeOf(mem::ProcessMemory(), se);
+    sp.orig = to;
+    sp.data = t.data, sp.serverBus = t.serverBus, sp.clientBus = t.clientBus;
+    sp.copyId = copyId;
+    sp.source = t.source;
+    memcpy(sp.sourceAt, t.at, sizeof(sp.sourceAt));
+    sp.ownerServer = t.ownerServer, sp.ownerClient = t.ownerClient;
+    {   // recorded now (its client half follows), so nothing places it a second time meanwhile
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        g_spawned.push_back(sp);
+    }
+    alignas(16) gn_transform w = to;
+    client().post([sp, w, select, addSel]() mutable {
+        sp.client = spawnClient(sp.data, sp.clientBus, w);
+        sp.clientType = sp.client ? registry().typeOf(mem::ProcessMemory(), sp.client) : nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (Spawned& rec : g_spawned)
+                if (rec.server == sp.server) rec.client = sp.client, rec.clientType = sp.clientType;
+        }
+        if (select) selectCopy(sp, w, addSel);
+    });
+}
+
+// Server thread: the level's saved copies and standalone copies of group props. With onlyMissing,
+// only what is not there (any more) is placed, quietly when nothing can be: after part of the level
+// streamed out and back in, which destroys the copies made in it.
+void applyGroupEdits(const std::vector<Edit>& edits, bool onlyMissing) {
+    int made = 0, missing = 0, copies = 0, lost = 0;
+    std::unordered_map<std::string, std::pair<bool, Template>> resolved; // one lookup per source
+    // Copies first: a copy of a group prop finds its source in the group before that prop is made standalone.
+    for (const Edit& ed : edits) {
+        if (ed.kind != "Copy") continue;
+        bool moved = false;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId == ed.copyId && !sp.hidden) {
+                    if (!onlyMissing) {
+                        if (sp.serverType) queueMove(sp.server, sp.serverType, ed.to);
+                        if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, ed.to);
+                    }
+                    moved = true;
+                }
+        }
+        if (moved) {
+            if (!onlyMissing) ++copies;
+            continue;
+        }
+        Template t;
+        char key[160];
+        snprintf(key, sizeof(key), "%s|%.3f|%.3f|%.3f", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
+        auto memo = resolved.find(key);
+        if (memo == resolved.end()) {
+            bool ok = resolveSource(ed.source, ed.at, t);
+            if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t, onlyMissing); // any loaded object with its mesh
+            memo = resolved.emplace(key, std::make_pair(ok, t)).first;
+        }
+        t = memo->second.second;
+        if (!memo->second.first) {
+            if (!onlyMissing) GN_LOG("layouts: copy of %s at (%.2f, %.2f, %.2f): the source was not found", ed.source.c_str(), ed.at[0], ed.at[1], ed.at[2]);
+            ++lost;
+            continue;
+        }
+        spawnCopy(t, ed.to, ed.copyId, false);
+        ++copies;
+    }
+    if (onlyMissing ? copies > 0 : (copies || lost))
+        GN_LOG("layouts: %d copies placed%s, %d sources not found", copies, onlyMissing ? " again (their part of the level was reloaded)" : " from the layout", lost);
     for (const Edit& ed : edits) {
         if (ed.kind != "GroupProp") continue;
         Spawned existing{};
@@ -847,9 +1817,10 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (const Spawned& sp : g_spawned)
-                if (dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
+                if (sp.copyId < 0 && !sp.hidden && dist2(sp.orig.trans, ed.at) <= kMatch * kMatch) existing = sp, have = true;
         }
         if (have) { // made standalone earlier this level: move that copy
+            if (onlyMissing) continue;
             if (existing.serverType) queueMove(existing.server, existing.serverType, ed.to);
             if (existing.client && existing.clientType) queueMove(existing.client, existing.clientType, ed.to);
             ++made;
@@ -864,7 +1835,9 @@ void applyGroupEdits(const std::vector<Edit>& edits) {
         makeStandalone(g, orig, ed.to, false);
         ++made;
     }
-    if (made || missing) GN_LOG("layouts: %d group props made standalone from the layout, %d not found", made, missing);
+    if (onlyMissing ? made > 0 : (made || missing))
+        GN_LOG("layouts: %d group props made standalone%s, %d not found", made, onlyMissing ? " again (their part of the level was reloaded)" : " from the layout",
+               missing);
 }
 
 // ---- the editor (render thread; game work is posted to the realms) -------------------------------------
@@ -876,16 +1849,84 @@ struct Selected {
     std::vector<std::pair<uintptr_t, const reflect::Type*>> entities; // its server and client entity
     bool group = false;    // a prop inside a static model group (experimental; not saved)
     bool spawned = false;  // a standalone copy GridNode made (not saved yet)
+    int copyId = -1;       // >= 0: a copy (Edit kind "Copy")
     GroupProp gp;
 };
 std::mutex g_selM;
 Selected g_sel;            // (g_selM)
 bool g_haveSel = false;    // (g_selM)
+std::vector<Selected> g_extra; // (g_selM) the rest of a multiple selection (Shift+pick); g_sel leads
 std::string g_status;      // (g_selM)
 
 void setStatus(const std::string& s) {
     std::lock_guard<std::mutex> lock(g_selM);
     g_status = s;
+}
+
+// Whether two selections are the same object.
+bool sameObject(const Selected& a, const Selected& b) {
+    if (a.group || b.group) return a.group && b.group && a.gp.serverGroup == b.gp.serverGroup && a.gp.part == b.gp.part;
+    if (a.copyId >= 0 || b.copyId >= 0) return a.copyId == b.copyId;
+    for (const auto& x : a.entities)
+        for (const auto& y : b.entities)
+            if (x.first == y.first) return true;
+    return false;
+}
+
+// g_selM held: `s` becomes the selection, or with `add` joins it (and leaves it when it is already in).
+void setPickedLocked(const Selected& s, bool add) {
+    if (!add || !g_haveSel) {
+        g_extra.clear();
+        g_sel = s;
+        g_haveSel = true;
+        return;
+    }
+    if (sameObject(g_sel, s)) {
+        if (g_extra.empty()) {
+            g_haveSel = false;
+        } else {
+            g_sel = g_extra.back();
+            g_extra.pop_back();
+        }
+        return;
+    }
+    for (size_t i = 0; i < g_extra.size(); ++i)
+        if (sameObject(g_extra[i], s)) {
+            g_extra.erase(g_extra.begin() + static_cast<long>(i));
+            return;
+        }
+    g_extra.push_back(g_sel);
+    g_sel = s;
+}
+
+// Everything selected, the leading object first.
+std::vector<Selected> selectionAll() {
+    std::lock_guard<std::mutex> lock(g_selM);
+    std::vector<Selected> out;
+    if (!g_haveSel) return out;
+    out.push_back(g_sel);
+    out.insert(out.end(), g_extra.begin(), g_extra.end());
+    return out;
+}
+
+// The group props in the selection made standalone (so they can move); false if there were none.
+bool standaloneGroupProps() {
+    int n = 0;
+    for (const Selected& s : selectionAll())
+        if (s.group) {
+            const GroupProp gp = s.gp;
+            const gn_transform at = s.orig;
+            server().post([gp, at] { makeStandalone(gp, at, at, true); });
+            ++n;
+        }
+    if (n) setStatus(n == 1 ? "Making the group prop standalone so it can move..." : "Making the group props standalone so they can move...");
+    return n > 0;
+}
+
+// g_selM held: " (N selected)" when more than one is.
+std::string countNoteLocked() {
+    if (!g_haveSel || g_extra.empty()) return "";
+    return " (" + std::to_string(g_extra.size() + 1) + " selected)";
 }
 
 // Every entity of the same kind at the same place (the server and client halves of one object).
@@ -911,10 +1952,13 @@ std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body) {
     return {0, nullptr};
 }
 
+void clearUndo();
+
 // ---- loading and unloading layouts ----------------------------------------------------------------------
 void clearSelection() {
     std::lock_guard<std::mutex> lock(g_selM);
     g_haveSel = false;
+    g_extra.clear();
 }
 
 // Puts the level back as the game has it: moved objects return to their own placement. A group
@@ -936,6 +1980,8 @@ void unloadLayout() {
         spawned = g_spawned; // they stay: the group copies they replace cannot be shown again
     }
     clearSelection();
+    clearUndo(); // the steps were for the layout that is gone
+    unloadSpecial(); // barriers and magropes back, their copies removed
     int n = 0;
     for (const auto& [p, t] : inspector::tracked()) {
         if (!t) continue;
@@ -949,13 +1995,18 @@ void unloadLayout() {
                 break;
             }
     }
-    // A standalone copy stands in for its group prop: back to the prop's own placement.
+    // Copies go away; a standalone copy stands in for its group prop: back to the prop's own placement.
+    for (const Spawned& sp : spawned)
+        if (sp.copyId >= 0) hideCopy(sp.copyId);
     for (const Spawned& sp : spawned) {
+        if (sp.copyId >= 0 || sp.hidden) continue;
         if (sp.serverType) queueMove(sp.server, sp.serverType, sp.orig);
         if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, sp.orig);
     }
-    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies back in their group prop's place)", n,
-           static_cast<unsigned long long>(spawned.size()));
+    size_t standIns = 0, copies = 0;
+    for (const Spawned& sp : spawned) (sp.copyId >= 0 ? copies : standIns) += sp.hidden ? 0 : 1;
+    GN_LOG("layouts: unloaded (%d objects put back, %llu standalone copies back in their group prop's place, %llu copies removed)", n,
+           static_cast<unsigned long long>(standIns), static_cast<unsigned long long>(copies));
 }
 
 // Loads a saved layout of the current level and applies it (unloading what is applied first).
@@ -976,7 +2027,7 @@ void loadLayout(const std::string& name) {
     }
     writeLine(levelDir(level) + L"last.txt", name);
     GN_LOG("layouts: loaded \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
-    std::thread([] { applyToExisting(); }).detach();
+    server().post([] { applyToExisting(); }); // on the server thread, not a thread of its own
 }
 
 void deleteLayout(const std::string& name) {
@@ -1008,14 +2059,48 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
     snprintf(b, sizeof(b), "Made a standalone %s (%llu entities) in place of the group prop. Move it as usual.",
              s.kind.c_str(), static_cast<unsigned long long>(s.entities.size()));
     std::lock_guard<std::mutex> lock(g_selM);
-    g_sel = s;
-    g_haveSel = !s.entities.empty();
-    g_status = b;
+    if (s.entities.empty()) return;
+    // It takes the place of the group prop it was made from, wherever that is in the selection.
+    auto from = [&](const Selected& x) { return x.group && dist2(x.orig.trans, orig.trans) <= kMatch * kMatch; };
+    if (g_haveSel && from(g_sel)) {
+        g_sel = s;
+    } else {
+        bool replaced = false;
+        for (Selected& e : g_extra)
+            if (!replaced && from(e)) e = s, replaced = true;
+        if (!replaced) {
+            g_extra.clear();
+            g_sel = s;
+            g_haveSel = true;
+        }
+    }
+    g_status = b + countNoteLocked();
+}
+
+// Client thread, after a copy was placed: select it for editing (with `add`, alongside the selection).
+void selectCopy(const Spawned& sp, const gn_transform& now, bool add) {
+    Selected s;
+    s.copyId = sp.copyId;
+    for (uintptr_t e : {sp.server, sp.client}) {
+        const reflect::Type* t = e ? registry().typeOf(mem::ProcessMemory(), e) : nullptr;
+        if (t) s.entities.push_back({e, t});
+        if (t && s.kind.empty()) s.kind = kindOf(t->name);
+    }
+    s.orig = s.now = now;
+    memcpy(s.at, sp.sourceAt, sizeof(s.at));
+    char b[160];
+    snprintf(b, sizeof(b), "Placed a copy (%s). Move it as usual; \"Remove this copy\" takes it away.", s.kind.c_str());
+    std::lock_guard<std::mutex> lock(g_selM);
+    if (s.entities.empty()) return;
+    setPickedLocked(s, add);
+    g_status = b + countNoteLocked();
 }
 
 // Server thread: a ray from the camera along its view; the object whose collision it hits.
 // `ray` (from, direction; 6 floats) or, if null, the camera's view.
-void pick(const float* ray = nullptr) {
+// With `add` (Shift held), what is picked joins the selection, or leaves it if it is already in.
+void pick(const float* ray = nullptr, bool add = false) {
+    clearSpecialSelection(); // picking an object leaves a barrier or magrope selection
     std::array<float, 6> given{};
     const bool haveRay = ray != nullptr;
     if (ray) memcpy(given.data(), ray, sizeof(float) * 6);
@@ -1023,10 +2108,10 @@ void pick(const float* ray = nullptr) {
         // A new pick replaces the selection, even when it finds nothing to select: otherwise the
         // editor keeps showing (and moving) the previous object under a "not supported" message.
         std::lock_guard<std::mutex> lock(g_selM);
-        g_haveSel = false;
+        if (!add) g_haveSel = false, g_extra.clear();
         g_status = "Picking...";
     }
-    server().post([haveRay, given] {
+    server().post([haveRay, given, add] {
         gn_transform cam{};
         gn_movement mv{};
         const bool haveMove = movementGet(&mv) == GN_OK;
@@ -1096,9 +2181,8 @@ void pick(const float* ray = nullptr) {
             snprintf(b, sizeof(b), "Picked a prop inside a static model group (part %u), %.1f m away. Experimental: small moves only, not saved.",
                      s.gp.part, hit.distance);
             std::lock_guard<std::mutex> lock(g_selM);
-            g_sel = s;
-            g_haveSel = true;
-            g_status = b;
+            setPickedLocked(s, add);
+            g_status = b + countNoteLocked();
             return;
         }
         Selected s;
@@ -1115,8 +2199,10 @@ void pick(const float* ray = nullptr) {
         {
             std::lock_guard<std::mutex> lock(g_m);
             for (const Edit& ed : g_edits)
-                if ((ed.kind == s.kind || ed.kind == "GroupProp") && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) {
-                    s.spawned = ed.kind == "GroupProp";
+                // Its own kind only: a standalone copy of a group prop is recognised below, from the copies
+                // GridNode made, not from an edit that happens to be at the same place.
+                if (ed.kind == s.kind && dist2(ed.to.trans, s.now.trans) <= kMatch * kMatch) {
+                    s.spawned = false;
                     memcpy(s.at, ed.at, sizeof(s.at));
                     if (ed.haveFrom) {
                         s.orig = ed.from;
@@ -1129,21 +2215,35 @@ void pick(const float* ray = nullptr) {
         {
             std::lock_guard<std::mutex> lock(g_spawnM);
             for (const Spawned& sp : g_spawned)
-                if (sp.server == entity) {
+                if (sp.server == entity && sp.copyId >= 0) { // a copy: its edit is found by its id
+                    s.spawned = false;
+                    s.copyId = sp.copyId;
+                    s.orig = s.now;
+                    memcpy(s.at, sp.sourceAt, sizeof(s.at));
+                } else if (sp.server == entity) {
                     s.spawned = true;
                     s.orig = sp.orig;
                     memcpy(s.at, sp.orig.trans, sizeof(s.at));
                 }
         }
-        collectPair(s, s.now.trans);
+        if (s.copyId >= 0) { // both halves of the copy, not whatever else is at the same place
+            s.entities.clear();
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (const Spawned& sp : g_spawned)
+                if (sp.copyId == s.copyId) {
+                    if (sp.serverType) s.entities.push_back({sp.server, sp.serverType});
+                    if (sp.client && sp.clientType) s.entities.push_back({sp.client, sp.clientType});
+                }
+        } else {
+            collectPair(s, s.now.trans);
+        }
         char b[160];
         snprintf(b, sizeof(b), "Picked %s (%llu entities), hit %.1f m away%s", s.kind.c_str(),
                  static_cast<unsigned long long>(s.entities.size()), hit.distance,
                  guessed ? " (a guess: the nearest object to the hit)" : "");
         std::lock_guard<std::mutex> lock(g_selM);
-        g_sel = s;
-        g_haveSel = true;
-        g_status = b;
+        setPickedLocked(s, add);
+        g_status = b + countNoteLocked();
     });
 }
 
@@ -1152,20 +2252,101 @@ void pick(const float* ray = nullptr) {
 // copy's original position in its group.
 std::string editKind(const Selected& s) { return s.spawned ? "GroupProp" : s.kind; }
 
-void moveSelection(const gn_transform& to) {
-    Selected s;
-    {
-        std::lock_guard<std::mutex> lock(g_selM);
-        if (!g_haveSel) return;
-        g_sel.now = to;
-        s = g_sel;
+// ---- undo -------------------------------------------------------------------------------------------
+// Each change to the layout leaves a step: a move (the object's placement and its edit before), a copy
+// placed (taken away again) or a copy removed (brought back). Moves of one object in quick
+// succession (a held key, a drag) are one step.
+struct UndoStep {
+    enum Kind { Move, Placed, Removed } kind = Move;
+    Selected target;          // Move: the object, `now` = where it was
+    bool hadEdit = false;     // Move: whether it had an edit, and the edit as it was
+    Edit edit;                // Move: that edit; Removed: the copy's edit
+    int copyId = -1;          // Placed / Removed
+    uintptr_t server = 0;     // Removed: the parked copy's server entity
+    double time = 0;
+    int batch = 0;            // steps made together (a multiple selection) are undone together
+};
+std::mutex g_undoM;
+std::vector<UndoStep> g_undo; // (g_undoM)
+int g_undoBatch = 0;          // (g_undoM)
+constexpr size_t kMaxUndo = 400;
+
+// Steps made together. Moves of the same objects in quick succession (a held key, a drag) are one step.
+void pushUndoBatch(std::vector<UndoStep> steps) {
+    if (steps.empty()) return;
+    const double now = static_cast<double>(GetTickCount64()) / 1000.0;
+    std::lock_guard<std::mutex> lock(g_undoM);
+    bool allMoves = true;
+    for (const UndoStep& st : steps) allMoves = allMoves && st.kind == UndoStep::Move;
+    if (allMoves && g_undo.size() >= steps.size()) {
+        const size_t base = g_undo.size() - steps.size();
+        const int b = g_undo[base].batch;
+        bool same = base == 0 || g_undo[base - 1].batch != b;
+        for (size_t i = 0; same && i < steps.size(); ++i) {
+            const UndoStep& last = g_undo[base + i];
+            same = last.kind == UndoStep::Move && last.batch == b && now - last.time < 0.7 && sameObject(last.target, steps[i].target);
+        }
+        if (same) { // the same move continuing: keep where it started
+            for (size_t i = 0; i < steps.size(); ++i) g_undo[base + i].time = now;
+            return;
+        }
     }
+    const int b = ++g_undoBatch;
+    for (UndoStep& st : steps) {
+        st.time = now;
+        st.batch = b;
+        g_undo.push_back(std::move(st));
+    }
+    while (g_undo.size() > kMaxUndo) g_undo.erase(g_undo.begin());
+}
+
+void clearUndo() {
+    std::lock_guard<std::mutex> lock(g_undoM);
+    g_undo.clear();
+}
+
+size_t undoCount() {
+    std::lock_guard<std::mutex> lock(g_undoM);
+    size_t n = 0;
+    for (size_t i = 0; i < g_undo.size(); ++i) n += i == 0 || g_undo[i].batch != g_undo[i - 1].batch;
+    return n;
+}
+
+// The selection's edit as it is now (g_m held).
+Edit* editOf(const Selected& s) {
+    for (Edit& ed : g_edits) {
+        if (s.copyId >= 0 ? (ed.kind == "Copy" && ed.copyId == s.copyId)
+                          : (ed.kind == editKind(s) && dist2(ed.at, s.at) <= kMatch * kMatch))
+            return &ed;
+    }
+    return nullptr;
+}
+
+UndoStep moveStep(const Selected& s) {
+    UndoStep st;
+    st.kind = UndoStep::Move;
+    st.target = s;
+    std::lock_guard<std::mutex> lock(g_m);
+    if (const Edit* ed = editOf(s)) st.hadEdit = true, st.edit = *ed;
+    return st;
+}
+
+// One object to `to` (both realms), and its edit.
+void moveObject(Selected s, const gn_transform& to) {
+    s.now = to;
     if (s.group) {
         const GroupProp gp = s.gp;
-        server().post([gp, to] { moveGroupProp(gp, to); });
+        const bool inPlace = g_inPlaceGroups.load();
+        server().post([gp, to, inPlace] { moveGroupProp(gp, to, inPlace); });
         return;
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, to);
+    if (s.copyId >= 0) {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Edit& ed : g_edits)
+            if (ed.kind == "Copy" && ed.copyId == s.copyId) ed.to = ed.from = to, g_dirty = true;
+        return;
+    }
     const std::string key = editKind(s);
     std::lock_guard<std::mutex> lock(g_m);
     for (Edit& ed : g_edits)
@@ -1184,25 +2365,245 @@ void moveSelection(const gn_transform& to) {
     g_dirty = true;
 }
 
-void resetSelection() {
-    Selected s;
+// `t` carried along by a change of `o` into `n` (as if fixed to it): the rest of a multiple
+// selection moves and turns with the leading object, about its position.
+gn_transform carry(const gn_transform& o, const gn_transform& n, const gn_transform& t) {
+    const float* orows[3] = {o.right, o.up, o.forward};
+    const float* nrows[3] = {n.right, n.up, n.forward};
+    auto map = [&](const float* v, float* out) {
+        float r[3] = {0.f, 0.f, 0.f};
+        for (int i = 0; i < 3; ++i) {
+            const float l2 = orows[i][0] * orows[i][0] + orows[i][1] * orows[i][1] + orows[i][2] * orows[i][2];
+            if (l2 < 1e-12f) continue;
+            const float c = (v[0] * orows[i][0] + v[1] * orows[i][1] + v[2] * orows[i][2]) / l2;
+            for (int k = 0; k < 3; ++k) r[k] += c * nrows[i][k];
+        }
+        out[0] = r[0], out[1] = r[1], out[2] = r[2];
+    };
+    gn_transform out = t;
+    map(t.right, out.right);
+    map(t.up, out.up);
+    map(t.forward, out.forward);
+    const float d[3] = {t.trans[0] - o.trans[0], t.trans[1] - o.trans[1], t.trans[2] - o.trans[2]};
+    float m[3];
+    map(d, m);
+    for (int k = 0; k < 3; ++k) out.trans[k] = n.trans[k] + m[k];
+    return out;
+}
+
+// Moves the selection: the leading object to `to`, the rest of it along (records the edits). Group
+// props are not moved (they are made standalone first).
+void moveSelection(const gn_transform& to, bool record = true) {
+    std::vector<std::pair<Selected, gn_transform>> moves; // object as it was, where it goes
     {
         std::lock_guard<std::mutex> lock(g_selM);
         if (!g_haveSel) return;
-        s = g_sel;
+        const gn_transform from = g_sel.now;
+        moves.push_back({g_sel, to});
+        g_sel.now = to;
+        for (Selected& e : g_extra) {
+            const gn_transform next = carry(from, to, e.now);
+            if (!e.group || g_inPlaceGroups.load()) moves.push_back({e, next});
+            e.now = next;
+        }
     }
+    if (moves.size() > 1 && moves[0].first.group && !g_inPlaceGroups.load()) moves.erase(moves.begin()); // the lead is a group prop: only the rest move
+    if (record) {
+        std::vector<UndoStep> steps;
+        for (const auto& [obj, where] : moves) steps.push_back(moveStep(obj));
+        pushUndoBatch(std::move(steps));
+    }
+    for (const auto& [obj, where] : moves) moveObject(obj, where);
+}
+
+bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm);
+
+bool canDestroy() {
+    static const bool known = build::codeMatches("SpatialEntity_destroy") && build::codeMatches("SpatialEntity_deinit");
+    return known;
+}
+
+// Both halves of a copy destroyed, each on its realm's thread.
+void postDestroy(const Spawned& sp) {
+    if (sp.client && sp.clientType) {
+        const uintptr_t c = sp.client;
+        const reflect::Type* ct = sp.clientType;
+        client().post([c, ct] { destroyEntity(c, ct, "client"); });
+    }
+    if (sp.server && sp.serverType) {
+        const uintptr_t s = sp.server;
+        const reflect::Type* st = sp.serverType;
+        server().post([s, st] { destroyEntity(s, st, "server"); });
+    }
+}
+
+// A copy is taken away: destroyed. Where this game build's destroy functions are not the known
+// ones, parked below the level instead (for reuse).
+void hideCopy(int copyId) {
+    std::vector<Spawned> gone;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (auto it = g_spawned.begin(); it != g_spawned.end();) {
+            Spawned& sp = *it;
+            if (sp.copyId != copyId || sp.hidden) {
+                ++it;
+                continue;
+            }
+            if (canDestroy()) {
+                gone.push_back(sp);
+                it = g_spawned.erase(it);
+                continue;
+            }
+            gn_transform away = sp.orig;
+            if (sp.serverType && inspector::alive(sp.server, sp.serverType))
+                entityTransform(reinterpret_cast<void*>(sp.server), away);
+            away.trans[1] -= kParkDepth;
+            if (sp.serverType) queueMove(sp.server, sp.serverType, away);
+            if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, away);
+            sp.hidden = true;
+            sp.copyId = -1;
+            ++it;
+        }
+    }
+    for (const Spawned& sp : gone) postDestroy(sp);
+}
+
+// Destroys an entity GridNode made, as the engine takes one down: vtable +0x88 (deinit: its
+// components out of the world, off its bus), +0x30 (destroy: the destroyed flag, its components
+// torn down), then +0x38 with 1 (destructor and free, which releases the entity's reference to its
+// bus). Without the deinit its physics part stayed in the spatial grid and the next query called
+// into freed memory. Only for spatial entities whose slots hold the engine's SpatialEntity_deinit
+// and SpatialEntity_destroy. On the game thread of the entity's realm.
+bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) {
+    if (!canDestroy()) {
+        GN_LOG("layouts: destroy: SpatialEntity_deinit/destroy do not match this build; not destroying");
+        return false;
+    }
+    if (!inspector::alive(ent, type)) {
+        GN_LOG("layouts: destroy: %s entity %llx is already gone", realm, static_cast<unsigned long long>(ent));
+        return false;
+    }
+    const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+    const uintptr_t deinit = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_deinit) : 0;
+    const uintptr_t destroy = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_destroy) : 0;
+    const uintptr_t del = vt ? mem::readOr<uintptr_t>(vt + e::constant::Entity_vf_delete) : 0;
+    const uint32_t flags = mem::readOr<uint32_t>(ent + 0x18);
+    // The delete slot holds the game's function, or a wrapper of it in a loaded module (GridNode's
+    // own destructor hook, hookDestructors, or another mod's): either is called as the engine would.
+    HMODULE delModule = nullptr;
+    const bool delOk = del && (mem::inImage(del) ||
+                               GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                  reinterpret_cast<LPCWSTR>(del), &delModule));
+    // Spatial entities, and the two GridNode copies besides: barriers (their own deinit 0x143335b30:
+    // disable, destroy the body) and magropes (0x143175390, the small entities' deinit); their +0x30 is
+    // the empty stub.
+    const bool spatial = deinit == mem::rva(e::function::SpatialEntity_deinit) && destroy == mem::rva(e::function::SpatialEntity_destroy);
+    const bool special = deinit == mem::rva(0x143335b30) || deinit == mem::rva(0x143175390);
+    if ((!spatial && !special) || !delOk) {
+        GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
+               static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
+        return false;
+    }
+    if (flags & e::constant::Entity_FlagDestroyed) {
+        GN_LOG("layouts: destroy: %s entity %llx is already being destroyed", realm, static_cast<unsigned long long>(ent));
+        return false;
+    }
+    // The entity's link in its owner's list (an EntityOwner: the part of the level it was made in
+    // destroys every entity in its list when it unloads). Node at +0x08: {prev node, next node};
+    // a node's next is at +8. Unlinked first, or the owner destroys the freed entity again.
+    const uintptr_t node = ent + e::constant::Entity_OwnerLink;
+    const uintptr_t prev = mem::readOr<uintptr_t>(node);
+    const uintptr_t next = mem::readOr<uintptr_t>(node + 8);
+    if (prev) {
+        const bool prevOk = mem::readOr<uintptr_t>(prev + 8) == node;
+        const bool nextOk = !next || mem::readOr<uintptr_t>(next) == node;
+        if (!prevOk || !nextOk) {
+            GN_LOG("layouts: destroy: %s entity %llx: its owner list does not look as expected (prev %llx -> %llx, next %llx -> %llx); not destroying",
+                   realm, static_cast<unsigned long long>(ent), static_cast<unsigned long long>(prev),
+                   static_cast<unsigned long long>(mem::readOr<uintptr_t>(prev + 8)), static_cast<unsigned long long>(next),
+                   static_cast<unsigned long long>(next ? mem::readOr<uintptr_t>(next) : 0));
+            return false;
+        }
+    }
+    inspector::markDead(ent); // nothing of GridNode's touches it from here on
+    GN_LOG("layouts: destroying %s entity %llx (%s, flags %08x, owner link prev %llx next %llx)", realm, static_cast<unsigned long long>(ent),
+           type ? type->name.c_str() : "?", flags, static_cast<unsigned long long>(prev), static_cast<unsigned long long>(next));
+    if (prev) { // unlink, as the engine does when it moves an entity to another owner (0x143161be0)
+        *reinterpret_cast<volatile uintptr_t*>(prev + 8) = next;
+        if (next) *reinterpret_cast<volatile uintptr_t*>(next) = prev;
+        *reinterpret_cast<volatile uintptr_t*>(node) = 0;
+        *reinterpret_cast<volatile uintptr_t*>(node + 8) = 0;
+    }
+    if (flags & e::constant::Entity_FlagInitialised) {
+        struct DeinitInfo {
+            int32_t realm;
+            uint8_t removeFromManager;
+            uint8_t pad[3];
+        } info{static_cast<int32_t>(flags & 1), 0, {}};
+        reinterpret_cast<void (*)(uintptr_t, DeinitInfo*)>(deinit)(ent, &info);
+        GN_LOG("layouts: deinit done (flags now %08x)", mem::readOr<uint32_t>(ent + 0x18));
+    }
+    reinterpret_cast<void (*)(uintptr_t)>(destroy)(ent);
+    reinterpret_cast<void* (*)(uintptr_t, uint32_t)>(del)(ent, 1);
+    GN_LOG("layouts: destroyed %s entity %llx", realm, static_cast<unsigned long long>(ent));
+    return true;
+}
+
+// The removed copies (parked below the level) destroyed for good: client halves on the client
+// thread, server halves on the server thread. Their undo steps can no longer bring them back.
+void destroyParked() {
+    std::vector<Spawned> gone;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (auto it = g_spawned.begin(); it != g_spawned.end();)
+            if (it->hidden) gone.push_back(*it), it = g_spawned.erase(it);
+            else ++it;
+    }
+    if (gone.empty()) return setStatus("No removed copies to destroy.");
+    GN_LOG("layouts: destroying %llu removed copies", static_cast<unsigned long long>(gone.size()));
+    for (const Spawned& sp : gone) postDestroy(sp);
+    char b[96];
+    snprintf(b, sizeof(b), "Destroyed %llu removed cop%s (see the log).", static_cast<unsigned long long>(gone.size()), gone.size() == 1 ? "y" : "ies");
+    setStatus(b);
+}
+
+size_t parkedCount() {
+    std::lock_guard<std::mutex> lock(g_spawnM);
+    size_t n = 0;
+    for (const Spawned& sp : g_spawned) n += sp.hidden;
+    return n;
+}
+
+// One object put back (a copy: taken away); its undo step. False when there is nothing to undo.
+bool resetObject(const Selected& s, UndoStep& st) {
+    if (s.copyId >= 0) {
+        st = UndoStep{};
+        st.kind = UndoStep::Removed;
+        st.copyId = s.copyId;
+        for (const auto& [p, t] : s.entities)
+            if (isServerClass(t->name)) st.server = p;
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            if (const Edit* ed = editOf(s)) st.edit = *ed;
+        }
+        hideCopy(s.copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& ed) { return ed.kind == "Copy" && ed.copyId == s.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+        }
+        return st.server && st.edit.kind == "Copy";
+    }
+    st = moveStep(s);
     const gn_transform back = s.orig;
     if (s.group) {
         const GroupProp gp = s.gp;
-        server().post([gp, back] { moveGroupProp(gp, back); });
+        server().post([gp, back] { moveGroupProp(gp, back, true); });
     }
     for (const auto& [p, t] : s.entities) queueMove(p, t, back);
     GN_LOG("layouts: %s put back at (%.2f, %.2f, %.2f) (%llu entities)", s.kind.c_str(), back.trans[0], back.trans[1], back.trans[2],
            static_cast<unsigned long long>(s.entities.size()));
-    {
-        std::lock_guard<std::mutex> lock(g_selM);
-        g_sel.now = back;
-    }
     const std::string key = editKind(s);
     std::lock_guard<std::mutex> lock(g_m);
     for (size_t i = 0; i < g_edits.size(); ++i)
@@ -1211,16 +2612,654 @@ void resetSelection() {
             g_dirty = true;
             break;
         }
+    return true;
+}
+
+// Everything selected put back where the level had it; copies taken away.
+void resetSelection() {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return;
+    std::vector<UndoStep> steps;
+    int removed = 0;
+    for (const Selected& s : all) {
+        UndoStep st;
+        if (resetObject(s, st)) steps.push_back(std::move(st));
+        removed += s.copyId >= 0;
+    }
+    pushUndoBatch(std::move(steps));
+    std::lock_guard<std::mutex> lock(g_selM);
+    std::vector<Selected> keep; // copies leave the selection; the rest stay, back in place
+    for (Selected s : all)
+        if (s.copyId < 0) s.now = s.orig, keep.push_back(s);
+    g_haveSel = !keep.empty();
+    if (g_haveSel) g_sel = keep[0], g_extra.assign(keep.begin() + 1, keep.end());
+    else g_extra.clear();
+    g_status = removed && removed == static_cast<int>(all.size()) ? (removed == 1 ? "Removed the copy." : "Removed the copies.")
+             : removed ? "Put back; copies removed."
+                       : "Put back where the level had it.";
+}
+
+// Takes back one step; a moved object (as it was) is added to `moved`.
+void undoStep(const UndoStep& st, std::vector<Selected>& moved, bool& addSel) {
+    if (st.kind == UndoStep::Placed) { // take the copy away
+        hideCopy(st.copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& ed) { return ed.kind == "Copy" && ed.copyId == st.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+        }
+        std::lock_guard<std::mutex> lock(g_selM);
+        if (g_haveSel && g_sel.copyId == st.copyId) {
+            if (g_extra.empty()) g_haveSel = false;
+            else g_sel = g_extra.back(), g_extra.pop_back();
+        }
+        g_extra.erase(std::remove_if(g_extra.begin(), g_extra.end(), [&](const Selected& e) { return e.copyId == st.copyId; }), g_extra.end());
+        g_status = "Undone: the copy placed last is gone.";
+        return;
+    }
+    if (st.kind == UndoStep::Removed) { // bring the parked copy back
+        Spawned back{};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(g_spawnM);
+            for (Spawned& sp : g_spawned)
+                if (sp.server == st.server && sp.hidden && sp.serverType && inspector::alive(sp.server, sp.serverType)) {
+                    sp.hidden = false;
+                    sp.copyId = st.copyId;
+                    if (sp.serverType) queueMove(sp.server, sp.serverType, st.edit.to);
+                    if (sp.client && sp.clientType) queueMove(sp.client, sp.clientType, st.edit.to);
+                    back = sp;
+                    found = true;
+                    break;
+                }
+        }
+        if (!found) { // destroyed: a new copy from its edit
+            const Edit ed = st.edit;
+            const bool add = addSel;
+            server().post([ed, add] {
+                Template t;
+                bool ok = resolveSource(ed.source, ed.at, t);
+                if (!ok && !ed.mesh.empty()) ok = resolveByMesh(ed.mesh, t);
+                if (!ok) {
+                    {
+                        std::lock_guard<std::mutex> lock(g_m); // nothing to place it from: its edit goes again
+                        g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& e2) { return e2.kind == "Copy" && e2.copyId == ed.copyId; }),
+                                      g_edits.end());
+                    }
+                    setStatus("Undo: that copy's source is not loaded here (fly back to it and undo again).");
+                    return;
+                }
+                spawnCopy(t, ed.to, ed.copyId, true, add);
+            });
+            {
+                std::lock_guard<std::mutex> lock(g_m);
+                g_edits.push_back(st.edit);
+                g_dirty = true;
+            }
+            addSel = true;
+            setStatus("Undone: the removed copy is back.");
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.push_back(st.edit);
+            g_dirty = true;
+        }
+        selectCopy(back, st.edit.to, addSel);
+        addSel = true;
+        setStatus("Undone: the removed copy is back.");
+        return;
+    }
+    // A move: the object back where it was, and its edit as it was.
+    const Selected& s = st.target;
+    if (s.group) {
+        const GroupProp gp = s.gp;
+        const gn_transform to = s.now;
+        server().post([gp, to] { moveGroupProp(gp, to, true); });
+    } else {
+        for (const auto& [p, t] : s.entities) queueMove(p, t, s.now);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Edit* ed = editOf(s);
+        if (st.hadEdit && ed) *ed = st.edit;
+        else if (st.hadEdit) g_edits.push_back(st.edit);
+        else if (ed) g_edits.erase(g_edits.begin() + (ed - g_edits.data()));
+        g_dirty = true;
+    }
+    moved.push_back(s);
+}
+
+// Takes back the last step (all of it, when it moved several objects at once).
+void undo() {
+    std::vector<UndoStep> steps;
+    {
+        std::lock_guard<std::mutex> lock(g_undoM);
+        if (g_undo.empty()) return setStatus("Nothing to undo.");
+        const int b = g_undo.back().batch;
+        while (!g_undo.empty() && g_undo.back().batch == b) {
+            steps.push_back(g_undo.back());
+            g_undo.pop_back();
+        }
+    }
+    std::reverse(steps.begin(), steps.end()); // as they were made: the leading object first
+    std::vector<Selected> moved;
+    bool addSel = false;
+    for (const UndoStep& st : steps) undoStep(st, moved, addSel);
+    if (moved.empty()) return;
+    std::lock_guard<std::mutex> lock(g_selM);
+    g_sel = moved[0]; // the moved objects are selected again, where they were
+    g_extra.assign(moved.begin() + 1, moved.end());
+    g_haveSel = true;
+    g_status = moved.size() == 1 ? "Undone: " + moved[0].kind + " is back where it was."
+                                 : "Undone: " + std::to_string(moved.size()) + " objects are back where they were.";
+}
+
+// ---- copy and paste ----------------------------------------------------------------------------------
+Template g_clip;          // (g_selM)
+bool g_haveClip = false;  // (g_selM)
+
+// The template for the selection (server thread).
+bool templateOfRaw(const Selected& s, Template& t);
+bool templateOf(const Selected& s, Template& t) {
+    const bool ok = templateOfRaw(s, t);
+    if (ok && t.mesh.empty()) t.mesh = meshOfData(t.data);
+    return ok;
+}
+bool templateOfRaw(const Selected& s, Template& t) {
+    t = Template{};
+    if (s.copyId >= 0 || s.spawned) {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (const Spawned& sp : g_spawned) {
+            const bool match = s.copyId >= 0 ? sp.copyId == s.copyId
+                                             : (sp.copyId < 0 && !s.entities.empty() && (sp.server == s.entities[0].first || sp.client == s.entities[0].first));
+            if (!match || !sp.data) continue;
+            t.data = sp.data, t.serverBus = sp.serverBus, t.clientBus = sp.clientBus;
+            setOwners(t, sp.ownerServer, sp.ownerClient);
+            if (sp.copyId >= 0) t.source = sp.source, memcpy(t.at, sp.sourceAt, sizeof(t.at));
+            else t.source = "GroupProp", memcpy(t.at, sp.orig.trans, sizeof(t.at));
+            t.place = s.now;
+            return true;
+        }
+        return false;
+    }
+    if (s.group) {
+        t.data = memberType(s.gp.member);
+        t.mesh = meshOfMember(s.gp.member);
+        t.serverBus = busOf(s.gp.serverGroup);
+        t.clientBus = busOf(s.gp.clientGroup);
+        t.source = "GroupProp";
+        memcpy(t.at, s.at, sizeof(t.at));
+        t.place = s.now;
+        setOwners(t, s.gp.serverGroup, s.gp.clientGroup);
+        return t.data && t.serverBus && t.clientBus;
+    }
+    return resolveSource(s.kind, s.at, t);
+}
+
+std::string describe(const Template& t, const Selected& s) {
+    const reflect::Type* dt = t.data ? registry().typeOf(mem::ProcessMemory(), t.data) : nullptr;
+    char b[160];
+    snprintf(b, sizeof(b), "%s (%s) from (%.1f, %.1f, %.1f)", s.group || s.spawned ? "group prop" : s.kind.c_str(), dt ? dt->name.c_str() : "?",
+             t.at[0], t.at[1], t.at[2]);
+    return b;
+}
+
+// Records a new copy in the layout (its id).
+int addCopyEdit(const Template& t, const gn_transform& to) {
+    std::lock_guard<std::mutex> lock(g_m);
+    Edit ed;
+    ed.kind = "Copy";
+    ed.source = t.source;
+    ed.mesh = t.mesh;
+    memcpy(ed.at, t.at, sizeof(ed.at));
+    ed.to = ed.from = to;
+    ed.haveFrom = true;
+    ed.copyId = g_nextCopyId++;
+    g_edits.push_back(ed);
+    g_dirty = true;
+    return ed.copyId;
+}
+
+bool selection(Selected& s) {
+    std::lock_guard<std::mutex> lock(g_selM);
+    s = g_sel;
+    return g_haveSel;
+}
+
+std::vector<Template> g_clipAll; // (g_selM) everything copied, the leading object first
+
+// Copy: the selection becomes the templates that Paste places (several keep where they are from
+// each other).
+void copySelection() {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Copy: pick an object first");
+    server().post([all] {
+        std::vector<Template> ts;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t)) continue;
+            t.label = describe(t, s);
+            ts.push_back(t);
+        }
+        if (ts.empty()) return setStatus("Copy: GridNode cannot make copies of this object (only static models and group props)");
+        const size_t skipped = all.size() - ts.size();
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_clip = ts[0];
+        if (ts.size() > 1) g_clip.label = std::to_string(ts.size()) + " objects, from " + ts[0].label;
+        g_clipAll = ts;
+        g_haveClip = true;
+        g_status = "Copied " + g_clip.label + ". Paste places new ones where the crosshair points." +
+                   (skipped ? " (" + std::to_string(skipped) + " could not be copied.)" : std::string());
+    });
+}
+
+// Places copies of `ts` (the first at `lead`, the rest where they were from it) as one undo step,
+// selected together.
+void placeCopies(const std::vector<Template>& ts, const std::vector<gn_transform>& places) {
+    std::vector<UndoStep> steps;
+    std::vector<int> ids;
+    for (size_t i = 0; i < ts.size(); ++i) {
+        const int id = addCopyEdit(ts[i], places[i]);
+        UndoStep st;
+        st.kind = UndoStep::Placed;
+        st.copyId = id;
+        steps.push_back(st);
+        ids.push_back(id);
+    }
+    pushUndoBatch(std::move(steps));
+    for (size_t i = 0; i < ts.size(); ++i) spawnCopy(ts[i], places[i], ids[i], true, i > 0);
+}
+
+// Paste: new copies of what was copied where the ray (from, direction) hits, or 10 m along it.
+void pasteAt(const float* ray) {
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(float) * 6);
+    server().post([r] {
+        std::vector<Template> ts;
+        {
+            std::lock_guard<std::mutex> lock(g_selM);
+            if (!g_haveClip || g_clipAll.empty()) return void(g_status = "Paste: copy an object first");
+            ts = g_clipAll;
+        }
+        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+        gn_ray_hit hit{};
+        float lead[3];
+        if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK)
+            memcpy(lead, hit.position, sizeof(lead));
+        else
+            for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
+        std::vector<gn_transform> places;
+        for (const Template& t : ts) {
+            alignas(16) gn_transform place = t.place;
+            for (int k = 0; k < 3; ++k) place.trans[k] = lead[k] + (t.place.trans[k] - ts[0].place.trans[k]);
+            place.trans[3] = 1.f;
+            places.push_back(place);
+        }
+        placeCopies(ts, places);
+    });
+}
+
+// Duplicate: new copies of the selection in the same places (selected, ready to move).
+void duplicateSelection() {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Duplicate: pick an object first");
+    server().post([all] {
+        std::vector<Template> ts;
+        std::vector<gn_transform> places;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t)) continue;
+            ts.push_back(t);
+            places.push_back(s.now);
+        }
+        if (ts.empty()) return setStatus("Duplicate: GridNode cannot make copies of this object (only static models and group props)");
+        placeCopies(ts, places);
+    });
+}
+
+
+} // namespace
+bool centreRay(float* ray); // (below, outside the anonymous namespace)
+namespace {
+
+// ---- object library ---------------------------------------------------------------------------------
+// Objects (or sets of objects) kept by name across sessions and levels, in layouts\library.txt.
+// An entry remembers each part's mesh (MeshAsset name) and where it is from the first part, not
+// pointers: placing one finds any loaded object drawn with that mesh (resolveByMesh) and copies it,
+// so it can be placed anywhere in a level where that mesh is loaded. Copies made from it are saved in
+// the layout as usual, with the mesh, so they are found again the same way.
+struct LibPart {
+    std::string mesh;
+    std::string bundle;            // the sublevel it came from (streamed in to place it from far away)
+    float at[3] = {};              // where its source is in the level (its zone is loaded to place it from far away)
+    float offset[3] = {};          // from the first part, in the world
+    float rows[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}; // its rotation (and scale)
+};
+struct LibEntry {
+    std::string name, level;
+    std::vector<LibPart> parts;
+};
+std::mutex g_libM;
+std::vector<LibEntry> g_lib; // (g_libM)
+bool g_libLoaded = false;    // (g_libM)
+
+std::wstring libraryFile() { return g_dir + L"library.txt"; }
+
+void saveLibrary() {
+    std::vector<LibEntry> lib;
+    {
+        std::lock_guard<std::mutex> lock(g_libM);
+        lib = g_lib;
+    }
+    std::string o = "# GridNode object library: name, level, then one part per line (mesh | offset | right | up | forward)\n";
+    for (const LibEntry& e : lib) {
+        o += "entry: " + e.name + "\nlevel: " + e.level + "\n";
+        for (const LibPart& p : e.parts) {
+            char b[512];
+            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s | %.3f %.3f %.3f\n", p.mesh.c_str(),
+                     p.offset[0], p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2],
+                     p.rows[2][0], p.rows[2][1], p.rows[2][2], p.bundle.c_str(), p.at[0], p.at[1], p.at[2]);
+            o += b;
+        }
+    }
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    writeLine(libraryFile(), o);
+}
+
+void loadLibrary() {
+    std::lock_guard<std::mutex> lock(g_libM);
+    if (g_libLoaded) return;
+    g_libLoaded = true;
+    FILE* f = _wfopen(libraryFile().c_str(), L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (l.rfind("entry: ", 0) == 0) g_lib.push_back(LibEntry{l.substr(7), "", {}});
+        else if (l.rfind("level: ", 0) == 0 && !g_lib.empty()) g_lib.back().level = l.substr(7);
+        else if (l.rfind("part: ", 0) == 0 && !g_lib.empty()) {
+            const size_t bar = l.find(" | ");
+            if (bar == std::string::npos) continue;
+            LibPart p;
+            p.mesh = l.substr(6, bar - 6);
+            float* r = &p.rows[0][0];
+            if (sscanf(l.c_str() + bar, " | %f %f %f | %f %f %f | %f %f %f | %f %f %f", &p.offset[0], &p.offset[1], &p.offset[2], &r[0], &r[1], &r[2],
+                       &r[3], &r[4], &r[5], &r[6], &r[7], &r[8]) == 12) {
+                size_t pos = bar;
+                for (int k = 0; k < 4 && pos != std::string::npos; ++k) pos = l.find(" | ", pos + 3);
+                if (pos != std::string::npos) { // bundle, then (newer entries) the source's position
+                    p.bundle = l.substr(pos + 3);
+                    const size_t more = p.bundle.find(" | ");
+                    if (more != std::string::npos) {
+                        if (sscanf(p.bundle.c_str() + more + 3, "%f %f %f", &p.at[0], &p.at[1], &p.at[2]) != 3) p.at[0] = p.at[1] = p.at[2] = 0.f;
+                        p.bundle.resize(more);
+                    }
+                }
+                g_lib.back().parts.push_back(p);
+            }
+        }
+    }
+    fclose(f);
+    g_lib.erase(std::remove_if(g_lib.begin(), g_lib.end(), [](const LibEntry& e) { return e.parts.empty(); }), g_lib.end());
+}
+
+std::string shortMesh(const std::string& mesh) {
+    std::string n = mesh.substr(mesh.find_last_of('/') + 1);
+    if (n.size() > 5 && n.compare(n.size() - 5, 5, "_Mesh") == 0) n.resize(n.size() - 5);
+    return n;
+}
+
+// Adds the selection to the library as one entry (its objects keep where they are from each other).
+void addSelectionToLibrary(const std::string& wanted) {
+    const std::vector<Selected> all = selectionAll();
+    if (all.empty()) return setStatus("Library: pick an object first");
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+    }
+    server().post([all, wanted, level] {
+        LibEntry e;
+        e.level = level;
+        int skipped = 0;
+        for (const Selected& s : all) {
+            Template t;
+            if (!templateOf(s, t) || t.mesh.empty()) {
+                ++skipped;
+                continue;
+            }
+            LibPart p;
+            p.mesh = t.mesh;
+            subLevelOfBus(t.serverBus, &p.bundle);
+            memcpy(p.at, t.at, sizeof(p.at));
+            for (int k = 0; k < 3; ++k) {
+                p.offset[k] = s.now.trans[k] - all[0].now.trans[k];
+                p.rows[0][k] = s.now.right[k], p.rows[1][k] = s.now.up[k], p.rows[2][k] = s.now.forward[k];
+            }
+            e.parts.push_back(p);
+        }
+        if (e.parts.empty()) return setStatus("Library: these objects have no mesh GridNode can find again (only static models and group props)");
+        e.name = !wanted.empty() ? wanted
+                                 : shortMesh(e.parts[0].mesh) + (e.parts.size() > 1 ? " +" + std::to_string(e.parts.size() - 1) : std::string());
+        {
+            std::lock_guard<std::mutex> lock(g_libM);
+            g_lib.push_back(e);
+        }
+        saveLibrary();
+        GN_LOG("layouts: library: added \"%s\" (%llu parts, first %s, from sublevel %s)", e.name.c_str(), static_cast<unsigned long long>(e.parts.size()),
+               e.parts[0].mesh.c_str(), e.parts[0].bundle.empty() ? "(not found)" : e.parts[0].bundle.c_str());
+        setStatus("Added \"" + e.name + "\" to the library" + (skipped ? " (" + std::to_string(skipped) + " objects without a mesh left out)." : "."));
+    });
+}
+
+// Places a library entry where the ray (from, direction) hits, or 10 m along it. Parts whose mesh is
+// not loaded have their sublevel streamed in first; placing waits for them (up to 30 s, looking every
+// 2 s: each look goes through every tracked entity on the server thread).
+constexpr int kLibTries = 15;
+void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt);
+
+void placeLibrary(const LibEntry& e, const float* ray) {
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(float) * 6);
+    server().post([e, r] { placeLibraryTry(e, r, 0); });
+}
+
+void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
+    std::vector<Template> ts;
+    std::vector<const LibPart*> parts;
+    std::unordered_map<std::string, std::pair<bool, Template>> found;
+    std::vector<std::string> wantBundles;
+    std::vector<const LibPart*> wantZones; // parts not loaded whose source position is known
+    for (const LibPart& p : e.parts) {
+        auto it = found.find(p.mesh);
+        if (it == found.end()) {
+            Template t;
+            bool ok = false;
+            for (const Selected& sel : selectionAll()) { // the selection first: cheap, and certainly loaded
+                Template x;
+                if (!ok && templateOf(sel, x) && x.mesh == p.mesh && templateAlive(x)) t = x, ok = true;
+            }
+            if (!ok) ok = resolveByMesh(p.mesh, t, attempt > 0 && attempt + 1 < kLibTries); // logged first and last
+            it = found.emplace(p.mesh, std::make_pair(ok, t)).first;
+        }
+        if (it->second.first) {
+            ts.push_back(it->second.second);
+            parts.push_back(&p);
+        } else {
+            if (!p.bundle.empty() && std::find(wantBundles.begin(), wantBundles.end(), p.bundle) == wantBundles.end()) wantBundles.push_back(p.bundle);
+            if (p.at[0] != 0.f || p.at[1] != 0.f || p.at[2] != 0.f) wantZones.push_back(&p);
+        }
+    }
+    const size_t missing = e.parts.size() - ts.size();
+    if (missing && (!wantBundles.empty() || !wantZones.empty()) && attempt < kLibTries) { // load their zones, and try again shortly
+        if (attempt == 0) {
+            int asked = 0;
+            for (const LibPart* p : wantZones) { // a focus point at the source: the zone streamer loads around it
+                zoneFocusRequest(p->at, 45);
+                ++asked;
+                GN_LOG("layouts: library: loading the zone around (%.1f, %.1f, %.1f) for \"%s\"", p->at[0], p->at[1], p->at[2], e.name.c_str());
+            }
+            if (!wantZones.empty()) server().post([] { zoneFocusSync(); }); // now, not in up to 2 s
+            for (const std::string& b : wantBundles) asked += streamIn(b) ? 1 : 0;
+            if (!asked) {
+                GN_LOG("layouts: library: \"%s\": none of its parts of the level could be streamed in", e.name.c_str());
+                attempt = kLibTries; // fall through: place what there is
+            } else {
+                setStatus("Loading the part of the level \"" + e.name + "\" comes from...");
+            }
+        }
+        if (attempt < kLibTries) {
+            std::thread([e, r, attempt] {
+                BusyThread busy;
+                Sleep(2000);
+                if (!unloading()) server().post([e, r, attempt] { placeLibraryTry(e, r, attempt + 1); });
+            }).detach();
+            return;
+        }
+    }
+    if (ts.empty()) {
+        GN_LOG("layouts: library: \"%s\": none of its meshes is loaded here", e.name.c_str());
+        return setStatus("\"" + e.name + "\" is not loaded here: its objects come from " + (e.level.empty() ? "another place" : e.level) +
+                         (wantBundles.empty() ? ". Fly near where it came from and place it again." : ", and its part of the level did not load."));
+    }
+    const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+    gn_ray_hit hit{};
+    float lead[3];
+    if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(lead, hit.position, sizeof(lead));
+    else
+        for (int k = 0; k < 3; ++k) lead[k] = r[k] + r[3 + k] * 10.f;
+    std::vector<gn_transform> places;
+    for (const LibPart* p : parts) {
+        alignas(16) gn_transform place{};
+        for (int k = 0; k < 3; ++k) {
+            place.right[k] = p->rows[0][k], place.up[k] = p->rows[1][k], place.forward[k] = p->rows[2][k];
+            place.trans[k] = lead[k] + p->offset[k];
+        }
+        place.trans[3] = 1.f;
+        places.push_back(place);
+    }
+    placeCopies(ts, places);
+    GN_LOG("layouts: library: placed \"%s\" (%llu parts, %llu not loaded here%s)", e.name.c_str(), static_cast<unsigned long long>(ts.size()),
+           static_cast<unsigned long long>(missing), attempt ? ", after streaming its part of the level in" : "");
+    if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
+}
+
+void drawLibrary() {
+    loadLibrary();
+    if (!ImGui::CollapsingHeader("Library")) return;
+    static char newName[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##libname", "name (optional)", newName, sizeof(newName));
+    ImGui::SameLine();
+    Selected cur;
+    ImGui::BeginDisabled(!selection(cur));
+    if (ImGui::Button("Add the selection")) {
+        std::string n = newName;
+        for (char& c : n)
+            if (c == '\n' || c == '\r') c = ' ';
+        addSelectionToLibrary(n);
+        newName[0] = 0;
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%s)", ui::keyName(g_binds[kLibAdd].vk).c_str());
+    static char filter[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##libfilter", "search", filter, sizeof(filter));
+    std::vector<LibEntry> lib;
+    {
+        std::lock_guard<std::mutex> lock(g_libM);
+        lib = g_lib;
+    }
+    std::string level;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        level = g_level;
+    }
+    auto lower = [](std::string x) {
+        for (char& c : x) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        return x;
+    };
+    const std::string f = lower(filter);
+    int remove = -1;
+    if (ImGui::BeginChild("##lib", ImVec2(0, ImGui::GetFontSize() * 12), ImGuiChildFlags_Borders)) {
+        for (size_t i = 0; i < lib.size(); ++i) {
+            const LibEntry& e = lib[i];
+            if (!f.empty() && lower(e.name).find(f) == std::string::npos && lower(e.parts[0].mesh).find(f) == std::string::npos) continue;
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::SmallButton("Place")) {
+                float ray[6];
+                if (centreRay(ray)) placeLibrary(e, ray);
+                else setStatus("Library: no camera");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(e.name.c_str());
+            if (ImGui::IsItemHovered()) {
+                std::string tip = e.level + "\n";
+                for (const LibPart& p : e.parts) tip += p.mesh + "\n";
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            ImGui::SameLine();
+            const std::string from = e.level.substr(e.level.find_last_of('/') + 1);
+            ImGui::TextDisabled("%s%s", e.parts.size() > 1 ? (std::to_string(e.parts.size()) + " parts, ").c_str() : "",
+                                e.level == level ? "this level" : from.c_str());
+            ImGui::PopID();
+        }
+        if (lib.empty()) ImGui::TextDisabled("Empty. Select objects and add them; they can then be placed anywhere their meshes are loaded.");
+    }
+    ImGui::EndChild();
+    if (remove >= 0) {
+        {
+            std::lock_guard<std::mutex> lock(g_libM);
+            if (remove < static_cast<int>(g_lib.size())) g_lib.erase(g_lib.begin() + remove);
+        }
+        saveLibrary();
+    }
+    ImGui::TextDisabled("Place puts it where the crosshair points.");
+}
+
+// Turns the object about a world axis through its position (its rows keep their lengths, so scale stays).
+void rotateAbout(gn_transform& t, const float* axisIn, float degrees) {
+    float k[3] = {axisIn[0], axisIn[1], axisIn[2]};
+    const float n = std::sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2]);
+    if (n < 1e-6f) return;
+    for (float& x : k) x /= n;
+    const float a = degrees * 3.14159265f / 180.f, c = std::cos(a), s = std::sin(a);
+    auto rot = [&](float* v) { // Rodrigues
+        const float kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+        const float cx = k[1] * v[2] - k[2] * v[1], cy = k[2] * v[0] - k[0] * v[2], cz = k[0] * v[1] - k[1] * v[0];
+        const float o[3] = {v[0] * c + cx * s + k[0] * kv * (1.f - c), v[1] * c + cy * s + k[1] * kv * (1.f - c),
+                            v[2] * c + cz * s + k[2] * kv * (1.f - c)};
+        v[0] = o[0], v[1] = o[1], v[2] = o[2];
+    };
+    rot(t.right);
+    rot(t.up);
+    rot(t.forward);
 }
 
 void yaw(gn_transform& t, float degrees) {
-    const float a = degrees * 3.14159265f / 180.f, c = std::cos(a), s = std::sin(a);
-    auto rot = [&](float* v) {
-        const float x = v[0] * c + v[2] * s, z = -v[0] * s + v[2] * c;
-        v[0] = x, v[2] = z;
-    };
-    rot(t.right);
-    rot(t.forward);
+    const float Y[3] = {0.f, 1.f, 0.f};
+    rotateAbout(t, Y, degrees);
+}
+
+// Stands the object upright again (its up row along world up), keeping the way it faces.
+void upright(gn_transform& t) {
+    auto len = [](const float* v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+    const float lr = len(t.right), lu = len(t.up), lf = len(t.forward);
+    float f[3] = {t.forward[0], 0.f, t.forward[2]};
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[0] = -t.up[0], f[2] = -t.up[2]; // was facing straight up or down
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[2] = 1.f;
+    const float n = std::sqrt(f[0] * f[0] + f[2] * f[2]);
+    f[0] /= n, f[2] /= n;
+    // right = up x forward with up = Y: (f.z, 0, -f.x)
+    t.right[0] = f[2] * lr, t.right[1] = 0.f, t.right[2] = -f[0] * lr;
+    t.up[0] = 0.f, t.up[1] = lu, t.up[2] = 0.f;
+    t.forward[0] = f[0] * lf, t.forward[1] = 0.f, t.forward[2] = f[2] * lf;
 }
 
 } // namespace
@@ -1232,7 +3271,9 @@ void start(const std::wstring& dir) {
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
         onCreated("gridnode", cls, &onCreatedGroup, nullptr);
-    g_autoload = readFlag(g_dir + L"settings.txt");
+    for (const char* cls : {"PamOBBCollisionEntity", "PamClientMagropeEntity"}) // their buses, for copies
+        onCreated("gridnode", cls, &onCreatedSpecial, nullptr);
+    loadSettings();
 }
 
 // GridNode's thread, when a level starts: with auto-load on, the layout last used for it.
@@ -1258,6 +3299,10 @@ void onLevel(const std::string& level) {
         g_spawned.clear();
     }
     {
+        std::lock_guard<std::mutex> lock(g_undoM);
+        g_undo.clear();
+    }
+    {
         std::lock_guard<std::mutex> lock(g_selM);
         g_haveSel = false;
     }
@@ -1266,12 +3311,83 @@ void onLevel(const std::string& level) {
         std::lock_guard<std::mutex> lock(g_busM);
         g_groupBus.clear();
     }
+    {
+        clearPins(); // a new level: new sublevel entities
+        clearZoneFocus();
+        { std::lock_guard<std::mutex> lock(g_origM); g_origHash.clear(); }
+        clearRopeMoves(); // their magropes went with the old level
+        clearSpecialCopies();
+        clearSpecialSelection();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_qm); // moves queued for the old level's objects are dropped
+        g_serverQ.clear();
+        g_clientQ.clear();
+    }
     if (!name.empty()) GN_LOG("layouts: auto-loading \"%s\" (%llu edits) for %s", name.c_str(), static_cast<unsigned long long>(edits.size()), level.c_str());
 }
 
-void serverTick() { runQueue(g_serverQ); }
+// Server thread, every 2 s: copies (and standalone stand-ins) whose part of the level streamed out
+// are gone with it; forget them, and place what the layout has again once its source is back.
+// Looking for sources walks every loaded group, so it runs only when something changed (a copy was
+// destroyed, or a group was created since the last look), and never more often than 25 times what
+// the last look took, so the game keeps its frame rate while sources are away.
+void maintainSpawned() {
+    size_t dead = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        const auto alive = [](const Spawned& sp) {
+            return sp.serverType && inspector::alive(sp.server, sp.serverType);
+        };
+        const size_t before = g_spawned.size();
+        g_spawned.erase(std::remove_if(g_spawned.begin(), g_spawned.end(), [&](const Spawned& sp) { return !alive(sp); }), g_spawned.end());
+        dead = before - g_spawned.size();
+    }
+    if (dead) GN_LOG("layouts: %llu copies were destroyed with their part of the level; they come back when it loads again",
+                     static_cast<unsigned long long>(dead));
+    static uint32_t seenGen = 0;
+    static bool pending = false; // something is still missing
+    static ULONGLONG nextLook = 0;
+    const uint32_t gen = g_groupGen.load();
+    if (dead) pending = true;
+    if (gen != seenGen) pending = true;
+    const ULONGLONG now = GetTickCount64();
+    if (!pending || now < nextLook) return;
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (g_level != levelName()) return;
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Copy" || ed.kind == "GroupProp") edits.push_back(ed);
+    }
+    if (edits.empty() || !localServerCharacter()) return;
+    seenGen = gen;
+    pending = false;
+    const ULONGLONG t0 = GetTickCount64();
+    applyGroupEdits(edits, true);
+    const ULONGLONG took = GetTickCount64() - t0;
+    nextLook = GetTickCount64() + std::max<ULONGLONG>(2000, took * 25);
+    static int slow = 0;
+    if (took > 100 && slow++ < 5) GN_LOG("layouts: looking for copies' sources took %llu ms; next look in %llu s at the earliest", took, (nextLook - GetTickCount64()) / 1000);
+}
+
+std::atomic<bool> g_released{false}; // a full unload: nothing more is applied
+
+void serverTick() {
+    if (g_released.load()) return;
+    runQueue(g_serverQ);
+    static DWORD last = 0;
+    const DWORD now = GetTickCount();
+    if (now - last >= 2000) {
+        last = now;
+        maintainSpawned();
+        zoneFocusSync();
+        specialSweep();
+    }
+}
 
 void clientTick() {
+    if (g_released.load()) return;
     runQueue(g_clientQ);
     // Once Faith is in the level, catch objects created before the layout was read.
     if (!g_sweptThisLevel.load() && localClientCharacter()) {
@@ -1281,30 +3397,31 @@ void clientTick() {
             std::lock_guard<std::mutex> lock(g_m);
             any = !g_edits.empty();
         }
-        if (any) std::thread([] { applyToExisting(); }).detach();
+        if (any) server().post([] { applyToExisting(); });
     }
 }
 
-// ---- free camera (render thread drives it; a camera post-update listener applies it) ---------------
-// While the menu is open the game gets no input, so Faith stands still. The free camera writes its
-// transform into the view after the game's camera update each frame: GridNode links a node into
-// the view manager's post-update listener list (a {vtable, next} list the game walks), no code is
-// patched. Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
-struct CamNode {
-    void* const* vtbl;
-    CamNode* next;
-};
-void onCameraUpdated(CamNode* node, void* info);
-void camNoop(CamNode*, void*, void*) {} // other slots, should the game call one (e.g. a destructor)
-void* const g_camVtbl[8] = {reinterpret_cast<void*>(&onCameraUpdated), reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
-                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop), reinterpret_cast<void*>(&camNoop),
-                            reinterpret_cast<void*>(&camNoop),         reinterpret_cast<void*>(&camNoop)};
-CamNode g_camNode{g_camVtbl, nullptr};
-uintptr_t g_camLinkedTo = 0;         // the view manager the node is in (client thread)
+// ---- free camera (render thread drives it; the active camera's frame update applies it) -----------
+// While the menu is open the game gets no input, so Faith stands still. Each frame the view manager
+// asks the active camera to update itself (camera vtable +0x68), which writes the camera's two
+// transforms (+0x10 and +0x50), and then copies them into the view the renderer uses. GridNode gives
+// the active camera object a copy of its vtable whose +0x68 entry calls the game's own update and then
+// writes the free camera's transform: a pointer swap on that one object, no code is patched.
+// Right mouse held: look; WASD: move; Q/E: down/up; Shift: faster; Ctrl: slower.
+constexpr size_t kCamSlots = 160;     // entries copied; the camera classes have well under that
+constexpr size_t kCamFrameSlot = 0x68 / 8;
+constexpr size_t kCamOutputSlot = 0x70 / 8; // computeTransforms(camera, info, LinearTransform out[2]) (MECMP)
+uintptr_t g_camFakeVtbl[kCamSlots + 1]; // [0] is the RTTI slot in front of the table
+uintptr_t g_camObject = 0;           // the camera object wearing the copy (client thread)
+uintptr_t g_camOrigVtbl = 0;         // its own vtable
+using CamFrameFn = void (*)(void*, void*);
+CamFrameFn g_camOrigFrame = nullptr;
+using CamOutputFn = void (*)(void*, void*, void*);
+CamOutputFn g_camOrigOutput = nullptr;
 
 std::mutex g_camM;
 bool g_camApply = false;             // (g_camM)
-gn_transform g_camT{};               // (g_camM) what the listener writes
+gn_transform g_camT{};               // (g_camM) what the camera update writes
 
 struct FreeCam {
     bool enabled = false;
@@ -1317,70 +3434,140 @@ struct FreeCam {
     bool looking = false;
 };
 FreeCam g_cam;                       // render thread
+bool g_editorOn = true;              // render thread: the editor drives the camera (its keys, picking, help); false for a mod's
+bool g_camByMod = false;             // render thread: a mod turned the free camera on (gn_api freecam_set): a plain camera
+// Asked for by mods (gn_api freecam_set / teleport_*) on any thread; done in the next frame.
+std::atomic<int> g_camWant{-1};      // -1 nothing, 0 off, 1 on
+std::atomic<int> g_teleportWant{0};  // 0 nothing, 1 to the crosshair, 2 to the free camera; +4: keep flying
+bool g_pointer = false;              // render thread: with the menu closed the mouse moves a cursor (right button: look)
+bool g_gizmoHot = false;             // render thread: the mouse is on (or dragging) a handle, so a click does not pick
+bool g_gizmoShown = false;           // render thread: the handles are showing (last frame)
+int g_gizmoMode = 0;                 // render thread: 0 move, 1 rotate
+bool g_gizmoLocal = true;            // render thread: handles along the object's own axes (else the world's)
 int g_editorFrame = -10;             // last frame the Layout editor was drawn (render thread)
 
 uintptr_t firstViewManager() {
     namespace cv = e::st::ClientCameraViewManagers::off;
-    const uintptr_t managers = mem::readOr<uintptr_t>(mem::rva(e::global::ClientCameraViewManagers));
+    uintptr_t managers = 0; // an image global: read directly (no kernel call), as it is read every frame
+    mem::readFast(mem::rva(e::global::ClientCameraViewManagers), managers);
     const uintptr_t begin = managers ? mem::readOr<uintptr_t>(managers + cv::managersBegin) : 0;
     const uintptr_t end = managers ? mem::readOr<uintptr_t>(managers + cv::managersEnd) : 0;
     return begin && end > begin ? mem::readOr<uintptr_t>(begin) : 0;
 }
 
-void onCameraUpdated(CamNode*, void*) {
+std::atomic<unsigned> g_camCalls{0}, g_camOutputs{0}; // diagnostics: how often the game ran the camera's update / output
+
+bool takeCamT(gn_transform& t) {
+    std::lock_guard<std::mutex> lock(g_camM);
+    if (!g_camApply) return false;
+    t = g_camT;
+    return true;
+}
+
+// The camera's transform output: everything that asks the camera where it is (its own update, and
+// whatever else calls this slot) gets the free camera.
+void camOutput(void* self, void* info, void* out) {
+    g_camOutputs.fetch_add(1, std::memory_order_relaxed);
+    if (g_camOrigOutput) g_camOrigOutput(self, info, out);
+    alignas(16) gn_transform t{};
+    if (!out || !takeCamT(t)) return;
+    auto* o = static_cast<gn_transform*>(out);
+    o[0] = t;
+    o[1] = t;
+}
+
+void camFrameUpdate(void* self, void* info) {
+    g_camCalls.fetch_add(1, std::memory_order_relaxed);
+    if (g_camOrigFrame) g_camOrigFrame(self, info);
     alignas(16) gn_transform t{};
     {
         std::lock_guard<std::mutex> lock(g_camM);
         if (!g_camApply) return;
         t = g_camT;
     }
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = firstViewManager();
-    if (!mgr) return;
-    mem::write(mgr + m::transform, &t, sizeof(t));
-    const uintptr_t camera = mem::readOr<uintptr_t>(mgr + m::activeCamera);
-    if (camera) mem::write(camera + e::st::CameraObject::off::transform, &t, sizeof(t));
+    const uintptr_t cam = reinterpret_cast<uintptr_t>(self);
+    namespace c = e::st::CameraObject::off;
+    mem::write(cam + c::transform, &t, sizeof(t));
+    mem::write(cam + c::viewTransform, &t, sizeof(t));
 }
 
-// Client thread: link / unlink the node at the end of the listener list.
-void linkCameraNode() {
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = firstViewManager();
-    if (!mgr) return;
-    const uintptr_t headAt = mgr + m::postUpdateListeners;
-    for (uintptr_t q = mem::readOr<uintptr_t>(headAt), guard = 0; q && guard < 1000; q = mem::readOr<uintptr_t>(q + 8), ++guard)
-        if (q == reinterpret_cast<uintptr_t>(&g_camNode)) return; // already in this manager's list
-    g_camNode.next = nullptr;
-    uintptr_t p = mem::readOr<uintptr_t>(headAt);
-    if (!p) {
-        mem::write<uintptr_t>(headAt, reinterpret_cast<uintptr_t>(&g_camNode));
-    } else {
-        for (int guard = 0; guard < 1000; ++guard) {
-            const uintptr_t next = mem::readOr<uintptr_t>(p + 8);
-            if (!next) break;
-            p = next;
-        }
-        mem::write<uintptr_t>(p + 8, reinterpret_cast<uintptr_t>(&g_camNode));
-    }
-    g_camLinkedTo = mgr;
+void unhookCamera() {
+    if (g_camObject && mem::readOr<uintptr_t>(g_camObject) == reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]))
+        mem::write<uintptr_t>(g_camObject, g_camOrigVtbl);
+    g_camObject = 0;
 }
 
-void unlinkCameraNode() {
-    namespace m = e::st::ClientCameraViewManager::off;
-    const uintptr_t mgr = g_camLinkedTo;
-    g_camLinkedTo = 0;
-    if (!mgr || mgr != firstViewManager()) return; // that manager is gone with its list
-    const uintptr_t self = reinterpret_cast<uintptr_t>(&g_camNode);
-    uintptr_t at = mgr + m::postUpdateListeners; // the address holding the pointer to the current node
-    for (int guard = 0; guard < 1000; ++guard) {
-        const uintptr_t p = mem::readOr<uintptr_t>(at);
-        if (!p) return;
-        if (p == self) {
-            mem::write<uintptr_t>(at, reinterpret_cast<uintptr_t>(g_camNode.next));
-            return;
-        }
-        at = p + 8;
+// Client thread: put the copy on the view manager's active camera (again after it changes).
+void hookCamera() {
+    if (g_released.load()) return;
+    const uintptr_t mgr = firstViewManager();
+    const uintptr_t cam = mgr ? mem::readOr<uintptr_t>(mgr + e::st::ClientCameraViewManager::off::activeCamera) : 0;
+    const uintptr_t fake = reinterpret_cast<uintptr_t>(&g_camFakeVtbl[1]);
+    if (!cam) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(cam);
+    if (vt == fake) return;
+    if (cam != g_camObject) unhookCamera();
+    if (!mem::inImage(vt)) return;
+    if (vt != g_camOrigVtbl) {
+        // A new camera class: build its copy (only while no object wears the old one).
+        for (size_t k = 0; k <= kCamSlots; ++k) g_camFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
+        g_camOrigVtbl = vt;
+        g_camOrigFrame = reinterpret_cast<CamFrameFn>(g_camFakeVtbl[1 + kCamFrameSlot]);
+        g_camFakeVtbl[1 + kCamFrameSlot] = reinterpret_cast<uintptr_t>(&camFrameUpdate);
+        g_camOrigOutput = reinterpret_cast<CamOutputFn>(g_camFakeVtbl[1 + kCamOutputSlot]);
+        if (mem::inImage(reinterpret_cast<uintptr_t>(g_camOrigOutput)))
+            g_camFakeVtbl[1 + kCamOutputSlot] = reinterpret_cast<uintptr_t>(&camOutput);
+        else
+            g_camOrigOutput = nullptr;
+        GN_LOG("layouts: free camera drives camera %llx (vtable %llx)", static_cast<unsigned long long>(cam),
+               static_cast<unsigned long long>(vt));
     }
+    if (!g_camOrigFrame) return;
+    mem::write<uintptr_t>(cam, fake);
+    g_camObject = cam;
+}
+
+
+// While the free camera is on, Faith shows the third-person body (with her head) instead of the
+// first-person one: the same per-object vtable copy, on the character's view-mode interface, whose
+// getViewMode answers 1 (MECMP found the slot and the meaning). Its other entries are the originals.
+constexpr size_t kBodySlots = 96;
+uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
+uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
+
+int bodyViewMode(void*) { return 1; }
+
+void unhookBody() {
+    if (g_bodyIface && mem::readOr<uintptr_t>(g_bodyIface) == reinterpret_cast<uintptr_t>(&g_bodyFakeVtbl[1]))
+        mem::write<uintptr_t>(g_bodyIface, g_bodyOrigVtbl);
+    g_bodyIface = 0;
+}
+
+void hookBody() {
+    if (g_released.load()) return;
+    namespace c = e::constant;
+    const auto character = reinterpret_cast<uintptr_t>(localClientCharacter());
+    const uintptr_t iface = character ? character + c::ClientCharacter_ViewModeInterface : 0;
+    const uintptr_t fake = reinterpret_cast<uintptr_t>(&g_bodyFakeVtbl[1]);
+    if (!iface) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(iface);
+    if (vt == fake) return;
+    if (iface != g_bodyIface) unhookBody();
+    const uintptr_t slotAt = mem::rva(c::ViewModeSlot);
+    if (!mem::inImage(vt) || slotAt < vt || slotAt >= vt + 8 * kBodySlots) { // not the interface we know
+        static bool said = false;
+        if (!said) GN_LOG("layouts: free camera: Faith's view-mode interface has vtable %llx, not the known one; keeping her first-person body",
+                          static_cast<unsigned long long>(vt));
+        said = true;
+        return;
+    }
+    const size_t slot = (slotAt - vt) / 8;
+    for (size_t k = 0; k <= kBodySlots; ++k) g_bodyFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
+    g_bodyFakeVtbl[1 + slot] = reinterpret_cast<uintptr_t>(&bodyViewMode);
+    g_bodyOrigVtbl = vt;
+    mem::write<uintptr_t>(iface, fake);
+    g_bodyIface = iface;
+    GN_LOG("layouts: free camera: Faith shows her third-person body (view-mode slot %u)", static_cast<unsigned>(slot));
 }
 
 void lookDir(float yaw, float pitch, float* d) {
@@ -1435,28 +3622,116 @@ bool startFreeCam() {
 
 // Render thread, every frame.
 void freeCamFrame(bool menuOpen) {
-    const bool want = g_cam.enabled && menuOpen && localClientCharacter() != nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        g_viewCamOn = g_cam.active;
+        memcpy(g_viewCam, g_cam.pos, sizeof(g_viewCam));
+    }
+    // On whether or not the menu is open; with it closed the mouse always looks and the game gets no input.
+    const bool want = g_cam.enabled && localClientCharacter() != nullptr;
     if (want && !g_cam.active) {
         if (!startFreeCam()) return;
         g_cam.active = true;
-        client().post([] { linkCameraNode(); });
+        client().post([] { hookCamera(); hookBody(); });
         GN_LOG("layouts: free camera on at (%.1f, %.1f, %.1f)", g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]);
     } else if (!want && g_cam.active) {
         g_cam.active = false;
         g_cam.looking = false;
+        g_pointer = false;
+        ui::setPointer(false);
         ui::setLookCapture(false);
+        ui::setInputCapture(false);
         {
             std::lock_guard<std::mutex> lock(g_camM);
             g_camApply = false;
         }
-        client().post([] { unlinkCameraNode(); });
+        client().post([] { unhookCamera(); unhookBody(); });
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { linkCameraNode(); }); // a level change makes a new view manager
+    if (!menuOpen) { // the keys, top left, while flying with the menu closed
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const float pad = ImGui::GetFontSize();
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + pad, vp->Pos.y + pad), ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(0.55f);
+        ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::TextUnformatted("Free camera");
+        ImGui::Separator();
+        auto row = [](const std::string& key, const char* what) {
+            ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "%s", key.c_str());
+            ImGui::SameLine(ImGui::GetFontSize() * 7.5f);
+            ImGui::TextUnformatted(what);
+        };
+        auto k = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
+        row("Mouse", g_pointer ? "pointer (right button: look)" : "look");
+        row("W A S D", "fly");
+        row("Q / E", "down / up");
+        row("Shift / Ctrl", "faster / slower");
+        row("Wheel", "flying speed");
+        if (g_editorOn) { // the editor's keys (a mod's free camera has its own, in its window)
+            ImGui::Separator();
+            row("Click / " + k(kPick), "pick at the crosshair");
+            row("Shift + click", "add to / take from the selection");
+            row(k(kPointer), g_pointer ? "mouse: back to looking" : "mouse: a pointer, to drag the handles");
+            row(k(kHandles), g_gizmoMode ? "handles: rotate (now) / move" : "handles: move (now) / rotate");
+            row(k(kFwd) + " " + k(kBack) + " " + k(kLeft) + " " + k(kRight), "move it");
+            row(k(kUp) + " / " + k(kDown), "move it up / down");
+            row(k(kTurnL) + " / " + k(kTurnR), "turn it");
+            row(k(kTiltL) + " / " + k(kTiltR), "tilt it left / right");
+            row(k(kTipAway) + " / " + k(kTipToward), "tip it away / toward");
+            row(k(kFlip), "flip it upside down");
+            row(k(kUpright), "stand it upright");
+            row("Ctrl+" + k(kUndo), "undo");
+            row(k(kCopy), "copy");
+            row(k(kPaste), "paste at the crosshair");
+            row(k(kDuplicate), "duplicate in place");
+            row(k(kLibAdd), "add to the library (menu: Library to place)");
+            ImGui::Separator();
+            row(k(kTeleport), "teleport Faith here (keep flying)");
+            row("Shift+" + k(kTeleport), "teleport Faith here and go back to her");
+            row(k(kFreeCam), "back to Faith");
+            Selected cur;
+            if (selection(cur)) {
+                ImGui::Separator();
+                const size_t n = selectionAll().size();
+                ImGui::Text("Selected: %s", cur.group ? "a group prop (made standalone when you move it)"
+                                           : cur.copyId >= 0 ? (cur.kind + " (copy)").c_str() : cur.kind.c_str());
+                if (n > 1) ImGui::Text("and %llu more (they move and turn with it)", static_cast<unsigned long long>(n - 1));
+            }
+        }
+        ImGui::End();
+    }
+    if (!menuOpen && g_editorOn) { // which way the mouse works, at the bottom of the screen
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        auto key = [](int i) { return g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("-"); };
+        Selected cur;
+        const bool sel = selection(cur);
+        std::string text = g_pointer ? "POINTER   " + key(kPointer) + ": back to looking   right mouse: look"
+                                     : "LOOKING   " + key(kPointer) + ": pointer" + (sel ? ", to drag the handles" : "");
+        if (sel && g_pointer) text += std::string("   ") + key(kHandles) + ": handles " + (g_gizmoMode ? "rotate" : "move");
+        if (sel && cur.group) text += "   (group prop: made standalone when you move it)";
+        const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+        const ImVec2 at(vp->Pos.x + (vp->Size.x - size.x) * 0.5f, vp->Pos.y + vp->Size.y - size.y - ImGui::GetFontSize() * 2.f);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const float pad = ImGui::GetFontSize() * 0.4f;
+        dl->AddRectFilled(ImVec2(at.x - pad, at.y - pad), ImVec2(at.x + size.x + pad, at.y + size.y + pad), IM_COL32(0, 0, 0, 140), pad);
+        dl->AddText(at, g_pointer ? IM_COL32(255, 220, 110, 255) : IM_COL32(230, 230, 230, 230), text.c_str());
+    }
+    if (ImGui::GetFrameCount() % 60 == 0) client().post([] { hookCamera(); hookBody(); });
+
     ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    ui::setInputCapture(!menuOpen);
+    ui::setPointer(!menuOpen && g_pointer);
+    if (!menuOpen && !g_pointer) {
+        g_cam.looking = true;
+    } else if (!menuOpen) { // pointer mode: like the menu, the right button looks
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !g_gizmoHot) g_cam.looking = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    } else {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !io.WantCaptureMouse) g_cam.looking = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) g_cam.looking = false;
+    }
     ui::setLookCapture(g_cam.looking);
     float dx = 0.f, dy = 0.f;
     ui::takeLook(dx, dy);
@@ -1485,7 +3760,7 @@ void freeCamFrame(bool menuOpen) {
         if (io.KeyShift) s *= 4.f;
         if (io.KeyCtrl) s *= 0.25f;
         for (int k = 0; k < 3; ++k) g_cam.pos[k] += v[k] * s;
-        if (io.MouseWheel != 0.f && g_cam.looking) g_cam.speed = std::clamp(g_cam.speed * (io.MouseWheel > 0 ? 1.25f : 0.8f), 0.5f, 200.f);
+        if (io.MouseWheel != 0.f && (g_cam.looking || (!menuOpen && g_pointer))) g_cam.speed = std::clamp(g_cam.speed * (io.MouseWheel > 0 ? 1.25f : 0.8f), 0.5f, 200.f);
     }
     alignas(16) gn_transform t{};
     for (int k = 0; k < 3; ++k) {
@@ -1500,31 +3775,986 @@ void freeCamFrame(bool menuOpen) {
     g_camApply = true;
 }
 
-// The ray through the cursor, from the current view (free camera or the game's).
-bool cursorRay(float* ray) {
-    const ImGuiIO& io = ImGui::GetIO();
-    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
-    float from[3], d[3], r[3], u[3];
+// The current view's look direction, screen right and up, and position (free camera or the game's).
+bool viewBasis(float* from, float* d, float* r, float* u) {
     if (g_cam.active) {
         camBasis(g_cam, d, r, u);
-        memcpy(from, g_cam.pos, sizeof(from));
+        memcpy(from, g_cam.pos, sizeof(float) * 3);
     } else {
         gn_transform v{};
         if (!cameraTransform(v)) return false;
         for (int k = 0; k < 3; ++k) d[k] = -v.forward[k], r[k] = v.right[k], u[k] = v.up[k], from[k] = v.trans[k];
         normalize(d), normalize(r), normalize(u);
     }
+    return true;
+}
+
+// The ray through a screen point (nx, ny in -1..1, y up), from the current view.
+bool viewRay(float nx, float ny, float* ray) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return false;
     const uintptr_t mgr = firstViewManager();
     const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
     const float fov = (fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f) * 3.14159265f / 180.f;
     const float aspect = io.DisplaySize.x / io.DisplaySize.y;
-    const float nx = 2.f * io.MousePos.x / io.DisplaySize.x - 1.f, ny = 1.f - 2.f * io.MousePos.y / io.DisplaySize.y;
     const float th = std::tan(fov * 0.5f);
     for (int k = 0; k < 3; ++k) ray[3 + k] = d[k] + r[k] * nx * th * aspect + u[k] * ny * th;
     normalize(ray + 3);
     memcpy(ray, from, sizeof(from));
     return true;
 }
+
+bool cursorRay(float* ray) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f) return false;
+    return viewRay(2.f * io.MousePos.x / io.DisplaySize.x - 1.f, 1.f - 2.f * io.MousePos.y / io.DisplaySize.y, ray);
+}
+bool centreRay(float* ray) { return viewRay(0.f, 0.f, ray); }
+
+void pickCentre(bool add = false) {
+    float ray[6];
+    if (centreRay(ray)) pick(ray, add);
+    else pick(nullptr, add);
+}
+// ---- teleports (the game's own: ServerCharacterEntity_teleport, as its teleport entities use) ------
+// Faith at `pos`, facing along `facing` (horizontal). Server thread does the move.
+void teleportFaith(const float* pos, const float* facing, const std::string& what) {
+    float f[3] = {facing[0], 0.f, facing[2]};
+    if (f[0] * f[0] + f[2] * f[2] < 1e-6f) f[2] = 1.f;
+    normalize(f);
+    alignas(16) gn_transform t{};
+    t.up[1] = 1.f;
+    t.forward[0] = f[0], t.forward[2] = f[2];
+    t.right[0] = f[2], t.right[2] = -f[0]; // up x forward
+    memcpy(t.trans, pos, sizeof(float) * 3);
+    t.trans[3] = 1.f;
+    server().post([t, what] {
+        void* faith = localServerCharacter();
+        const int r = faith ? teleport(faith, &t) : GN_ERR_NOT_FOUND;
+        GN_LOG("layouts: teleport to %s (%.2f, %.2f, %.2f): %s", what.c_str(), t.trans[0], t.trans[1], t.trans[2], r == GN_OK ? "done" : "failed");
+        setStatus(r == GN_OK ? "Teleported Faith to " + what + "." : "Teleport failed (no character, or the game's teleport is not as expected).");
+    });
+}
+
+// Faith where the crosshair points (on what it hits, or at the camera when it hits nothing within
+// 200 m), facing the way the camera looks; then the view goes back to her.
+// With `keepFlying`, the free camera stays where it is (only Faith moves).
+void teleportCrosshair(bool keepFlying = false) {
+    float ray[6];
+    if (!centreRay(ray)) return setStatus("Teleport: no camera");
+    std::array<float, 6> r{};
+    memcpy(r.data(), ray, sizeof(ray));
+    if (!keepFlying) g_cam.enabled = false; // back to Faith's view
+    server().post([r] {
+        const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+        gn_ray_hit hit{};
+        float pos[3] = {r[0], r[1], r[2]};
+        const bool onSomething = raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK;
+        if (onSomething) {
+            // A little back from the surface and up, so she stands on it rather than in it.
+            for (int k = 0; k < 3; ++k) pos[k] = hit.position[k] - r[3 + k] * 0.3f;
+            pos[1] = std::max(pos[1], hit.position[1]) + 0.05f;
+        }
+        const float facing[3] = {r[3], 0.f, r[5]};
+        teleportFaith(pos, facing, onSomething ? "the crosshair" : "the camera");
+    });
+}
+
+// Teleport points: named places per level (layouts\<level>\teleports.txt: name|x|y|z|yaw).
+struct TeleportPoint {
+    std::string name;
+    float pos[3] = {};
+    float yaw = 0.f; // radians, atan2(forward.x, forward.z)
+};
+
+std::wstring teleportFile(const std::string& level) { return levelDir(level) + L"teleports.txt"; }
+
+std::vector<TeleportPoint> loadTeleports(const std::string& level) {
+    std::vector<TeleportPoint> out;
+    FILE* f = _wfopen(teleportFile(level).c_str(), L"rb");
+    if (!f) return out;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        const size_t bar = l.find('|');
+        if (bar == std::string::npos || l[0] == '#') continue;
+        TeleportPoint p;
+        p.name = l.substr(0, bar);
+        if (sscanf(l.c_str() + bar + 1, "%f|%f|%f|%f", &p.pos[0], &p.pos[1], &p.pos[2], &p.yaw) >= 3) out.push_back(p);
+    }
+    fclose(f);
+    return out;
+}
+
+void saveTeleports(const std::string& level, const std::vector<TeleportPoint>& pts) {
+    CreateDirectoryW(g_dir.c_str(), nullptr);
+    CreateDirectoryW(levelDir(level).c_str(), nullptr);
+    std::string o = "# GridNode teleport points: name|x|y|z|yaw (radians)\n";
+    for (const TeleportPoint& p : pts) {
+        char b[256];
+        snprintf(b, sizeof(b), "%s|%.3f|%.3f|%.3f|%.4f\n", p.name.c_str(), p.pos[0], p.pos[1], p.pos[2], p.yaw);
+        o += b;
+    }
+    writeLine(teleportFile(level), o);
+}
+
+void pasteCentre() {
+    float ray[6];
+    if (centreRay(ray)) pasteAt(ray);
+    else setStatus("Paste: no camera");
+}
+
+// Moves the selection one step relative to the view: dir 0 away, 1 toward, 2 left, 3 right, 4 up, 5 down;
+// 6 / 7 turn left / right. Shift: 4 steps, Ctrl: a quarter.
+bool nudgeTransform(gn_transform& t, int dir, float scale);
+void nudge(int dir, float scale) {
+    if (nudgeSpecial(dir, scale)) return;
+    Selected s;
+    if (!selection(s)) return;
+    if (s.group && !g_inPlaceGroups.load()) { // a group prop leads: it becomes standalone first (the next press moves it)
+        static double askedAt = -10.0;
+        if (ImGui::GetTime() - askedAt > 1.0) askedAt = ImGui::GetTime(), standaloneGroupProps();
+        return;
+    }
+    gn_transform t = s.now;
+    if (nudgeTransform(t, dir, scale)) moveSelection(t);
+}
+
+// `t` moved or turned by one press of a move key (`dir` as the keys: 0..3 along the ground from the
+// view, 4 / 5 up / down, 6 / 7 turn, 8..13 tilt, tip, flip, upright).
+bool nudgeTransform(gn_transform& t, int dir, float scale) {
+    float from[3] = {}, d[3] = {}, r[3] = {}, u[3] = {};
+    if ((dir < 4 || (dir >= 8 && dir <= 12)) && !viewBasis(from, d, r, u)) return false;
+    float f[3] = {d[0], 0.f, d[2]}, side[3] = {r[0], 0.f, r[2]}; // the view's directions along the ground
+    if (dir < 4 || (dir >= 8 && dir <= 12)) normalize(f), normalize(side);
+    if (dir >= 8) { // 8 / 9 tilt left / right, 10 / 11 tip away / toward, 12 upside down, 13 upright
+        if (dir == 8 || dir == 9) rotateAbout(t, f, (dir == 8 ? -1.f : 1.f) * g_turnStep * scale);
+        else if (dir == 10 || dir == 11) rotateAbout(t, side, (dir == 10 ? 1.f : -1.f) * g_turnStep * scale);
+        else if (dir == 12) rotateAbout(t, f, 180.f);
+        else upright(t);
+    } else if (dir >= 6) {
+        yaw(t, (dir == 6 ? 1.f : -1.f) * g_turnStep * scale);
+    } else if (dir >= 4) {
+        t.trans[1] += (dir == 4 ? 1.f : -1.f) * g_nudge * scale;
+    } else { // along the ground
+        const float* axis = dir < 2 ? f : side;
+        const float sign = dir == 0 || dir == 3 ? 1.f : -1.f;
+        for (int k = 0; k < 3; ++k) t.trans[k] += axis[k] * sign * g_nudge * scale;
+    }
+    return true;
+}
+
+// ---- barriers and magropes (research, 2026-10-22) ---------------------------------------------------
+// PamOBBCollisionEntity (client and server; an Entity, not spatial): its world transform at +0x50
+// (resolved from its data's Transform when it is enabled, 0x143333310), its body id at +0x90, enabled
+// at +0x95; the box is the data's HalfExtents (+0x60) about that transform. Flags from
+// PamOBBCollisionEntityData +0x90..0x93 (can't stand, climb, vault, wallrun).
+// PamClientMagropeEntity (client, spatial): its transform, PamMagropeEntityData Radius (+0x74).
+namespace {
+struct Barrier {
+    uintptr_t ent = 0, data = 0;
+    bool server = false, enabled = false, pam = false;
+    gn_transform t{};
+    float half[3] = {};
+    uint8_t cant[4] = {};
+    uint32_t body = 0xffffffffu;
+    float dist = 0.f;
+};
+struct Magrope {
+    uintptr_t ent = 0;
+    gn_transform t{};
+    float radius = 0.f, dist = 0.f;
+    int32_t type = -1; // MagropeType (FBMagropeType: 0 Swing, 1 PullUp, 2 PullDown, by the names' order)
+    bool fromData = false;
+    struct Trigger {
+        gn_transform local{};
+        // Target (+0x00). Not a size: zero on pull-ups and large on swings (their volumes were drawn kilometres wide
+        // when read as half extents). Drawn as a point in the magrope's frame, probably where a swing sends Faith.
+        float target[4] = {};
+        int32_t shape = 0;  // ShapeType (+0x50): 0 sphere, 1 box (PamMagropeTriggerType)
+    };
+    std::vector<Trigger> triggers; // the data's Triggers (+0x80), 0x60 bytes each
+    bool moved = false;
+    gn_transform original{};       // where it was, when GridNode moved it
+};
+struct BarrierCounts {
+    int barriers = 0, unknownBarriers = 0, magropes = 0, ropesNoTransform = 0;
+};
+BarrierCounts g_barCounts;
+std::mutex g_barM;
+std::vector<Barrier> g_barriers; // nearest first (render thread writes, the editor window reads)
+std::vector<Magrope> g_magropes;
+bool g_showBarriers = false;
+float g_barRange = 150.f;
+uintptr_t g_barSel = 0;     // selected barrier (its server entity, or client when alone)
+uintptr_t g_ropeSel = 0;    // selected magrope
+// Moved magropes: a magrope reads its transform through a resolved property reference
+// (+0x58 context, +0x60 value pointer, made in its constructor 0x1439b9b70 with 0x1446513d0;
+// the value is its data's Transform, or a blueprint's override). GridNode points +0x60 at a
+// transform of its own; putting it back restores the pointer.
+struct RopeMove {
+    uintptr_t original = 0;               // the pointer that was there
+    std::unique_ptr<gn_transform> value;  // GridNode's transform
+};
+std::mutex g_ropeM;
+std::unordered_map<uintptr_t, RopeMove> g_ropeMoves;
+std::unordered_map<uintptr_t, gn_transform> g_barOrig; // moved barriers' first transforms (render thread)
+double g_barScanAt = -10.0;
+
+bool barrierKnown(uintptr_t ent) { // the class whose layout this was read off
+    const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+    return vt && mem::readOr<uintptr_t>(vt + 0x88) == mem::rva(0x143335b30);
+}
+
+void scanBarriers() {
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return;
+    static const reflect::Type* obb = registry().find("OBBCollisionEntity");
+    static const reflect::Type* rope = registry().find("PamClientMagropeEntity");
+    static const reflect::Type* pamData = registry().find("PamOBBCollisionEntityData");
+    std::vector<Barrier> bars;
+    std::vector<Magrope> ropes;
+    BarrierCounts counts;
+    const float range2 = g_barRange * g_barRange;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t) continue;
+        const bool isBar = obb && registry().isKindOf(t, obb);
+        const bool isRope = !isBar && rope && registry().isKindOf(t, rope);
+        if ((!isBar && !isRope) || !inspector::alive(p, t)) continue;
+        if (isBar) {
+            ++counts.barriers;
+            if (!barrierKnown(p)) {
+                ++counts.unknownBarriers;
+                continue;
+            }
+            Barrier b;
+            b.ent = p;
+            if (!mem::read(p + 0x50, &b.t, sizeof(b.t)) || !usableTransform(b.t)) continue;
+            const float q[3] = {b.t.trans[0] - from[0], b.t.trans[1] - from[1], b.t.trans[2] - from[2]};
+            const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+            if (d2 > range2) continue;
+            b.dist = std::sqrt(d2);
+            b.server = (mem::readOr<uint32_t>(p + 0x18) & 1) != 0;
+            b.enabled = mem::readOr<uint8_t>(p + 0x95) != 0;
+            b.body = mem::readOr<uint32_t>(p + 0x90, 0xffffffffu);
+            b.data = mem::readOr<uintptr_t>(p + 0x28);
+            mem::read(b.data + 0x60, b.half, sizeof(b.half));
+            const reflect::Type* dt = b.data ? registry().typeOf(mem::ProcessMemory(), b.data) : nullptr;
+            b.pam = dt && pamData && registry().isKindOf(dt, pamData);
+            if (b.pam) mem::read(b.data + 0x90, b.cant, sizeof(b.cant));
+            if (!finite(b.half, 3)) continue;
+            bars.push_back(b);
+        } else {
+            ++counts.magropes;
+            Magrope m;
+            m.ent = p;
+            const uintptr_t md = dataOf(p, "PamMagropeEntityData");
+            // A magrope is a plain spatial entity (0x68 bytes, no transform space): its place is read
+            // through its property reference (+0x60 -> its data's Transform, or GridNode's after a move).
+            const uintptr_t tp = mem::readOr<uintptr_t>(p + 0x60);
+            if (!tp || !mem::read(tp, &m.t, sizeof(m.t)) || !usableTransform(m.t)) {
+                ++counts.ropesNoTransform;
+                continue;
+            }
+            m.fromData = true;
+            const float q[3] = {m.t.trans[0] - from[0], m.t.trans[1] - from[1], m.t.trans[2] - from[2]};
+            const float d2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+            if (d2 > range2) continue;
+            m.dist = std::sqrt(d2);
+            if (md) {
+                m.radius = mem::readOr<float>(md + 0x74), m.type = mem::readOr<int32_t>(md + 0x70);
+                const uintptr_t arr = mem::readOr<uintptr_t>(md + 0x80);
+                const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
+                for (uint32_t i = 0; i < n && i < 16; ++i) {
+                    Magrope::Trigger tr;
+                    const uintptr_t e = arr + uintptr_t(i) * 0x60;
+                    mem::read(e, tr.target, sizeof(tr.target));
+                    mem::read(e + 0x10, &tr.local, sizeof(tr.local));
+                    tr.shape = mem::readOr<int32_t>(e + 0x50);
+                    if (finite(tr.target, 3) && usableTransform(tr.local)) m.triggers.push_back(tr);
+                }
+                static std::atomic<int> said[4] = {}; // the first two of each type
+                if (!m.triggers.empty() && said[m.type >= 0 && m.type <= 2 ? m.type : 3].fetch_add(1) < 2)
+                    GN_LOG("layouts: magrope %llx type %d: %d trigger(s), first shape %d target (%.2f %.2f %.2f) at local (%.2f %.2f %.2f)",
+                           static_cast<unsigned long long>(p), m.type, static_cast<int>(m.triggers.size()), m.triggers[0].shape,
+                           m.triggers[0].target[0], m.triggers[0].target[1], m.triggers[0].target[2], m.triggers[0].local.trans[0],
+                           m.triggers[0].local.trans[1], m.triggers[0].local.trans[2]);
+                // Moved by GridNode: where it was (the pointer it had).
+                std::lock_guard<std::mutex> lock(g_ropeM);
+                if (auto it = g_ropeMoves.find(p); it != g_ropeMoves.end() && mem::read(it->second.original, &m.original, sizeof(m.original)))
+                    m.moved = true;
+            }
+            ropes.push_back(m);
+        }
+    }
+    // One entry per barrier: the server half where both realms have one (same data, same place).
+    std::vector<Barrier> one;
+    for (const Barrier& b : bars) {
+        bool twin = false;
+        if (!b.server)
+            for (const Barrier& o : bars)
+                twin = twin || (o.server && o.data == b.data && std::fabs(o.t.trans[0] - b.t.trans[0]) + std::fabs(o.t.trans[1] - b.t.trans[1]) +
+                                                                     std::fabs(o.t.trans[2] - b.t.trans[2]) < 0.01f);
+        if (!twin) one.push_back(b);
+    }
+    std::sort(one.begin(), one.end(), [](const Barrier& a, const Barrier& b) { return a.dist < b.dist; });
+    std::sort(ropes.begin(), ropes.end(), [](const Magrope& a, const Magrope& b) { return a.dist < b.dist; });
+    std::lock_guard<std::mutex> lock(g_barM);
+    g_barriers = std::move(one);
+    g_magropes = std::move(ropes);
+    if (counts.barriers != g_barCounts.barriers || counts.magropes != g_barCounts.magropes)
+        GN_LOG("layouts: barriers: %d tracked (%d of another layout), magropes: %d tracked (%d without a transform); in range: %d, %d",
+               counts.barriers, counts.unknownBarriers, counts.magropes, counts.ropesNoTransform, static_cast<int>(g_barriers.size()),
+               static_cast<int>(g_magropes.size()));
+    g_barCounts = counts;
+}
+
+// On the barrier's realm thread: its transform and its body's, as the enable does
+// (0x1434f6d90 then 0x1434f8930 with 1).
+void placeBarrier(uintptr_t ent, const reflect::Type* type, gn_transform to) {
+    if (!inspector::alive(ent, type) || !barrierKnown(ent) || !usableTransform(to)) return;
+    alignas(16) gn_transform t = to;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    mem::write(ent + 0x50, &t, sizeof(t));
+    const uint32_t id = mem::readOr<uint32_t>(ent + 0x90, 0xffffffffu);
+    if (id == 0xffffffffu) return; // no body (never enabled): the field is all there is
+    const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds) + (mem::readOr<uint32_t>(ent + 0x18) & 1) * 8);
+    const uintptr_t mgr = world ? mem::readOr<uintptr_t>(world + 0x50) : 0;
+    const uintptr_t owners = mgr ? mem::readOr<uintptr_t>(mgr + e::constant::PhysicsManager_Owners) : 0;
+    const uintptr_t owner = owners ? mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8) : 0;
+    if (!owner) return;
+    uint32_t a = id, b = id;
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*)>(mem::rva(e::function::RigidBody_transformSource))(owner, &a, &t);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, bool)>(mem::rva(e::function::RigidBody_setTransformNative))(owner, &b, &t, true);
+}
+
+// Both halves of a barrier (the same data at the same place), each on its thread.
+void moveBarrier(const Barrier& b, const gn_transform& to) {
+    struct Half {
+        uintptr_t p;
+        const reflect::Type* t;
+        bool server;
+    };
+    std::vector<Half> halves{{b.ent, registry().typeOf(mem::ProcessMemory(), b.ent), b.server}};
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (p == b.ent || !t || mem::readOr<uintptr_t>(p + 0x28) != b.data || !barrierKnown(p)) continue;
+        gn_transform o{};
+        if (!mem::read(p + 0x50, &o, sizeof(o))) continue;
+        if (std::fabs(o.trans[0] - b.t.trans[0]) + std::fabs(o.trans[1] - b.t.trans[1]) + std::fabs(o.trans[2] - b.t.trans[2]) < 0.01f)
+            halves.push_back({p, t, (mem::readOr<uint32_t>(p + 0x18) & 1) != 0});
+    }
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 3)
+        GN_LOG("layouts: barrier %llx (body %08x) moved to (%.2f %.2f %.2f), %d half(s)", static_cast<unsigned long long>(b.ent), b.body,
+               to.trans[0], to.trans[1], to.trans[2], static_cast<int>(halves.size()));
+    for (const Half& h : halves) {
+        const uintptr_t ent = h.p;
+        const reflect::Type* ty = h.t;
+        alignas(16) gn_transform t = to;
+        if (h.server) server().post([ent, ty, t] { placeBarrier(ent, ty, t); });
+        else client().post([ent, ty, t] { placeBarrier(ent, ty, t); });
+    }
+}
+
+// On the client thread: the magrope reads `to` from now on.
+void placeMagrope(uintptr_t ent, const reflect::Type* type, gn_transform to) {
+    if (!inspector::alive(ent, type) || !usableTransform(to)) return;
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    RopeMove& m = g_ropeMoves[ent];
+    if (!m.value) {
+        m.original = mem::readOr<uintptr_t>(ent + 0x60);
+        if (!m.original) return (void)g_ropeMoves.erase(ent);
+        m.value = std::make_unique<gn_transform>();
+    }
+    *m.value = to;
+    m.value->right[3] = m.value->up[3] = m.value->forward[3] = 0.f, m.value->trans[3] = 1.f;
+    const uintptr_t mine = reinterpret_cast<uintptr_t>(m.value.get());
+    if (mem::readOr<uintptr_t>(ent + 0x60) != mine) mem::write(ent + 0x60, mine);
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 3)
+        GN_LOG("layouts: magrope %llx moved to (%.2f %.2f %.2f) (its transform reference now GridNode's)", static_cast<unsigned long long>(ent),
+               to.trans[0], to.trans[1], to.trans[2]);
+}
+void putBackMagrope(uintptr_t ent, const reflect::Type* type) {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    auto it = g_ropeMoves.find(ent);
+    if (it == g_ropeMoves.end()) return;
+    if (inspector::alive(ent, type) && mem::readOr<uintptr_t>(ent + 0x60) == reinterpret_cast<uintptr_t>(it->second.value.get()))
+        mem::write(ent + 0x60, it->second.original);
+    g_ropeMoves.erase(it);
+}
+bool ropeMoved(uintptr_t ent) {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    return g_ropeMoves.count(ent) != 0;
+}
+
+// ---- barrier and magrope edits: saved in layouts ----------------------------------------------------
+// Edit kinds: "Barrier" / "Magrope" (an original moved: `at` its original position) and
+// "BarrierCopy" / "MagropeCopy" (a copy: `at` its source's original position, `to` its place).
+struct SpecialCopy {
+    int copyId = -1;
+    bool rope = false;
+    uintptr_t server = 0, client = 0;
+    const reflect::Type *serverType = nullptr, *clientType = nullptr;
+};
+std::mutex g_specM;
+std::vector<SpecialCopy> g_specCopies; // (g_specM)
+
+bool specialCopyOf(uintptr_t ent, SpecialCopy* out = nullptr) {
+    std::lock_guard<std::mutex> lock(g_specM);
+    for (const SpecialCopy& c : g_specCopies)
+        if (c.server == ent || c.client == ent) {
+            if (out) *out = c;
+            return true;
+        }
+    return false;
+}
+
+// Adds or updates an edit (g_m taken here).
+void recordSpecial(const char* kind, const float* at, const gn_transform& from, const gn_transform& to, int copyId = -1, const char* source = nullptr) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (Edit& ed : g_edits)
+        if (ed.kind == kind && (copyId >= 0 ? ed.copyId == copyId : dist2(ed.at, at) <= kMatch * kMatch)) {
+            ed.to = to;
+            g_dirty = true;
+            return;
+        }
+    Edit ed;
+    ed.kind = kind;
+    memcpy(ed.at, at, sizeof(ed.at));
+    ed.to = to;
+    ed.from = from;
+    ed.haveFrom = true;
+    ed.copyId = copyId;
+    if (source) ed.source = source;
+    g_edits.push_back(ed);
+    g_dirty = true;
+}
+void forgetSpecial(const char* kind, const float* at, int copyId = -1) {
+    std::lock_guard<std::mutex> lock(g_m);
+    g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(),
+                                 [&](const Edit& ed) {
+                                     return ed.kind == kind && (copyId >= 0 ? ed.copyId == copyId : dist2(ed.at, at) <= kMatch * kMatch);
+                                 }),
+                  g_edits.end());
+    g_dirty = true;
+}
+
+// A barrier's or magrope's original placement: as the level made it, before any GridNode move.
+bool originalOf(uintptr_t ent, bool rope, gn_transform& out) {
+    if (rope) {
+        {
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            if (auto it = g_ropeMoves.find(ent); it != g_ropeMoves.end()) return mem::read(it->second.original, &out, sizeof(out));
+        }
+        const uintptr_t tp = mem::readOr<uintptr_t>(ent + 0x60);
+        return tp && mem::read(tp, &out, sizeof(out));
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        if (auto it = g_barOrig.find(ent); it != g_barOrig.end()) return out = it->second, true;
+    }
+    return mem::read(ent + 0x50, &out, sizeof(out));
+}
+
+// Places a copy's halves directly (no search for twins: a copy shares its source's data).
+void placeCopyHalves(const SpecialCopy& c, const gn_transform& to) {
+    if (c.rope) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+        return;
+    }
+    if (c.server) {
+        const uintptr_t ent = c.server;
+        const reflect::Type* ty = c.serverType;
+        server().post([ent, ty, to] { placeBarrier(ent, ty, to); });
+    }
+    if (c.client) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        client().post([ent, ty, to] { placeBarrier(ent, ty, to); });
+    }
+}
+
+// Server thread: a copy of the barrier or magrope `src` (an original) at `to`.
+void spawnSpecialCopy(uintptr_t src, bool rope, const gn_transform& to, int copyId) {
+    const reflect::Type* srcType = registry().typeOf(mem::ProcessMemory(), src);
+    if (!srcType || !inspector::alive(src, srcType)) return;
+    if (rope) {
+        const uintptr_t data = mem::readOr<uintptr_t>(src + 0x30);
+        uintptr_t bus = busOf(src);
+        if (!bus) bus = mem::readOr<uintptr_t>(src + 0x28);
+        if (!data || !bus) return GN_LOG("layouts: magrope copy %d: its source's data or bus is unknown", copyId);
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            g_specCopies.push_back({copyId, true, 0, 0, nullptr, nullptr});
+        }
+        pinBus(bus);
+        client().post([data, bus, to, copyId] {
+            const uintptr_t ce = spawnClient(data, bus, to);
+            const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+            GN_LOG("layouts: magrope copy %d at (%.2f %.2f %.2f): client entity %llx", copyId, to.trans[0], to.trans[1], to.trans[2],
+                   static_cast<unsigned long long>(ce));
+            {
+                std::lock_guard<std::mutex> lock(g_specM);
+                for (SpecialCopy& c : g_specCopies)
+                    if (c.copyId == copyId) c.client = ce, c.clientType = ct;
+            }
+            if (ce) placeMagrope(ce, ct, to);
+        });
+        return;
+    }
+    // A barrier: both realms, each from its own half's bus (the same data).
+    const uintptr_t data = mem::readOr<uintptr_t>(src + 0x28);
+    uintptr_t sbus = 0, cbus = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || mem::readOr<uintptr_t>(p + 0x28) != data || !barrierKnown(p) || specialCopyOf(p)) continue;
+        const bool srv = (mem::readOr<uint32_t>(p + 0x18) & 1) != 0;
+        uintptr_t b = busOf(p);
+        if (!b) b = mem::readOr<uintptr_t>(p + 0x20);
+        (srv ? sbus : cbus) = b;
+    }
+    if (!data || !sbus) return GN_LOG("layouts: barrier copy %d: its source's data or server bus is unknown", copyId);
+    pinBus(sbus);
+    const uintptr_t se = spawnServer(data, sbus, to);
+    const reflect::Type* st = se ? registry().typeOf(mem::ProcessMemory(), se) : nullptr;
+    GN_LOG("layouts: barrier copy %d at (%.2f %.2f %.2f): server entity %llx", copyId, to.trans[0], to.trans[1], to.trans[2],
+           static_cast<unsigned long long>(se));
+    if (!se) return;
+    placeBarrier(se, st, to); // made where its data says (its source's place): moved at once
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        g_specCopies.push_back({copyId, false, se, 0, st, nullptr});
+    }
+    if (!cbus) return;
+    client().post([data, cbus, to, copyId] {
+        const uintptr_t ce = spawnClient(data, cbus, to);
+        const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            for (SpecialCopy& c : g_specCopies)
+                if (c.copyId == copyId) c.client = ce, c.clientType = ct;
+        }
+        if (ce) placeBarrier(ce, ct, to);
+    });
+}
+
+// A copy's halves destroyed, each on its thread, and forgotten.
+void removeSpecialCopy(int copyId) {
+    SpecialCopy c;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        auto it = std::find_if(g_specCopies.begin(), g_specCopies.end(), [&](const SpecialCopy& x) { return x.copyId == copyId; });
+        if (it == g_specCopies.end()) return;
+        c = *it;
+        g_specCopies.erase(it);
+    }
+    if (c.server && c.serverType) {
+        const uintptr_t ent = c.server;
+        const reflect::Type* ty = c.serverType;
+        server().post([ent, ty] { destroyEntity(ent, ty, "server"); });
+    }
+    if (c.client && c.clientType) {
+        const uintptr_t ent = c.client;
+        const reflect::Type* ty = c.clientType;
+        const bool rope = c.rope;
+        client().post([ent, ty, rope] {
+            if (rope) putBackMagrope(ent, ty); // its own transform reference back before it goes
+            destroyEntity(ent, ty, "client");
+        });
+    }
+}
+
+// Server thread, every 2 s: originals at an edit's position are moved; missing copies are made.
+void specialSweepNow() {
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "Barrier" || ed.kind == "Magrope" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") edits.push_back(ed);
+        if (g_level != levelName()) return;
+    }
+    if (edits.empty()) return;
+    static const reflect::Type* obb = registry().find("OBBCollisionEntity");
+    static const reflect::Type* rope = registry().find("PamClientMagropeEntity");
+    std::unordered_map<int, uintptr_t> sources; // copy id -> an original at its source position
+    int moved = 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t) continue;
+        const bool isBar = obb && registry().isKindOf(t, obb);
+        const bool isRope = !isBar && rope && registry().isKindOf(t, rope);
+        if ((!isBar && !isRope) || !inspector::alive(p, t) || specialCopyOf(p)) continue;
+        if (isBar && (!barrierKnown(p) || !(mem::readOr<uint32_t>(p + 0x18) & 1))) continue; // server halves (moveBarrier takes the client too)
+        gn_transform orig{};
+        if (!originalOf(p, isRope, orig)) continue;
+        for (const Edit& ed : edits) {
+            if (dist2(ed.at, orig.trans) > kMatch * kMatch) continue;
+            if (ed.kind == (isRope ? "MagropeCopy" : "BarrierCopy")) sources.emplace(ed.copyId, p);
+            if (ed.kind != (isRope ? "Magrope" : "Barrier")) continue;
+            gn_transform now{};
+            if (isRope) {
+                const uintptr_t tp = mem::readOr<uintptr_t>(p + 0x60);
+                if (!tp || !mem::read(tp, &now, sizeof(now))) continue;
+            } else if (!mem::read(p + 0x50, &now, sizeof(now))) {
+                continue;
+            }
+            if (dist2(now.trans, ed.to.trans) <= kMatch * kMatch && std::fabs(now.right[0] - ed.to.right[0]) < 1e-3f &&
+                std::fabs(now.right[2] - ed.to.right[2]) < 1e-3f)
+                continue; // already there
+            if (isRope) {
+                const uintptr_t ent = p;
+                const reflect::Type* ty = t;
+                const gn_transform to = ed.to;
+                client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+            } else {
+                {
+                    std::lock_guard<std::mutex> lock(g_ropeM);
+                    g_barOrig.emplace(p, orig);
+                }
+                Barrier b;
+                b.ent = p, b.server = true, b.t = now, b.data = mem::readOr<uintptr_t>(p + 0x28);
+                moveBarrier(b, ed.to);
+            }
+            ++moved;
+        }
+    }
+    int made = 0, waiting = 0;
+    for (const Edit& ed : edits) {
+        if (ed.kind != "BarrierCopy" && ed.kind != "MagropeCopy") continue;
+        bool have = false;
+        {
+            std::lock_guard<std::mutex> lock(g_specM);
+            for (const SpecialCopy& c : g_specCopies) {
+                if (c.copyId != ed.copyId) continue;
+                const uintptr_t e = c.rope ? c.client : c.server;
+                const reflect::Type* et = c.rope ? c.clientType : c.serverType;
+                have = !e || inspector::alive(e, et); // a client half still being made counts
+            }
+            if (!have) // destroyed with its part of the level: made again below
+                g_specCopies.erase(std::remove_if(g_specCopies.begin(), g_specCopies.end(), [&](const SpecialCopy& c) { return c.copyId == ed.copyId; }),
+                                   g_specCopies.end());
+        }
+        if (have) continue;
+        auto src = sources.find(ed.copyId);
+        if (src == sources.end()) {
+            ++waiting; // its source's part of the level is not loaded
+            continue;
+        }
+        spawnSpecialCopy(src->second, ed.kind == "MagropeCopy", ed.to, ed.copyId);
+        ++made;
+    }
+    static int lastMoved = -1, lastMade = -1, lastWaiting = -1;
+    if (moved || made || waiting != lastWaiting) {
+        if (moved != lastMoved || made != lastMade || waiting != lastWaiting)
+            GN_LOG("layouts: barriers and magropes: %d moved, %d copies made, %d copies waiting for their source's part of the level", moved, made, waiting);
+        lastMoved = moved, lastMade = made, lastWaiting = waiting;
+    }
+}
+
+// A position field: dragging applies at once; a typed value applies on Enter or when the field is left
+// (applying each keystroke sent "623" to 6 first).
+bool positionField(const char* label, float* pos) {
+    static float pending[3];
+    static ImGuiID pendingFor = 0;
+    const bool changed = ImGui::DragFloat3(label, pos, 0.05f, 0.f, 0.f, "%.2f");
+    const ImGuiID id = ImGui::GetItemID();
+    if (changed && ImGui::GetIO().WantTextInput) {
+        memcpy(pending, pos, sizeof(pending)), pendingFor = id;
+        return false;
+    }
+    if (pendingFor == id && ImGui::IsItemDeactivated()) {
+        pendingFor = 0;
+        memcpy(pos, pending, sizeof(pending));
+        return true;
+    }
+    return changed;
+}
+
+void moveSelectedBarrier(const Barrier& b, const gn_transform& to) {
+    SpecialCopy c;
+    if (specialCopyOf(b.ent, &c)) {
+        placeCopyHalves(c, to);
+        recordSpecial("BarrierCopy", to.trans, to, to, c.copyId);
+    } else {
+        gn_transform orig{};
+        if (!originalOf(b.ent, false, orig)) orig = b.t;
+        {
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            g_barOrig.emplace(b.ent, orig);
+        }
+        moveBarrier(b, to);
+        recordSpecial("Barrier", orig.trans, orig, to);
+    }
+    std::lock_guard<std::mutex> lock(g_barM); // drawn at once at the new place
+    for (Barrier& x : g_barriers)
+        if (x.ent == b.ent) x.t = to;
+}
+void moveSelectedRope(uintptr_t ent, const gn_transform& to) {
+    SpecialCopy c;
+    if (specialCopyOf(ent, &c)) {
+        placeCopyHalves(c, to);
+        recordSpecial("MagropeCopy", to.trans, to, to, c.copyId);
+    } else {
+        gn_transform orig{};
+        if (originalOf(ent, true, orig)) recordSpecial("Magrope", orig.trans, orig, to);
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        client().post([ent, ty, to] { placeMagrope(ent, ty, to); });
+    }
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (Magrope& r : g_magropes)
+        if (r.ent == ent) r.t = to;
+}
+
+// A copy of the selected barrier or magrope, a metre and a half to the camera's right, selected.
+void copySelectedSpecial() {
+    float from[3], d[3], r[3], u[3];
+    if (!viewBasis(from, d, r, u)) return;
+    const bool rope = g_ropeSel != 0;
+    uintptr_t src = rope ? g_ropeSel : g_barSel;
+    if (!src) return;
+    SpecialCopy sc;
+    if (specialCopyOf(src, &sc)) return setStatus("Copy the original, not a copy (for now)");
+    gn_transform orig{}, now{};
+    if (!originalOf(src, rope, orig)) return;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        bool found = false;
+        if (rope) {
+            for (const Magrope& m : g_magropes) if (m.ent == src) now = m.t, found = true;
+        } else {
+            for (const Barrier& b : g_barriers) if (b.ent == src) now = b.t, found = true;
+        }
+        if (!found) return;
+    }
+    if (!rope && !(mem::readOr<uint32_t>(src + 0x18) & 1)) { // copies are made from the server half
+        const uintptr_t data = mem::readOr<uintptr_t>(src + 0x28);
+        for (const auto& [p, t] : inspector::tracked())
+            if (t && p != src && mem::readOr<uintptr_t>(p + 0x28) == data && barrierKnown(p) && (mem::readOr<uint32_t>(p + 0x18) & 1) && !specialCopyOf(p)) src = p;
+    }
+    gn_transform to = now;
+    float side[3] = {r[0], 0.f, r[2]};
+    normalize(side);
+    for (int k = 0; k < 3; ++k) to.trans[k] += 1.5f * side[k];
+    int id;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        id = g_nextCopyId++;
+    }
+    recordSpecial(rope ? "MagropeCopy" : "BarrierCopy", orig.trans, to, to, id, rope ? "Magrope" : "Barrier");
+    {   // `at` is its source's position: recordSpecial keyed it by the copy id
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Edit& ed : g_edits)
+            if (ed.copyId == id && ed.kind == (rope ? "MagropeCopy" : "BarrierCopy")) memcpy(ed.at, orig.trans, sizeof(ed.at));
+    }
+    server().post([src, rope, to, id] { spawnSpecialCopy(src, rope, to, id); });
+    setStatus(rope ? "Magrope copied: select it (it appears to the right) and move it" : "Barrier copied: select it (it appears to the right) and move it");
+}
+
+void removeSelectedSpecialCopy() {
+    const uintptr_t ent = g_ropeSel ? g_ropeSel : g_barSel;
+    SpecialCopy c;
+    if (!ent || !specialCopyOf(ent, &c)) return;
+    forgetSpecial(c.rope ? "MagropeCopy" : "BarrierCopy", nullptr, c.copyId);
+    removeSpecialCopy(c.copyId);
+    g_ropeSel = g_barSel = 0;
+}
+
+void barriersPanel() {
+    ImGui::SeparatorText("Barriers and magropes (research)");
+    ImGui::Checkbox("Show barriers and magropes", &g_showBarriers);
+    if (!g_showBarriers) return;
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.f);
+    ImGui::SliderFloat("range##bar", &g_barRange, 20.f, 500.f, "%.0f m");
+    std::vector<Barrier> bars;
+    std::vector<Magrope> ropeList;
+    BarrierCounts counts;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        bars = g_barriers;
+        ropeList = g_magropes;
+        counts = g_barCounts;
+    }
+    ImGui::Text("%d barriers, %d magropes in range", static_cast<int>(bars.size()), static_cast<int>(ropeList.size()));
+    ImGui::SameLine();
+    ImGui::TextDisabled("(level: %d barriers, %d magropes, %d of them without a position)", counts.barriers, counts.magropes, counts.ropesNoTransform);
+    ImGui::TextDisabled("Orange: barrier, grey: switched off, yellow: selected, cyan: magrope (arrow: toward its trigger; axes red right, green up, blue forward;\ngreen boxes: its triggers, grey: where they were; magenta cross: a trigger's Target).\nClick one in the world or in a list; the move keys then move it (while flying). Moves and copies are saved with the layout.");
+    if (ImGui::BeginChild("##barlist", ImVec2(0, 140.f), ImGuiChildFlags_Borders)) {
+        for (size_t i = 0; i < bars.size() && i < 60; ++i) {
+            const Barrier& b = bars[i];
+            char cant[40] = "";
+            if (b.pam) snprintf(cant, sizeof(cant), "%s%s%s%s", b.cant[0] ? " stand" : "", b.cant[1] ? " climb" : "", b.cant[2] ? " vault" : "", b.cant[3] ? " wallrun" : "");
+            char label[200];
+            snprintf(label, sizeof(label), "%5.1f m  %.1f x %.1f x %.1f%s%s%s%s##b%llx", b.dist, b.half[0] * 2, b.half[1] * 2, b.half[2] * 2,
+                     b.enabled ? "" : "  (off)", cant[0] ? "  can't:" : "", cant, specialCopyOf(b.ent) ? "  (copy)" : "", static_cast<unsigned long long>(b.ent));
+            if (ImGui::Selectable(label, g_barSel == b.ent)) g_barSel = b.ent, g_ropeSel = 0;
+        }
+    }
+    ImGui::EndChild();
+    if (!ropeList.empty() && ImGui::TreeNodeEx("Magropes", ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (size_t i = 0; i < ropeList.size() && i < 40; ++i) {
+            const Magrope& m = ropeList[i];
+            char label[120];
+            snprintf(label, sizeof(label), "%5.1f m  %s  radius %.2f%s##r%llx", m.dist, m.type == 0 ? "Swing" : m.type == 1 ? "PullUp" : m.type == 2 ? "PullDown" : "?", m.radius, specialCopyOf(m.ent) ? "  (copy)" : ropeMoved(m.ent) ? "  (moved)" : "",
+                     static_cast<unsigned long long>(m.ent));
+            if (ImGui::Selectable(label, g_ropeSel == m.ent)) g_ropeSel = m.ent, g_barSel = 0;
+        }
+        ImGui::TreePop();
+    }
+    for (const Magrope& m : ropeList) {
+        if (m.ent != g_ropeSel) continue;
+        float pos[3] = {m.t.trans[0], m.t.trans[1], m.t.trans[2]};
+        if (positionField("Magrope position", pos)) {
+            gn_transform to = m.t;
+            for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
+            moveSelectedRope(m.ent, to);
+        }
+        if (ImGui::Button("Turn left##rope")) nudgeSpecial(6, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Turn right##rope")) nudgeSpecial(7, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip away##rope")) nudgeSpecial(10, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip toward##rope")) nudgeSpecial(11, 1.f);
+        if (specialCopyOf(m.ent)) {
+            if (ImGui::Button("Remove this copy##rope")) removeSelectedSpecialCopy();
+        } else if (ImGui::Button("Copy##rope")) {
+            copySelectedSpecial();
+        }
+        if (ropeMoved(m.ent)) {
+            ImGui::SameLine();
+            if (!specialCopyOf(m.ent) && ImGui::Button("Put back##rope")) {
+                const uintptr_t ent = m.ent;
+                gn_transform orig{};
+                if (originalOf(ent, true, orig)) forgetSpecial("Magrope", orig.trans);
+                const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+                client().post([ent, ty] { putBackMagrope(ent, ty); });
+            }
+        }
+    }
+    const Barrier* sel = nullptr;
+    for (const Barrier& b : bars)
+        if (b.ent == g_barSel) sel = &b;
+    if (!sel) return;
+    float pos[3] = {sel->t.trans[0], sel->t.trans[1], sel->t.trans[2]};
+    if (positionField("Barrier position", pos)) {
+        gn_transform to = sel->t;
+        for (int k = 0; k < 3; ++k) to.trans[k] = pos[k];
+        moveSelectedBarrier(*sel, to);
+    }
+    if (ImGui::Button("Turn left##bar")) nudgeSpecial(6, 1.f);
+    ImGui::SameLine();
+    if (ImGui::Button("Turn right##bar")) nudgeSpecial(7, 1.f);
+    ImGui::SameLine();
+    if (specialCopyOf(sel->ent)) {
+        if (ImGui::Button("Remove this copy##bar")) removeSelectedSpecialCopy();
+    } else if (ImGui::Button("Copy##bar")) {
+        copySelectedSpecial();
+    }
+    bool moved = false;
+    gn_transform back{};
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        if (auto it = g_barOrig.find(sel->ent); it != g_barOrig.end()) moved = true, back = it->second;
+    }
+    if (moved) {
+        ImGui::SameLine();
+        if (ImGui::Button("Put back##bar")) {
+            const Barrier b = *sel;
+            moveBarrier(b, back);
+            forgetSpecial("Barrier", back.trans);
+            {
+                std::lock_guard<std::mutex> lock(g_barM);
+                for (Barrier& x : g_barriers)
+                    if (x.ent == b.ent) x.t = back;
+            }
+            std::lock_guard<std::mutex> lock(g_ropeM);
+            g_barOrig.erase(b.ent);
+        }
+    }
+    ImGui::TextDisabled("body %08x, %s%s", sel->body, sel->server ? "server" : "client", sel->pam ? "" : ", not a Pam barrier (no flags)");
+}
+} // namespace
+
+void clearRopeMoves() {
+    std::lock_guard<std::mutex> lock(g_ropeM);
+    g_ropeMoves.clear();
+    g_barOrig.clear();
+}
+
+void clearSpecialSelection() { g_barSel = 0, g_ropeSel = 0; }
+
+void specialSweep() { specialSweepNow(); }
+
+void clearSpecialCopies() { // a new level: the copies went with the old one
+    std::lock_guard<std::mutex> lock(g_specM);
+    g_specCopies.clear();
+}
+
+// The layout is unloaded: moved barriers and magropes back, copies removed (g_edits already cleared).
+void unloadSpecial() {
+    std::vector<int> ids;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        for (const SpecialCopy& c : g_specCopies) ids.push_back(c.copyId);
+    }
+    for (int id : ids) removeSpecialCopy(id);
+    std::vector<std::pair<uintptr_t, gn_transform>> bars;
+    std::vector<uintptr_t> ropes;
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        for (const auto& [ent, t] : g_barOrig) bars.push_back({ent, t});
+        for (const auto& [ent, m] : g_ropeMoves) ropes.push_back(ent);
+        g_barOrig.clear();
+    }
+    for (const auto& [ent, orig] : bars) {
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        if (!ty || !inspector::alive(ent, ty)) continue;
+        Barrier b;
+        b.ent = ent, b.server = (mem::readOr<uint32_t>(ent + 0x18) & 1) != 0, b.data = mem::readOr<uintptr_t>(ent + 0x28);
+        if (!mem::read(ent + 0x50, &b.t, sizeof(b.t))) continue;
+        moveBarrier(b, orig);
+    }
+    for (uintptr_t ent : ropes) {
+        const reflect::Type* ty = registry().typeOf(mem::ProcessMemory(), ent);
+        client().post([ent, ty] { putBackMagrope(ent, ty); });
+    }
+    if (!bars.empty() || !ropes.empty() || !ids.empty())
+        GN_LOG("layouts: unloaded: %d barriers and %d magropes put back, %d of their copies removed", static_cast<int>(bars.size()),
+               static_cast<int>(ropes.size()), static_cast<int>(ids.size()));
+}
+
+// The move keys on a selected barrier or magrope (shown): false when neither is selected.
+bool nudgeSpecial(int dir, float scale) {
+    if (!g_showBarriers || (!g_barSel && !g_ropeSel)) return false;
+    if (g_ropeSel) {
+        gn_transform t{};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(g_barM);
+            for (const Magrope& m : g_magropes)
+                if (m.ent == g_ropeSel) t = m.t, found = true;
+        }
+        if (found && nudgeTransform(t, dir, scale)) moveSelectedRope(g_ropeSel, t);
+        return true;
+    }
+    Barrier b;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(g_barM);
+        for (const Barrier& x : g_barriers)
+            if (x.ent == g_barSel) b = x, found = true;
+    }
+    gn_transform t = b.t;
+    if (found && nudgeTransform(t, dir, scale)) moveSelectedBarrier(b, t);
+    return true;
+}
+
+void drawKeys();
 
 void draw(bool* open) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 26, 0), ImGuiCond_FirstUseEver);
@@ -1550,9 +4780,65 @@ void draw(bool* open) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
         ImGui::SliderFloat("speed", &g_cam.speed, 0.5f, 200.f, "%.1f m/s", ImGuiSliderFlags_Logarithmic);
-        ImGui::TextDisabled("Hold right mouse to look; WASD move, Q/E down/up, Shift faster, Ctrl slower; wheel while looking: speed.");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("Close the menu to fly: the mouse looks, WASD move, Q/E down/up, Shift faster, Ctrl slower, wheel: speed. With the menu open, hold right mouse to look and click objects to pick them.");
+        ImGui::PopTextWrapPos();
     }
     ImGui::TextDisabled("Left-click an object in the world to pick it.");
+    ImGui::SeparatorText("Teleport");
+    {
+        static std::vector<TeleportPoint> points;
+        static std::string pointsFor;
+        if (pointsFor != level) points = level.empty() ? std::vector<TeleportPoint>{} : loadTeleports(level), pointsFor = level;
+        ImGui::BeginDisabled(!g_cam.active);
+        if (ImGui::Button("Teleport Faith to the crosshair")) teleportCrosshair(true);
+        ImGui::SameLine();
+        if (ImGui::Button("... and go back to her")) teleportCrosshair(false);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled(g_cam.active ? "(%s while flying)" : "(fly the free camera to use it; %s)", ui::keyName(g_binds[kTeleport].vk).c_str());
+        static char pname[48] = "";
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+        ImGui::InputTextWithHint("##pname", "name", pname, sizeof(pname));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(level.empty() || !localClientCharacter());
+        if (ImGui::Button("Save Faith's position")) {
+            gn_transform ft{};
+            if (void* faith = localClientCharacter(); faith && entityTransform(faith, ft)) {
+                TeleportPoint p;
+                p.name = *pname ? std::string(pname) : "point " + std::to_string(points.size() + 1);
+                for (char& c : p.name)
+                    if (c == '|') c = '/';
+                memcpy(p.pos, ft.trans, sizeof(p.pos));
+                p.yaw = std::atan2(ft.forward[0], ft.forward[2]);
+                points.push_back(p);
+                saveTeleports(level, points);
+                pname[0] = 0;
+            }
+        }
+        ImGui::EndDisabled();
+        int remove = -1;
+        for (size_t i = 0; i < points.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i) + 7000);
+            if (ImGui::SmallButton("Go")) {
+                const float facing[3] = {std::sin(points[i].yaw), 0.f, std::cos(points[i].yaw)};
+                g_cam.enabled = false;
+                teleportFaith(points[i].pos, facing, "\"" + points[i].name + "\"");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("x")) remove = static_cast<int>(i);
+            ImGui::SameLine();
+            ImGui::Text("%s", points[i].name.c_str());
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%.0f, %.0f, %.0f)", points[i].pos[0], points[i].pos[1], points[i].pos[2]);
+            ImGui::PopID();
+        }
+        if (remove >= 0) {
+            points.erase(points.begin() + remove);
+            saveTeleports(level, points);
+        }
+        if (points.empty()) ImGui::TextDisabled("No teleport points saved for this level.");
+    }
     ImGui::SeparatorText("Layouts");
     if (loaded.empty()) ImGui::Text("%s", count ? "Unsaved edits" : "The level as the game has it");
     else ImGui::Text("Layout \"%s\"", loaded.c_str());
@@ -1575,14 +4861,13 @@ void draw(bool* open) {
     bool autoload = g_autoload.load();
     if (ImGui::Checkbox("Load the last used layout when a level starts", &autoload)) {
         g_autoload = autoload;
-        CreateDirectoryW(g_dir.c_str(), nullptr);
-        writeLine(g_dir + L"settings.txt", autoload ? "autoload=1\n" : "autoload=0\n");
+        saveSettings();
     }
     // The level's saved layouts (listed again at most once a second).
     static std::vector<std::string> saved;
     static double listedAt = -10.0;
     static std::string listedFor;
-    if (ImGui::GetTime() - listedAt > 1.0 || listedFor != level) {
+    if (ImGui::GetTime() - listedAt > 3.0 || listedFor != level) {
         saved = level.empty() ? std::vector<std::string>{} : listLayouts(level);
         listedAt = ImGui::GetTime();
         listedFor = level;
@@ -1592,7 +4877,7 @@ void draw(bool* open) {
         ImGui::PushID(n.c_str());
         ImGui::BulletText("%s%s", n.c_str(), n == loaded ? " (loaded)" : "");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Load")) loadLayout(n);
+        if (ImGui::SmallButton("Load")) server().post([n] { loadLayout(n); }); // its scan off the render thread
         ImGui::SameLine();
         if (confirmDelete == n) {
             if (ImGui::SmallButton("Really delete")) {
@@ -1609,23 +4894,56 @@ void draw(bool* open) {
     }
     if (saved.empty()) ImGui::TextDisabled("No saved layouts for this level.");
     ImGui::BeginDisabled(count == 0 && loaded.empty());
-    if (ImGui::Button("Unload (put the level back)")) unloadLayout();
+    if (ImGui::Button("Unload (put the level back)")) server().post([] { unloadLayout(); });
     ImGui::EndDisabled();
+    {   // Experimental: removed copies are parked below the level; this destroys them for real.
+        static double countedAt = -10.0;
+        static size_t parked = 0;
+        if (ImGui::GetTime() - countedAt > 0.5) parked = parkedCount(), countedAt = ImGui::GetTime();
+        ImGui::BeginDisabled(parked == 0);
+        char label[64];
+        snprintf(label, sizeof(label), "Destroy removed copies (%llu)##destroy", static_cast<unsigned long long>(parked));
+        if (ImGui::Button(label)) destroyParked();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(copies parked where this build cannot destroy them)");
+    }
+    barriersPanel();
     ImGui::SeparatorText("Object");
-    if (ImGui::Button("Pick what the camera points at")) pick();
+    {
+        bool inPlace = g_inPlaceGroups.load();
+        if (ImGui::Checkbox("Move group props in place (experimental)", &inPlace)) g_inPlaceGroups = inPlace;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Moves a group prop itself instead of hiding it and placing a standalone copy.\n"
+                              "A test: such moves are not saved in the layout yet.");
+    }
+    if (ImGui::Button("Pick what the camera points at")) pickCentre();
+    ImGui::SameLine();
+    const size_t steps = undoCount();
+    ImGui::BeginDisabled(steps == 0);
+    if (ImGui::Button("Undo")) undo();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("%llu step%s", static_cast<unsigned long long>(steps), steps == 1 ? "" : "s");
     Selected s;
-    bool have;
-    std::string status;
+    bool have, haveClip;
+    std::string status, clip;
     {
         std::lock_guard<std::mutex> lock(g_selM);
         s = g_sel;
         have = g_haveSel;
         status = g_status;
+        haveClip = g_haveClip;
+        clip = g_clip.label;
     }
-    if (!status.empty()) ImGui::TextDisabled("%s", status.c_str());
+    if (!status.empty()) {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("%s", status.c_str());
+        ImGui::PopTextWrapPos();
+    }
     if (have && s.group) {
         ImGui::TextWrapped("This prop is part of a static model group, which the game draws as one batch. Make it standalone to move it: "
-                           "the group's copy is hidden and a standalone copy takes its place.");
+                           "the group's copy is hidden and a standalone copy takes its place. Copy and Duplicate work on it as it is.");
         if (ImGui::Button("Make standalone")) {
             const GroupProp gp = s.gp;
             const gn_transform at = s.orig;
@@ -1633,34 +4951,1122 @@ void draw(bool* open) {
             server().post([gp, at] { makeStandalone(gp, at, at, true); });
         }
     } else if (have) {
-        ImGui::Text("%s%s  (%llu entities)", s.kind.c_str(), s.spawned ? " (standalone copy of a group prop)" : "",
+        ImGui::Text("%s%s  (%llu entities)", s.kind.c_str(),
+                    s.copyId >= 0 ? " (a copy)" : s.spawned ? " (standalone copy of a group prop)" : "",
                     static_cast<unsigned long long>(s.entities.size()));
         gn_transform t = s.now;
         bool changed = ImGui::DragFloat3("Position", t.trans, 0.05f, 0.f, 0.f, "%.2f");
-        static float step = 15.f;
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
-        ImGui::InputFloat("##step", &step, 0.f, 0.f, "%.0f deg");
-        ImGui::SameLine();
-        if (ImGui::Button("Turn left")) yaw(t, step), changed = true;
-        ImGui::SameLine();
-        if (ImGui::Button("Turn right")) yaw(t, -step), changed = true;
         if (changed) moveSelection(t);
-        if (ImGui::Button("Put back where the level had it")) resetSelection();
-        ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
+        // Steps relative to the view.
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        if (ImGui::InputFloat("##nudge", &g_nudge, 0.f, 0.f, "%.2f m")) g_nudge = std::clamp(g_nudge, 0.01f, 100.f), saveSettings();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 5);
+        if (ImGui::InputFloat("##turn", &g_turnStep, 0.f, 0.f, "%.0f deg")) g_turnStep = std::clamp(g_turnStep, 0.1f, 180.f), saveSettings();
+        const float scale = ImGui::GetIO().KeyShift ? 4.f : ImGui::GetIO().KeyCtrl ? 0.25f : 1.f;
+        if (ImGui::Button("Away")) nudge(0, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Closer")) nudge(1, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Left")) nudge(2, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Right")) nudge(3, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Up")) nudge(4, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Down")) nudge(5, scale);
+        if (ImGui::Button("Turn left")) nudge(6, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Turn right")) nudge(7, scale);
+        if (ImGui::Button("Tilt left")) nudge(8, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tilt right")) nudge(9, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip away")) nudge(10, scale);
+        ImGui::SameLine();
+        if (ImGui::Button("Tip toward")) nudge(11, scale);
+        if (ImGui::Button("Flip upside down")) nudge(12, 1.f);
+        ImGui::SameLine();
+        if (ImGui::Button("Stand upright")) nudge(13, 1.f);
+        ImGui::TextDisabled("Directions follow the camera. Shift: 4 steps, Ctrl: a quarter.");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Handles:");
+        ImGui::SameLine();
+        ImGui::RadioButton("move", &g_gizmoMode, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("rotate", &g_gizmoMode, 1);
+        ImGui::SameLine();
+        ImGui::Checkbox("its own axes", &g_gizmoLocal);
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("Drag the arrows or rings on the selection (Ctrl snaps to the steps above). While flying with the menu closed, "
+                            "%s gives the mouse a pointer for them; %s switches move / rotate.",
+                            ui::keyName(g_binds[kPointer].vk).c_str(), ui::keyName(g_binds[kHandles].vk).c_str());
+        ImGui::PopTextWrapPos();
+        const size_t selected = selectionAll().size();
+        if (selected > 1) ImGui::TextDisabled("%llu objects selected (Shift+click adds or takes away); they move and turn with this one.",
+                                              static_cast<unsigned long long>(selected));
+        if (ImGui::Button(selected > 1 ? "Put them all back (copies: remove)" : s.copyId >= 0 ? "Remove this copy" : "Put back where the level had it"))
+            resetSelection();
+        if (s.copyId < 0) ImGui::TextDisabled("level position (%.2f, %.2f, %.2f)", s.at[0], s.at[1], s.at[2]);
     } else {
         ImGui::TextDisabled("Point the camera at an object and press Pick.");
     }
+    // Copies.
+    ImGui::BeginDisabled(!have);
+    if (ImGui::Button("Copy")) copySelection();
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate in place")) duplicateSelection();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!haveClip);
+    if (ImGui::Button("Paste at the crosshair")) pasteCentre();
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.f);
+    if (haveClip) ImGui::TextDisabled("Copied: %s", clip.c_str());
+    else ImGui::TextDisabled("Copy an object (a building, a prop) to paste new ones of it anywhere in this level. Copies are saved with the layout.");
+    ImGui::PopTextWrapPos();
+    drawLibrary();
+    drawKeys();
     ImGui::End();
 }
 
-void frame(bool menuOpen) {
+// ---- key binds (read with GetAsyncKeyState so they work with the menu closed) ----------------------------
+int g_rebinding = -1;            // the bind waiting for a key (render thread)
+bool g_keyWas[kBindCount] = {};
+double g_keyNext[kBindCount] = {};
+
+bool keyHeld(int vk) { return vk && (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+// A press of bind `i` this frame (with repeats while held, for binds that repeat).
+bool bindPressed(int i) {
+    const bool down = keyHeld(g_binds[i].vk);
+    const bool was = g_keyWas[i];
+    g_keyWas[i] = down;
+    if (!down) return false;
+    const double now = ImGui::GetTime();
+    if (!was) {
+        g_keyNext[i] = now + 0.35;
+        return true;
+    }
+    if (g_binds[i].repeat && now >= g_keyNext[i]) {
+        g_keyNext[i] = now + 0.06;
+        return true;
+    }
+    return false;
+}
+
+void drawKeys() {
+    if (!ImGui::CollapsingHeader("Keys")) return;
+    ImGui::TextDisabled("Free-camera keys work only while the free camera is on.");
+    for (int i = 0; i < kBindCount; ++i) {
+        ImGui::PushID(i);
+        const std::string name = g_rebinding == i ? std::string("press a key...") : g_binds[i].vk ? ui::keyName(g_binds[i].vk) : std::string("none");
+        if (ImGui::Button(name.c_str(), ImVec2(ImGui::GetFontSize() * 7, 0))) {
+            g_rebinding = i;
+            for (int vk = 0x04; vk <= 0xFE; ++vk) GetAsyncKeyState(vk); // forget presses from before
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s%s", g_binds[i].label, g_binds[i].freeCamOnly ? "" : "  (always)");
+        ImGui::PopID();
+    }
+    if (g_rebinding >= 0) ImGui::TextDisabled("Escape: no key. Backspace: the default.");
+    if (ImGui::SmallButton("All keys back to the defaults")) {
+        for (Bind& b : g_binds) b.vk = b.def;
+        saveSettings();
+    }
+}
+
+// While rebinding: the first key pressed (mouse buttons other than the side ones are left alone).
+void rebindFrame() {
+    if (g_rebinding < 0) return;
+    for (int vk = 0x04; vk <= 0xFE; ++vk) {
+        if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= 0xA0 && vk <= 0xA5)) continue;
+        if (!(GetAsyncKeyState(vk) & 1)) continue; // pressed since the last call
+        Bind& b = g_binds[g_rebinding];
+        b.vk = vk == VK_ESCAPE ? 0 : vk == VK_BACK ? b.def : vk;
+        g_rebinding = -1;
+        for (int i = 0; i < kBindCount; ++i) g_keyWas[i] = true; // no action for the key just pressed
+        saveSettings();
+        return;
+    }
+}
+
+void keysFrame(bool menuOpen) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (g_rebinding >= 0) return rebindFrame();
+    if (!ui::gameFocused() || io.WantTextInput) {
+        for (bool& w : g_keyWas) w = true; // nothing fires when focus comes back with a key held
+        return;
+    }
+    if (bindPressed(kFreeCam) && localClientCharacter()) g_cam.enabled = !g_cam.enabled, g_camByMod = false;
+    const bool flying = g_cam.active;
+    bool fire[kBindCount] = {};
+    for (int i = kPick; i < kBindCount; ++i) fire[i] = bindPressed(i);
+    // Undo: Ctrl + its key, while flying or with the menu open. With Ctrl held the key does nothing else.
+    if (io.KeyCtrl || keyHeld(VK_CONTROL)) {
+        if (fire[kUndo] && (flying || menuOpen)) undo();
+        for (int i = kPick; i < kBindCount; ++i)
+            if (g_binds[i].vk == g_binds[kUndo].vk) fire[i] = false;
+    }
+    fire[kUndo] = false;
+    if (!flying) return;
+    const bool adding = io.KeyShift || keyHeld(VK_SHIFT);
+    if (fire[kPick]) pickCentre(adding);
+    if (fire[kCopy]) copySelection();
+    if (fire[kPaste]) pasteCentre();
+    if (fire[kDuplicate]) duplicateSelection();
+    // The camera stays (switching back to Faith's view as she teleports makes the level reload around
+    // her, which takes copies with it); Shift: back to her view, as before.
+    if (fire[kTeleport]) teleportCrosshair(!(io.KeyShift || keyHeld(VK_SHIFT)));
+    if (fire[kPointer]) g_pointer = !g_pointer;
+    if (fire[kHandles]) g_gizmoMode ^= 1;
+    if (fire[kLibAdd]) addSelectionToLibrary("");
+    const float scale = io.KeyShift ? 4.f : io.KeyCtrl ? 0.25f : 1.f;
+    for (int i = kFwd; i <= kUpright; ++i)
+        if (fire[i]) nudge(i - kFwd, scale);
+    // With the menu closed: a left click picks what the crosshair points at, and the crosshair shows.
+    if (!menuOpen && g_pointer) { // the cursor picks, as with the menu open
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_gizmoHot) {
+            float ray[6];
+            if (cursorRay(ray)) pick(ray, adding);
+        }
+    } else if (!menuOpen) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !g_gizmoHot) pickCentre(adding);
+        const ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const float k = ImGui::GetFontSize() * 0.5f;
+        dl->AddLine(ImVec2(c.x - k, c.y), ImVec2(c.x + k, c.y), IM_COL32(255, 255, 255, 200), 1.5f);
+        dl->AddLine(ImVec2(c.x, c.y - k), ImVec2(c.x, c.y + k), IM_COL32(255, 255, 255, 200), 1.5f);
+    }
+}
+
+// ---- selection outline ------------------------------------------------------------------------------
+// The selected object's box: the union of its physics parts' boxes from its StaticModelEntityData
+// (PhysicsPartInfos: PartInfoData {Aabb, Translation}), in the object's own frame, turned and placed
+// with it and drawn through the current view.
+uintptr_t selectionData(const Selected& s) {
+    if (s.group) return memberType(s.gp.member);
+    if (s.copyId >= 0 || s.spawned) {
+        std::lock_guard<std::mutex> lock(g_spawnM);
+        for (const Spawned& sp : g_spawned)
+            if (s.copyId >= 0 ? sp.copyId == s.copyId : (!s.entities.empty() && (sp.server == s.entities[0].first || sp.client == s.entities[0].first)))
+                return sp.data;
+    }
+    for (const auto& [p, t] : s.entities)
+        if (const uintptr_t d = dataOf(p, "StaticModelEntityData")) return d;
+    return 0;
+}
+
+// A group prop's box, from the group's collision: the compound shape's instance tree (+0xc0) is a
+// Havok static tree with 6-byte compressed nodes (hknpStaticCompoundShape's box update, 0x143e99090):
+// node array at tree +0x10 (count +0x18), the root's box at +0x20 (min) / +0x30 (max). A node's
+// bytes 0..2 give its box inside its parent's, per axis: min = parent min + (byte >> 4)^2 * step,
+// max = parent max - (byte & 15)^2 * step, step = parent size * a constant (0x1425a8e10). Byte 3
+// bit 7 marks an inner node: its left child is the next node, its right child (byte 3 & 0x7f) << 16 |
+// u16 at +4, times two, nodes on; a leaf's u16 at +4 is its instance. Boxes are in the compound's
+// space (the world: groups sit at the origin).
+bool instanceWorldBox(uintptr_t body, int instance, float* mn, float* mx) {
+    namespace c = e::constant;
+    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
+    const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
+    const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
+    const int32_t count = tree ? mem::readOr<int32_t>(tree + c::CompoundTree_NodeCount) : 0;
+    if (!nodes || count <= 0 || count > 4000000 || instance < 0) return false;
+    float k = mem::readOr<float>(mem::rva(e::global::HavokAabb6Step), 0.f);
+    if (!(k > 0.f && k < 0.05f)) k = 1.f / 226.f;
+    struct Item {
+        int32_t index;
+        float mn[3], mx[3];
+    };
+    Item stack[96];
+    int n = 0;
+    stack[n].index = 0;
+    if (!mem::read(tree + c::CompoundTree_Min, stack[n].mn, sizeof(float) * 3) || !mem::read(tree + c::CompoundTree_Max, stack[n].mx, sizeof(float) * 3))
+        return false;
+    ++n;
+    auto child = [&](const Item& parent, int32_t index, Item& out) {
+        uint8_t b[3];
+        if (index < 0 || index >= count || !mem::read(nodes + static_cast<uintptr_t>(index) * 6, b, sizeof(b))) return false;
+        out.index = index;
+        for (int a = 0; a < 3; ++a) {
+            const float step = (parent.mx[a] - parent.mn[a]) * k;
+            const float hi = static_cast<float>(b[a] >> 4), lo = static_cast<float>(b[a] & 15);
+            out.mn[a] = parent.mn[a] + hi * hi * step;
+            out.mx[a] = parent.mx[a] - lo * lo * step;
+        }
+        return true;
+    };
+    for (int guard = 0; n > 0 && guard < 4000000; ++guard) {
+        const Item it = stack[--n];
+        const uintptr_t node = nodes + static_cast<uintptr_t>(it.index) * 6;
+        const uint8_t flags = mem::readOr<uint8_t>(node + 3);
+        const uint16_t data = mem::readOr<uint16_t>(node + 4);
+        if (!(flags & 0x80)) { // a leaf
+            if (data != instance) continue;
+            memcpy(mn, it.mn, sizeof(it.mn));
+            memcpy(mx, it.mx, sizeof(it.mx));
+            return finite(mn, 3) && finite(mx, 3);
+        }
+        if (n + 2 > 96) return false;
+        const int32_t right = it.index + static_cast<int32_t>((static_cast<uint32_t>(flags & 0x7f) << 16 | data) * 2);
+        Item l, r;
+        if (child(it, right, r)) stack[n++] = r;
+        if (child(it, it.index + 1, l)) stack[n++] = l;
+    }
+    return false;
+}
+
+// A world box as a box in an object's own frame (the box around its corners there).
+void localFromWorld(const gn_transform& t, const float* wmn, const float* wmx, float* mn, float* mx) {
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    for (int i = 0; i < 8; ++i) {
+        const float w[3] = {i & 1 ? wmx[0] : wmn[0], i & 2 ? wmx[1] : wmn[1], i & 4 ? wmx[2] : wmn[2]};
+        float l[3];
+        reframe(t, I, w, true, l);
+        for (int k = 0; k < 3; ++k) {
+            mn[k] = i ? std::min(mn[k], l[k]) : l[k];
+            mx[k] = i ? std::max(mx[k], l[k]) : l[k];
+        }
+    }
+}
+
+// Local boxes learnt from group props, by their StaticModelEntityData: a standalone copy (or any
+// static model with that data) uses its prop's box. Render thread.
+std::unordered_map<uintptr_t, std::array<float, 6>> g_dataBox;
+
+// A mesh's local box, as the renderer culls with it: a RigidMeshEntity (render object) keeps its
+// transform at +0x10, its world bounding sphere at +0x50 and its mesh's local box at
+// *(**(object + 0x60) + 0x20) (min xyz_, max xyz_), as its set-transform (0x14376c060) reads it.
+bool meshBox(uintptr_t ro, float* mn, float* mx) {
+    static const bool known = build::codeMatches("RigidMeshEntity_setTransform") && build::codeMatches("RenderObject_buildUpdate");
+    if (!known) return false; // the layout below was read off these functions
+    const uintptr_t h = ro ? mem::readOr<uintptr_t>(ro + e::constant::MeshEntity_Mesh) : 0;
+    const uintptr_t x = h ? mem::readOr<uintptr_t>(h) : 0;
+    const uintptr_t p = x ? mem::readOr<uintptr_t>(x + e::constant::Mesh_Box) : 0;
+    float b[8];
+    if (!p || !mem::read(p, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) return false;
+    for (int k = 0; k < 3; ++k)
+        if (b[4 + k] < b[k] || b[4 + k] - b[k] > 5000.f) return false;
+    memcpy(mn, b, sizeof(float) * 3);
+    memcpy(mx, b + 4, sizeof(float) * 3);
+    return true;
+}
+
+bool isMeshEntity(uintptr_t p) {
+    if (p < 0x10000 || (p & 7)) return false;
+    const uintptr_t vt = mem::readOr<uintptr_t>(p);
+    if (vt == mem::rva(e::global::RigidMeshEntity_vtable)) return true;     // group props, most models
+    if (vt == mem::rva(e::global::CompositeMeshEntity_vtable)) return true; // some standalone models; same base and layout
+    const reflect::Type* t = mem::inImage(vt) ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;
+    return t && t->name.size() > 10 && t->name.compare(t->name.size() - 10, 10, "MeshEntity") == 0;
+}
+
+// A render object's world transform (+0x10: right, up, forward, translation rows).
+bool meshTransform(uintptr_t ro, gn_transform& t) {
+    float m[16];
+    if (!ro || !mem::read(ro + e::constant::MeshEntity_Transform, m, sizeof(m)) || !finite(m, 16)) return false;
+    for (int k = 0; k < 3; ++k) t.right[k] = m[k], t.up[k] = m[4 + k], t.forward[k] = m[8 + k], t.trans[k] = m[12 + k];
+    return true;
+}
+
+// A mesh entity that is drawn at `where` (within 0.75 m): any other is some other object's.
+bool meshAt(uintptr_t ro, const float* where) {
+    gn_transform t{};
+    return isMeshEntity(ro) && meshTransform(ro, t) && dist2(t.trans, where) < 0.5625f;
+}
+
+// A mesh entity drawn at `where`, reachable from [base, base + size): directly, or up to `depth`
+// pointers down.
+uintptr_t findMesh(uintptr_t base, uint32_t size, int depth, const float* where) {
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (meshAt(p, where)) return p;
+    }
+    if (depth <= 0) return 0;
+    for (uint32_t off = 0; off < size; off += 8) {
+        const uintptr_t p = mem::readOr<uintptr_t>(base + off);
+        if (p < 0x10000 || (p & 7) || mem::inImage(p)) continue;
+        if (const uintptr_t q = findMesh(p, 0x180, depth - 1, where)) return q;
+    }
+    return 0;
+}
+
+// The render object that draws this selection, found by reading only (any thread): for a group
+// prop, its member's render object list (the block's +0xc8, one per copy); for a standalone model,
+// one its client entity points to. Only one drawn where the selection is counts.
+uintptr_t drawnObjectOf(const Selected& s) {
+    const float* at = s.now.trans;
+    if (s.group) {
+        if (!s.gp.block) return 0;
+        const uintptr_t list = mem::readOr<uintptr_t>(s.gp.block + 0xc8);
+        if (list > 0x10000 && !(list & 7)) {
+            const uintptr_t ro = mem::readOr<uintptr_t>(list + s.gp.copy * 8u);
+            if (meshAt(ro, at)) return ro;
+        }
+        return findMesh(s.gp.block, 0x130, 1, at);
+    }
+    for (const auto& [ent, ty] : s.entities) {
+        if (isServerClass(ty->name)) continue;
+        if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 1, at)) return m;
+        if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 2, at)) return m;
+    }
+    static std::unordered_set<uintptr_t> deepDone; // once per entity: three levels down (slower)
+    if (!s.entities.empty() && deepDone.insert(s.entities[0].first).second) {
+        if (deepDone.size() > 4096) deepDone.clear();
+        for (const auto& [ent, ty] : s.entities) {
+            if (isServerClass(ty->name)) continue;
+            if (const uintptr_t m = findMesh(ent + 0x18, 0x2e8, 3, at)) return m;
+            GN_LOG("layouts: outline: no render object found from %s %llx", ty->name.c_str(), static_cast<unsigned long long>(ent));
+        }
+    }
+    return 0;
+}
+
+// The outline's render object asked of the game on the client thread (a group copy's comes from its
+// physics component, a call), for the selection `key`.
+std::mutex g_outAskM;
+std::unordered_map<uintptr_t, uintptr_t> g_outAsk; // (g_outAskM) selection key -> render object (0: none yet)
+
+// A client static model's own local box (+0x100 min, +0x110 max), cached by its bounds function
+// (vtable +0xb8, 0x1431833a0) and valid while bit 0 of +0x142 is clear. When it is not valid yet,
+// the bounds function is asked once on the client thread (it computes and caches it).
+bool entityBox(const Selected& s, float* mn, float* mx) {
+    namespace c = e::constant;
+    static const reflect::Type* csm = registry().find("ClientStaticModelEntity");
+    for (const auto& [ent, ty] : s.entities) {
+        if (!csm || !registry().isKindOf(ty, csm) || !inspector::alive(ent, ty)) continue;
+        const uintptr_t vt = mem::readOr<uintptr_t>(ent);
+        if (!vt || mem::readOr<uintptr_t>(vt + c::ClientStaticModel_vf_bounds) != mem::rva(e::function::ClientStaticModelEntity_bounds)) continue;
+        if (mem::readOr<uint8_t>(ent + c::ClientStaticModel_BoxFlags) & 1) { // not computed yet: ask once
+            static std::unordered_set<uintptr_t> asked;
+            if (asked.insert(ent).second) {
+                if (asked.size() > 4096) asked.clear();
+                const uintptr_t e2 = ent;
+                const reflect::Type* t2 = ty;
+                client().post([e2, t2] {
+                    if (!inspector::alive(e2, t2)) return;
+                    alignas(16) uint8_t out[0x80] = {};
+                    reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::ClientStaticModelEntity_bounds))(e2, out);
+                });
+            }
+            continue;
+        }
+        float b[8];
+        if (!mem::read(ent + c::ClientStaticModel_BoxMin, b, sizeof(b)) || !finite(b, 3) || !finite(b + 4, 3)) continue;
+        bool ok = true;
+        for (int k = 0; k < 3; ++k) ok = ok && b[4 + k] >= b[k] && b[4 + k] - b[k] < 5000.f;
+        if (!ok) continue;
+        memcpy(mn, b, sizeof(float) * 3);
+        memcpy(mx, b + 4, sizeof(float) * 3);
+        return true;
+    }
+    return false;
+}
+
+bool localBox(uintptr_t data, const Selected& s, float* mn, float* mx, const char** from) {
+    if (!s.group && entityBox(s, mn, mx)) return *from = "its own box", true;
+    const auto it = data ? g_dataBox.find(data) : g_dataBox.end();
+    if (it != g_dataBox.end()) {
+        memcpy(mn, it->second.data(), sizeof(float) * 3);
+        memcpy(mx, it->second.data() + 3, sizeof(float) * 3);
+        return *from = "its model's mesh (seen before)", true;
+    }
+    // Until the mesh is found: the collision box (the group's tree), which can differ from what is drawn.
+    if (s.group) {
+        int index = -1;
+        float wmn[3], wmx[3];
+        if (groupInstance(s.gp.serverBody, s.gp.part, &index) && instanceWorldBox(s.gp.serverBody, index, wmn, wmx)) {
+            localFromWorld(s.orig, wmn, wmx, mn, mx);
+            return *from = "the collision, until the mesh is found", true;
+        }
+    }
+    return false;
+}
+
+// World point -> screen; false behind the camera.
+struct View {
+    float from[3], d[3], r[3], u[3];
+    float th = 1.f, aspect = 1.f, w = 1.f, h = 1.f;
+};
+bool currentView(View& v) {
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || !viewBasis(v.from, v.d, v.r, v.u)) return false;
+    const uintptr_t mgr = firstViewManager();
+    const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
+    v.th = std::tan((fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f) * 3.14159265f / 360.f);
+    v.aspect = io.DisplaySize.x / io.DisplaySize.y;
+    v.w = io.DisplaySize.x, v.h = io.DisplaySize.y;
+    return true;
+}
+constexpr float kNear = 0.05f;
+float depthOf(const View& v, const float* p) {
+    const float q[3] = {p[0] - v.from[0], p[1] - v.from[1], p[2] - v.from[2]};
+    return dot3(q, v.d);
+}
+ImVec2 project(const View& v, const float* p) {
+    const float q[3] = {p[0] - v.from[0], p[1] - v.from[1], p[2] - v.from[2]};
+    const float z = std::max(dot3(q, v.d), kNear);
+    const float x = dot3(q, v.r) / (z * v.th * v.aspect), y = dot3(q, v.u) / (z * v.th);
+    return ImVec2((x + 1.f) * 0.5f * v.w, (1.f - y) * 0.5f * v.h);
+}
+// A 3D line, cut at the near plane.
+void line3d(ImDrawList* dl, const View& v, const float* a, const float* b, ImU32 col, float thick) {
+    float p[3] = {a[0], a[1], a[2]}, q[3] = {b[0], b[1], b[2]};
+    const float za = depthOf(v, p), zb = depthOf(v, q);
+    if (za < kNear && zb < kNear) return;
+    if (za < kNear || zb < kNear) {
+        const float t = (kNear - za) / (zb - za);
+        float* cut = za < kNear ? p : q;
+        for (int k = 0; k < 3; ++k) cut[k] = a[k] + (b[k] - a[k]) * t;
+    }
+    dl->AddLine(project(v, p), project(v, q), col, thick);
+}
+
+// The leading selection as drawn this frame, for the handles (render thread).
+struct LeadFrame {
+    bool valid = false;
+    gn_transform t{};    // its drawn transform
+    float centre[3] = {}; // the middle of its box, in the world
+    bool group = false;
+};
+LeadFrame g_lead;
+
+// One selected object's outline, looked up once and kept while it stays selected (render thread).
+struct Outline {
+    bool box = false;
+    float mn[3] = {}, mx[3] = {};
+    uintptr_t ro = 0;     // the render object that draws it, when found
+    double boxAt = -10.0, roAt = -10.0;
+    bool asked = false;   // asked the game for it (a group prop's copy)
+    bool own = false;     // the box is the entity's own (a standalone model's)
+    bool ownSaid = false;
+};
+std::unordered_map<uintptr_t, Outline> g_outlines;
+
+uintptr_t outlineKey(const Selected& s) {
+    return s.group ? s.gp.serverGroup ^ (uintptr_t(s.gp.part) << 3) : s.entities.empty() ? 0 : s.entities[0].first;
+}
+
+void drawOne(const View& v, const Selected& s, bool lead) {
+    const uintptr_t key = outlineKey(s);
+    const bool fresh = g_outlines.find(key) == g_outlines.end();
+    Outline& o = g_outlines[key];
+    const uintptr_t data = selectionData(s);
+    const double now = ImGui::GetTime();
+    // The box: its model's mesh once seen, else the collision; again every 2 s while there is none.
+    if (fresh || ((!o.box || (!o.ro && !o.own)) && now - o.boxAt > 2.0)) { // until its own box or render object
+        o.boxAt = now;
+        const char* from = "no box found";
+        const bool had = o.box;
+        float mn[3], mx[3];
+        if (localBox(data, s, mn, mx, &from)) {
+            memcpy(o.mn, mn, sizeof(mn)), memcpy(o.mx, mx, sizeof(mx)), o.box = true;
+            o.own = strcmp(from, "its own box") == 0;
+        }
+        if (fresh || (o.own && !had) || (o.own && !o.ownSaid))
+            GN_LOG("layouts: outline: %s, %s (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", s.kind.c_str(), from, o.mn[0], o.mn[1], o.mn[2], o.mx[0], o.mx[1],
+                   o.mx[2]),
+                o.ownSaid = o.ownSaid || o.own;
+    }
+    // Drawn in the render object's own transform when it is found (what is on screen).
+    auto adopt = [&](uintptr_t found, const char* how) {
+        o.ro = found;
+        float rmn[3], rmx[3];
+        if (meshBox(found, rmn, rmx)) {
+            memcpy(o.mn, rmn, sizeof(rmn)), memcpy(o.mx, rmx, sizeof(rmx)), o.box = true;
+            if (data) g_dataBox[data] = {rmn[0], rmn[1], rmn[2], rmx[0], rmx[1], rmx[2]};
+        }
+        GN_LOG("layouts: outline: render object %llx (%s), mesh box (%.2f %.2f %.2f) .. (%.2f %.2f %.2f)", (unsigned long long)found, how, o.mn[0],
+               o.mn[1], o.mn[2], o.mx[0], o.mx[1], o.mx[2]);
+    };
+    if (fresh) {
+        o.roAt = now;
+        if (const uintptr_t found = drawnObjectOf(s)) {
+            adopt(found, "read");
+        } else if (s.group) {
+            o.asked = true;
+            {
+                std::lock_guard<std::mutex> lock(g_outAskM);
+                g_outAsk[key] = 0;
+            }
+            const GroupProp gp = s.gp;
+            float at[3] = {s.now.trans[0], s.now.trans[1], s.now.trans[2]};
+            client().post([gp, at, key] {
+                const uintptr_t r = renderObjectOf(gp);
+                std::lock_guard<std::mutex> lock(g_outAskM);
+                const auto it = g_outAsk.find(key);
+                if (it != g_outAsk.end() && meshAt(r, at)) it->second = r;
+            });
+        }
+    } else if (!o.ro && o.asked) {
+        uintptr_t got = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_outAskM);
+            const auto it = g_outAsk.find(key);
+            if (it != g_outAsk.end() && it->second) got = it->second, g_outAsk.erase(it);
+        }
+        if (got) adopt(got, "asked the game"), o.asked = false;
+    } else if (!o.ro && now - o.roAt > 2.0) {
+        o.roAt = now;
+        if (const uintptr_t found = drawnObjectOf(s)) adopt(found, "read");
+    }
+    gn_transform rt{};
+    const gn_transform& t = o.ro && meshTransform(o.ro, rt) ? rt : s.now;
+    auto world = [&](float x, float y, float z, float* out) {
+        for (int k = 0; k < 3; ++k) out[k] = t.trans[k] + x * t.right[k] + y * t.up[k] + z * t.forward[k];
+    };
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    // The leading object (what moves and turns the rest) yellow, the rest of the selection light blue.
+    const ImU32 col = lead ? IM_COL32(255, 200, 60, 230) : IM_COL32(120, 200, 255, 210);
+    if (o.box) {
+        float c[8][3];
+        for (int i = 0; i < 8; ++i) world(i & 1 ? o.mx[0] : o.mn[0], i & 2 ? o.mx[1] : o.mn[1], i & 4 ? o.mx[2] : o.mn[2], c[i]);
+        static const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto& e : edges) line3d(dl, v, c[e[0]], c[e[1]], col, lead ? 2.f : 1.5f);
+    }
+    float pv[3];
+    world(0, 0, 0, pv);
+    if (depthOf(v, pv) > kNear) dl->AddCircleFilled(project(v, pv), lead ? 3.5f : 2.5f, col);
+    if (!lead) return;
+    {
+        float mid[3] = {0, 0, 0};
+        if (o.box)
+            for (int k = 0; k < 3; ++k) mid[k] = 0.5f * (o.mn[k] + o.mx[k]);
+        g_lead.valid = true;
+        g_lead.t = t;
+        g_lead.group = s.group;
+        world(mid[0], mid[1], mid[2], g_lead.centre);
+    }
+    if (g_gizmoShown) return; // the handles are drawn instead of the axes
+    // Its own axes from the middle of its box (its pivot, often a corner, is the small dot): right red,
+    // up green, forward blue.
+    float len = 1.f, c0[3] = {0, 0, 0};
+    if (o.box) {
+        len = std::max(0.5f, 0.35f * std::max({o.mx[0] - o.mn[0], o.mx[1] - o.mn[1], o.mx[2] - o.mn[2]}));
+        for (int k = 0; k < 3; ++k) c0[k] = 0.5f * (o.mn[k] + o.mx[k]);
+    }
+    float org[3], a[3];
+    auto axisEnd = [&](int k, float f, float* out) {
+        world(c0[0] + (k == 0 ? len * f : 0), c0[1] + (k == 1 ? len * f : 0), c0[2] + (k == 2 ? len * f : 0), out);
+    };
+    world(c0[0], c0[1], c0[2], org);
+    static const char* names[3] = {"X", "Y", "Z"};
+    static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
+    for (int k = 0; k < 3; ++k) {
+        axisEnd(k, 1.f, a);
+        line3d(dl, v, org, a, cols[k], 2.f);
+        axisEnd(k, 1.1f, a);
+        if (depthOf(v, a) > kNear) dl->AddText(project(v, a), cols[k], names[k]);
+    }
+}
+
+// The selection's outlines, shown while the free camera is on.
+void drawOutline() {
+    g_lead.valid = false;
+    const std::vector<Selected> all = g_cam.enabled ? selectionAll() : std::vector<Selected>{};
+    // Forget the outlines of what is no longer selected.
+    for (auto it = g_outlines.begin(); it != g_outlines.end();) {
+        bool keep = false;
+        for (const Selected& s : all) keep = keep || outlineKey(s) == it->first;
+        if (keep) {
+            ++it;
+        } else {
+            std::lock_guard<std::mutex> lock(g_outAskM);
+            g_outAsk.erase(it->first);
+            it = g_outlines.erase(it);
+        }
+    }
+    if (all.empty()) return;
+    View v;
+    if (!currentView(v)) return;
+    for (size_t i = all.size(); i-- > 0;) drawOne(v, all[i], i == 0); // the lead last, on top
+}
+
+
+// ---- handles (move / rotate by dragging) -----------------------------------------------------------
+// On the leading selection, from the middle of its box: three arrows (move along an axis) or three
+// rings (turn about one), along its own axes or the world's. They are used with the cursor: with
+// the menu open, or with the menu closed in pointer mode. A drag is one undo step; Ctrl snaps to
+// the editor's steps. Everything selected follows (moveSelection).
+struct GizmoDrag {
+    int axis = -1;
+    bool rotate = false;
+    gn_transform start{};    // the leading selection's transform when the drag began
+    float centre[3] = {};    // the handles' origin then
+    float dir[3] = {};       // the axis (unit, world)
+    float t0 = 0.f;          // move: where on the axis the drag began
+    float a0 = 0.f;          // rotate: the cursor's screen angle about the centre then
+    float sign = 1.f;        // rotate: screen angle -> rotation about dir
+    bool first = true;
+    float last = 0.f;        // the last value applied (a still mouse moves nothing)
+    bool waiting = false;    // group props in the selection are being made standalone first
+    double since = 0.0;
+};
+GizmoDrag g_drag;
+
+// Closest point on the line (o, a) to the ray (f, d): the parameter along the line.
+bool lineRayParam(const float* o, const float* a, const float* f, const float* d, float& t) {
+    const float w[3] = {o[0] - f[0], o[1] - f[1], o[2] - f[2]};
+    const float b = dot3(a, d), c = dot3(d, d), aa = dot3(a, a);
+    const float den = aa * c - b * b;
+    if (std::fabs(den) < 1e-6f) return false; // looking along the axis
+    t = (b * dot3(d, w) - c * dot3(a, w)) / den;
+    return std::isfinite(t);
+}
+
+float distToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
+    const float vx = b.x - a.x, vy = b.y - a.y, wx = p.x - a.x, wy = p.y - a.y;
+    const float l2 = vx * vx + vy * vy;
+    const float t = l2 > 0.f ? std::clamp((wx * vx + wy * vy) / l2, 0.f, 1.f) : 0.f;
+    const float dx = a.x + t * vx - p.x, dy = a.y + t * vy - p.y;
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+void rotateVec(float* v, const float* axis, float degrees) {
+    gn_transform tmp{};
+    memcpy(tmp.right, v, sizeof(float) * 3);
+    rotateAbout(tmp, axis, degrees);
+    memcpy(v, tmp.right, sizeof(float) * 3);
+}
+
+void gizmoFrame(bool menuOpen) {
+    g_gizmoHot = false;
+    g_gizmoShown = false;
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool cursor = menuOpen || g_pointer;
+    if (!g_cam.active || !cursor || !g_lead.valid) {
+        g_drag.axis = -1;
+        return;
+    }
+    View v;
+    if (!currentView(v)) return;
+    const float* c = g_lead.centre; // the handles follow the object; a drag's own sums use where it began
+    if (depthOf(v, c) < kNear * 4.f) return;
+    g_gizmoShown = true;
+    // Axes: the object's (its drawn rows) or the world's.
+    float ax[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    if (g_gizmoLocal) {
+        const float* rows[3] = {g_lead.t.right, g_lead.t.up, g_lead.t.forward};
+        for (int k = 0; k < 3; ++k) {
+            memcpy(ax[k], rows[k], sizeof(float) * 3);
+            normalize(ax[k]);
+        }
+    }
+    if (g_drag.axis >= 0) memcpy(ax[g_drag.axis], g_drag.dir, sizeof(float) * 3);
+    const float dist = std::sqrt(std::max(dist2(v.from, c), 1e-4f));
+    const float L = dist * v.th * 0.32f; // about a sixth of the screen's height
+    const ImVec2 mouse = io.MousePos;
+    const ImVec2 c2 = project(v, c);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    static const ImU32 cols[3] = {IM_COL32(240, 70, 70, 255), IM_COL32(80, 220, 80, 255), IM_COL32(80, 140, 255, 255)};
+    const ImU32 hotCol = IM_COL32(255, 230, 90, 255);
+    const bool overUi = menuOpen && io.WantCaptureMouse && g_drag.axis < 0;
+    const bool rotate = g_drag.axis >= 0 ? g_drag.rotate : g_gizmoMode == 1;
+    // Hover: the nearest handle within 9 px.
+    int hover = -1;
+    float best = 9.f;
+    std::vector<ImVec2> ring[3];
+    for (int k = 0; k < 3; ++k) {
+        if (!rotate) {
+            float e[3];
+            for (int i = 0; i < 3; ++i) e[i] = c[i] + ax[k][i] * L;
+            if (depthOf(v, e) < kNear) continue;
+            const float d = distToSegment(mouse, c2, project(v, e));
+            if (d < best) best = d, hover = k;
+        } else {
+            const int a = (k + 1) % 3, b = (k + 2) % 3; // a ring in the plane of the other two axes
+            for (int i = 0; i <= 64; ++i) {
+                const float th = 6.2831853f * static_cast<float>(i) / 64.f;
+                float p[3];
+                for (int j = 0; j < 3; ++j) p[j] = c[j] + (ax[a][j] * std::cos(th) + ax[b][j] * std::sin(th)) * L * 0.9f;
+                ring[k].push_back(depthOf(v, p) > kNear ? project(v, p) : ImVec2(-1e9f, -1e9f));
+            }
+            for (size_t i = 1; i < ring[k].size(); ++i) {
+                if (ring[k][i - 1].x < -1e8f || ring[k][i].x < -1e8f) continue;
+                const float d = distToSegment(mouse, ring[k][i - 1], ring[k][i]);
+                if (d < best) best = d, hover = k;
+            }
+        }
+    }
+    if (overUi || g_cam.looking) hover = -1;
+    const int active = g_drag.axis >= 0 ? g_drag.axis : hover;
+    g_gizmoHot = active >= 0;
+    // Draw.
+    for (int k = 0; k < 3; ++k) {
+        const ImU32 col = k == active ? hotCol : cols[k];
+        const float thick = k == active ? 4.f : 3.f;
+        if (!rotate) {
+            float e[3];
+            for (int i = 0; i < 3; ++i) e[i] = c[i] + ax[k][i] * L;
+            line3d(dl, v, c, e, col, thick);
+            if (depthOf(v, e) > kNear) { // a head: a triangle across the arrow's end
+                const ImVec2 p0 = c2, p1 = project(v, e);
+                float dx = p1.x - p0.x, dy = p1.y - p0.y;
+                const float n = std::sqrt(dx * dx + dy * dy);
+                if (n > 1.f) {
+                    dx /= n, dy /= n;
+                    const float h = 12.f, w = 6.f;
+                    dl->AddTriangleFilled(ImVec2(p1.x + dx * h, p1.y + dy * h), ImVec2(p1.x - dy * w, p1.y + dx * w), ImVec2(p1.x + dy * w, p1.y - dx * w), col);
+                }
+            }
+        } else {
+            for (size_t i = 1; i < ring[k].size(); ++i)
+                if (ring[k][i - 1].x > -1e8f && ring[k][i].x > -1e8f) dl->AddLine(ring[k][i - 1], ring[k][i], col, thick);
+        }
+    }
+    dl->AddCircleFilled(c2, 4.f, IM_COL32(255, 255, 255, 220));
+    // Begin a drag.
+    if (g_drag.axis < 0 && hover >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        Selected s;
+        if (!selection(s)) return;
+        g_drag = GizmoDrag{};
+        g_drag.axis = hover;
+        g_drag.rotate = rotate;
+        g_drag.start = s.now;
+        g_drag.waiting = g_inPlaceGroups.load() ? false : standaloneGroupProps(); // a group prop cannot move as it is
+        g_drag.since = ImGui::GetTime();
+        memcpy(g_drag.centre, c, sizeof(g_drag.centre));
+        memcpy(g_drag.dir, ax[hover], sizeof(g_drag.dir));
+        float ray[6];
+        if (!rotate) {
+            if (!cursorRay(ray) || !lineRayParam(c, g_drag.dir, ray, ray + 3, g_drag.t0)) {
+                g_drag.axis = -1;
+                return;
+            }
+        } else {
+            g_drag.a0 = std::atan2(-(mouse.y - c2.y), mouse.x - c2.x);
+            // Which way a positive turn about the axis goes on screen: turn a point a little and look.
+            const int a = (hover + 1) % 3;
+            float p[3], q[3];
+            for (int j = 0; j < 3; ++j) p[j] = ax[a][j] * L;
+            memcpy(q, p, sizeof(q));
+            rotateVec(q, g_drag.dir, 5.f);
+            for (int j = 0; j < 3; ++j) p[j] += c[j], q[j] += c[j];
+            const ImVec2 sp = project(v, p), sq = project(v, q);
+            const float ap = std::atan2(-(sp.y - c2.y), sp.x - c2.x), aq = std::atan2(-(sq.y - c2.y), sq.x - c2.x);
+            float da = aq - ap;
+            while (da > 3.14159265f) da -= 6.2831853f;
+            while (da < -3.14159265f) da += 6.2831853f;
+            g_drag.sign = da >= 0.f ? 1.f : -1.f;
+        }
+        return;
+    }
+    if (g_drag.axis < 0) return;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) { // released: done
+        g_drag.axis = -1;
+        return;
+    }
+    if (g_drag.waiting) { // until the standalone copies have taken the group props' places
+        bool groups = false;
+        for (const Selected& e : selectionAll()) groups = groups || e.group;
+        Selected s;
+        if (groups && ImGui::GetTime() - g_drag.since < 3.0) return;
+        if (!selection(s) || (s.group && !g_inPlaceGroups.load())) { // it did not happen
+            g_drag.axis = -1;
+            return;
+        }
+        g_drag.waiting = false;
+        g_drag.start = s.now;
+    }
+    // Drag: the leading selection's new transform (the rest follow it).
+    gn_transform t = g_drag.start;
+    float value = 0.f;
+    if (!g_drag.rotate) {
+        float ray[6], tp;
+        if (!cursorRay(ray) || !lineRayParam(g_drag.centre, g_drag.dir, ray, ray + 3, tp)) return;
+        value = tp - g_drag.t0;
+        if (io.KeyCtrl && g_nudge > 0.f) value = std::round(value / g_nudge) * g_nudge;
+        for (int k = 0; k < 3; ++k) t.trans[k] += g_drag.dir[k] * value;
+    } else {
+        const ImVec2 s2 = project(v, g_drag.centre);
+        float a = std::atan2(-(mouse.y - s2.y), mouse.x - s2.x) - g_drag.a0;
+        while (a > 3.14159265f) a -= 6.2831853f;
+        while (a < -3.14159265f) a += 6.2831853f;
+        value = a * 57.2957795f * g_drag.sign;
+        if (io.KeyCtrl && g_turnStep > 0.f) value = std::round(value / g_turnStep) * g_turnStep;
+        rotateAbout(t, g_drag.dir, value);
+        float off[3] = {t.trans[0] - g_drag.centre[0], t.trans[1] - g_drag.centre[1], t.trans[2] - g_drag.centre[2]};
+        rotateVec(off, g_drag.dir, value); // about the middle of the box, not the pivot
+        for (int k = 0; k < 3; ++k) t.trans[k] = g_drag.centre[k] + off[k];
+    }
+    if (!g_drag.first && value == g_drag.last) return;
+    moveSelection(t, g_drag.first); // the first move of a drag leaves the undo step
+    g_drag.first = false;
+    g_drag.last = value;
+    char b[64];
+    snprintf(b, sizeof(b), g_drag.rotate ? "%+.1f deg" : "%+.2f m", value);
+    dl->AddText(ImVec2(mouse.x + 16.f, mouse.y + 8.f), IM_COL32(255, 255, 255, 230), b);
+}
+
+// Barriers and magropes near the camera (render thread).
+void drawBarriers() {
+    if (!g_showBarriers) return;
+    if (ImGui::GetTime() - g_barScanAt > 1.0) g_barScanAt = ImGui::GetTime(), scanBarriers();
+    View v;
+    if (!currentView(v)) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (const Barrier& b : g_barriers) {
+        const float* rows[3] = {b.t.right, b.t.up, b.t.forward};
+        float c[8][3];
+        for (int i = 0; i < 8; ++i)
+            for (int k = 0; k < 3; ++k)
+                c[i][k] = b.t.trans[k] + ((i & 1) ? 1.f : -1.f) * b.half[0] * rows[0][k] + ((i & 2) ? 1.f : -1.f) * b.half[1] * rows[1][k] +
+                          ((i & 4) ? 1.f : -1.f) * b.half[2] * rows[2][k];
+        const bool sel = b.ent == g_barSel;
+        const ImU32 col = sel ? IM_COL32(255, 255, 80, 255) : b.enabled ? IM_COL32(255, 140, 0, 220) : IM_COL32(150, 150, 150, 160);
+        const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto& e2 : edges) line3d(dl, v, c[e2[0]], c[e2[1]], col, sel ? 2.5f : 1.5f);
+    }
+    // A point (or direction) of `t`'s frame in the world.
+    auto xf = [](const gn_transform& t, const float* q, bool point, float* out) {
+        for (int k = 0; k < 3; ++k) out[k] = q[0] * t.right[k] + q[1] * t.up[k] + q[2] * t.forward[k] + (point ? t.trans[k] : 0.f);
+    };
+    auto circle = [&](const float* c, const float* a, const float* b, float r, ImU32 col, float thick) {
+        float prev[3] = {};
+        for (int i = 0; i <= 24; ++i) {
+            const float ang = i * 6.2831853f / 24.f;
+            float q[3];
+            for (int k = 0; k < 3; ++k) q[k] = c[k] + r * (std::cos(ang) * a[k] + std::sin(ang) * b[k]);
+            if (i) line3d(dl, v, prev, q, col, thick);
+            memcpy(prev, q, sizeof(q));
+        }
+    };
+    // A magrope's triggers (where Faith has to be), each in the magrope's frame.
+    auto triggers = [&](const Magrope& m, const gn_transform& at, ImU32 col) {
+        for (const Magrope::Trigger& tr : m.triggers) {
+            float c[3];
+            xf(at, tr.local.trans, true, c);
+            if (tr.shape == 0) {
+                float a[3], b[3], u2[3];
+                xf(at, tr.local.right, false, a), xf(at, tr.local.up, false, u2), xf(at, tr.local.forward, false, b);
+                normalize(a), normalize(b), normalize(u2);
+                // A unit sphere scaled by the trigger transform.
+                const float r = std::sqrt(dot3(tr.local.right, tr.local.right));
+                circle(c, a, b, r, col, 1.f), circle(c, a, u2, r, col, 1.f), circle(c, u2, b, r, col, 1.f);
+            } else {
+                float corner[8][3];
+                for (int i = 0; i < 8; ++i) {
+                    // A unit box scaled by the trigger transform.
+                    const float q[3] = {(i & 1) ? 1.f : -1.f, (i & 2) ? 1.f : -1.f, (i & 4) ? 1.f : -1.f};
+                    float a[3];
+                    xf(tr.local, q, true, a);
+                    xf(at, a, true, corner[i]);
+                }
+                const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+                for (const auto& e2 : edges) line3d(dl, v, corner[e2[0]], corner[e2[1]], col, 1.f);
+            }
+            // Its Target, when it has one: a small cross joined to the trigger by a thin line.
+            if (std::fabs(tr.target[0]) + std::fabs(tr.target[1]) + std::fabs(tr.target[2]) > 0.01f) {
+                float t[3];
+                xf(at, tr.target, true, t);
+                const ImU32 tc = IM_COL32(255, 80, 255, 200);
+                line3d(dl, v, c, t, tc, 1.f);
+                for (int k = 0; k < 3; ++k) {
+                    float p0[3] = {t[0], t[1], t[2]}, p1[3] = {t[0], t[1], t[2]};
+                    p0[k] -= 0.3f, p1[k] += 0.3f;
+                    line3d(dl, v, p0, p1, tc, 2.f);
+                }
+            }
+        }
+    };
+    static const char* kRopeType[] = {"Swing", "PullUp", "PullDown"};
+    for (const Magrope& m : g_magropes) {
+        const bool sel = m.ent == g_ropeSel;
+        const ImU32 col = sel ? IM_COL32(255, 255, 80, 255) : IM_COL32(0, 220, 255, 220);
+        const float thick = sel ? 2.5f : 1.5f;
+        float a[3] = {m.t.right[0], m.t.right[1], m.t.right[2]}, b[3] = {m.t.forward[0], m.t.forward[1], m.t.forward[2]};
+        normalize(a), normalize(b);
+        circle(m.t.trans, a, b, m.radius > 0.05f ? m.radius : 0.5f, col, thick);
+        // The side it is used from: an arrow along the ground toward its first trigger (where Faith
+        // stands), or along its forward row when it has none.
+        float fwd[3];
+        if (!m.triggers.empty()) {
+            float c[3];
+            xf(m.t, m.triggers[0].local.trans, true, c);
+            for (int k = 0; k < 3; ++k) fwd[k] = c[k] - m.t.trans[k];
+            fwd[1] = 0.f;
+        } else {
+            memcpy(fwd, m.t.forward, sizeof(fwd));
+        }
+        normalize(fwd);
+        float side[3] = {fwd[2], 0.f, -fwd[0]};
+        float tip[3], l[3], r2[3];
+        for (int k = 0; k < 3; ++k) {
+            tip[k] = m.t.trans[k] + 2.f * fwd[k];
+            l[k] = tip[k] - 0.4f * fwd[k] + 0.25f * side[k];
+            r2[k] = tip[k] - 0.4f * fwd[k] - 0.25f * side[k];
+        }
+        line3d(dl, v, m.t.trans, tip, col, thick);
+        line3d(dl, v, tip, l, col, thick);
+        line3d(dl, v, tip, r2, col, thick);
+        // Its own axes, a metre each: right red, up green, forward blue.
+        const float* rows[3] = {m.t.right, m.t.up, m.t.forward};
+        const ImU32 axisCol[3] = {IM_COL32(255, 60, 60, 255), IM_COL32(60, 255, 60, 255), IM_COL32(80, 120, 255, 255)};
+        for (int i = 0; i < 3; ++i) {
+            float d2[3] = {rows[i][0], rows[i][1], rows[i][2]}, e[3];
+            normalize(d2);
+            for (int k = 0; k < 3; ++k) e[k] = m.t.trans[k] + d2[k];
+            line3d(dl, v, m.t.trans, e, axisCol[i], 2.f);
+        }
+        triggers(m, m.t, sel ? IM_COL32(255, 255, 80, 200) : IM_COL32(0, 255, 140, 180));
+        if (m.moved) triggers(m, m.original, IM_COL32(160, 160, 160, 160)); // where its triggers were
+        if (depthOf(v, m.t.trans) > kNear && m.dist < 60.f) {
+            char label[48];
+            snprintf(label, sizeof(label), "%s%s", m.type >= 0 && m.type <= 2 ? kRopeType[m.type] : "magrope", m.moved ? " (moved)" : "");
+            const ImVec2 at = project(v, m.t.trans);
+            dl->AddText(ImVec2(at.x + 6.f, at.y - 18.f), col, label);
+        }
+    }
+}
+
+// A click on a shown barrier selects it (instead of the object behind it). Ray: origin, direction.
+bool pickBarrier(const float* ray) {
+    if (!g_showBarriers) return false;
+    gn_transform I{};
+    I.right[0] = I.up[1] = I.forward[2] = 1.f;
+    float best = 1e30f;
+    uintptr_t hit = 0;
+    std::lock_guard<std::mutex> lock(g_barM);
+    for (const Barrier& b : g_barriers) {
+        float o[3], d[3];
+        reframe(b.t, I, ray, true, o);
+        reframe(b.t, I, ray + 3, false, d);
+        float t0 = 0.f, t1 = 1e30f;
+        bool ok = true;
+        for (int k = 0; k < 3 && ok; ++k) {
+            const float h = std::max(b.half[k], 0.05f); // thin boxes stay clickable
+            if (std::fabs(d[k]) < 1e-8f) {
+                ok = std::fabs(o[k]) <= h;
+                continue;
+            }
+            float a = (-h - o[k]) / d[k], c = (h - o[k]) / d[k];
+            if (a > c) std::swap(a, c);
+            t0 = std::max(t0, a), t1 = std::min(t1, c);
+            ok = t0 <= t1;
+        }
+        if (ok && t0 < best) best = t0, hit = b.ent;
+    }
+    uintptr_t rope = 0;
+    for (const Magrope& m : g_magropes) { // a sphere of its radius (at least half a metre)
+        const float r = std::max(m.radius, 0.5f);
+        float o[3];
+        for (int k = 0; k < 3; ++k) o[k] = m.t.trans[k] - ray[k];
+        const float along = o[0] * ray[3] + o[1] * ray[4] + o[2] * ray[5];
+        const float d2 = o[0] * o[0] + o[1] * o[1] + o[2] * o[2] - along * along;
+        if (along > 0.f && d2 <= r * r && along - std::sqrt(r * r - d2) < best) best = along - std::sqrt(r * r - d2), rope = m.ent;
+    }
+    if (rope) {
+        g_ropeSel = rope, g_barSel = 0;
+        GN_LOG("layouts: magrope %llx selected (%.1f m)", static_cast<unsigned long long>(rope), best);
+        return true;
+    }
+    if (!hit) return false;
+    g_barSel = hit, g_ropeSel = 0;
+    GN_LOG("layouts: barrier %llx selected (%.1f m)", static_cast<unsigned long long>(hit), best);
+    return true;
+}
+
+void frame(bool menuOpen, bool editor) {
+    // What mods asked for (their hotkeys run on the client thread; the camera is this thread's).
+    if (const int want = g_camWant.exchange(-1); want >= 0) {
+        g_cam.enabled = want != 0;
+        if (want) g_camByMod = true; // flown for a mod: none of the editor's keys, picking or help
+    }
+    // The editor's part only when the editor flies it (or nothing flies): a mod's free camera is plain,
+    // even with the Layout editor tool on (the first version showed the editor's whole camera, 2026-11-01).
+    const bool modCam = g_camByMod && (g_cam.enabled || g_cam.active);
+    g_editorOn = editor && !modCam;
+    if (g_editorOn) {
+        drawOutline();
+        drawBarriers();
+        gizmoFrame(menuOpen);
+        keysFrame(menuOpen);
+    }
+    if (const int want = g_teleportWant.exchange(0)) {
+        const bool keepFlying = (want & 4) != 0;
+        if ((want & 3) == 1) {
+            if (g_cam.active) teleportCrosshair(keepFlying);
+        } else if ((want & 3) == 2 && g_cam.active) {
+            float d[3], r[3], u[3];
+            camBasis(g_cam, d, r, u);
+            const float pos[3] = {g_cam.pos[0], g_cam.pos[1], g_cam.pos[2]};
+            if (!keepFlying) g_cam.enabled = false; // back to Faith's view
+            teleportFaith(pos, d, "the free camera");
+        }
+    }
     freeCamFrame(menuOpen);
     // Click to pick: a left click on the world (not on a window) while the Layout editor is open.
     const ImGuiIO& io = ImGui::GetIO();
-    if (menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.WantCaptureMouse) {
+    if (g_editorOn && menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        !io.WantCaptureMouse && !g_gizmoHot) {
         float ray[6];
-        if (cursorRay(ray)) pick(ray);
+        if (cursorRay(ray) && !pickBarrier(ray)) pick(ray, io.KeyShift);
     }
+}
+
+bool view(gn_view& out) {
+    out = gn_view{};
+    if (!ImGui::GetCurrentContext()) return false;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.DisplaySize.x < 1.f || io.DisplaySize.y < 1.f || !viewBasis(out.position, out.forward, out.right, out.up)) return false;
+    const uintptr_t mgr = firstViewManager();
+    const float fovDeg = mgr ? mem::readOr<float>(mgr + e::st::ClientCameraViewManager::off::fovYDegrees) : 0.f;
+    out.fov_y = fovDeg > 10.f && fovDeg < 170.f ? fovDeg : 70.f; // as the editor's picking: 70 when unreadable
+    out.width = io.DisplaySize.x, out.height = io.DisplaySize.y;
+    return true;
+}
+
+int freecamSet(bool on) {
+    if (on && !localClientCharacter()) return GN_ERR_UNAVAILABLE;
+    g_camWant = on ? 1 : 0;
+    return GN_OK;
+}
+
+int freecamGet(gn_freecam* out) {
+    if (!out) return GN_ERR_ARGUMENT;
+    *out = gn_freecam{};
+    std::lock_guard<std::mutex> lock(g_viewM); // the frame's copy (g_cam is the render thread's)
+    out->on = g_viewCamOn ? 1 : 0;
+    memcpy(out->position, g_viewCam, sizeof(out->position));
+    return GN_OK;
+}
+
+int teleportRequest(int to, bool keepFlying) {
+    if (to != 1 && to != 2) return GN_ERR_ARGUMENT;
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        if (!g_viewCamOn) return GN_ERR_UNAVAILABLE; // both need the free camera flying
+    }
+    g_teleportWant = to | (keepFlying ? 4 : 0);
+    return GN_OK;
+}
+
+void release() {
+    g_released = true;
+    g_camWant = 0; // the render thread turns the free camera off at its next frame
+    // The camera and Faith's view-mode interface wear vtable copies in gridnode.dll: back now, from
+    // this thread (one pointer each; the copies hold the same functions but ours), in case the client
+    // is not ticking. hookCamera / hookBody do nothing once released.
+    unhookCamera();
+    unhookBody();
+    // Copies made from saved layouts go; moved magropes read their own transforms again (ours are
+    // in gridnode.dll). Moved props and barriers keep their places until the level reloads.
+    std::vector<int> copies;
+    {
+        std::lock_guard<std::mutex> lock(g_specM);
+        for (const SpecialCopy& c : g_specCopies) copies.push_back(c.copyId);
+    }
+    for (int id : copies) removeSpecialCopy(id);
+    std::vector<uintptr_t> ropes;
+    {
+        std::lock_guard<std::mutex> lock(g_ropeM);
+        for (const auto& [ent, m] : g_ropeMoves) ropes.push_back(ent);
+    }
+    for (uintptr_t ent : ropes) putBackMagrope(ent, registry().typeOf(mem::ProcessMemory(), ent)); // their own pointers, now
+    GN_LOG("layouts: released (%d copies removed, %d magropes given back their transforms)", static_cast<int>(copies.size()),
+           static_cast<int>(ropes.size()));
 }
 
 } // namespace gn::host::layouts

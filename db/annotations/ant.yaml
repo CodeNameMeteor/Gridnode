@@ -3,154 +3,777 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: ServerWriteAntGameStateEntity_onEvent
+    va: 0x1433acd90
+    signature: "void(void* entity, void* event)"
+    note: "Starts writing (0xc072adf0) or writes once (WriteOnce, 0xde2f4c9f) through the entity's updater (0x1433b09e0 -> 0x1431f7d10 -> each data object's vtable +0x18)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: WriteBoolGameState_write
+    va: 0x14342db30
+    signature: "void(void* data, void* props, u32* writerIndex, u32* valueIndex, void* state)"
+    note: "Vtable +0x18 of WriteBoolGameState (and its siblings): reads the value slot (TypedValue_getValuePtr) and calls the ANT writer's +8 (writer, state, value). The Recorder wraps the +0x18 slot of each Write*GameState class."
+    confidence: inferred
+    sources: [ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: ant_initPamplonaSubsystem
     va: 0x142f23700
-    note: "Named in Ghidra as ant_initPamplonaSubsystem. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineAlignmentCollisionDriverAsset
-    va: 0x142f2cc10
-    note: "Named in Ghidra as ant_defineAlignmentCollisionDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineCoilDriverAsset
-    va: 0x142f2e650
-    note: "Named in Ghidra as ant_defineCoilDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineCollisionDriverAsset
-    va: 0x142f2e790
-    note: "Named in Ghidra as ant_defineCollisionDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineDashCombatDriverAsset
-    va: 0x142f2f490
-    note: "Named in Ghidra as ant_defineDashCombatDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineDashCompensationDriverAsset
-    va: 0x142f2f6f0
-    note: "Named in Ghidra as ant_defineDashCompensationDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineDashDriverAsset
-    va: 0x142f2f8e0
-    note: "Named in Ghidra as ant_defineDashDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineFallingDriverAsset
-    va: 0x142f2fbe0
-    note: "Named in Ghidra as ant_defineFallingDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineFollowLedgeDriverAsset
-    va: 0x142f30ae0
-    note: "Named in Ghidra as ant_defineFollowLedgeDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineFollowSplineDriverAsset
-    va: 0x142f30bf0
-    note: "Named in Ghidra as ant_defineFollowSplineDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineFootPlantEventDriverAsset
-    va: 0x142f30d00
-    note: "Named in Ghidra as ant_defineFootPlantEventDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineGravityEquationDriverAsset
-    va: 0x142f30f00
-    note: "Named in Ghidra as ant_defineGravityEquationDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineIntoLedgeAlignDriverAsset
-    va: 0x142f31490
-    note: "Named in Ghidra as ant_defineIntoLedgeAlignDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineIntoSplineDriverAsset
-    va: 0x142f31520
-    note: "Named in Ghidra as ant_defineIntoSplineDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineLedgeAlignDriverAsset
-    va: 0x142f316a0
-    note: "Named in Ghidra as ant_defineLedgeAlignDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineMagropePullUpDriverAsset
-    va: 0x142f32270
-    note: "Named in Ghidra as ant_defineMagropePullUpDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineMagropeSwingDriverAsset
-    va: 0x142f325e0
-    note: "Named in Ghidra as ant_defineMagropeSwingDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_definePamplonaMoverAsset
-    va: 0x142f35a10
-    note: "Named in Ghidra as ant_definePamplonaMoverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_definePamplonaPhysicsAsset
-    va: 0x142f35ac0
-    note: "Named in Ghidra as ant_definePamplonaPhysicsAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineSmoothAlignmentDriverAsset
-    va: 0x142f36440
-    note: "Named in Ghidra as ant_defineSmoothAlignmentDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineSoftLandingFallDriverAsset
-    va: 0x142f36720
-    note: "Named in Ghidra as ant_defineSoftLandingFallDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineSplineDriverAsset
-    va: 0x142f368c0
-    note: "Named in Ghidra as ant_defineSplineDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineSpringboardDriverAsset
-    va: 0x142f36ae0
-    note: "Named in Ghidra as ant_defineSpringboardDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineSwingJumpDriverAsset
-    va: 0x142f37070
-    note: "Named in Ghidra as ant_defineSwingJumpDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineUncontrolledSlideDriveAsset
-    va: 0x142f373b0
-    note: "Named in Ghidra as ant_defineUncontrolledSlideDriveAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineVaultDriverAsset
-    va: 0x142f377e0
-    note: "Named in Ghidra as ant_defineVaultDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineWalkingDriverAsset
-    va: 0x142f37a20
-    note: "Named in Ghidra as ant_defineWalkingDriverAsset. Signature not known yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ant_defineWallrunDriverAsset
-    va: 0x142f37d00
-    note: "Named in Ghidra as ant_defineWallrunDriverAsset. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Registers the custom expressions (0x142f2b030 with the ANT context 0x1423bd9b8), every Pamplona driver, processor and scene op (0x142f38640), the phase blend assets, then creates the Pamplona, Damage and Weapon features (0x142f20580, 0x142f204a0, 0x142f20900)."
+    confidence: inferred
     sources: [ghidra]
   - name: ant_registerAllPamplonaDriverDefinitions
     va: 0x142f38640
-    note: "Named in Ghidra as ant_registerAllPamplonaDriverDefinitions. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Defines every Pamplona driver, processor, tag, scene op and value type (the ant_define* functions below); called from ant_initPamplonaSubsystem. ant_unregisterAllPamplonaDriverDefinitions removes them."
+    confidence: inferred
     sources: [ghidra]
-  - name: ant_registerPamplonaDriversAndProcessors
+  - name: ant_unregisterAllPamplonaDriverDefinitions
     va: 0x142f38b10
-    note: "Named in Ghidra as ant_registerPamplonaDriversAndProcessors. Signature not known yet."
-    confidence: hypothesis
+    signature: "void()"
+    note: "Removes every Pamplona asset definition by name (only names are passed, so it is the removal; called from ant_shutdownPamplonaSubsystem). Was named ant_registerPamplonaDriversAndProcessors."
+    confidence: inferred
     sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research, signatures corrected).
+  - name: ant_shutdownPamplonaSubsystem
+    va: 0x142f237a0
+    signature: "void()"
+    note: "The reverse of ant_initPamplonaSubsystem: unregisters the expressions and definitions, destroys the three features."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_registerPamplonaCustomExpressions
+    va: 0x142f2b030
+    signature: "void(void* antContext)"
+    note: "Called with the global at 0x1423bd9b8."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_unregisterPamplonaCustomExpressions
+    va: 0x142f3c480
+    signature: "void(void* antContext)"
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createPamplonaFeature
+    va: 0x142f20580
+    signature: "void()"
+    note: "Allocates the 0x40-byte PamplonaFeature from the ANT allocator and stores it in the global at 0x1423da030."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createDamageFeature
+    va: 0x142f204a0
+    signature: "void()"
+    note: "Stores the feature in a global (destroyed by ant_shutdownPamplonaSubsystem)."
+    confidence: inferred
+    sources: [ghidra, user]
+  - name: ant_createWeaponFeature
+    va: 0x142f20900
+    signature: "void()"
+    confidence: inferred
+    sources: [ghidra, user]
+  # The landing prediction and the movement mirror, read in Ghidra 2026-10-30 (bhop research).
+  - name: PositionPredictionProcessorAsset_create
+    va: 0x142eff9a0
+    signature: "void*()"
+    note: "Vtable 0x141ab0b70 +0 (the asset type registered by ant_definePositionPredictionProcessorAsset). Allocates the 0x58-byte asset (vtable 0x141aabb98): +0x10 Timespan (2.0), +0x14 Iterations (6), then the output bindings: +0x18 HitPosition, +0x20 HitPositionY, +0x28 TicksToHit, +0x30 IsSoftLanding, +0x38 SoftLandingCenter, +0x40 SoftLandingRadius, +0x48 SoftLandingGuidance, +0x50 PositionPredictionBus."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PositionPredictionProcessorAsset_update
+    va: 0x142f28e20
+    signature: "void(void* asset, void* context)"
+    note: "Vtable 0x141aabb98 +0x20. Takes the result from the bus if there is one, else runs ant_predictTrajectoryHit on the character's active trajectory (PamplonaFeature +0x38, or per instance) when its start time (+0x80) is >= 0, then sets that time to -1: one prediction per jump or fall. Writes each output through its binding's writer ((binding + 0x20)->vtable +8: writer, state, value). The Recorder's movement watch wraps this slot to record the outputs."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_predictTrajectoryHit
+    va: 0x142f3b9a0
+    signature: "void(void* trajectory, void* query, f32* out)"
+    note: "Samples the trajectory (position +0x30, velocity +0x60, acceleration terms +0x50/+0x70, start time +0x80) at query.Iterations points over query.Timespan and casts each segment (0x142f4b320); out = hit position (4 floats) and out[4] = time to the hit x 60 (TicksToHit, 60ths of a second; Timespan x 60 when nothing is hit)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PamMovement_readAntState
+    va: 0x142d6c2b0
+    note: "Fills Faith's movement struct from ANT values (each through value->vtable +0x10 with a type id: 0x1c0b376 bool, 0xbd87f16 float, then accessor->vtable +0): among them +0x4 (float), +0x15..+0x19 flags, +0x17 in the air. So the movement state the game code and GridNode read is a mirror of ANT's graph. Called from 0x142d96d30."
+    confidence: inferred
+    sources: [ghidra]
+  # Asset and value types: each builds its field descriptors (0x142c0c590: index, name, type) and
+  # registers the type by name with ANT (0x142c352b0 on the registry from 0x142c2f840). Names from the
+  # user's Ghidra; checked 2026-10-29: each one passes its own type's name. Field names in the order defined.
+  - name: ant_definePamplonaResultBusAssets
+    va: 0x142f15390
+    signature: "void()"
+    note: "Defines the asset types LedgeResultBusAsset, FloorResultBusAsset, SplineResultBusAsset, PositionPredictionResultBusAsset."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamBoolAssets
+    va: 0x142f15490
+    signature: "void()"
+    note: "Defines the asset types PamIsFrostbiteBoolAsset, PamANTToolBoolAsset."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineBalanceWalkValue
+    va: 0x142f2a640
+    signature: "void()"
+    note: "Defines the ANT type BalanceWalkValue (fields: Value, LastValue)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamDamageGameState
+    va: 0x142f2a6e0
+    signature: "void()"
+    note: "Defines the ANT type PamDamageGameState (fields: Amount, HeartAmount, AllowLastChance, GiverID, Direction, IsFatal, IsFromBehind, Category, TypeAsset, AttackTypeAsset, ZoneAsset, StumbleTypeAsset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamEnumTrackerEntry
+    va: 0x142f2a940
+    signature: "void()"
+    note: "Defines the ANT type PamEnumTrackerEntry (fields: Value, Timestamp)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamEnumTrackerValue
+    va: 0x142f2a9d0
+    signature: "void()"
+    note: "Defines the ANT type PamEnumTrackerValue (fields: PreviousFrameValue, EntriesStartIndex, PamEnumTrackerEntry, Entries)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamGameSpline
+    va: 0x142f2aac0
+    signature: "void()"
+    note: "Defines the ANT type PamGameSpline (fields: SplinePtr, SplineId, SplineTypeFlags)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamLedge
+    va: 0x142f2abb0
+    signature: "void()"
+    note: "Defines the ANT type PamLedge (fields: Position, Normal, LeftHandObstacleNormal, LeftHandSurfaceNormal, LeftHandObstaclePosition, RightHandObstacleNormal, RightHandSurfaceNormal, RightHandObstaclePosition, ClimbSplinePtr, HangFree)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamMagrope
+    va: 0x142f2adb0
+    signature: "void()"
+    note: "Defines the ANT type PamMagrope (fields: Radius, VerticalStretch)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaFallMetricsGameState
+    va: 0x142f2ae40
+    signature: "void()"
+    note: "Defines the ANT type PamplonaFallMetricsGameState (fields: AllowedJumpAssistDistance, ForwardSpeed, JumpHeight, UseLookDirAngleLimit)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaWalkMetricsGameState
+    va: 0x142f2af50
+    signature: "void()"
+    note: "Defines the ANT type PamplonaWalkMetricsGameState (fields: ForwardFriction, BackwardFriction, StrafeFriction)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineActivateMagropeTag
+    va: 0x142f2cb80
+    signature: "void()"
+    note: "Defines the ANT type ActivateMagropeTag (fields: MagropeId)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAlignmentCollisionDriverAsset
+    va: 0x142f2cc10
+    signature: "void()"
+    note: "Defines the ANT type AlignmentCollisionDriverAsset (fields: TurnToFaceOffset, CollisionCapsuleHeight, CollisionCapsuleHeightGS, MasterIgnoreRotation, SlaveIgnoreRotation, EnableStepUp)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnalogKeyboardStickMatchAsset
+    va: 0x142f2cd90
+    signature: "void()"
+    note: "Defines the ANT type AnalogKeyboardStickMatchAsset (fields: Keyboard, MatchType, ForwardKey, BackKey, LeftKey, RightKey, ScaleModifierKey, ScaleModifierValue, ScaleModifierType, MinMagnitude, MaxMagnitude, AngleOutputRange, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnalyzeClimbingProcessorAsset
+    va: 0x142f2d070
+    signature: "void()"
+    note: "Defines the ANT type AnalyzeClimbingProcessorAsset (fields: InputUp, InputDown, InputLeft, InputRight, InputJump, IsHorizontallyBlocked, UseAnimatableClimbSpace, CameraJoint, ConnectJoint, TraceStartOffset, CornerDistance, DistanceLeftRight, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnalyzeClimbingQueryFilterAsset
+    va: 0x142f2d330
+    signature: "void()"
+    note: "Defines the ANT type AnalyzeClimbingQueryFilterAsset (fields: InputUp, InputDown, InputLeft, InputRight, InputJump, IsHorizontallyBlocked, UseAnimatableClimbSpace, CameraJoint, ConnectJoint, TraceStartOffset, CornerDistance, DistanceLeftRight, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnalyzeObstacleProcessorAsset
+    va: 0x142f2d620
+    signature: "void()"
+    note: "Defines the ANT type AnalyzeObstacleProcessorAsset (fields: CollisionLayer, DirectionMode, TraceDistance, InputAngle, InputSize, CameraInputAngle, ConnectJoint, FloorPosition, FindJumpLedge, FindFreeClimbSplines, FindHangLedge, EnableParallellRaycasts, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnalyzeObstacleQueryFilterAsset
+    va: 0x142f2dae0
+    signature: "void()"
+    note: "Defines the ANT type AnalyzeObstacleQueryFilterAsset (fields: CollisionLayer, DirectionMode, TraceDistance, InputAngle, InputSize, CameraInputAngle, ConnectJoint, FloorPosition, FindJumpLedge, FindFreeClimbSplines, FindHangLedge, EnableParallellRaycasts, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineAnnouncingBranchOutPointTag
+    va: 0x142f2df10
+    signature: "void()"
+    note: "Defines the ANT type AnnouncingBranchOutPointTag (fields: BoolValue, ValueAsset, TargetOffsetTick). Called from ant_initPamplonaSubsystem."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineBalanceWalkFloatAsset
+    va: 0x142f2e020
+    signature: "void()"
+    note: "Defines the ANT type BalanceWalkFloatAsset (fields: ControlInput, InputWeight, GravityWeight, Value, LastValue)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineBroadcastAnimatableIdProcessorAsset
+    va: 0x142f2e170
+    signature: "void()"
+    note: "Defines the ANT type BroadcastAnimatableIdProcessorAsset (fields: GameState)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCameraConstraintTag
+    va: 0x142f2e200
+    signature: "void()"
+    note: "Defines the ANT type CameraConstraintTag (fields: MinPitch, MinYaw, MinRoll, MinPitchCurveYMin, MinPitchCurveYMax, MinPitchCurveX, MinPitchCurve, MaxPitch, MaxYaw, MaxRoll, ConstraintSpeed, YawSoftness, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCheckBlockingGeometryProcessorAsset
+    va: 0x142f2e510
+    signature: "void()"
+    note: "Defines the ANT type CheckBlockingGeometryProcessorAsset (fields: UseCrouchCollision, OnlyCheckClosest, MyOffset, TheirOffset, SuccessAnimatableID)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCoilDriverAsset
+    va: 0x142f2e650
+    signature: "void()"
+    note: "Defines the ANT type CoilDriverAsset (fields: CoilHeight, CoilBlendInTicks, MaxFallingSpeed, CanBranchOutCoil, Collided)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCollisionDriverAsset
+    va: 0x142f2e790
+    signature: "void()"
+    note: "Defines the ANT type CollisionDriverAsset (fields: UseCustomCollisionSize, CustomCollisionCapsuleRadius, CustomCollisionCapsuleHeight, CustomCollisionStepUpHeight, UseCrouchCollision, UseCrouchCollisionGS, EnableStepUp, AdjustmentType, ConstantVelocity, AvoidEncroachment, CollisionLayer, EncroachmentPushDelta, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineComputeLockOnTargetPositionProcessorAsset
+    va: 0x142f2ea20
+    signature: "void()"
+    note: "Defines the ANT type ComputeLockOnTargetPositionProcessorAsset (fields: CameraJoint, LowestJoint, HighestJoint, TranslationGameState)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCopyAnimatableTrajectoryProcessorAsset
+    va: 0x142f2eb40
+    signature: "void()"
+    note: "Defines the ANT type CopyAnimatableTrajectoryProcessorAsset (fields: TranslationGameState, RotationGameState, TranslationOffset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCopyObstacleInfoTag
+    va: 0x142f2ec60
+    signature: "void()"
+    note: "Defines the ANT type CopyObstacleInfoTag (fields: SourceObstacleNormal, SourceObstaclePosition, SourceObstacleType, TargetObstacleNormal, TargetObstaclePosition, TargetObstacleType)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineCopySplineInfoTag
+    va: 0x142f2edd0
+    signature: "void()"
+    note: "Defines the ANT type CopySplineInfoTag (fields: SplineSetMode, SourceSpline)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDamageFeatureAsset
+    va: 0x142f2ee90
+    signature: "void()"
+    note: "Defines the ANT type DamageFeatureAsset (fields: Health, IsDead, IsAlive, StumbleType, ComboAttackDamage, FlowAttackDamage, MoveAttackDamage)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDamageProcessorAsset
+    va: 0x142f2f020
+    signature: "void()"
+    note: "Defines the ANT type DamageProcessorAsset (fields: Amount, AmountGS, HeartAmount, AllowLastChance, AttackTypeValue, DamageTypeValue, DamageZoneValue, StumbleTypeValue, DamageDirection, InputGameState, OutputGameState, TargetIsFilterResult)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDamageTag
+    va: 0x142f2f280
+    signature: "void()"
+    note: "Defines the ANT type DamageTag (fields: Amount, AmountGS, HeartAmount, AllowLastChance, AttackTypeValue, DamageTypeValue, DamageZoneValue, StumbleTypeValue, DamageDirection, InputGameState)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDashCombatDriverAsset
+    va: 0x142f2f490
+    signature: "void()"
+    note: "Defines the ANT type DashCombatDriverAsset (fields: Direction, EnemyAnimatableID, IsFullyAligned, InputHold, DashStartSpeed, DashEndSpeed, DashAroundMaximumAngle, DashAroundMaximumHoldAngle, AngleSpeed, MinimumDistance, MaximumDistance, BackingSpeed)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDashCompensationDriverAsset
+    va: 0x142f2f6f0
+    signature: "void()"
+    note: "Defines the ANT type DashCompensationDriverAsset (fields: Direction, CompensationTime, CompensationSpeed, CompensationExitSpeed, DashStartPosition, DashDuration, CanExit, AngleSpeed, MaximumAngleOffset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDashDriverAsset
+    va: 0x142f2f8e0
+    signature: "void()"
+    note: "Defines the ANT type DashDriverAsset (fields: Direction, DashStartSpeed, DashEndSpeed, AngleSpeed, MaximumAngleOffset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDisruptorGloveProcessorAsset
+    va: 0x142f2fa20
+    signature: "void()"
+    note: "Defines the ANT type DisruptorGloveProcessorAsset (fields: CameraJoint, Tag)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineEncroachmentProcessorAsset
+    va: 0x142f2fad0
+    signature: "void()"
+    note: "Defines the ANT type EncroachmentProcessorAsset (fields: IsEncroaching, EncroachmentPushDelta, CollisionBus)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFallingDriverAsset
+    va: 0x142f2fbe0
+    signature: "void()"
+    note: "Defines the ANT type FallingDriverAsset (fields: GravityY, LookYaw, AirControlSpeed, AirControlMaximumAngle, DirectionInput, CameraJoint, CompensateForHighSpeed, FallMetrics, JumpHeight, ForwardSpeed, UseLookDirAngleLimit, JumpHeightGamestate, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFbImpactTagAsset
+    va: 0x142f30000
+    signature: "void()"
+    note: "Defines the ANT type FbImpactTagAsset (fields: TriggerFilter, SpawnDecal, SpawnFinalBlowEffect, TargetAnimatableID, SourceType, DestinationType, SourceTypeValue, DestinationTypeValue)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFindFloorProcessorAsset
+    va: 0x142f301d0
+    signature: "void()"
+    note: "Defines the ANT type FindFloorProcessorAsset (fields: JointTraceStart, TraceDistance, CeilingTraceDistance, TraceDirection, InvertTraceDirection, UseAdvanceHitDetection, UsePredictDetection, UseFatRayCast, EnableFindCeiling, EnableParallellRaycasts, FindOutIfUnstandable, TraceStart, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFindFloorQueryFilterAsset
+    va: 0x142f306e0
+    signature: "void()"
+    note: "Defines the ANT type FindFloorQueryFilterAsset (fields: JointTraceStart, TraceDistance, CeilingTraceDistance, TraceDirection, InvertTraceDirection, UseAdvanceHitDetection, UsePredictDetection, UseFatRayCast, EnableFindCeiling, EnableParallellRaycasts, FindOutIfUnstandable, MinWalkableFloorY, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFinisherTag
+    va: 0x142f30a30
+    signature: "void()"
+    note: "Defines the ANT type FinisherTag (fields: TagID, TargetAnimatableID)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFollowLedgeDriverAsset
+    va: 0x142f30ae0
+    signature: "void()"
+    note: "Defines the ANT type FollowLedgeDriverAsset (fields: JointTemplateId, HangFree, LedgeAngle, IsBlocked)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFollowSplineDriverAsset
+    va: 0x142f30bf0
+    signature: "void()"
+    note: "Defines the ANT type FollowSplineDriverAsset (fields: AlignRotation, Collision, ClampPosition)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineFootPlantEventDriverAsset
+    va: 0x142f30d00
+    signature: "void()"
+    note: "Defines the ANT type FootPlantEventDriverAsset (fields: LeftFootPlantTag, RightFootPlantTag)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineGateAsset
+    va: 0x142f30db0
+    signature: "void()"
+    note: "Defines the ANT type GateAsset (fields: DefaultState, State)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineGiveAnimatableProcessorAsset
+    va: 0x142f30e70
+    signature: "void()"
+    note: "Defines the ANT type GiveAnimatableProcessorAsset (fields: GiveTo)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineGravityEquationDriverAsset
+    va: 0x142f30f00
+    signature: "void()"
+    note: "Defines the ANT type GravityEquationDriverAsset (fields: GravityGS, Gravity, EndPosition, IsFinished)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineIgnoredJointAsset
+    va: 0x142f31020
+    signature: "void()"
+    note: "Defines the ANT type IgnoredJointAsset (fields: JointToIgnore, OriginalJointTranslation, OriginalJointOrientation)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineInFrontOrBehindFilterAsset
+    va: 0x142f31140
+    signature: "void()"
+    note: "Defines the ANT type InFrontOrBehindFilterAsset (fields: FromInput, ToInput, CompareMode, SwitchAnimatables)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineInterpolateFloatAsset
+    va: 0x142f31250
+    signature: "void()"
+    note: "Defines the ANT type InterpolateFloatAsset (fields: Target, BoolTarget, BoolTargetFalseValue, BoolTargetTrueValue, TargetMultiplier, AbsoluteTarget, BlendUpTime, BlendDownTime, ScaleGamestate, ScaleGamestateMax, ScaleGamestateMin)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineIntoLedgeAlignDriverAsset
+    va: 0x142f31490
+    signature: "void()"
+    note: "Defines the ANT type IntoLedgeAlignDriverAsset (fields: TransferFromActiveLedge)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineIntoSplineDriverAsset
+    va: 0x142f31520
+    signature: "void()"
+    note: "Defines the ANT type IntoSplineDriverAsset (fields: SplineAlignMode, IntoSpline, OverrideInitialPosition, SmoothAlign, CannotMove, PerpendicularSpeed)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineLedgeAlignDriverAsset
+    va: 0x142f316a0
+    signature: "void()"
+    note: "Defines the ANT type LedgeAlignDriverAsset (fields: AllowWeightDecreasing, AlignWeight, LedgePosition, LedgeNormal, Ledge, JointTemplateId, UsePreview, PreviewLedgePosition, PreviewLedgeNormal)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineLedgeOutputProcessorAsset
+    va: 0x142f31890
+    signature: "void()"
+    note: "Defines the ANT type LedgeOutputProcessorAsset (fields: AlwaysWriteHitResults, HitPosition, HitPositionY, HitNormal, HitNormalY, HitNormalYaw, HitNormalPitch, HitNormalRoll, HitMaterial, RelativeHitNormalYaw, HitDistance, HitHeight, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineLineConnectorProcessorAsset
+    va: 0x142f31d30
+    signature: "void()"
+    note: "Defines the ANT type LineConnectorProcessorAsset (fields: Degrees, MaximumDistance, DistanceThreshold, CameraJoint, InteractButtonPressed, ConnectorIsSelected, ConnectorPosition, SecondConnectorPosition)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineLookAtTag
+    va: 0x142f31ef0
+    signature: "void()"
+    note: "Defines the ANT type LookAtTag (fields: Mode, Angle, UseShortestPath, AngleGS, TicksToReachTarget, LookAtEnable, LerpType, LookAtTarget, AnimatableID, Offset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMagropeProcessorAsset
+    va: 0x142f32100
+    signature: "void()"
+    note: "Defines the ANT type MagropeProcessorAsset (fields: MinimumAngleMagropePullUp, MinimumAngleMagropePullDown, MinimumAngleMagropeSwing, IgnoreId, CameraJoint, Magrope)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMagropePullUpDriverAsset
+    va: 0x142f32270
+    signature: "void()"
+    note: "Defines the ANT type MagropePullUpDriverAsset (fields: StartSpeed, Acceleration, MaximumSpeed, RopeStartSlack, Deceleration, Gravity, MaximumGravity, RotationSpeed, MinimumLedgeAlignDistance, MaximumLedgeAlignDistance, EndOffsetZ, EndOffsetY, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMagropeSwingDriverAsset
+    va: 0x142f325e0
+    signature: "void()"
+    note: "Defines the ANT type MagropeSwingDriverAsset (fields: CameraJoint, StickAngle, StickMagnitude, Magrope, Acceleration, MaximumSpeed1, MaximumSpeed2, Deceleration, Gravity, MaximumGravity, ParticleGravity, ForwardBackwardAngle, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMeleeProcessorAsset
+    va: 0x142f32930
+    signature: "void()"
+    note: "Defines the ANT type MeleeProcessorAsset (fields: IsEnabled, AllowSwitchingTarget, MaxAttackDistanceXZ, MaxAttackHeight, MinAttackHeight, MaxAttackAngle, InputFlowOrComboAttack, IsFlowAttackUnlocked, InputMoveEnemyAttack, IsSpeedyAttack, MoveEnumTracker, InFlow, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMeleeQueryFilterAsset
+    va: 0x142f32fc0
+    signature: "void()"
+    note: "Defines the ANT type MeleeQueryFilterAsset (fields: IsEnabled, AllowSwitchingTarget, MaxAttackDistanceXZ, MaxAttackHeight, MinAttackHeight, MaxAttackAngle, MoveEnumTracker, FoundTargetID, UseCrouchCollision, MyOffset, TheirOffset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMovementImpactTagAsset
+    va: 0x142f33200
+    signature: "void()"
+    note: "Defines the ANT type MovementImpactTagAsset (fields: VolumeEnumValue, ImpactId, TriggerEffect, SpawnDecal, TriggerSound)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMovementSplineProcessorAsset
+    va: 0x142f33340
+    signature: "void()"
+    note: "Defines the ANT type MovementSplineProcessorAsset (fields: SplineBus, TraceRadius, TraceOffset, FacingAngle, TypeFilter, CooldownTimer, OutputSplinePtr, HitPosition, HitNormal, HitDistance, HitHeight, DistanceToEndPoint, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMovementSplineQueryFilterAsset
+    va: 0x142f336e0
+    signature: "void()"
+    note: "Defines the ANT type MovementSplineQueryFilterAsset (fields: SplineBus, TraceRadius, TraceOffset, FacingAngle, TypeFilter)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineMovementVolumeProcessorAsset
+    va: 0x142f33820
+    signature: "void()"
+    note: "Defines the ANT type MovementVolumeProcessorAsset (fields: IsUncontrollableSlide)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamDamageGameStateAsset
+    va: 0x142f338b0
+    signature: "void()"
+    note: "Defines the ANT type PamDamageGameStateAsset (fields: Amount, HeartAmount, AllowLastChance, GiverID, Direction, IsFatal, IsFromBehind, Category, TypeAsset, AttackTypeAsset, ZoneAsset, StumbleTypeAsset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineDelayedPhaseTimescaleBlendAsset
+    va: 0x142f33b10
+    signature: "void()"
+    note: "Defines the ANT type DelayedPhaseTimescaleBlendAsset (fields: AdjustTargetPhase). Called from ant_initPamplonaSubsystem."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamDeltaTrajectoryRigOpAsset
+    va: 0x142f33ba0
+    signature: "void()"
+    note: "Defines the ANT type PamDeltaTrajectoryRigOpAsset (fields: DeltaTicksAsset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamEnumTrackerGameStateAsset
+    va: 0x142f33c30
+    signature: "void()"
+    note: "Defines the ANT type PamEnumTrackerGameStateAsset (fields: Enum, PreviousFrameValue, EntriesStartIndex, PamEnumTrackerEntry, Entries)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamGameSplineValueAsset
+    va: 0x142f33d50
+    signature: "void()"
+    note: "Defines the ANT type PamGameSplineValueAsset (fields: SplineType, ExtendedSplineType, ExitAtStart, ExitAtEnd, CannotMoveDir, SplineExitPosition, SplineDirection, SplineNormal, SplinePtr, SplineId, SplineTypeFlags)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamIntegerChooserPolicyAsset
+    va: 0x142f33f90
+    signature: "void()"
+    note: "Defines the ANT type PamIntegerChooserPolicyAsset (fields: IntegerValueAsset, AutoIncrementSetting, IndexingMode). Called from ant_initPamplonaSubsystem."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamInteractionQueryProcess
+    va: 0x142f340b0
+    signature: "void()"
+    note: "Defines the ANT type PamInteractionQueryProcess (fields: GateToOpen)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamLedgeValueAsset
+    va: 0x142f34140
+    signature: "void()"
+    note: "Defines the ANT type PamLedgeValueAsset (fields: LedgePosition, LedgeNormal, Position, Normal, LeftHandObstacleNormal, LeftHandSurfaceNormal, LeftHandObstaclePosition, RightHandObstacleNormal, RightHandSurfaceNormal, RightHandObstaclePosition, ClimbSplinePtr, HangFree)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamMagropeValueAsset
+    va: 0x142f343b0
+    signature: "void()"
+    note: "Defines the ANT type PamMagropeValueAsset (fields: IsValid, Position, Normal, GraphicalAttachPosition, Target, Type, Radius, VerticalStretch)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaAimingAsset
+    va: 0x142f345a0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaAimingAsset (fields: EnableAim, EnemyID, LookPitch, LookYaw, AimPitch, AimYaw, Offset, MaxYaw, MaxPitch, AimSpeed)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaCopyPoseSceneOp
+    va: 0x142f347c0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaCopyPoseSceneOp (fields: SlaveAnimatableId, JointsToIgnore, CopyPoseGate)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaFallMetricsGameStateAsset
+    va: 0x142f348d0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaFallMetricsGameStateAsset (fields: AllowedJumpAssistDistance, ForwardSpeed, JumpHeight, UseLookDirAngleLimit)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaFeatureAsset
+    va: 0x142f349f0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaFeatureAsset (fields: AntRayQueryPtr, ActiveSpline, ActiveLedge, DefaultCameraConstraintMin, DefaultCameraConstraintMax, DefaultCameraConstraintSoftness, DefaultCameraConstraintSpeed, DefaultSteeringMode, DefaultTrajectoryRotationTimeToAlign, StartGameState, StopGameState, AlignTranslation, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaFenceSceneOp
+    va: 0x142f352e0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaFenceSceneOp (fields: Gate)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaFootplantSceneOpAsset
+    va: 0x142f35370
+    signature: "void()"
+    note: "Defines the ANT type PamplonaFootplantSceneOpAsset (fields: LeftFootPlantTag, RightFootPlantTag, EnableMovementEventTags, FootSpeedTagThreshold, FootHeightTagThreshold, StepUpBaseSpeed, StepUpAcceleration, MaxDisplacement, UseStepByStepSmoothing, ClimbingThreshhold, MaxHipDisplacement, LeftFootVolume, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaGateOpenerSceneOp
+    va: 0x142f35680
+    signature: "void()"
+    note: "Defines the ANT type PamplonaGateOpenerSceneOp (fields: ShouldOpen, Gate)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaHandplantSceneOpAsset
+    va: 0x142f35730
+    signature: "void()"
+    note: "Defines the ANT type PamplonaHandplantSceneOpAsset (fields: LeftHandVolume, RightHandVolume, LeftHandJoint, RightHandJoint, UseActiveLedge, Ledge, EnableHandIKLeft, EnableHandIKRight, LeftHandEffectorPosition, LeftHandEffectorOrientation, LeftHandEffectorReach, RightHandEffectorPosition, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaMoverAsset
+    va: 0x142f35a10
+    signature: "void()"
+    note: "Defines the ANT type PamplonaMoverAsset (fields: FloatGameStates, VectorGameStates)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaPhysicsAsset
+    va: 0x142f35ac0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaPhysicsAsset (fields: FacingAngle, CurrentMove, Falling, MovingAngle, MovingPerTick, MovingSpeed, AngularSpeed, FallingSpeed, Velocity, Position, LandingImpulse, LandingImpulseWeight, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaSteeringTag
+    va: 0x142f35de0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaSteeringTag (fields: SteeringMode, SteeringSpeed, SetCameraConstraint)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePamplonaWalkMetricsGameStateAsset
+    va: 0x142f35ef0
+    signature: "void()"
+    note: "Defines the ANT type PamplonaWalkMetricsGameStateAsset (fields: ForwardFriction, BackwardFriction, StrafeFriction)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePositionPredictionProcessorAsset
+    va: 0x142f36010
+    signature: "void()"
+    note: "Defines the ANT type PositionPredictionProcessorAsset (fields: Timespan, Iterations, HitPosition, HitPositionY, TicksToHit, IsSoftLanding, SoftLandingCenter, SoftLandingRadius, SoftLandingGuidance, PositionPredictionBus)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_definePositionPredictionQueryFilterAsset
+    va: 0x142f36220
+    signature: "void()"
+    note: "Defines the ANT type PositionPredictionQueryFilterAsset (fields: Timespan, Iterations, PositionPredictionBus)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineRangedCombatProcessorAsset
+    va: 0x142f36330
+    signature: "void()"
+    note: "Defines the ANT type RangedCombatProcessorAsset (fields: TraceOffset, AimAngle, FilterSuccess, TargetAnimatableID)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSmoothAlignmentDriverAsset
+    va: 0x142f36440
+    signature: "void()"
+    note: "Defines the ANT type SmoothAlignmentDriverAsset (fields: FacingMasterRatio, FacingSlaveRatio, TranslationMasterRatio, TranslationSlaveRatio, MasterEntryIsContinuous, MasterExitIsContinuous, MasterIgnoreRotation, SlaveEntryIsContinuous, SlaveExitIsContinuous, SlaveIgnoreRotation, TurnToFaceOffset, TurnToFace, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSoftLandingFallDriverAsset
+    va: 0x142f36720
+    signature: "void()"
+    note: "Defines the ANT type SoftLandingFallDriverAsset (fields: SoftLandingCenter, SoftLandingRadius, SoftLandingGuidance)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSpineAimTag
+    va: 0x142f36830
+    signature: "void()"
+    note: "Defines the ANT type SpineAimTag (fields: Mode)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSplineDriverAsset
+    va: 0x142f368c0
+    signature: "void()"
+    note: "Defines the ANT type SplineDriverAsset (fields: UsePreview, PreviewSplineTypeFlags, TranslationOffset, AlignMode, StartOffset, EndOffset, AlignJoint, ForwardSpeed, CurrentT, LostSpline)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSpringboardDriverAsset
+    va: 0x142f36ae0
+    signature: "void()"
+    note: "Defines the ANT type SpringboardDriverAsset (fields: EntrySpeedXZ, MinimumJumpHeight, MinimumForwardSpeed, MinimumSpeedScale, MaximumSpeedScale, JumpLedgeNormal)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSpringboardProcessorAsset
+    va: 0x142f36c60
+    signature: "void()"
+    note: "Defines the ANT type SpringboardProcessorAsset (fields: MoveEnumTracker, TimestampNow, ObstaclePosition, ObstacleNormal, ObstacleCanStand, ObstacleCanVault, ObstacleType, JumpStartPosition, SpringboardTimestamp, SpringboardPosition, SpringboardNormal, SpringboardObstacleType, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineStrideLengthTag
+    va: 0x142f36f50
+    signature: "void()"
+    note: "Defines the ANT type StrideLengthTag (fields: TurnBranchStart, TurnBranchStartOffset, OutBranchStart, OutBranchStartOffset)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineSwingJumpDriverAsset
+    va: 0x142f37070
+    signature: "void()"
+    note: "Defines the ANT type SwingJumpDriverAsset (fields: SwingJoint)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineTimestampTag
+    va: 0x142f37100
+    signature: "void()"
+    note: "Defines the ANT type TimestampTag (fields: TimestampNow, Out, SetOnEnter, SetOnUpdate, SetOnLeave)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineTrajectoryRotationTag
+    va: 0x142f37240
+    signature: "void()"
+    note: "Defines the ANT type TrajectoryRotationTag (fields: UpVector, UpVectorGS, TimeTilAlign, UpdateUpVector, ParentControllerName, ParentControllerIsStateflowNode)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineUncontrolledSlideDriveAsset
+    va: 0x142f373b0
+    signature: "void()"
+    note: "Defines the ANT type UncontrolledSlideDriveAsset (fields: MaxStrafeSpeed, Gravity, RotationSpeed, MaxSlideSpeed, InitialSpeedLoss, AccelerationLeftRight, Velocity, FloorNormal, OnDetectedExit, DetectedExitRayLength)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineVariableDistanceQueryFilterAsset
+    va: 0x142f375c0
+    signature: "void()"
+    note: "Defines the ANT type VariableDistanceQueryFilterAsset (fields: DistInput)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineVaultControllerAsset
+    va: 0x142f37650
+    signature: "void()"
+    note: "Defines the ANT type VaultControllerAsset (fields: Subject, PreAlignMinimumRatio, PreAlignMaximumRatio, PostAlignMinimumRatio, PostAlignMaximumRatio, MinimumEndSpeed, MaximumEndSpeed)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineVaultDriverAsset
+    va: 0x142f377e0
+    signature: "void()"
+    note: "Defines the ANT type VaultDriverAsset (fields: PreviewStartPosition, PreviewLedgeHeight, PreviewEndPosition, PreviewEnabled, StartFullAlignTick, EndFullAlignTick, ExtraHeightAlignTicks, PostStopBranchTick, LedgePosition, EndPosition, AlignJoint)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineWalkingDriverAsset
+    va: 0x142f37a20
+    signature: "void()"
+    note: "Defines the ANT type WalkingDriverAsset (fields: WalkSetting, SprintSetting, IsSprinting, AccelerationAngle, AccelerationMagnitude, LookYaw, HasFloor, FloorIsUnstandable, AssisteSpline, AssistMaxAngle, AssistMinAngle, StopAtLedgeEnabled, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineWallrunDriverAsset
+    va: 0x142f37d00
+    signature: "void()"
+    note: "Defines the ANT type WallrunDriverAsset (fields: ObstacleNormal, ObstaclePosition, ObstacleType, JumpStartPosition, ConsecutiveWallruns, HasWall, MinWallrunLength, MaxWallrunLength, WallrunHeight, WallrunPostApexHeight, PostApexCurveFalloffStrength, VerticalPostApexCurveFalloffStrength, ...)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineWeaponFeatureAsset
+    va: 0x142f38120
+    signature: "void()"
+    note: "Defines the ANT type WeaponFeatureAsset (fields: WeaponAnimatableId, HasWeapon, OwnerAnimatableId, HasOwner, WeaponType, Ammo)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineWorldCollisionProcessorAsset
+    va: 0x142f38290
+    signature: "void()"
+    note: "Defines the ANT type WorldCollisionProcessorAsset (fields: MinY, Out, CollisionBus)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ant_defineWorldRayCastQueryFilterAsset
+    va: 0x142f383a0
+    signature: "void()"
+    note: "Defines the ANT type WorldRayCastQueryFilterAsset (fields: AsyncFromInput, ImmediateFromInput, TraceDistance, Fatness, Offset, OffsetYaw, OffsetPitch, CollisionLayer, JointTraceStart, RayCastBus, WantsHit, AimAtTargetAnimatable, ...)."
+    confidence: inferred
+    sources: [ghidra]
+
+# The landing prediction's hook points (GridNode's landing.cpp and the Recorder's movement watch).
+hooks:
+  - name: PositionPrediction_update
+    kind: vtable-slot
+    vtable: 0x141aabb98
+    offset: 0x20
+    original: 0x142f28e20
+    signature: "void(void* asset, void* context, void*, void*)"
+    note: "PositionPredictionProcessorAsset_update in the asset's vtable: wrapped to know which writes are the prediction's."
+    confidence: inferred
+  - name: AntFloatWriter_write
+    kind: vtable-slot
+    vtable: 0x141a434d0
+    offset: 0x8
+    original: 0x142da3e80
+    signature: "void(void* writer, void* state, f32 value)"
+    note: "The float output writer of an ANT binding ((binding + 0x20)->vtable +8). Seen writing the prediction's HitPositionY and TicksToHit (2026-10-30); slot read from the game image 2026-11-03."
+    confidence: inferred
+  - name: AntBoolWriter_write
+    kind: vtable-slot
+    vtable: 0x141a435c8
+    offset: 0x8
+    original: 0x142c3ea40
+    signature: "void(void* writer, void* state, u64 value)"
+    note: "The bool output writer of an ANT binding (IsSoftLanding). Slot read from the game image 2026-11-03."
+    confidence: inferred

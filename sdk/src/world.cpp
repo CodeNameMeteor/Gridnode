@@ -115,7 +115,13 @@ void* fromCreatedCharacters() {
 }
 
 void callLevel(const std::vector<LevelListener>& ls, const std::string& level, bool loaded) {
-    for (const LevelListener& l : ls) l.fn(level.c_str(), loaded ? 1 : 0, l.user);
+    for (const LevelListener& l : ls) {
+        try {
+            l.fn(level.c_str(), loaded ? 1 : 0, l.user);
+        } catch (...) {
+            GN_LOG("level: a mod's level listener threw; ignored");
+        }
+    }
 }
 
 } // namespace
@@ -510,6 +516,7 @@ void pollLevel() {
     if (!now.empty()) {
         GN_LOG("level: started %s", now.c_str());
         layouts::onLevel(now); // its layout, before its objects are created
+        recorder::onLevel(now);
         settingsList();    // logs how many settings objects the engine holds
         consoleCommands(); // and how many commands (when that changed)
         callLevel(ls, now, true);
@@ -525,13 +532,29 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
     if (!pos || !fn || !(radius > 0.f)) return 0;
     int n = 0;
     const float r2 = radius * radius;
+    static const reflect::Type* spatial = registry().find("SpatialEntity");
     for (const auto& [p, t] : inspector::tracked()) {
         gn_transform at{};
-        if (!entityTransform(reinterpret_cast<void*>(p), at)) continue;
+        // Only objects with a place (most entities are logic): their type first, then memory reads.
+        if (!t || !spatial || !registry().isKindOf(t, spatial)) continue;
+        if (!inspector::alive(p, t) || !entityTransform(reinterpret_cast<void*>(p), at)) continue;
         const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > r2) continue;
         fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        ++n;
+    }
+    return n;
+}
+
+int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user) {
+    if (!className || !fn) return -GN_ERR_ARGUMENT;
+    const reflect::Type* cls = registry().find(className);
+    if (!cls) return -GN_ERR_NOT_FOUND;
+    int n = 0;
+    for (const auto& [p, t] : inspector::trackedOf(cls)) {
+        if (!inspector::alive(p, t)) continue;
+        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
         ++n;
     }
     return n;
@@ -543,6 +566,7 @@ int entitySetTransform(void* entity, const gn_transform* to) {
     const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(entity));
     const reflect::Type* spatial = registry().find("SpatialEntity");
     if (!t || !spatial || !registry().isKindOf(t, spatial)) return GN_ERR_ARGUMENT;
+    if (!inspector::alive(reinterpret_cast<uintptr_t>(entity), t)) return GN_ERR_ARGUMENT; // found destroyed
     // The realm from the class name (Client... / Server... / Pam{Client,Server}...).
     const std::string& n = t->name;
     const bool client = n.rfind("Client", 0) == 0 || n.rfind("PamClient", 0) == 0;
@@ -555,6 +579,13 @@ int entitySetTransform(void* entity, const gn_transform* to) {
     using Fn = void (*)(void*, const void*, uint8_t);
     reinterpret_cast<Fn>(mem::rva(e::function::SpatialEntity_setTransform))(entity, &m, 1);
     return GN_OK;
+}
+
+void forgetLevel(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_levelM);
+    g_levelListeners.erase(std::remove_if(g_levelListeners.begin(), g_levelListeners.end(),
+                                          [&](const LevelListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                           g_levelListeners.end());
 }
 
 } // namespace gn::host

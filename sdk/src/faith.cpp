@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "gridnode/build.hpp"
+#include "gridnode/config.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -179,7 +180,7 @@ Tuning* findTuning(const char* name) {
 
 // ---- Faith's movement -----------------------------------------------------------------------------
 struct MovementPtrs {
-    uintptr_t ground = 0, state = 0, motion = 0, camera = 0;
+    uintptr_t ground = 0, state = 0, camera = 0;
 };
 MovementPtrs movementPtrs() {
     MovementPtrs p;
@@ -191,8 +192,6 @@ MovementPtrs movementPtrs() {
         p.ground = ptr(mv + k::Movement_Ground);
         p.state = ptr(mv + k::Movement_State);
     }
-    const uintptr_t body = ptr(ptr(c + k::Character_PhysicsHolder) + k::PhysicsHolder_Body);
-    p.motion = ptr(body + k::Body_Motion);
     const uintptr_t cam = ptr(c + k::Character_Camera);
     if (typeIs(cam, "PamClientCharacterCameraComponent")) p.camera = cam;
     return p;
@@ -364,6 +363,30 @@ void faithClientTick() {
     }
 }
 
+int jumpHeld() {
+    // The player's own jump input (the live state; an action GridNode presses is in the override).
+    const int bit = digitalBit(static_cast<uint32_t>(k::Action_Jump));
+    const uintptr_t player = clientPlayer();
+    const uintptr_t live = player ? ptr(player + ka::ClientPlayer_InputState) : 0;
+    uint64_t bits = 0;
+    if (bit < 0 || !live || !mem::read(live + ka::EntryInputState_Digital, bits)) return -1;
+    return (bits >> bit) & 1 ? 1 : 0;
+}
+
+int jumpHeldByMods() {
+    // GridNode (for a mod) is holding the jump action or the Space key it falls back to.
+    {
+        std::lock_guard<std::mutex> lock(g_actM);
+        if (g_overrideOn)
+            for (const HeldAction& a : g_actions)
+                if (a.hash == static_cast<uint32_t>(k::Action_Jump)) return 1;
+    }
+    static const int space = keyFind("IDK_Space");
+    const int key = space > 0 ? space : 57;
+    std::lock_guard<std::mutex> lock(g_keyM);
+    return g_keyHeld[key] || g_keyTicks[key] > 0 ? 1 : 0;
+}
+
 int jump() {
     // The jump action, whatever key the player bound to it; the game decides what it becomes (a
     // jump, a vault, a coil...). Four ticks, as a quick tap. Falls back to the Space key.
@@ -384,13 +407,16 @@ int movementGet(gn_movement* out) {
     mem::read(p.state + k::State_WallRuns, out->wall_runs);
     mem::read(p.ground + k::Ground_LastY, out->last_ground_y);
     out->on_ground = mem::readOr<uint8_t>(p.ground + k::Ground_OnGround);
-    if (p.motion) mem::read(p.motion + k::Motion_Speed, out->speed);
+    float vel[3] = {};
+    if (mem::read(p.ground + k::Ground_Velocity, vel, sizeof(vel))) out->speed = std::sqrt(vel[0] * vel[0] + vel[2] * vel[2]);
     if (p.camera) mem::read(p.camera + k::Camera_Forward, out->camera_forward, sizeof(out->camera_forward));
     return GN_OK;
 }
 
 int movementSet(const gn_movement* in, uint32_t fields) {
     if (!in) return GN_ERR_ARGUMENT;
+    if (((fields & GN_MOVE_SPEED) && !std::isfinite(in->speed)) || ((fields & GN_MOVE_LAST_GROUND_Y) && !std::isfinite(in->last_ground_y)))
+        return GN_ERR_ARGUMENT; // never nan / inf into the game
     const MovementPtrs p = movementPtrs();
     if (!p.state || !p.ground) return GN_ERR_UNAVAILABLE;
     if (fields & GN_MOVE_STATE) mem::write(p.state + k::State_Movement, in->state);
@@ -398,7 +424,25 @@ int movementSet(const gn_movement* in, uint32_t fields) {
     if (fields & GN_MOVE_WALL_CLIMBS) mem::write(p.state + k::State_WallClimbs, in->wall_climbs);
     if (fields & GN_MOVE_WALL_RUNS) mem::write(p.state + k::State_WallRuns, in->wall_runs);
     if (fields & GN_MOVE_LAST_GROUND_Y) mem::write(p.ground + k::Ground_LastY, in->last_ground_y);
-    if ((fields & GN_MOVE_SPEED) && p.motion) mem::write(p.motion + k::Motion_Speed, in->speed);
+    if (fields & GN_MOVE_SPEED) {
+        // Her velocity, scaled to the speed (its direction kept; standing still, her camera's). The old
+        // trainer's field (round values while running, so likely the speed she is driven at) gets it
+        // too, by its proper path: slot +0x1e8 of the object at 0x1423dd6f8. Which one the game keeps
+        // through a position load is untested.
+        float vel[3] = {};
+        if (mem::read(p.ground + k::Ground_Velocity, vel, sizeof(vel))) {
+            float len = std::sqrt(vel[0] * vel[0] + vel[2] * vel[2]), dx = vel[0], dz = vel[2];
+            float fwd[4] = {};
+            if (len < 0.01f && p.camera && mem::read(p.camera + k::Camera_Forward, fwd, sizeof(fwd)))
+                dx = fwd[0], dz = fwd[2], len = std::sqrt(dx * dx + dz * dz);
+            if (len >= 0.01f) {
+                vel[0] = dx / len * in->speed, vel[2] = dz / len * in->speed;
+                mem::write(p.ground + k::Ground_Velocity, vel, sizeof(vel));
+            }
+        }
+        const uintptr_t drive = ptr(ptr(ptr(mem::rva(k::Speed_DriveGlobal)) + k::Speed_DriveSlot) + k::Body_Motion);
+        if (drive) mem::write(drive + k::Motion_Speed, in->speed);
+    }
     return GN_OK;
 }
 
@@ -406,7 +450,7 @@ int movementSet(const gn_movement* in, uint32_t fields) {
 // -> +0x128 (an Animatable, checked) -> +0x30 -> +0x50 (Vec3). Writing it moves Faith on the client
 // without a teleport, so the camera stays free (noclip).
 int positionSet(const float pos[3]) {
-    if (!pos) return GN_ERR_ARGUMENT;
+    if (!pos || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2])) return GN_ERR_ARGUMENT;
     const uintptr_t c = reinterpret_cast<uintptr_t>(localClientCharacter());
     if (!c) return GN_ERR_UNAVAILABLE;
     const uintptr_t anim = ptr(ptr(c + k::Character_AnimatableOwner) + k::AnimatableOwner_Animatable);
@@ -457,6 +501,25 @@ int godModeSet(int on) {
     return GN_OK;
 }
 
+void faithRelease() {
+    client().post([] {
+        {
+            std::lock_guard<std::mutex> lock(g_actM);
+            g_actions.clear();
+            releaseActions();
+        }
+        const uintptr_t dev = inputDevices();
+        std::lock_guard<std::mutex> lock(g_keyM);
+        for (int key = 1; key < kKeys; ++key) {
+            if (g_keyHeld[key] && dev && !physicallyDown(key)) setKey(dev, key, false);
+            g_keyHeld[key] = false, g_keyTicks[key] = 0;
+        }
+    });
+    server().post([] {
+        if (g_godAt) godModeSet(0); // IsImmortal as it was before GridNode set it
+    });
+}
+
 // ---- game state -------------------------------------------------------------------------------------
 namespace {
 uintptr_t timeOfDayClock() {
@@ -484,6 +547,7 @@ int gameStateGet(gn_game_state* out) {
 }
 
 int timeOfDaySet(float seconds) {
+    if (!std::isfinite(seconds)) return GN_ERR_ARGUMENT;
     const uintptr_t clock = timeOfDayClock();
     if (!clock) return GN_ERR_UNAVAILABLE;
     return mem::write(clock + k::Clock_Time, seconds) ? GN_OK : GN_ERR_UNAVAILABLE;
@@ -506,11 +570,215 @@ int tuningAt(uint32_t i, gn_tuning* out) {
 }
 
 int tuningSet(const char* name, float value) {
+    if (!std::isfinite(value)) return GN_ERR_ARGUMENT;
     Tuning* t = name ? findTuning(name) : nullptr;
     if (!t) return GN_ERR_NOT_FOUND;
     const uintptr_t a = resolve(*t);
     if (!a || (t->verifiedAt.load() != a && !verified(*t))) return GN_ERR_UNAVAILABLE;
     return mem::write(a, value) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+
+// ---- research: which field holds her speed ---------------------------------------------------------
+// gn_movement.speed (then body motion +0x438) read 0.00 most of the time in game (2026-10-30); this
+// found her velocity at movement ground +0xd0 (speed-3 and speed-4), now its source. Kept for checking other fields the same way. The
+// Recorder's movement watch calls this every frame: when her position moves on, her horizontal speed
+// is measured from it and every float (and every x/z pair of a vector) in the objects around her
+// movement is scored by how often it matches (within 15%, while she moves faster than 1 m/s). The best
+// are logged every 100 samples (about 10 s of moving), at most five times per run of the game.
+namespace {
+struct ProbeRegion {
+    const char* name;
+    uint32_t size;
+};
+constexpr ProbeRegion kProbeRegions[] = {{"motion", 0x800}, {"body", 0x800}, {"physics holder", 0x400}, {"movement state", 0x200},
+                                         {"movement ground", 0x100}};
+constexpr size_t kProbeSlots = 0x800 / 4;
+struct ProbeScore {
+    uint32_t hit[2][kProbeSlots] = {}; // [scalar, x/z pair][offset / 4]
+};
+std::mutex g_probeM;
+ProbeScore g_probe[std::size(kProbeRegions)]; // (g_probeM)
+uint32_t g_probeSamples = 0, g_probeReports = 0;
+float g_probeX = 0.f, g_probeZ = 0.f, g_probeMeasured = -1.f;
+LARGE_INTEGER g_probeAt{};
+bool g_probeHave = false;
+
+// The user's old trainer read her speed as [[[0x1423e29b8] + 0x2378] + 0x10] + 0x438 (a Cheat Engine
+// pointer path). 0x1423e29b8 holds a 0x2180-byte object (made in 0x142fe1fd0, constructed by
+// 0x143017420, fields up to +0x2178), so +0x2378 lies past its end: in whatever the allocator put
+// next (the next allocation there is a 0x1b50-byte object, global 0x1423dd6f8). No code reads +0x2378.
+// The path ends like ours (+0x10, +0x438), so the question is which object the game's motion hangs
+// off: this logs both, so one run in game shows whether they differ and what the old one is.
+constexpr uint64_t kOldSpeedGlobal = 0x1423e29b8, kNextAllocGlobal = 0x1423dd6f8;
+constexpr uint32_t kOldSpeedOff = 0x2378;
+
+std::string describe(uintptr_t obj) {
+    if (!obj) return "null";
+    const uintptr_t vt = mem::readOr<uintptr_t>(obj);
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
+    char b[160];
+    snprintf(b, sizeof(b), "0x%llx (vtable 0x%llx%s%s)", static_cast<unsigned long long>(obj),
+             static_cast<unsigned long long>(mem::inImage(vt) ? mem::va(vt) : vt), t ? ", " : "", t ? t->name.c_str() : "");
+    return b;
+}
+
+void probeChains(uintptr_t c) {
+    const uintptr_t g = ptr(mem::rva(kOldSpeedGlobal));
+    const uintptr_t oldX = g ? ptr(g + kOldSpeedOff) : 0, oldMotion = ptr(oldX + 0x10);
+    const uintptr_t next = ptr(mem::rva(kNextAllocGlobal));
+    const uintptr_t holder = ptr(c + k::Character_PhysicsHolder), body = ptr(holder + k::PhysicsHolder_Body);
+    const uintptr_t motion = ptr(body + k::Body_Motion);
+    GN_LOG("speed probe: old path: [0x1423e29b8] %s, +0x2378 -> %s (%s+0x%llx from the 0x1b50 object at 0x%llx), +0x10 -> %s, "
+           "speed %.2f",
+           describe(g).c_str(), describe(oldX).c_str(), g + kOldSpeedOff >= next ? "" : "-",
+           static_cast<unsigned long long>(g + kOldSpeedOff >= next ? g + kOldSpeedOff - next : next - g - kOldSpeedOff),
+           static_cast<unsigned long long>(next), describe(oldMotion).c_str(), oldMotion ? mem::readOr<float>(oldMotion + 0x438) : -1.f);
+    GN_LOG("speed probe: our path: Faith +0x28 %s, +0x1f0 -> %s, +0x10 -> %s, speed %.2f; same body %s, same motion %s",
+           describe(holder).c_str(), describe(body).c_str(), describe(motion).c_str(), motion ? mem::readOr<float>(motion + 0x438) : -1.f,
+           oldX == body ? "yes" : "no", oldMotion == motion ? "yes" : "no");
+}
+
+void probeReport() {
+    struct Best {
+        uint32_t hits;
+        size_t region;
+        uint32_t off;
+        bool pair;
+    };
+    std::vector<Best> all;
+    for (size_t r = 0; r < std::size(kProbeRegions); ++r)
+        for (int pair = 0; pair < 2; ++pair)
+            for (uint32_t i = 0; i < kProbeRegions[r].size / 4; ++i)
+                if (g_probe[r].hit[pair][i]) all.push_back({g_probe[r].hit[pair][i], r, i * 4, pair != 0});
+    std::sort(all.begin(), all.end(), [](const Best& a, const Best& b) { return a.hits > b.hits; });
+    std::string line;
+    for (size_t i = 0; i < all.size() && i < 8; ++i) {
+        char b[96];
+        snprintf(b, sizeof(b), "%s%s +0x%x%s %u%%", i ? ", " : "", kProbeRegions[all[i].region].name, all[i].off,
+                 all[i].pair ? " (x, +0x8 z)" : "", all[i].hits * 100 / g_probeSamples);
+        line += b;
+    }
+    GN_LOG("speed probe: %u samples while moving; best matches: %s", g_probeSamples, line.empty() ? "none" : line.c_str());
+}
+} // namespace
+
+float oldTrainerSpeed() {
+    const uintptr_t g = ptr(mem::rva(kOldSpeedGlobal));
+    const uintptr_t m = g ? ptr(ptr(g + kOldSpeedOff) + 0x10) : 0;
+    return m ? mem::readOr<float>(m + 0x438, -1.f) : -1.f;
+}
+
+float speedProbeSample() {
+    const uintptr_t c = reinterpret_cast<uintptr_t>(localClientCharacter());
+    gn_transform tr{};
+    if (!c || !entityTransform(reinterpret_cast<void*>(c), tr)) {
+        g_probeHave = false;
+        return -1.f;
+    }
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    const float x = tr.trans[0], z = tr.trans[2];
+    std::lock_guard<std::mutex> lock(g_probeM);
+    if (!g_probeHave) {
+        g_probeHave = true, g_probeX = x, g_probeZ = z, g_probeAt = now;
+        return g_probeMeasured;
+    }
+    // Measured over at least 0.1 s: her position moves every frame (interpolated between ticks), so
+    // frame to frame it was too noisy, and the first version, which took only 10-100 ms steps, never
+    // sampled at a high frame rate (speed-2, 2026-10-30).
+    const double dt = double(now.QuadPart - g_probeAt.QuadPart) / double(freq.QuadPart);
+    if (dt < 0.1) return g_probeMeasured;
+    const float d = std::sqrt((x - g_probeX) * (x - g_probeX) + (z - g_probeZ) * (z - g_probeZ));
+    g_probeX = x, g_probeZ = z, g_probeAt = now;
+    if (dt > 0.3) return g_probeMeasured; // a pause, a load or a hitch: no fair measure
+    const float measured = static_cast<float>(d / dt);
+    if (measured > 100.f) return g_probeMeasured; // a teleport
+    g_probeMeasured = measured;
+    if (measured < 1.f) return measured;
+
+    const uintptr_t owner = ptr(c + e::cls::PamClientCharacterEntity::off::movementOwner);
+    const uintptr_t mv = ptr(ptr(owner + k::MovementOwner_Movement));
+    const uintptr_t holder = ptr(c + k::Character_PhysicsHolder);
+    const uintptr_t body = ptr(holder + k::PhysicsHolder_Body);
+    const uintptr_t base[] = {ptr(body + k::Body_Motion), body, holder, mv ? ptr(mv + k::Movement_State) : 0, mv ? ptr(mv + k::Movement_Ground) : 0};
+    static float buf[kProbeSlots];
+    if (++g_probeSamples == 1) probeChains(c); // once at the start, then with each report
+    for (size_t r = 0; r < std::size(kProbeRegions); ++r) {
+        const uint32_t n = kProbeRegions[r].size / 4;
+        if (!base[r] || !mem::read(base[r], buf, n * 4)) continue;
+        for (uint32_t i = 0; i < n; ++i) {
+            // (not "near": a windows.h macro)
+            const auto matches = [measured](float v) { return std::isfinite(v) && std::fabs(std::fabs(v) - measured) <= measured * 0.15f; };
+            if (matches(buf[i])) ++g_probe[r].hit[0][i];
+            if (i + 2 < n && std::isfinite(buf[i]) && std::isfinite(buf[i + 2]) && matches(std::sqrt(buf[i] * buf[i] + buf[i + 2] * buf[i + 2])))
+                ++g_probe[r].hit[1][i];
+        }
+    }
+    if (g_probeSamples % 100 == 0 && g_probeReports < 5) ++g_probeReports, probeReport(), probeChains(c);
+    return measured;
+}
+
+
+// ---- movement events (gn_api on_movement) ----------------------------------------------------------
+// Faith's movement read once per client tick, while a mod listens: a landing (in air 1 -> 0), a take-off
+// and a change of movement state, in that order. The landing tick is the bhop tick (state 0 there,
+// recorded 2026-10-30), so a listener sees it as LANDED then STATE (8 -> 0).
+namespace {
+struct MoveListener {
+    std::string mod;
+    gn_movement_fn fn;
+    void* user;
+};
+std::mutex g_moveM;
+std::vector<MoveListener> g_moveListeners; // (g_moveM)
+moveevents::Sample g_moveWas;                // client thread
+bool g_moveHave = false;                   // client thread
+} // namespace
+
+int onMovement(const std::string& mod, gn_movement_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_moveM);
+    g_moveListeners.push_back({mod, fn, user});
+    return GN_OK;
+}
+
+void movementEventsClientTick() {
+    std::vector<MoveListener> listeners;
+    {
+        std::lock_guard<std::mutex> lock(g_moveM);
+        if (g_moveListeners.empty()) return;
+        listeners = g_moveListeners;
+    }
+    gn_movement m{};
+    if (movementGet(&m) != GN_OK) {
+        g_moveHave = false; // no Faith (loading, a menu): the next reading starts again
+        return;
+    }
+    const moveevents::Sample now{m.state, m.on_ground != 0};
+    const moveevents::Sample was = g_moveWas;
+    const bool had = g_moveHave;
+    g_moveWas = now, g_moveHave = true;
+    if (!had) return;
+    for (const moveevents::Event& e : moveevents::diff(was, now)) {
+        const gn_movement_event ev{e.kind, e.state, e.oldState, now.inAir ? 1 : 0};
+        for (const MoveListener& l : listeners) {
+            try {
+                l.fn(&ev, &m, l.user);
+            } catch (...) {
+                static std::atomic<int> said{0};
+                if (said.fetch_add(1) < 10) GN_LOG("[%s] a movement callback threw; ignored", l.mod.c_str());
+            }
+        }
+    }
+}
+
+void forgetMovement(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_moveM);
+    g_moveListeners.erase(std::remove_if(g_moveListeners.begin(), g_moveListeners.end(),
+                                         [&](const MoveListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                          g_moveListeners.end());
 }
 
 } // namespace gn::host

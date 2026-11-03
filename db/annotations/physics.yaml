@@ -1,6 +1,14 @@
 # Physics: ray casts, and how a physics entity's collision follows its transform.
 defaults: { confidence: confirmed, sources: [mecmp] }
 
+globals:
+  - name: HavokAabb6Step
+    va: 0x1425a8e10
+    type: f32
+    note: "The 6-byte AABB codec's step factor (a child box's step = parent size * this; 1/226 in Havok)."
+    confidence: inferred
+    sources: [ghidra]
+
 structs:
   - name: RaycastQuery
     size: 0x30
@@ -58,6 +66,21 @@ structs:
       - { offset: 0x40, name: valid, type: u8 }
 
 functions:
+  # From MECMP's player collision (docs/PLAYER_OPTIONS.md, 2026-10-16); not checked here yet.
+  - { name: PhysicsEntityFactory_create, va: 0x1435169e0, note: "Body factory; MECMP makes native Havok boxes (shape type 1, half-extents at +0x20, body kind 2 at +0x14) through it.", confidence: hypothesis, sources: [mecmp] }
+  - { name: PhysicsCreationInfo_ctor, va: 0x142d4d1a0, note: "Owner entity bus at +0x28.", confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_setTransformNative, va: 0x1434f8930, signature: "void(void* owner, u32* id, const LinearTransform* t, bool a4)", note: "Owner object table[id & 0xffff] vtable +0x178 (RigidBody_vf_setTransform) then 0x1434f38e0(owner, id). A barrier's enable calls it with 1 after RigidBody_transformSource.", confidence: inferred, sources: [mecmp, ghidra] }
+  - { name: RigidBody_transformSource, va: 0x1434f6d90, signature: "void(void* owner, u32* id, const LinearTransform* t)", note: "Owner object table[id & 0xffff] vtable +0x250 with the transform.", confidence: inferred, sources: [mecmp, ghidra] }
+  - { name: PhysicsManager_ownerOf, va: 0x1434ee790, signature: "void*(void* manager, u32* id)", note: "manager +0xf0 [(id >> 16) & 0xff]. The manager is a game world's +0x50.", confidence: inferred, sources: [ghidra] }
+  - { name: PamOBBCollision_enable, va: 0x143333310, signature: "void(void* collision)", note: "Builds the barrier's body (HalfExtents, PhysicsBodies) once (id at +0x90), resolves its world transform (0x143165bc0, kept at +0x50), places the body (RigidBody_transformSource, RigidBody_setTransformNative), adds it to the world; +0x95 = 1. See docs/research/barriers-and-magropes.md.", confidence: inferred, sources: [ghidra] }
+  - { name: PamOBBCollision_disable, va: 0x143335ff0, signature: "void(void* collision)", note: "+0x95 = 0, takes the body out of the world (0x1434f6610, 0x1434f65f0).", confidence: inferred, sources: [ghidra] }
+  - { name: PamOBBCollision_deinit, va: 0x143335b30, signature: "void(void* collision)", note: "Vtable +0x88: disables if enabled, destroys the body (0x1434eba50(owner, id, {realm, 1})), then the base deinit 0x143168770.", confidence: inferred, sources: [ghidra] }
+  - { name: Entity_resolveTransform, va: 0x143165bc0, signature: "LinearTransform*(void* data, LinearTransform* out, void* bus)", note: "A data's Transform through its bus's property context (blueprint parents applied).", confidence: inferred, sources: [ghidra] }
+  - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_disable, va: 0x1434f65f0, confidence: hypothesis, sources: [mecmp] }
+  - { name: RigidBody_destroyDeferred, va: 0x1434f5550, confidence: hypothesis, sources: [mecmp] }
   - name: RaycastQuery_execute
     va: 0x143a24890
     signature: "void(const RaycastQuery* query, void* world, void* physics, RaycastResult* result)"
@@ -68,12 +91,14 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: PhysicsQuery_raycastNamed
     va: 0x1432e6730
-    note: "Named in Ghidra as PhysicsQuery_raycastNamed. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64, i32, void*, void*, void*, u32, i64)"
+    note: "Named in Ghidra as PhysicsQuery_raycastNamed; checked in the decompiler (2026-10-30): called with a query name (ServerTeleportEntity_checkSpawningBelowGround) and from / to points."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerTeleportEntity_clearPhysicsAtTarget
     va: 0x143381560
-    note: "Named in Ghidra as ServerTeleportEntity_clearPhysicsAtTarget. Signature not known yet."
+    signature: "void(u64, void*, i64, i64)"
+    note: "Named in Ghidra as ServerTeleportEntity_clearPhysicsAtTarget; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Physics_castRay
@@ -87,26 +112,40 @@ functions:
     sources: [ghidra, research]
   - name: PhysicsHolder_getPhysics
     va: 0x1434ee940
-    note: "Named in Ghidra as PhysicsHolder_getPhysics. Signature not known yet."
+    signature: "u64(void* self)"
+    note: "Named in Ghidra as PhysicsHolder_getPhysics; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: Physics_castRayCollectHits
     va: 0x14351a1a0
-    note: "Named in Ghidra as Physics_castRayCollectHits. Signature not known yet."
+    signature: "void(i64, void*, void*, u32)"
+    note: "Named in Ghidra as Physics_castRayCollectHits; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ServerRaycastEntity_update
     va: 0x143a204b0
-    note: "Named in Ghidra as ServerRaycastEntity_update. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, u64, void*, void*)"
+    note: "Named in Ghidra as ServerRaycastEntity_update; checked in the decompiler (2026-10-30): builds the query (RaycastEntity_buildQuery), casts it (Raycast_query) and posts the result event."
+    confidence: inferred
     sources: [ghidra]
   - name: RaycastEntity_buildQuery
     va: 0x143a22330
-    note: "Named in Ghidra as RaycastEntity_buildQuery. Signature not known yet."
-    confidence: hypothesis
+    signature: "u64(void* self, void*)"
+    note: "Named in Ghidra as RaycastEntity_buildQuery; checked in the decompiler (2026-10-30): fills the query from the entity's from / to properties."
+    confidence: inferred
     sources: [ghidra]
+  - name: PhysicsOwner_objectOfHit
+    va: 0x1434ee750
+    signature: "void*(void* owner, const u16* bodyIndex)"
+    note: "(*(owner + 0x130))[*bodyIndex]: a pointer to a table, not a table at +0x130. The user's research names it PhysicsEntity_resolveFromHitId; the hit's object is a physics component (+8 its collection, whose first entry is the entity)."
+    confidence: confirmed
+    sources: [ghidra, user]
 
 constants:
+  - { name: GameWorld_PhysicsManager, value: 0x50, confidence: inferred, sources: [ghidra], note: "A game world's physics manager (PhysicsManager_Owners at its +0xf0)." }
+  - { name: OBBCollision_WorldTransform, value: 0x50, confidence: inferred, sources: [ghidra], note: "A barrier's world transform, resolved when it is enabled." }
+  - { name: OBBCollision_BodyId, value: 0x90, confidence: inferred, sources: [ghidra], note: "u32 body id (-1: none yet)." }
+  - { name: OBBCollision_Enabled, value: 0x95, confidence: inferred, sources: [ghidra] }
   - { name: World_PhysicsManager, value: 0x50 }
   - { name: PhysicsManager_Holder, value: 0xf0 }
   - { name: PhysicsHolder_Physics, value: 0x18 }
@@ -130,6 +169,11 @@ constants:
   - { name: GroupRigidBody_BodyIndex, value: 0x50, confidence: inferred, sources: [research], note: "i32 Havok body index (hknpWorld bodies, 0x90 each)." }
   - { name: GroupRigidBody_Shape, value: 0x58, confidence: inferred, sources: [research], note: "hknpStaticCompoundShape* of the group." }
   - { name: GroupRigidBody_PartToInstance, value: 0x110, confidence: inferred, sources: [research], note: "Array of 4-byte entries; the low i16 of entry [part] is the compound instance index (0x1434eda80)." }
+  - { name: CompoundShape_Tree, value: 0xc0, confidence: inferred, sources: [ghidra], note: "Instance tree: a Havok static tree with 6-byte compressed nodes (box update 0x143e99090). Nodes: bytes 0..2 per axis min = parent min + (b>>4)^2*step, max = parent max - (b&15)^2*step, step = parent size * HavokAabb6Step; byte 3 bit 7 = inner node (left child = next node, right = index + ((b3&0x7f)<<16 | u16 +4) * 2); a leaf's u16 +4 is its instance. Confirmed by the outline (2026-10-20) once tested." }
+  - { name: CompoundTree_Nodes, value: 0x10, confidence: inferred, sources: [ghidra] }
+  - { name: CompoundTree_NodeCount, value: 0x18, confidence: inferred, sources: [ghidra] }
+  - { name: CompoundTree_Min, value: 0x20, confidence: inferred, sources: [ghidra], note: "The root's box (the compound's domain): min +0x20, max +0x30." }
+  - { name: CompoundTree_Max, value: 0x30, confidence: inferred, sources: [ghidra] }
   - { name: CompoundShape_Instances, value: 0x60, confidence: inferred, sources: [research], note: "hknpShapeInstance array (0x80 each): rotation rows +0x00/+0x10/+0x20 (unit), translation +0x30, scale +0x40, shape +0x50 (0x143f50740 builds the scaled transform)." }
   - { name: ShapeInstance_Size, value: 0x80, confidence: inferred, sources: [research] }
   - { name: ShapeInstance_Scale, value: 0x40, confidence: inferred, sources: [research] }

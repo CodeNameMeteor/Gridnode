@@ -50,7 +50,8 @@ def annotated_pages(db: Database, reflected=None) -> dict[str, str]:
     With a dump, class pages link to the class's reference section."""
     by_file: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for kind, table in (("classes", db.classes), ("structs", db.structs), ("globals", db.globals),
-                        ("functions", db.functions), ("hooks", db.hooks), ("code", db.code), ("constants", db.constants)):
+                        ("functions", db.functions), ("hooks", db.hooks), ("code", db.code), ("constants", db.constants),
+                        ("events", db.events)):
         for item in table.values():
             by_file[os.path.basename(item.meta.file)][kind].append(item)
 
@@ -117,6 +118,8 @@ def _annotated_file(stem: str, k: dict, reflected) -> str:
          lambda h: [f"`{h.name}`", h.kind, f"`{_hex(h.slot)}`", f"`{_hex(h.original)}`", _esc(h.meta.note)]),
         ("Code sites", k["code"], ["Name", "Address", "Note"], lambda c: [f"`{c.name}`", f"`{_hex(c.va)}`", _esc(c.meta.note)]),
         ("Constants", k["constants"], ["Name", "Value", "Note"], lambda c: [f"`{c.name}`", f"`{_hex(c.value)}`", _esc(c.meta.note)]),
+        ("Events", k["events"], ["Event", "Hash", "Sent to", "Confidence", "Note"],
+         lambda e: [f"`{e.name}`", f"`{_hex(e.hash)}`", ", ".join(f"`{c}`" for c in e.sent_to), _badge(e.meta), _esc(e.meta.note)]),
     ]
     for title, items, head, row in tables:
         if not items:

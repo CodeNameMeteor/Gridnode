@@ -14,9 +14,12 @@
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <string>
+#include <vector>
 #include <type_traits>
 #include <utility>
 
@@ -91,6 +94,45 @@ template <class Fn> bool hookSlot(uint64_t slotVa, uint64_t expectedVa, Fn detou
     static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
     return api().hook_slot(modName(), slotVa, expectedVa, reinterpret_cast<void*>(detour),
                            reinterpret_cast<void**>(original)) == GN_OK;
+}
+
+// Code patches (API 15), for what no pointer reaches; undone when the mod is unloaded. patchCall: the
+// call or jmp at siteVa, which must go to expectedTargetVa, goes to detour; call the game's function
+// through *original. patchBytes: size bytes at va, which must be `expected`, become `bytes`.
+template <class Fn> bool patchCall(uint64_t siteVa, uint64_t expectedTargetVa, Fn detour, Fn* original) {
+    static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
+    return api().patch_call(modName(), siteVa, expectedTargetVa, reinterpret_cast<void*>(detour),
+                            reinterpret_cast<void**>(original)) == GN_OK;
+}
+inline bool patchBytes(uint64_t va, const void* expected, const void* bytes, size_t size) {
+    return api().patch_bytes(modName(), va, expected, bytes, size) == GN_OK;
+}
+
+// Function detours (API 16): calls to the game's function at fnVa go to detour, with the same
+// arguments; call the game's function through *original (before, after, or not at all). Taken out
+// when the mod is unloaded. The detour runs on the caller's thread.
+template <class Fn> bool hookFunction(uint64_t fnVa, Fn detour, Fn* original) {
+    static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
+    return api().hook_function(modName(), fnVa, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(original)) == GN_OK;
+}
+
+// ---- other mods (API 16) ----------------------------------------------------------------------
+// A mod says who it is with GN_MOD_INFO / GN_MOD_INFO_DEPS (below; gn_mod_info in gridnode/api.h).
+// exportFn offers a function of this mod as "<its id>.<name>"; importFn gets another mod's (null when
+// it is not loaded or does not offer it); modVersion: whether a mod is loaded, and its version.
+template <class Fn> bool exportFn(const char* name, Fn fn) {
+    static_assert(std::is_pointer<Fn>::value, "fn must be a function pointer");
+    return api().mod_export(name, reinterpret_cast<void*>(fn)) == GN_OK;
+}
+template <class Fn> Fn importFn(const char* modId, const char* name) {
+    static_assert(std::is_pointer<Fn>::value, "Fn must be a function pointer type");
+    return reinterpret_cast<Fn>(api().mod_import(modId, name));
+}
+inline bool modVersion(const char* modId, std::string* version = nullptr) {
+    char b[64] = {};
+    if (api().mod_version(modId, b, sizeof(b)) != GN_OK) return false;
+    if (version) *version = b;
+    return true;
 }
 
 // ---- reflection ------------------------------------------------------------------------------
@@ -264,6 +306,189 @@ using Movement = gn_movement;
 inline bool movement(Movement& out) { return api().movement_get(&out) == GN_OK; }
 // Writes the fields named in `fields` (GN_MOVE_*).
 inline bool setMovement(const Movement& in, uint32_t fields) { return api().movement_set(&in, fields) == GN_OK; }
+using Landing = gn_landing;
+// The game's own landing prediction for Faith (ticks to hit in 60ths of a second, hit height, soft
+// landing); false until she has been in the air.
+inline bool landingPrediction(Landing& out) { return api().landing_prediction(&out) == GN_OK; }
+
+// ---- the free camera (API 13) ----------------------------------------------------------------------
+// GridNode's free camera (the layout editor's): on / off at the next frame.
+using Freecam = gn_freecam;
+inline bool freecam(bool on) { return api().freecam_set(on ? 1 : 0) == GN_OK; }
+inline bool freecamState(Freecam& out) { return api().freecam_get(&out) == GN_OK; }
+inline bool freecamOn() {
+    Freecam f;
+    return freecamState(f) && f.on;
+}
+// Faith to where the free camera's crosshair points, or to the camera itself; keepFlying false goes
+// back to her view. Only while it flies.
+inline bool teleportToCrosshair(bool keepFlying = false) { return api().freecam_teleport(1, keepFlying ? 1 : 0) == GN_OK; }
+inline bool teleportToFreecam(bool keepFlying = false) { return api().freecam_teleport(2, keepFlying ? 1 : 0) == GN_OK; }
+
+// ---- events between entities (API 11) ------------------------------------------------------------
+// An event's id from its name, as the engine hashes it (djb2-xor): eventHash("StartReplay").
+constexpr uint32_t eventHash(const char* name) {
+    uint32_t h = 5381;
+    for (; *name; ++name) h = (h * 33) ^ static_cast<unsigned char>(*name);
+    return h;
+}
+// An id's name, or the id as hex for an unnamed one.
+inline std::string eventName(uint32_t id) {
+    char buf[128];
+    if (api().event_name(id, buf, sizeof(buf)) == GN_OK) return buf;
+    std::snprintf(buf, sizeof(buf), "%08x", id);
+    return buf;
+}
+// Sends an event to an entity as its bus would, at its realm's next tick: sendEvent(replay,
+// "StartReplay"). A name or "0x<hash>". sendEventToClass: to every live entity of the class; how many.
+inline bool sendEvent(void* entity, const char* event) { return api().event_send(modName(), entity, event) == GN_OK; }
+inline int sendEventToClass(const char* className, const char* event) { return api().event_send_class(modName(), className, event); }
+// fn(void* entity, gn::Type type, uint32_t eventId) for every event an entity receives, before it
+// handles it, on the thread that delivers it. event: a name or "0x<hash>", null for all; className:
+// an entity class (and its subclasses), null for all. Filter by name where you can: there are many.
+template <class F> bool onEvent(const char* event, const char* className, F f) {
+    using Fn = std::function<void(void*, Type, uint32_t)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    return api().on_event(modName(), event, className,
+                          [](void* e, const gn_type* t, uint32_t id, void* u) { (*static_cast<Fn*>(u))(e, Type(t), id); }, p) == GN_OK;
+}
+
+// ---- movement events, settings, hotkeys (API 9) ------------------------------------------------
+using MovementEvent = gn_movement_event;
+// fn(const MovementEvent& e, const Movement& now) for every landing, take-off and movement state
+// change (GN_MOVE_EVENT_*), on the client thread, on the tick it happens.
+template <class F> bool onMovement(F f) {
+    using Fn = std::function<void(const MovementEvent&, const Movement&)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    return api().on_movement(modName(), [](const gn_movement_event* e, const gn_movement* m, void* u) { (*static_cast<Fn*>(u))(*e, *m); },
+                             p) == GN_OK;
+}
+
+// The mod's settings, kept between runs in mods/<mod>.ini (written a second after a change).
+namespace config {
+inline std::string get(const char* key, const std::string& def = {}) {
+    char buf[1024];
+    const int r = api().config_get(modName(), key, buf, sizeof(buf));
+    return r == GN_OK || r == GN_ERR_FULL ? std::string(buf) : def;
+}
+inline float getFloat(const char* key, float def) {
+    const std::string v = get(key);
+    char* end = nullptr;
+    const float f = v.empty() ? def : std::strtof(v.c_str(), &end);
+    return end && *end == 0 ? f : def;
+}
+inline int getInt(const char* key, int def) {
+    const std::string v = get(key);
+    char* end = nullptr;
+    const long i = v.empty() ? def : std::strtol(v.c_str(), &end, 10);
+    return end && *end == 0 ? static_cast<int>(i) : def;
+}
+inline bool getBool(const char* key, bool def) {
+    const std::string v = get(key);
+    return v == "1" || v == "true" ? true : v == "0" || v == "false" ? false : def;
+}
+inline bool setString(const char* key, const std::string& value) { return api().config_set(modName(), key, value.c_str()) == GN_OK; }
+inline bool setFloat(const char* key, float value) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", value);
+    return setString(key, buf);
+}
+inline bool setInt(const char* key, int value) { return setString(key, std::to_string(value)); }
+inline bool setBool(const char* key, bool value) { return setString(key, value ? "1" : "0"); }
+} // namespace config
+
+// ---- declared settings (API 17) ---------------------------------------------------------------------
+// Declared once; kept in the mod's settings file with their description; on the mod's page in the
+// GridNode menu (Mod settings) unless gn::setting::page(false). For example:
+//     static gn::setting::Setting speed;
+//     GN_MOD("my-mod") {
+//         speed = gn::setting::addFloat("speed", "Speed", 2.f, 0.1f, 10.f, {"Metres per tick", "Movement"});
+//         gn::setting::onChange("speed", [](const char*) { gn::log("speed is now %.2f", speed.value()); });
+//         ...
+//     }
+//     ... speed.value() anywhere, any thread.
+namespace setting {
+struct Options {
+    const char* description = nullptr; // tooltip and file comment
+    const char* group = nullptr;       // heading on the page
+    double step = 0;                   // int / float without a range: the +/- step
+    uint32_t flags = 0;                // GN_SETTING_HIDDEN: only in the file
+};
+class Setting {
+public:
+    Setting() = default;
+    explicit Setting(std::string id) : id_(std::move(id)) {}
+    explicit operator bool() const { return !id_.empty(); }
+    const std::string& id() const { return id_; }
+    double number() const { return api().setting_number(modName(), id_.c_str()); } // NaN: unknown (or a text)
+    bool on() const { return number() != 0; }
+    int integer() const { return static_cast<int>(number()); } // INT, or a CHOICE's index
+    float value() const { return static_cast<float>(number()); }
+    std::string text() const {
+        char b[1024];
+        const int r = api().setting_text(modName(), id_.c_str(), b, sizeof(b));
+        return r == GN_OK || r == GN_ERR_FULL ? std::string(b) : std::string();
+    }
+    bool set(double v) const { return api().setting_set_number(modName(), id_.c_str(), v) == GN_OK; }
+    bool setText(const std::string& v) const { return api().setting_set_text(modName(), id_.c_str(), v.c_str()) == GN_OK; }
+
+private:
+    std::string id_;
+};
+namespace detail {
+inline Setting add(const char* id, const char* label, int32_t kind, double def, double min, double max, const char* const* choices,
+                   const char* defText, const Options& o) {
+    gn_setting s{};
+    s.size = sizeof(s), s.kind = kind, s.id = id, s.label = label, s.description = o.description, s.group = o.group;
+    s.def = def, s.min = min, s.max = max, s.step = o.step, s.choices = choices, s.def_text = defText, s.flags = o.flags;
+    return api().setting_add(modName(), &s) == GN_OK ? Setting(id) : Setting();
+}
+} // namespace detail
+inline Setting addBool(const char* id, const char* label, bool def, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_BOOL, def ? 1 : 0, 0, 0, nullptr, nullptr, o);
+}
+inline Setting addInt(const char* id, const char* label, int def, int min, int max, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_INT, def, min, max, nullptr, nullptr, o);
+}
+inline Setting addFloat(const char* id, const char* label, float def, float min, float max, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_FLOAT, def, min, max, nullptr, nullptr, o);
+}
+inline Setting addChoice(const char* id, const char* label, int def, std::initializer_list<const char*> choices, const Options& o = {}) {
+    std::vector<const char*> c(choices);
+    c.push_back(nullptr); // copied by GridNode: need not outlive the call
+    return detail::add(id, label, GN_SETTING_CHOICE, def, 0, 0, c.data(), nullptr, o);
+}
+inline Setting addText(const char* id, const char* label, const char* def, const Options& o = {}) {
+    return detail::add(id, label, GN_SETTING_TEXT, 0, 0, 0, nullptr, def, o);
+}
+// f(const char* id) on the client thread when a setting changes (id null: any of the mod's).
+template <class F> bool onChange(const char* id, F f) {
+    auto* p = ::gn::detail::keep(std::function<void(const char*)>(std::move(f)));
+    return api().setting_on_change(modName(), id, [](const char* changed, void* u) { (*static_cast<std::function<void(const char*)>*>(u))(changed); },
+                                   p) == GN_OK;
+}
+// false: no page in the GridNode menu for this mod (its own window shows them).
+inline void page(bool shown) { api().settings_page(modName(), shown ? 1 : 0); }
+} // namespace setting
+
+// A key the player can rebind, kept in the mod's settings (key.<id>). fn() runs on the client thread
+// when it goes down (game focused, menu closed). defaultVk: a Windows virtual-key code ('F', VK_F1),
+// 0 none. Show it in the mod's window with gn::ui::hotkeyButton(id) (gridnode/ui.hpp).
+template <class F> bool hotkey(const char* id, const char* label, int defaultVk, F f) {
+    auto* p = detail::keep(std::function<void()>(std::move(f)));
+    return api().hotkey_add(modName(), id, label, defaultVk, [](void* u) { (*static_cast<std::function<void()>*>(u))(); }, p) == GN_OK;
+}
+using HotkeyInfo = gn_hotkey_info;
+inline bool hotkeyInfo(const char* id, HotkeyInfo& out) { return api().hotkey_info(modName(), id, &out) == GN_OK; }
+// Its key's name ("F", "none"), "" for no such hotkey: for labels like "God mode  [1]".
+inline std::string hotkeyName(const char* id) {
+    HotkeyInfo i;
+    return hotkeyInfo(id, i) ? std::string(i.name) : std::string();
+}
+// Waits for the next key the player presses (Escape: none, Backspace: the default).
+inline bool hotkeyRebind(const char* id) { return api().hotkey_rebind(modName(), id) == GN_OK; }
+// A key directly (a virtual-key code, 0 none, -1 the default).
+inline bool hotkeySet(const char* id, int vk) { return api().hotkey_set(modName(), id, vk) == GN_OK; }
 
 using Tuning = gn_tuning;
 inline uint32_t tuningCount() { return api().tuning_count(); }
@@ -292,8 +517,22 @@ inline bool setPosition(const Vec3& p) {
     return api().position_set(a) == GN_OK;
 }
 
+// ---- unloading (API 15) ----------------------------------------------------------------------------
+// This mod unloaded (its GN_MOD_UNLOAD runs, everything it registered goes) once the current callback
+// returns; it stays unloaded until the GridNode menu's Load. False without GN_MOD_UNLOAD. For an
+// "Unload" button in the mod's own window.
+inline bool unloadSelf() { return api().mod_unload() == GN_OK; }
+// Every mod and GridNode itself unloaded, the game put back as it was (the menu's Unload section).
+inline void unloadGridNode() { api().gridnode_unload(); }
+
 // ---- entities in place -------------------------------------------------------------------------------
 // fn(void* entity, Type type, const Transform& at, float distance) for live entities near pos.
+// fn(void* entity, gn::Type type) for every live entity of the class (and subclasses), logic entities
+// too; how many (negative: an unknown class).
+template <class F> int entitiesOfClass(const char* className, F fn) {
+    return api().entities_of_class(className, [](void* e, const gn_type* t, void* u) { (*static_cast<F*>(u))(e, Type(t)); }, &fn);
+}
+
 template <class F> int entitiesNear(const Vec3& pos, float radius, F fn) {
     const float p[3] = {pos.x, pos.y, pos.z};
     return api().entities_near(p, radius,
@@ -341,3 +580,28 @@ private:
         return gn_mod_main() ? 0 : 1;                                                             \
     }                                                                                             \
     static bool gn_mod_main()
+
+// Optional: makes the mod reloadable while the game runs (GridNode's menu, Mods: Reload, or when its
+// DLL changes). The body runs before GridNode takes out the mod's callbacks and hooks and frees it:
+// stop the mod's own threads and undo what GridNode cannot see (memory it wrote, objects it made).
+// Return true to go ahead, false to stay loaded. Mods without it are never unloaded.
+// The mod's manifest (API 16): who it is and what it needs, read before gn_mod_load. Dependencies:
+// "id", "id>=1.2" (that version or newer), "?id" (optional: loaded after it when it is there).
+//     GN_MOD_INFO("my-mod", "My mod", "1.0.0", "me", "What it does");
+//     GN_MOD_INFO_DEPS("my-mod", "My mod", "1.0.0", "me", "What it does", "mec-trainer>=1.3", "?other");
+#define GN_MOD_INFO_DEPS(ID, NAME, VERSION, AUTHOR, DESCRIPTION, ...)                                         \
+    extern "C" GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info() {                                           \
+        static const char* const deps[] = {__VA_ARGS__, nullptr};                                             \
+        static const gn_mod_manifest m{sizeof(gn_mod_manifest), ID, NAME, VERSION, AUTHOR, DESCRIPTION, deps}; \
+        return &m;                                                                                            \
+    }
+#define GN_MOD_INFO(ID, NAME, VERSION, AUTHOR, DESCRIPTION)                                                   \
+    extern "C" GN_MOD_EXPORT const gn_mod_manifest* gn_mod_info() {                                           \
+        static const gn_mod_manifest m{sizeof(gn_mod_manifest), ID, NAME, VERSION, AUTHOR, DESCRIPTION, nullptr}; \
+        return &m;                                                                                            \
+    }
+
+#define GN_MOD_UNLOAD()                                                                           \
+    static bool gn_mod_unload_main();                                                             \
+    extern "C" GN_MOD_EXPORT int gn_mod_unload() { return gn_mod_unload_main() ? 0 : 1; }          \
+    static bool gn_mod_unload_main()

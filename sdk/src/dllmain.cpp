@@ -17,7 +17,16 @@ DWORD WINAPI mainThread(LPVOID) {
         OutputDebugStringW(L"[GridNode] already active in this process; this copy stays idle\n");
         return 0;
     }
-    gn::runtime::run(g_self);
+    const bool canFree = gn::runtime::run(g_self);
+    // Stopped either way (passive, or unloaded but kept in memory): another GridNode may start. The
+    // injector loads it as a copy under another name, as this one is still mapped as gridnode.dll.
+    if (!canFree && instance) ReleaseMutex(instance), CloseHandle(instance), instance = nullptr;
+    if (canFree) {
+        // A full unload put everything back: let a later GridNode (injected again) start, and free
+        // this one. The loader's LoadLibrary is the only reference, so this unmaps it.
+        if (instance) ReleaseMutex(instance), CloseHandle(instance);
+        FreeLibraryAndExitThread(g_self, 0);
+    }
     return 0;
 }
 } // namespace
@@ -26,13 +35,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         g_self = inst;
         DisableThreadLibraryCalls(inst);
-        // Pin: hooks will point into this DLL, so it must never be unloaded while the game runs.
-        HMODULE pinned = nullptr;
-        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                           reinterpret_cast<LPCWSTR>(&DllMain), &pinned);
+        // Not pinned: hooks point into this DLL, so only a full unload (unload.cpp), which takes them all
+        // out first, frees it (mainThread). Nothing else calls FreeLibrary on it.
         if (HANDLE t = CreateThread(nullptr, 0, mainThread, nullptr, 0, nullptr)) CloseHandle(t);
     } else if (reason == DLL_PROCESS_DETACH && reserved != nullptr) {
-        gn::runtime::shutdown(); // process exit (the DLL is pinned, so there is no other detach)
+        gn::runtime::shutdown(); // process exit (a full unload's detach has reserved null and needs nothing)
     }
     return TRUE;
 }

@@ -19,6 +19,14 @@ structs:
       - { offset: 0x1398, name: isHuman, type: u8 }
       - { offset: 0x1478, name: character, type: "ServerCharacterEntity*", confidence: confirmed, note: "param_2[0x28f] in ServerTeleportEntity_teleportPlayer (0x143391430)." }
       - { offset: 0x1500, name: blueprintOverride, type: "void*", note: "Character blueprint used instead of the level's when the player spawns." }
+  - name: ClientPlayer
+    size: 0x1500
+    opaque: true
+    confidence: inferred
+    sources: [ghidra, user]
+    members:
+      - { offset: 0x78, name: localPlayerIndex, type: i32, confidence: confirmed }
+      - { offset: 0x1480, name: characterHolder, type: "void**", confidence: confirmed, note: "*holder - 8 is the character entity (ClientPlayer_getCharacterEntity)." }
 
 functions:
   - name: ServerTeleportEntity_teleportPlayer
@@ -29,39 +37,59 @@ functions:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: ClientPlayer_ctor
     va: 0x1431fb8c0
-    note: "Named in Ghidra as ClientPlayer_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, i64, u64, u32)"
+    note: "Named in Ghidra as ClientPlayer_ctor; checked in the decompiler (2026-10-30): builds the player's EntryInputState."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientPlayerManager_ctor
     va: 0x1431fbcc0
-    note: "Named in Ghidra as ClientPlayerManager_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, u64, u32)"
+    note: "Named in Ghidra as ClientPlayerManager_ctor; checked in the decompiler (2026-10-30): its strings ('ClientPlayerManagerPlayerGroup')."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientPlayerManager_setLocalPlayer
     va: 0x1431ffc20
-    note: "Named in Ghidra as ClientPlayerManager_setLocalPlayer. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, void*, u64, u64)"
+    note: "Named in Ghidra as ClientPlayerManager_setLocalPlayer; checked in the decompiler (2026-10-30): sends ClientPlayerLocalSetMessage."
+    confidence: inferred
     sources: [ghidra]
   - name: ClientPlayer_applyControlUpdates
     va: 0x143200b10
-    note: "Named in Ghidra as ClientPlayer_applyControlUpdates. Signature not known yet."
+    signature: "void(u64, void*, u64, u64)"
+    note: "Named in Ghidra as ClientPlayer_applyControlUpdates; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
   - name: ClientPlayerManager_removeLocalPlayer
     va: 0x14320f8e0
-    note: "Named in Ghidra as ClientPlayerManager_removeLocalPlayer. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, i64, u64, u64)"
+    note: "Named in Ghidra as ClientPlayerManager_removeLocalPlayer; checked in the decompiler (2026-10-30): sends ClientPlayerLocalSetMessage after walking the local players."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerPlayerManager_ctor
     va: 0x1433482d0
-    note: "Named in Ghidra as ServerPlayerManager_ctor. Signature not known yet."
-    confidence: hypothesis
+    signature: "void*(void* self, u64, u32, u32)"
+    note: "Named in Ghidra as ServerPlayerManager_ctor; checked in the decompiler (2026-10-30): its strings ('ServerPlayerManager')."
+    confidence: inferred
     sources: [ghidra]
   - name: ServerConnection_validateLocalPlayerId
     va: 0x1433da010
-    note: "Named in Ghidra as ServerConnection_validateLocalPlayerId. Signature not known yet."
-    confidence: hypothesis
+    signature: "void(void* self, i32, i8)"
+    note: "Named in Ghidra as ServerConnection_validateLocalPlayerId; checked in the decompiler (2026-10-30): its strings ('Invalid LocalPlayerId %d, limit %d')."
+    confidence: inferred
     sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research).
+  - name: ClientPlayerManager_getLocalPlayer
+    va: 0x143205f90
+    signature: "void*(void* playerManager, i32 localPlayerIndex)"
+    note: "Walks the players vector (+0x540..+0x548) for the one whose +0x78 is the index; null if none. The player manager is ClientGameContext +0x68."
+    confidence: confirmed
+    sources: [ghidra, user]
+  - name: ClientPlayer_getCharacterEntity
+    va: 0x14334ef90
+    signature: "void*(void* player)"
+    note: "**(player + 0x1480) - 8, or null: the controlled PamClientCharacterEntity."
+    confidence: confirmed
+    sources: [ghidra, user]
 
 globals:
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
