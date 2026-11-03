@@ -178,6 +178,11 @@ set_source_files_properties(third_party/imgui/backends/imgui_impl_dx11.cpp third
                             PROPERTIES COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/W0,-w>")
 target_include_directories(gridnode PUBLIC sdk/include PRIVATE sdk/src third_party/imgui)
 target_link_libraries(gridnode PRIVATE gn_reflect gn_engine gn_imgui d3d11 dxgi d3dcompiler gdi32 dwmapi)
+# entities.cpp instantiates one detour per pool slot (2048 creators, 2048 destructors) and events.cpp
+# 4096 more: MSVC's object file section limit is exceeded without /bigobj (CI, 2026-11-03).
+if(MSVC)
+  target_compile_options(gridnode PRIVATE /bigobj)
+endif()
 if(NOT MSVC)
   # cmpxchg16b for a detour's entry jump (patches.cpp); every CPU 64-bit Windows 8.1+ runs on has it.
   set_source_files_properties(sdk/src/patches.cpp PROPERTIES COMPILE_OPTIONS -mcx16)
