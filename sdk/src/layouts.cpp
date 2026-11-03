@@ -112,9 +112,25 @@ std::wstring levelKey(const std::string& level) {
 // layouts\<level>\<name>.yaml; the single file per level of earlier versions (layouts\<level>.yaml)
 // reads as the layout "default".
 std::wstring levelDir(const std::string& level) { return g_dir + levelKey(level) + L"\\"; }
+
+// A layout's name as a file name: no folders, drive letters or characters Windows refuses (review,
+// 2026-11-03: a typed name went into the path as it was).
+std::wstring nameFile(const std::string& name) {
+    std::wstring out;
+    for (char c : name) out += std::strchr("\\/:*?\"<>|", c) || static_cast<unsigned char>(c) < 32 ? L'_' : static_cast<wchar_t>(c);
+    while (!out.empty() && (out.back() == L'.' || out.back() == L' ')) out.pop_back();
+    return out.empty() ? L"_" : out;
+}
+
+// A value written into a layout or library line: one line, and no " | " (the library's separator).
+std::string oneLine(std::string v) {
+    for (char& c : v)
+        if (c == '\n' || c == '\r' || c == '|') c = '_';
+    return v;
+}
 std::wstring legacyFile(const std::string& level) { return g_dir + levelKey(level) + L".yaml"; }
 std::wstring fileFor(const std::string& level, const std::string& name) {
-    const std::wstring f = levelDir(level) + widen(name) + L".yaml";
+    const std::wstring f = levelDir(level) + nameFile(name) + L".yaml";
     if (name == "default" && GetFileAttributesW(f.c_str()) == INVALID_FILE_ATTRIBUTES &&
         GetFileAttributesW(legacyFile(level).c_str()) != INVALID_FILE_ATTRIBUTES)
         return legacyFile(level);
@@ -441,9 +457,9 @@ bool save(const std::string& name) {
     std::string o = "# GridNode layout: changes GridNode applies to this level when it loads.\n";
     o += "level: " + level + "\nedits:\n";
     for (const Edit& ed : edits) {
-        o += "  - kind: " + ed.kind + "\n";
-        if (!ed.source.empty()) o += "    source: " + ed.source + "\n";
-        if (!ed.mesh.empty()) o += "    mesh: " + ed.mesh + "\n";
+        o += "  - kind: " + oneLine(ed.kind) + "\n";
+        if (!ed.source.empty()) o += "    source: " + oneLine(ed.source) + "\n";
+        if (!ed.mesh.empty()) o += "    mesh: " + oneLine(ed.mesh) + "\n";
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -455,7 +471,7 @@ bool save(const std::string& name) {
             o += "    original_forward: " + fmtVec(ed.from.forward) + "\n";
         }
     }
-    const std::wstring file = levelDir(level) + widen(name) + L".yaml";
+    const std::wstring file = levelDir(level) + nameFile(name) + L".yaml";
     FILE* f = _wfopen(file.c_str(), L"wb");
     if (!f) {
         GN_LOG("layouts: cannot write the layout for %s", level.c_str());
@@ -483,7 +499,7 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     std::vector<Edit> out;
     FILE* f = _wfopen(fileFor(level, name).c_str(), L"rb");
     if (!f) return out;
-    char line[512];
+    char line[4096];
     Edit cur;
     int fields = 0, origFields = 0, lineNo = 0;
     auto flush = [&] {
@@ -574,7 +590,16 @@ struct GroupProp {
     uintptr_t member = 0;                     // StaticModelGroupMemberData (client block's)
     uintptr_t block = 0;                      // the client group's render block for the member
     uint32_t copy = 0;                        // index of this copy within the member
+    // The groups' classes when found: a group in a part of the level that streamed out since is no
+    // longer alive(), and nothing is written through it (review, 2026-11-03).
+    const reflect::Type* serverType = nullptr;
+    const reflect::Type* clientType = nullptr;
 };
+
+// The server group still there (not destroyed, still of its class), and the client group if it had one.
+bool groupAlive(const GroupProp& g) {
+    return inspector::alive(g.serverGroup, g.serverType) && (!g.clientGroup || inspector::alive(g.clientGroup, g.clientType));
+}
 
 bool finite(const float* v, int n) {
     for (int i = 0; i < n; ++i)
@@ -790,7 +815,7 @@ void fillGroupUpdate(const GroupProp& g, uintptr_t obj, uint8_t* update) {
 void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = false, const gn_transform* fromWorld = nullptr) {
     // The render-object functions it calls must be the ones this was worked out on.
     static const bool known = build::codeMatches("RenderObject_buildUpdate") && build::codeMatches("RenderWorld_submitUpdate");
-    if (!known) return;
+    if (!known || !inspector::alive(g.clientGroup, g.clientType)) return;
     const uintptr_t obj = renderObjectOf(g);
     const uintptr_t vt = obj ? mem::readOr<uintptr_t>(obj) : 0;
     const uintptr_t setT = vt ? mem::readOr<uintptr_t>(vt + 0x10) : 0;
@@ -849,6 +874,7 @@ void placeCopy(const GroupProp& g, const gn_transform& world, bool streaming = f
 
 // Server thread: puts the copy at `world`, then has the client group re-place its render objects.
 void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming = false) {
+    if (!groupAlive(g)) return;
     gn_transform G{};
     if (!entityTransform(reinterpret_cast<void*>(g.serverGroup), G)) return;
     alignas(16) gn_transform local{};
@@ -887,6 +913,7 @@ void moveGroupProp(const GroupProp& g, const gn_transform& world, bool streaming
 bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupProp& g, gn_transform& world) {
     g = GroupProp{};
     g.serverGroup = serverGroup;
+    g.serverType = registry().typeOf(mem::ProcessMemory(), serverGroup);
     g.serverBody = body;
     g.part = part & 0xffff;
     int index = -1;
@@ -908,6 +935,7 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
     for (const auto& [p, t] : inspector::tracked())
         if (t && cg && registry().isKindOf(t, cg) && data && inspector::alive(p, t) && dataOf(p, "StaticModelGroupEntityData") == data) {
             g.clientGroup = p;
+            g.clientType = t;
             break;
         }
     if (g.clientGroup) {
@@ -1048,6 +1076,13 @@ void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform&
 // its member type at `to`; `select` makes it the editor's selection.
 void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_transform& to, bool select) {
     static const reflect::Type* smd = registry().find("StaticModelEntityData");
+    // Queued from a pick or a layout: its part of the level may have streamed out since, freeing the
+    // groups, their data and their buses (review, 2026-11-03).
+    if (!groupAlive(g) || !g.clientGroup) {
+        GN_LOG("layouts: make standalone: part %u: its group is gone (streamed out)", g.part);
+        if (select) setStatus("Make standalone: the group is no longer loaded");
+        return;
+    }
     uintptr_t data = memberType(g.member);
     const reflect::Type* checked = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
     if (!checked || !smd || !registry().isKindOf(checked, smd)) data = 0; // only a static model's data is spawned from
@@ -1072,7 +1107,8 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
     moveGroupProp(g, away);
     alignas(16) gn_transform o = orig, w = to;
     client().post([g, data, cbus, o, w, se, select] {
-        const uintptr_t ce = spawnClient(data, cbus, w);
+        // Later, on the client thread: the client group (its data and bus) may be gone by now.
+        const uintptr_t ce = inspector::alive(g.clientGroup, g.clientType) ? spawnClient(data, cbus, w) : 0;
         const reflect::Type* ct = ce ? registry().typeOf(mem::ProcessMemory(), ce) : nullptr;
         GN_LOG("layouts: make standalone: client entity %llx (%s)", static_cast<unsigned long long>(ce), ct ? ct->name.c_str() : "-");
         {
@@ -1106,11 +1142,12 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
     // Client groups by their data, and the server groups: found from the tracked list at most once a
     // second (applying a layout looks for many props in a row).
     static std::mutex cacheM;
-    static std::unordered_map<uintptr_t, uintptr_t> clientByDataCache;
-    static std::vector<uintptr_t> serversCache;
+    using Ent = std::pair<uintptr_t, const reflect::Type*>; // checked with alive() at each use: kept up to a second
+    static std::unordered_map<uintptr_t, Ent> clientByDataCache;
+    static std::vector<Ent> serversCache;
     static ULONGLONG cachedAt = 0;
-    std::unordered_map<uintptr_t, uintptr_t> clientByData;
-    std::vector<uintptr_t> servers;
+    std::unordered_map<uintptr_t, Ent> clientByData;
+    std::vector<Ent> servers;
     {
         std::lock_guard<std::mutex> lock(cacheM);
         if (GetTickCount64() - cachedAt > 1000) {
@@ -1119,19 +1156,21 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
             for (const auto& [p, t] : inspector::tracked()) {
                 if (!t || !inspector::alive(p, t)) continue;
                 if (registry().isKindOf(t, cg)) {
-                    if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByDataCache.emplace(d, p);
+                    if (const uintptr_t d = dataOf(p, "StaticModelGroupEntityData")) clientByDataCache.emplace(d, Ent{p, t});
                 } else if (registry().isKindOf(t, sg))
-                    serversCache.push_back(p);
+                    serversCache.push_back({p, t});
             }
             cachedAt = GetTickCount64();
         }
         clientByData = clientByDataCache;
         servers = serversCache;
     }
-    for (const uintptr_t server : servers) {
+    for (const auto& [server, serverType] : servers) {
+        if (!inspector::alive(server, serverType)) continue;
         const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
         const auto ci = data ? clientByData.find(data) : clientByData.end();
-        const uintptr_t client = ci == clientByData.end() ? 0 : ci->second;
+        const Ent clientEnt = ci == clientByData.end() ? Ent{0, nullptr} : ci->second;
+        const uintptr_t client = inspector::alive(clientEnt.first, clientEnt.second) ? clientEnt.first : 0;
         const uintptr_t serverBody = groupBodyOf(server);
         gn_transform G{};
         if (!client || !serverBody || !entityTransform(reinterpret_cast<void*>(server), G)) continue;
@@ -1155,6 +1194,8 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
                 out = GroupProp{};
                 out.serverGroup = server;
                 out.clientGroup = client;
+                out.serverType = serverType;
+                out.clientType = clientEnt.second;
                 out.serverBody = serverBody;
                 out.clientBody = groupBodyOf(client);
                 out.part = first + per * k;
@@ -2037,7 +2078,7 @@ void deleteLayout(const std::string& name) {
         level = g_level;
         if (g_name == name) g_name.clear(); // what is applied stays applied, unsaved
     }
-    DeleteFileW((levelDir(level) + widen(name) + L".yaml").c_str());
+    DeleteFileW((levelDir(level) + nameFile(name) + L".yaml").c_str());
     if (name == "default") DeleteFileW(legacyFile(level).c_str());
     if (readLine(levelDir(level) + L"last.txt") == name) DeleteFileW((levelDir(level) + L"last.txt").c_str());
     GN_LOG("layouts: deleted \"%s\" for %s", name.c_str(), level.c_str());
@@ -2955,12 +2996,13 @@ void saveLibrary() {
     }
     std::string o = "# GridNode object library: name, level, then one part per line (mesh | offset | right | up | forward)\n";
     for (const LibEntry& e : lib) {
-        o += "entry: " + e.name + "\nlevel: " + e.level + "\n";
+        o += "entry: " + oneLine(e.name) + "\nlevel: " + oneLine(e.level) + "\n";
         for (const LibPart& p : e.parts) {
-            char b[512];
-            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s | %.3f %.3f %.3f\n", p.mesh.c_str(),
+            // Two asset paths and the numbers: more than 512 bytes with long names (the reader takes 4,096).
+            char b[4096];
+            snprintf(b, sizeof(b), "part: %s | %.4f %.4f %.4f | %.5f %.5f %.5f | %.5f %.5f %.5f | %.5f %.5f %.5f | %s | %.3f %.3f %.3f\n", oneLine(p.mesh).c_str(),
                      p.offset[0], p.offset[1], p.offset[2], p.rows[0][0], p.rows[0][1], p.rows[0][2], p.rows[1][0], p.rows[1][1], p.rows[1][2],
-                     p.rows[2][0], p.rows[2][1], p.rows[2][2], p.bundle.c_str(), p.at[0], p.at[1], p.at[2]);
+                     p.rows[2][0], p.rows[2][1], p.rows[2][2], oneLine(p.bundle).c_str(), p.at[0], p.at[1], p.at[2]);
             o += b;
         }
     }
@@ -2974,7 +3016,7 @@ void loadLibrary() {
     g_libLoaded = true;
     FILE* f = _wfopen(libraryFile().c_str(), L"rb");
     if (!f) return;
-    char line[1024];
+    char line[4096];
     while (fgets(line, sizeof(line), f)) {
         std::string l = line;
         while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
@@ -4154,7 +4196,19 @@ void placeBarrier(uintptr_t ent, const reflect::Type* type, gn_transform to) {
     const uintptr_t mgr = world ? mem::readOr<uintptr_t>(world + 0x50) : 0;
     const uintptr_t owners = mgr ? mem::readOr<uintptr_t>(mgr + e::constant::PhysicsManager_Owners) : 0;
     const uintptr_t owner = owners ? mem::readOr<uintptr_t>(owners + ((id >> 16) & 0xff) * 8) : 0;
-    if (!owner) return;
+    // The owner is the game functions' `this`: only when its object table holds a RigidBody for this
+    // id (as forEachBody checks), which a wrong or stale table entry does not (review, 2026-11-03).
+    static const reflect::Type* rigid = registry().find("RigidBody");
+    const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + e::constant::PhysicsOwner_Objects) : 0;
+    const uintptr_t body = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8) : 0;
+    const reflect::Type* bt = body ? registry().typeOf(mem::ProcessMemory(), body) : nullptr;
+    if (!rigid || !bt || !registry().isKindOf(bt, rigid)) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 3)
+            GN_LOG("layouts: barrier %llx: body %08x not moved (object %llx is %s, not a RigidBody)", static_cast<unsigned long long>(ent), id,
+                   static_cast<unsigned long long>(body), bt ? bt->name.c_str() : "unknown");
+        return;
+    }
     uint32_t a = id, b = id;
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*)>(mem::rva(e::function::RigidBody_transformSource))(owner, &a, &t);
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, gn_transform*, bool)>(mem::rva(e::function::RigidBody_setTransformNative))(owner, &b, &t, true);

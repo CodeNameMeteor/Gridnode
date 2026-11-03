@@ -14,6 +14,13 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Review fixes, fourth round** (2026-11-03, untested in game). Layouts: group props keep their
+  groups' classes and nothing is written or spawned through a group that streamed out (find,
+  move, make standalone); a barrier's body is moved only when its owner's table holds a RigidBody;
+  layout names are made safe file names, values one line, library lines up to 4,096 bytes.
+  Volumes: a full pass for triggers once a second (barriers re-read every 0.25 s); bus links capped
+  (400,000 per bus, 1,000,000 in all), read again when a bus's link array changes, senders found
+  by an index on the event; names are redone when the type at an address changes.
 - **Summarizer: numbers** (2026-11-03, checked on the pipole and magboost recordings). Game-code
   animation values show their writer (`writer 0x...`, in diffs `writer from <call site>`), `--alias`
   names them; per marker a movement state timeline and the range of every changing number; repeated

@@ -239,38 +239,93 @@ struct Conn {
     void* dst;
     uint32_t ev, tev;
 };
-std::unordered_map<void*, std::vector<Conn>> g_conns; // bus -> its connections, sorted by source
-const std::vector<Conn>& connectionsOf(void* bus) {
-    auto it = g_conns.find(bus);
-    if (it != g_conns.end()) return it->second;
-    std::vector<Conn>& out = g_conns[bus];
+// Per bus, as read: where its link array was (a bus freed with its part of the level and another made
+// at the same address has a different array: read again; review, 2026-11-03), its links by source,
+// and by event when needed. Read on the client tick, one read per link: a bus over the cap is left
+// unread (its triggers stay "Other") and the cache stops growing at the total (a level's root bus
+// could take ~96 MB on its own).
+struct BusLinks {
+    char* begin = nullptr;
+    char* end = nullptr;
+    std::vector<Conn> bySrc;
+    std::vector<Conn> byEvent;
+    bool byEventMade = false;
+};
+std::unordered_map<void*, BusLinks> g_conns;
+size_t g_connsTotal = 0; // links cached, all buses (each list counted)
+constexpr size_t kConnsPerBus = 400000, kConnsTotal = 1000000; // 24 bytes each: ~10 MB, ~24 MB
+
+BusLinks& linksOf(void* bus) {
     void* x = rd<void*>(bus, 0x68);
-    if (!x) return out;
     const size_t at = (rd<uint32_t>(bus, 0x3c) & 0x10000000) ? 0x148 : 0x120;
-    char* b = rd<char*>(x, at);
-    char* e = rd<char*>(x, at + 8);
-    if (!b || e <= b || e - b > 8 * 4000000) return out; // a level's root bus holds a great many
-    std::vector<void*> recs(size_t(e - b) / 8);
-    if (gn::api().read(b, recs.data(), recs.size() * 8) != GN_OK) return out;
-    out.reserve(recs.size());
+    char* b = x ? rd<char*>(x, at) : nullptr;
+    char* e = x ? rd<char*>(x, at + 8) : nullptr;
+    BusLinks& l = g_conns[bus];
+    if (l.begin == b && l.end == e) return l;
+    g_connsTotal -= std::min(g_connsTotal, l.bySrc.size() + l.byEvent.size());
+    l = BusLinks{};
+    l.begin = b, l.end = e;
+    if (!b || e <= b) return l;
+    const size_t n = size_t(e - b) / 8;
+    if (n > kConnsPerBus || g_connsTotal + n > kConnsTotal) {
+        static int said = 0;
+        if (said++ < 5) gn::log("volumes: bus %p has %zu links: not read (cap %zu per bus, %zu in all; %zu cached)", bus, n, kConnsPerBus, kConnsTotal, g_connsTotal);
+        return l;
+    }
+    std::vector<void*> recs(n);
+    if (gn::api().read(b, recs.data(), recs.size() * 8) != GN_OK) return l;
+    l.bySrc.reserve(recs.size());
     for (void* r : recs) {
         struct {
             void* src;
             void* dst;
             uint32_t ev, tev;
         } rec{};
-        if (r && gn::api().read(r, &rec, sizeof(rec)) == GN_OK) out.push_back({rec.src, rec.dst, rec.ev, rec.tev});
+        if (r && gn::api().read(r, &rec, sizeof(rec)) == GN_OK) l.bySrc.push_back({rec.src, rec.dst, rec.ev, rec.tev});
     }
-    std::sort(out.begin(), out.end(), [](const Conn& a, const Conn& b) { return a.src < b.src; });
+    std::sort(l.bySrc.begin(), l.bySrc.end(), [](const Conn& a, const Conn& b) { return a.src < b.src; });
+    g_connsTotal += l.bySrc.size();
+    return l;
+}
+
+const std::vector<Conn>& connectionsOf(void* bus) { return linksOf(bus).bySrc; }
+
+// The bus's connections that send `event`, at most `max`: by an index on the event, not a pass over
+// every link (a bus can hold hundreds of thousands).
+std::vector<const Conn*> sendersOf(void* bus, uint32_t event, size_t max) {
+    // As already read (the caller holds its links by source): not checked again here.
+    auto found = g_conns.find(bus);
+    BusLinks& l = found != g_conns.end() ? found->second : linksOf(bus);
+    if (!l.byEventMade) {
+        l.byEventMade = true;
+        if (g_connsTotal + l.bySrc.size() <= kConnsTotal) {
+            l.byEvent = l.bySrc;
+            std::sort(l.byEvent.begin(), l.byEvent.end(), [](const Conn& a, const Conn& b) { return a.ev < b.ev; });
+            g_connsTotal += l.byEvent.size();
+        }
+    }
+    std::vector<const Conn*> out;
+    auto lo = std::lower_bound(l.byEvent.begin(), l.byEvent.end(), event, [](const Conn& c, uint32_t k) { return c.ev < k; });
+    for (; lo != l.byEvent.end() && lo->ev == event && out.size() < max; ++lo) out.push_back(&*lo);
     return out;
 }
 
-std::unordered_map<void*, std::string> g_names; // target -> "type[blueprint]"
+// target -> its type and "type[blueprint]"; named again when the type at that address changes (data
+// freed with a part of the level and the address reused).
+std::unordered_map<void*, std::pair<const void*, std::string>> g_names;
+struct BarEnt {
+    void* e;
+    void* data;
+};
+std::vector<BarEnt> g_barEnts; // the barriers found by the last full pass (client tick)
 const std::string& targetName(void* p) {
-    auto it = g_names.find(p);
-    if (it != g_names.end()) return it->second;
-    std::string& n = g_names[p];
     const gn::Type t = p ? gn::Type::of(p) : gn::Type();
+    auto it = g_names.find(p);
+    if (it != g_names.end() && it->second.first == t.get()) return it->second.second;
+    auto& entry = g_names[p];
+    entry.first = t.get();
+    std::string& n = entry.second;
+    n.clear();
     if (!t) return n;
     n = t.name();
     gn_field f;
@@ -371,9 +426,10 @@ void classify(void* e, Volume& v) {
         for (auto it = lo; it != all.end() && it->src == st.from; ++it)
             if (!st.event || it->ev == st.event) hits.push_back(&*it);
         if (hits.empty() && st.event) {
-            // The placing reference was not the source: any reference sending that interface event.
-            for (const Conn& c : all)
-                if (c.ev == st.event && targetName(c.src).find("ReferenceObjectData") != std::string::npos && hits.size() < 4) hits.push_back(&c);
+            // The placing reference was not the source: any reference sending that interface event
+            // (the first 64 senders looked at, 4 kept).
+            for (const Conn* c : sendersOf(static_cast<char*>(st.bus) - 8, st.event, 64))
+                if (targetName(c->src).find("ReferenceObjectData") != std::string::npos && hits.size() < 4) hits.push_back(c);
         }
         for (const Conn* c : hits) {
             if (!c->dst || !seen.insert(c->dst).second) continue;
@@ -478,11 +534,10 @@ void describe(void* e) {
             gn::log("%s(in bus %p, placed by %s %p: %d links in it, %d from it with %s)", pad.c_str(), st.bus, targetName(st.from).c_str(), st.from,
                     int(all.size()), int(hits.size()), eventText(st.event).c_str());
             if (hits.empty())
-                for (const Conn& c : all)
-                    if (c.ev == st.event && hits.size() < 6) {
-                        gn::log("%s(sent by %s %p)", pad.c_str(), targetName(c.src).c_str(), c.src);
-                        hits.push_back(&c);
-                    }
+                for (const Conn* c : sendersOf(static_cast<char*>(st.bus) - 8, st.event, 6)) {
+                    gn::log("%s(sent by %s %p)", pad.c_str(), targetName(c->src).c_str(), c->src);
+                    hits.push_back(c);
+                }
         }
         for (const Conn* c : hits) {
             const std::string& name = targetName(c->dst);
@@ -575,11 +630,13 @@ void clientTick(float dt) {
     static float t = 0.f;
     if (const unsigned gen = g_generation.load(); gen != g_seenGeneration) {
         g_seenGeneration = gen;
-        g_all.clear(), g_conns.clear(), g_names.clear();
+        g_all.clear(), g_conns.clear(), g_names.clear(), g_barEnts.clear();
+        g_connsTotal = 0;
     }
     if (!g_on) {
         if (!g_all.empty()) {
-            g_all.clear(), g_conns.clear(), g_names.clear();
+            g_all.clear(), g_conns.clear(), g_names.clear(), g_barEnts.clear();
+            g_connsTotal = 0;
             std::lock_guard<std::mutex> lock(g_shownM);
             g_shown.clear();
         }
@@ -591,8 +648,16 @@ void clientTick(float dt) {
     gn::Vec3 at{};
     if (!faith || !gn::positionOf(faith, at)) return;
 
-    // What exists now: new triggers get their shapes, gone ones are dropped.
+    // What exists now: new triggers get their shapes, gone ones are dropped. A full pass over the
+    // tracked entities once a second, not every 0.25 s (four classes, ~135,000 entities each time;
+    // review, 2026-11-03); between passes the known ones are kept.
+    static int tick = 0;
+    const bool scan = tick++ % 4 == 0 || g_all.empty();
     std::unordered_set<void*> alive;
+    if (!scan)
+        for (const auto& [e, v] : g_all)
+            if (!v.barrier) alive.insert(e);
+    if (scan)
     for (const char* cls : {"PamServerAreaTriggerEntity", "ServerAreaTriggerEntity", "PamServerKillVolumeEntity"}) {
         gn::entitiesOfClass(cls, [&](void* e, gn::Type type) {
             if (!alive.insert(e).second || g_all.count(e)) return;
@@ -633,12 +698,21 @@ void clientTick(float dt) {
         bool server;
     };
     std::vector<Bar> bars;
-    gn::entitiesOfClass("OBBCollisionEntity", [&](void* e, gn::Type) {
-        void* data = rd<void*>(e, 0x28);
-        const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
-        if (!dt || !std::strstr(dt.name(), "OBBCollisionEntityData")) return; // another layout
-        bars.push_back({e, data, readM(static_cast<char*>(e) + 0x50), (rd<uint32_t>(e, 0x18) & 1) != 0});
-    });
+    if (scan) {
+        g_barEnts.clear();
+        gn::entitiesOfClass("OBBCollisionEntity", [&](void* e, gn::Type) {
+            void* data = rd<void*>(e, 0x28);
+            const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
+            if (!dt || !std::strstr(dt.name(), "OBBCollisionEntityData")) return; // another layout
+            g_barEnts.push_back({e, data});
+        });
+    }
+    static const gn::Type obb = gn::Type::find("OBBCollisionEntity");
+    for (const BarEnt& b : g_barEnts) {
+        // Between passes: still a barrier with the same data (one that streamed out is not).
+        if (!scan && (!gn::Type::of(b.e).isKindOf(obb) || rd<void*>(b.e, 0x28) != b.data)) continue;
+        bars.push_back({b.e, b.data, readM(static_cast<char*>(b.e) + 0x50), (rd<uint32_t>(b.e, 0x18) & 1) != 0});
+    }
     std::unordered_multimap<void*, const Bar*> serverHalves; // by data
     for (const Bar& b : bars)
         if (b.server) serverHalves.emplace(b.data, &b);
