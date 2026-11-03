@@ -633,6 +633,44 @@ class RecordingDiff(unittest.TestCase):
         marks = [{"kind": "marker", "t": t, "name": "m"} for t in (1.0, 1.5, 5.0)]
         self.assertAlmostEqual(summarize._scope(marks, "*", 1.0)[1], 4.5)   # 0-2.5 and 4-6: overlap counted once
 
+    def test_numbers(self):
+        """Writers, value ranges, movement states, folded repeats, value divergence (2026-11-03)."""
+        sys.path.insert(0, os.path.join(ROOT, "tools", "recording"))
+        import summarize
+        w = {"kind": "anim", "t": 0.0, "ant_writer": "0x1b76af840", "stack": ["0x142f4142a"], "value": 0.5, "target": "C"}
+        self.assertEqual(summarize.anim_name(w), "writer 0x1b76af840")
+        self.assertEqual(summarize.anim_name(w, stable=True), "writer from 0x142f4142a")   # the same in every run
+        summarize.ALIASES[0x142f4142a] = "spline t"
+        self.assertEqual(summarize.anim_name(w), "writer 0x1b76af840 'spline t'")
+        summarize.ALIASES.clear()
+        self.assertEqual(summarize.number([3, 4, 0]), 5.0)
+        self.assertEqual(summarize.number(True), 1.0)
+        self.assertIsNone(summarize.number("x"))
+        f = lambda t, name, v, old=None: {"kind": "field", "t": t, "field": name, "value": v, "old": old, "target": "Faith"}
+        near = [f(0.0, "movement state", 1, 0), f(0.0, "speed (game)", 2.0), f(1.0, "movement state", 22, 1),
+                f(1.05, "speed (game)", 24.0), f(1.1, "movement state", 2, 22), f(2.0, "speed (game)", 20.0)]
+        st = summarize.state_timeline(near, 1.0)
+        self.assertEqual(len(st), 3)
+        self.assertIn("state 22", st[1])
+        self.assertIn("for 0.100 s", st[1])
+        self.assertIn("peak speed 24.00", st[1])
+        self.assertIn("jumping", st[2])
+        ranges = summarize.value_ranges(near, 1.0, 5)
+        self.assertTrue(ranges[0].strip().startswith("speed (game)"))
+        self.assertIn("2 .. 24 (peak at +0.050 s)", ranges[0])
+        rows = [({"t": t}, "jump held = 0", "") for t in (0.0, 0.1, 0.2)] + [({"t": 0.3}, "jump held = 1", "")]
+        folded = summarize.collapse(rows)
+        self.assertEqual([(r[1], r[3]) for r in folded], [("jump held = 0", 3), ("jump held = 1", 1)])
+        # A frozen value in A, advancing in B: found, with when they part.
+        a = [{"kind": "anim", "t": 10 + i * 0.1, "ant_writer": "0x1", "stack": ["0x142000000"], "target": "C",
+              "value": min(i, 3) * 0.1} for i in range(10)]
+        b = [{"kind": "anim", "t": 50 + i * 0.1, "ant_writer": "0x2", "stack": ["0x142000000"], "target": "C",
+              "value": i * 0.1} for i in range(10)]
+        out = "\n".join(summarize.value_diff(a, b, 10.0, 50.0, 5.0, 10))
+        self.assertIn("writer from 0x142000000", out)
+        self.assertIn("stops changing in A", out)
+        self.assertIn("apart from", out)
+
     def test_diff_around_markers(self):
         """Values do not split labels; each side is cut to its own marker's window."""
         import json

@@ -172,6 +172,21 @@ GridNodeSync export) where the annotations have none. Events and properties name
 `--all` lists everything near it. Lines about an object carry its id (`#12`), and targets are named
 with their blueprint when the recording knows it.
 
+Per marker it also prints:
+
+- **closest**: the lines nearest the marker in time order; a reading repeated tick after tick is one
+  line, `(x18 over 0.30 s)`.
+- **movement states** (with Faith's movement watched): each state, when it began (seconds from the
+  marker), how long it lasted and the peak speed in it. Known states are named (1 on the ground,
+  2 jumping, 8 wall run, 25 mag rope swing); `--states` lists them over the whole recording.
+- **numbers**: every field and animation value that changes near the marker: its range, when it
+  peaked, its value at the marker and at the end of the window. Vectors count by their length.
+
+Animation values written by game code (no property name) show the writer, `anim writer 0x1b76af840`.
+The writer's address differs per run; where the game calls it from does not, so a diff shows
+`writer from 0x142f4142a` instead. `--alias FILE` names them: lines of `<address or call site> <name>`,
+`#` for comments.
+
 ```
 python tools/recording/summarize.py rec.jsonl --object 12          # one object: what it was, when made and destroyed, every line about it
 python tools/recording/summarize.py rec.jsonl --object 0x1b4015800 # every object that had this address
@@ -191,7 +206,10 @@ per second, so different lengths compare), only in B, and far more in B; then A'
 order they first appear (seconds from the marker) and the call stacks behind them, the lines only A
 has first. Without `--marker` it compares the whole recordings; `--marker "*"` takes every marker.
 Values (animation and field values, list contents) are left out so the two line up; `--values` keeps
-them. `--kinds event,sent,call` compares only those line kinds (a part of the level streaming in can
+them. `--diff-values` also compares the numbers both have (aligned on the two markers): where one
+stops changing while the other goes on, opposite signs at the marker, and the first moment they are
+far apart (10% of their range), earliest first. That finds runs that do the same things with
+different numbers (a value that freezes in one of them). `--kinds event,sent,call` compares only those line kinds (a part of the level streaming in can
 otherwise fill the list), `--min-lift 3` asks for a bigger difference ("more" also needs at least 3
 lines beyond what the other recording's rate predicts). It says so when both recordings start with
 the same lines (exported without Clear). In the stacks, frames that a fifth or more of A's stacks

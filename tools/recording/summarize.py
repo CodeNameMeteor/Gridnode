@@ -19,7 +19,15 @@ a bookmark at each call site with what came through it, and a comment per functi
     python tools/recording/summarize.py with-ghost.jsonl --diff without-ghost.jsonl
 
 compares two recordings of the same thing done two ways: what happens only (or far more often) in
-the first, with its call stacks, and what only happens in the second.
+the first, with its call stacks, and what only happens in the second. With --diff-values, the
+values too: per field and animation writer, where the two runs part (one stops changing, a sign
+flips, the numbers move apart), aligned on the markers.
+
+Per marker it also prints Faith's movement states (each one's start, length and peak speed) and the
+range of every number that changes near it (speeds, predictions, animation values). Animation values
+the game writes itself (no property name) are told apart by their writer: `anim writer 0x1b76af840`
+(this recording's object), or by where the game calls it from for comparing runs. Name them with
+--alias FILE: lines of "<address or call site> <name>".
 """
 
 import argparse
@@ -95,6 +103,60 @@ def load_event_names(path):
     return len(EVENT_NAMES)
 
 
+# Faith's movement states (field "movement state", +0x90), as far as they are known (db/annotations/
+# faith.yaml, 2026-10-30). Unknown ones print as their number: a wrong name misleads more than none.
+MOVEMENT_STATES = {1: "on the ground", 2: "jumping", 8: "wall run", 25: "mag rope swing"}
+
+# Names given with --alias: writer addresses (one recording) or call sites (any recording).
+ALIASES = {}
+
+# The float and bool writers of the animation system (db/annotations/ant.yaml).
+WRITER_KINDS = {0x141a434d0: "float", 0x141a435c8: "bool"}
+
+
+def load_aliases(path):
+    for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, _, name = line.partition(" ")
+        try:
+            ALIASES[int(key, 16)] = name.strip()
+        except ValueError:
+            pass
+
+
+def writer_site(ev):
+    """Where the game called the animation writer from (the first frame): the same in every run."""
+    st = ev.get("stack") or []
+    return int(st[0], 16) if st else None
+
+
+def writer_text(ev, stable=False):
+    """'writer 0x1b76af840' (this recording) or 'writer from 0x1446ae87d' (stable across runs), with an
+    alias when there is one."""
+    w = int(ev.get("ant_writer", "0"), 16)
+    site = writer_site(ev)
+    name = ALIASES.get(w) or (ALIASES.get(site) if site else None)
+    if stable:
+        base = f"writer from 0x{site:x}" if site else "writer (no stack)"
+    else:
+        base = f"writer 0x{w:x}"
+    return base + (f" '{name}'" if name else "")
+
+
+def anim_name(ev, stable=False):
+    prop = ev.get("property")
+    pid = ev.get("property_id")
+    if pid and prop == pid:
+        prop = ANNOTATED_EVENTS.get(int(pid, 16)) or EVENT_NAMES.get(int(pid, 16), prop)
+    if prop:
+        return prop
+    if ev.get("ant_writer"):
+        return writer_text(ev, stable)
+    return "(game code)"
+
+
 def event_label(ev):
     name, eid = ev.get("event", "?"), ev.get("event_id")
     if eid and name == eid:
@@ -119,14 +181,10 @@ def label(ev):
     if k == "event":
         return f"event {event_label(ev)} -> {target(ev)}"
     if k == "anim":
-        prop = ev.get("property")
-        pid = ev.get("property_id")
-        if pid and prop == pid:
-            prop = ANNOTATED_EVENTS.get(int(pid, 16)) or EVENT_NAMES.get(int(pid, 16), prop)
         val = ev.get("value")
         if isinstance(val, list):
             val = "(" + " ".join(f"{v:.2f}" for v in val[:3]) + (" ..." if len(val) > 3 else "") + ")"
-        return f"anim {prop or '(game code)'} = {val} -> {ev.get('target', '?')}"
+        return f"anim {anim_name(ev)} = {val} -> {ev.get('target', '?')}"
     if k == "field":
         return f"field {ev.get('field', '?')} = {ev.get('value')} -> {ev.get('target', '?')}"
     if k == "sent":
@@ -154,15 +212,13 @@ def label(ev):
 def diff_label(ev, values=False):
     """label() without the values that differ from run to run (animation and field values, list
     contents), so two recordings of the same thing line up."""
+    k = ev.get("kind")
+    if values and k == "anim":  # the value, but the writer by where it is called from (its address differs per run)
+        return label(ev).replace(f"anim {anim_name(ev)} ", f"anim {anim_name(ev, stable=True)} ", 1)
     if values:
         return label(ev)
-    k = ev.get("kind")
     if k == "anim":
-        prop = ev.get("property")
-        pid = ev.get("property_id")
-        if pid and prop == pid:
-            prop = ANNOTATED_EVENTS.get(int(pid, 16)) or EVENT_NAMES.get(int(pid, 16), prop)
-        return f"anim {prop or '(game code)'} -> {ev.get('target', '?')}"
+        return f"anim {anim_name(ev, stable=True)} -> {ev.get('target', '?')}"
     if k == "field":
         return f"field {ev.get('field', '?')} -> {ev.get('target', '?')}"
     if k == "list":
@@ -504,6 +560,19 @@ def diff(args, a_events, names):
     for lift, c, can, lab in more_b[:n]:
         print(f"  {c:6d} vs {can:<6d} x{lift:6.1f}  {lab}")
 
+    if args.diff_values:
+        def marker_t(evs, mk):
+            if mk and mk != "*":
+                return next((e["t"] for e in evs if e.get("kind") == "marker" and e.get("name") == mk), None)
+            return evs[0]["t"] if evs else None
+        ta, tb = marker_t(a_events, a_mark), marker_t(b_events, b_mark)
+        print()
+        if ta is None or tb is None:
+            print("--diff-values needs one marker in each (--marker / --diff-marker), or none for the starts")
+        else:
+            span = args.window if a_mark else max(a_events[-1]["t"] - ta, b_events[-1]["t"] - tb)
+            print("\n".join(value_diff(a_events, b_events, ta, tb, span, n)))
+
     # When A's own lines first appear (from the marker, or the start), and the stacks behind them.
     keep = [lab for _, lab in only_a[:n]] + [x[3] for x in more_a[:n]]
     if not keep:
@@ -553,6 +622,176 @@ def diff(args, a_events, names):
     return 0
 
 
+# ---- numbers over time: value ranges, movement states, where two runs part -----------------------
+
+def number(v):
+    """A reading as one number: bools 0 / 1, vectors by their length; None for anything else."""
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, list) and v and all(isinstance(x, (int, float)) for x in v):
+        return sum(float(x) * float(x) for x in v[:3]) ** 0.5
+    if isinstance(v, str) and v in ("True", "False"):
+        return 1.0 if v == "True" else 0.0
+    return None
+
+
+def series_key(ev, stable=False):
+    """What a reading is a reading of: a field of an object, or an animation value."""
+    k = ev.get("kind")
+    if k == "field":
+        return f"{ev.get('field', '?')} ({ev.get('target', '?')})"
+    if k == "anim":
+        return f"anim {anim_name(ev, stable)} ({ev.get('target', '?')})"
+    return None
+
+
+def series(events, t0, stable=False):
+    """key -> [(t - t0, value)] in time order, for fields and animation values with a number."""
+    out = collections.defaultdict(list)
+    for e in events:
+        key = series_key(e, stable)
+        if key is None:
+            continue
+        v = number(e.get("value"))
+        if v is not None:
+            out[key].append((e["t"] - t0, v))
+    for v in out.values():
+        v.sort(key=lambda x: x[0])
+    return out
+
+
+def is_vector(events, key, stable=False):
+    return any(isinstance(e.get("value"), list) for e in events if series_key(e, stable) == key)
+
+
+def value_ranges(near, t0, top):
+    """Lines for every number that changes near the marker: its range, when it peaked, its value at
+    the marker and at the end of the window."""
+    rows = []
+    for key, pts in series(near, t0).items():
+        vals = [v for _, v in pts]
+        lo, hi = min(vals), max(vals)
+        if len(pts) < 3 or hi - lo < 1e-6 or set(vals) <= {0.0, 1.0}:  # steady, or an on / off: not a range
+            continue
+        peak_t = next(t for t, v in pts if v == hi)
+        before = [v for t, v in pts if t <= 0]
+        at = before[-1] if before else pts[0][1]
+        speed = "speed" in key
+        rows.append((not speed, -(hi - lo) / max(abs(hi), abs(lo), 1e-6), key,
+                     f"{lo:.4g} .. {hi:.4g} (peak at {peak_t:+.3f} s), at the marker {at:.4g}, at the end {pts[-1][1]:.4g}  [{len(pts)}]"))
+    rows.sort()
+    return [f"    {key}: {text}" for _, _, key, text in rows[:top]]
+
+
+def state_timeline(near, t0):
+    """Faith's movement states in the window: when each began, how long it lasted, the peak speed in it."""
+    states = sorted((e for e in near if e.get("kind") == "field" and e.get("field") == "movement state"), key=lambda e: e["t"])
+    if not states:
+        return []
+    speeds = sorted(((e["t"], float(e["value"])) for e in near if e.get("kind") == "field" and e.get("field") in ("speed (game)", "speed (measured)")
+                     and isinstance(e.get("value"), (int, float))), key=lambda x: x[0])
+    end = max(e["t"] for e in near)
+    lines = []
+    first = states[0]
+    if first.get("old") is not None and first["t"] > min(e["t"] for e in near):
+        lines.append(f"    (before {first['t'] - t0:+.3f} s: state {first['old']})")
+    for i, e in enumerate(states):
+        until = states[i + 1]["t"] if i + 1 < len(states) else end
+        st = int(e["value"])
+        name = MOVEMENT_STATES.get(st, "")
+        peak = max((v for t, v in speeds if e["t"] <= t <= until), default=None)
+        open_end = i + 1 == len(states)
+        lines.append(f"    {e['t'] - t0:+8.3f} s  state {st:<3d}{(' ' + name) if name else '':<17}  "
+                     f"{'for ' if not open_end else 'still, '}{until - e['t']:.3f} s"
+                     + (f", peak speed {peak:.2f} m/s" if peak is not None else ""))
+    return lines
+
+
+def collapse(timeline):
+    """Consecutive identical lines become one: (t, label, extra, repeats, last t)."""
+    out = []
+    for e, lab, extra in timeline:
+        if out and out[-1][1] == lab and out[-1][2] == extra:
+            t, l, x, n, _ = out[-1]
+            out[-1] = (t, l, x, n + 1, e["t"])
+        else:
+            out.append((e["t"], lab, extra, 1, e["t"]))
+    return out
+
+
+def value_diff(a_events, b_events, a_t0, b_t0, window, top):
+    """--diff-values: per field and animation writer in both runs (aligned on their markers), where
+    they part. Writers are matched by where the game calls them from (their addresses differ per run)."""
+    def scoped(evs, t0):
+        return [e for e in evs if abs(e["t"] - t0) <= window]
+    sa, sb = series(scoped(a_events, a_t0), a_t0, True), series(scoped(b_events, b_t0), b_t0, True)
+    rows = []
+    for key in sorted(set(sa) & set(sb)):
+        pa, pb = sa[key], sb[key]
+        notes = []
+        # Stopped changing in one run while the other goes on.
+        def last_change(p):
+            last = None
+            for (t1, v1), (t2, v2) in zip(p, p[1:]):
+                if abs(v2 - v1) > 1e-6:
+                    last = t2
+            return last
+        la, lb = last_change(pa), last_change(pb)
+        if la is not None and lb is not None and abs(la - lb) > 0.1:
+            which, stop, other = ("A", la, lb) if la < lb else ("B", lb, la)
+            notes.append(f"stops changing in {which} at {stop:+.3f} s (the other until {other:+.3f} s)")
+        elif (la is None) != (lb is None):
+            notes.append(f"never changes in {'A' if la is None else 'B'}")
+        # The sign at the marker.
+        def at0(p):
+            before = [v for t, v in p if t <= 0]
+            return before[-1] if before else p[0][1]
+        va, vb = at0(pa), at0(pb)
+        if va * vb < 0 and min(abs(va), abs(vb)) > 1e-3:
+            notes.append(f"opposite signs at the marker ({va:.4g} vs {vb:.4g})")
+        # The first moment the values are far apart (each held until its next reading).
+        scale = max(max(abs(v) for _, v in pa), max(abs(v) for _, v in pb), 1e-6)
+        times = sorted({t for t, _ in pa} | {t for t, _ in pb})
+        ia = ib = 0
+        cur_a, cur_b = pa[0][1], pb[0][1]
+        first = None
+        for t in times:
+            while ia < len(pa) and pa[ia][0] <= t:
+                cur_a = pa[ia][1]
+                ia += 1
+            while ib < len(pb) and pb[ib][0] <= t:
+                cur_b = pb[ib][1]
+                ib += 1
+            if t >= max(pa[0][0], pb[0][0]) and abs(cur_a - cur_b) > 0.1 * scale:
+                first = (t, cur_a, cur_b)
+                break
+        if first:
+            notes.append(f"apart from {first[0]:+.3f} s ({first[1]:.4g} vs {first[2]:.4g})")
+        ra = (min(v for _, v in pa), max(v for _, v in pa))
+        rb = (min(v for _, v in pb), max(v for _, v in pb))
+        if notes:
+            when = first[0] if first else (min(la or 0, lb or 0))
+            rows.append((when, key, notes, ra, rb))
+    rows.sort(key=lambda r: r[0])
+    only_a = sorted(set(sa) - set(sb))
+    only_b = sorted(set(sb) - set(sa))
+    lines = [f"Values that part (aligned on the markers, within {window:g} s; earliest first):"]
+    for _, key, notes, ra, rb in rows[:top]:
+        lines.append(f"  {key}")
+        lines.append(f"      A {ra[0]:.4g} .. {ra[1]:.4g}   B {rb[0]:.4g} .. {rb[1]:.4g}")
+        for n in notes:
+            lines.append(f"      {n}")
+    if not rows:
+        lines.append("  (none: every number both runs have moves alike)")
+    if only_a:
+        lines.append(f"Numbers only A has: {', '.join(only_a[:top])}" + (" ..." if len(only_a) > top else ""))
+    if only_b:
+        lines.append(f"Numbers only B has: {', '.join(only_b[:top])}" + (" ..." if len(only_b) > top else ""))
+    return lines
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file")
@@ -585,8 +824,15 @@ def main():
                          "sent, anim, field, list, call)")
     ap.add_argument("--values", action="store_true",
                     help="with --diff: keep animation and field values and list contents in the labels")
+    ap.add_argument("--diff-values", action="store_true",
+                    help="with --diff: compare the numbers too (where one run stops changing, signs, where they part)")
+    ap.add_argument("--alias", type=pathlib.Path, metavar="FILE",
+                    help='names for animation writers: lines of "<address or call site> <name>"')
+    ap.add_argument("--states", action="store_true", help="Faith's movement states over the whole recording")
     args = ap.parse_args()
     load_event_names(args.names or pathlib.Path(args.file).with_name("event-names.txt"))
+    if args.alias:
+        load_aliases(args.alias)
 
     header, events, objects, starts = read_recording(args.file)
     OBJECTS.update(objects)
@@ -660,6 +906,12 @@ def main():
             print(f"  watches read {w['count']} times ({rate}): {w['average_ms']:.3f} ms average, {w['worst_ms']:.3f} ms worst")
     print(f"  {span:.1f} s recorded\n")
 
+    if args.states:
+        lines = state_timeline(events, events[0]["t"])
+        print("Movement states (seconds from the start):")
+        print("\n".join(lines) if lines else "    (no movement state recorded: Recorder, Faith's movement)")
+        print()
+
     totals = collections.Counter(label(e) for e in events)
     print("Most frequent:")
     for lab, n in totals.most_common(args.top):
@@ -692,9 +944,10 @@ def main():
             print("    (nothing stands out; try --all or a wider --window)")
         # Timeline of the unusual ones, closest first.
         keep = {lab for _, _, lab in shown[: args.top]}
-        timeline = sorted((e for e in near if label(e) in keep), key=lambda e: abs(e["t"] - t0))[: args.top]
+        # The closest ones; a reading repeated tick after tick is one line (it pushed real events out).
+        timeline = sorted((e for e in near if label(e) in keep), key=lambda e: abs(e["t"] - t0))[: args.top * 8]
         if timeline:
-            print("  closest:")
+            rows = []
             for e in sorted(timeline, key=lambda e: e["t"]):
                 extra = ""
                 if e.get("kind") == "message" and e.get("fields"):
@@ -703,7 +956,21 @@ def main():
                     extra = "  -> " + ", ".join(p["type"] for p in e["pointers"][:4])
                 if e.get("obj"):
                     extra = f"  #{e['obj']}" + extra
-                print(f"    {e['t'] - t0:+7.3f}  {label(e)}{extra}")
+                rows.append((e, label(e), extra))
+            folded = collapse(rows)
+            folded = sorted(sorted(folded, key=lambda r: abs(r[0] - t0))[: args.top], key=lambda r: r[0])
+            print("  closest:")
+            for t, lab, extra, n, last in folded:
+                rep = f"  (x{n} over {last - t:.2f} s)" if n > 1 else ""
+                print(f"    {t - t0:+7.3f}  {lab}{extra}{rep}")
+        states = state_timeline(near, t0)
+        if states:
+            print("  movement states:")
+            print("\n".join(states))
+        ranges = value_ranges(near, t0, args.top)
+        if ranges:
+            print("  numbers (range, peak, at the marker, at the end of the window; [readings]):")
+            print("\n".join(ranges))
         # Call stacks behind them: the frames to open in Ghidra.
         stacks = collections.Counter()
         for e in near:

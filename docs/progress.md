@@ -14,6 +14,10 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Summarizer: numbers** (2026-11-03, checked on the pipole and magboost recordings). Game-code
+  animation values show their writer (`writer 0x...`, in diffs `writer from <call site>`), `--alias`
+  names them; per marker a movement state timeline and the range of every changing number; repeated
+  readings fold into one timeline line; `--states`; `--diff --diff-values` finds where two runs' numbers part.
 - **Review fixes, third round** (2026-11-03, untested in game). The "still in its code" check also
   reads registers (first second only) and logs long pauses; optional dependencies never block a load;
   `events::ensureHooked` keeps and repeats its result; pruning slows to every 250 ms once destructors

@@ -100,10 +100,11 @@ python tools/recording/summarize.py <file> --marker "name" --window 2
 python tools/recording/summarize.py <file> --all --top 50         # everything near the markers
 python tools/recording/summarize.py <file> --object 12            # one object (id or 0xADDRESS): what, when, every line
 python tools/recording/summarize.py A --diff B --marker m --kinds event,sent  # what A has that B does not
+python tools/recording/summarize.py A --diff B --marker m --diff-values  # also where the numbers part (--states, --alias FILE)
 python tools/recording/summarize.py <file> --ghidra OUT --exe DUMP  # a GridNodeSync import
 ```
 
-Per marker it prints the "unusual" labels (seen near it at >= 2x their average rate; `xN.N` is the
+Per marker: movement states, number ranges, and the "unusual" labels (seen near it at >= 2x their average rate; `xN.N` is the
 lift), a "closest" timeline, and call stacks. Frames print as `0x14... (Function+0xNN)`, the address
 first for Ghidra's Go To; `--ghidra-names EXPORT` adds the user's Ghidra names. Line kinds:
 `message`, `created`, `destroyed`, `event` / `sent`, `anim`, `field`, `list`, `call`, `marker`,
