@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -152,7 +153,56 @@ void* localClientCharacter() {
     return g_clientCharacter.load(std::memory_order_relaxed);
 }
 
-void worldStart() { onCreated("gridnode", "ServerCharacterEntity", &onServerCharacter, nullptr); }
+namespace {
+// Havok's buffers are fixed when a physics world is made, and the game's "body buffer full" and
+// "motion buffer full" handlers are empty stubs: past 16,384 bodies Havok carries on with id
+// 0x7fffffff and writes past the buffer (the cinematic tools' crash, Research_Havok_2026-10-25).
+// So every world is made with room for 65,536 bodies and 65,535 moving ones, the most the game's
+// 16-bit body records can number. Proven in game by those tools.
+constexpr uint32_t kPhysicsBodies = 65535, kPhysicsMotions = 65535; // the game adds 1 to the bodies
+using PhysicsWorldCreateFn = void* (*)(void* world, void* desc);
+PhysicsWorldCreateFn g_physicsWorldCreate = nullptr;
+
+void* physicsWorldCreate(void* world, void* desc) {
+    namespace c = e::constant;
+    char* d = static_cast<char*>(desc);
+    uint32_t bodies = 0, motions = 0;
+    if (d && mem::read(reinterpret_cast<uintptr_t>(d + c::PhysicsWorldDesc_BodyCapacity), &bodies, 4) &&
+        mem::read(reinterpret_cast<uintptr_t>(d + c::PhysicsWorldDesc_MotionCapacity), &motions, 4)) {
+        if (bodies < kPhysicsBodies) mem::write(reinterpret_cast<uintptr_t>(d + c::PhysicsWorldDesc_BodyCapacity), &kPhysicsBodies, 4);
+        if (motions < kPhysicsMotions) mem::write(reinterpret_cast<uintptr_t>(d + c::PhysicsWorldDesc_MotionCapacity), &kPhysicsMotions, 4);
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 12) {
+            if (bodies >= kPhysicsBodies) // the game makes its client worlds from one description: raised already
+                GN_LOG("physics: a world made with room for %u bodies and %u moving ones", bodies + 1, motions);
+            else
+                GN_LOG("physics: a world made with room for %u bodies and %u moving ones (the game's settings: %u and %u)", kPhysicsBodies + 1,
+                       std::max(motions, kPhysicsMotions), bodies + 1, motions);
+        }
+    }
+    return g_physicsWorldCreate(world, desc);
+}
+
+void physicsStart() {
+    if (!build::codeMatches("PhysicsWorld_create")) {
+        GN_LOG("physics: the world set-up does not look as expected; worlds keep the game's room for bodies");
+        return;
+    }
+    void* original = nullptr;
+    if (hookFunction("GridNode", e::function::PhysicsWorld_create, reinterpret_cast<void*>(&physicsWorldCreate), &original) != GN_OK) {
+        GN_LOG("physics: could not hook the world set-up; worlds keep the game's room for bodies");
+        return;
+    }
+    g_physicsWorldCreate = reinterpret_cast<PhysicsWorldCreateFn>(original);
+    // Worlds made before this (GridNode injected into a running level) keep their size until the next level.
+    GN_LOG("physics: new worlds get room for %u bodies (the next level load, if one is running)", kPhysicsBodies + 1);
+}
+} // namespace
+
+void worldStart() {
+    onCreated("gridnode", "ServerCharacterEntity", &onServerCharacter, nullptr);
+    physicsStart();
+}
 
 namespace {
 // ServerGameContext -> server player manager (+0x68) -> players (+0x268/+0x270). The first human

@@ -30,6 +30,13 @@ Also in the research, for later: the game's job system and the hang it can get i
 missions' start, end and abort, the car swarm and its road network, crowds, weather and snow, shadows
 and screen-space reflections, the KrugerSec types and their AI, and how the game's data patch is laid out.
 
+## Built (2026-11-03)
+
+- 1: GridNode's `physicsStart` (world.cpp) hooks `PhysicsWorld_create`.
+- 4 and 5: the trainer's game speed slider and "No fall death".
+- 3 is waiting on one Ghidra trace: our ray hit gives the game's body id, and the filter info is on
+  Havok's body (hknpBody +0x5c), which the hit doesn't lead to yet.
+
 ## Build order (proposed)
 
 1. The body buffer fix (1), and the hit's collision layer (3): small, and they make API 18 safer.

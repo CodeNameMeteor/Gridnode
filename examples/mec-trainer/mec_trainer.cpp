@@ -33,11 +33,13 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <deque>
 #include <mutex>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -49,7 +51,7 @@ namespace {
 
 // ---- settings (render thread writes, ticks read) ------------------------------------------------------
 std::atomic<bool> g_god{false}, g_noclip{false}, g_noStumble{false}, g_sameWall{false}, g_infClimbs{false},
-    g_infRuns{false}, g_fastLoads{false}, g_freezeTime{false}, g_hud{true}, g_cheatList{true};
+    g_infRuns{false}, g_fastLoads{false}, g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_noFallDeath{false};
 std::atomic<float> g_noclipSpeed{0.5f}, g_frozenTime{0.f}, g_timeScale{1.f};
 
 // ---- what the client tick saw (render thread shows it) ------------------------------------------------
@@ -66,7 +68,10 @@ std::atomic<bool> g_loading{false};
 
 // ---- what the trainer changed, put back when it is unloaded (render thread) ----------------------------
 std::atomic<bool> g_tuned{false};       // a movement tuning value was set
-float g_timeScaleOriginal = -1.f;       // GameTimeSettings TimeScale before the slider first moved (-1: never)
+// Game speed (client thread): the game's own TimeScale (its slow motion eases it and writes 1.0 when
+// it ends, SlowMotionEntity 0x1433362a0 / 0x143332d10), and what the trainer last wrote on top of it
+// (-1: nothing; the game's value stands).
+float g_speedBase = 1.f, g_speedWritten = -1.f;
 std::vector<std::pair<const char*, bool>> g_postOriginal; // post-processing fields as they were
 
 // ---- soft anti-cheat: no Dash or time trial uploads while the trainer is loaded ------------------------
@@ -176,6 +181,77 @@ void blockUploads() {
     g_bestGuard = gn::patchCall(c::NamedChallengeFinish_statsCall, f::NamedChallengeStats_onFinished, &keepBest, &g_finishOrig);
     gn::log(g_bestGuard ? "anti-cheat: new best Dash times are not saved while the trainer is loaded"
                         : "anti-cheat: COULD NOT stop new best Dash times being saved");
+}
+
+// ---- no fall death ---------------------------------------------------------------------------------------
+// The fall death comes from Ant's fall check (RayCastCollisionProcessor_update): past FallThreshold
+// metres of falling (10 by default) it sets HasFallenPastThreshold and the animation graph plays the
+// death fall, whatever she lands on. While on, each fall check asset's threshold is raised (its own
+// value kept, and put back when it is switched off or the trainer unloads). It's per asset: AI using
+// the same asset get it too. Below y -100 the check works as normal, so a fall out of the level ends.
+// From the cinematic tools' research (Research_Ground_Level_2026-11-01 2.2).
+using FallUpdateFn = void (*)(void* asset, void* info);
+FallUpdateFn g_fallOrig = nullptr;
+std::mutex g_fallM;
+std::unordered_map<void*, float> g_fallThresholds; // (g_fallM) asset -> the game's threshold
+bool g_fallHooked = false;
+constexpr float kNoFall = 1e9f;
+std::atomic<uint32_t> g_fallCalls{0}, g_fallOurs{0}; // calls to the fall check, and with the expected asset (diagnostics)
+
+void fallUpdate(void* asset, void* info) {
+    namespace c = gn::engine::constant;
+    void* vt = nullptr;
+    g_fallCalls.fetch_add(1, std::memory_order_relaxed);
+    if (gn::api().read(asset, &vt, sizeof(vt)) == GN_OK && reinterpret_cast<uint64_t>(vt) == c::RayCastCollisionProcessorAsset_vtable) {
+        g_fallOurs.fetch_add(1, std::memory_order_relaxed);
+        char* at = static_cast<char*>(asset) + c::RayCastCollisionProcessorAsset_FallThreshold;
+        const bool on = g_noFallDeath && g_py > -100.f;
+        float now = 0.f;
+        if (gn::api().read(at, &now, 4) == GN_OK) {
+            std::lock_guard<std::mutex> lock(g_fallM);
+            auto it = g_fallThresholds.find(asset);
+            if (on && now != kNoFall) {
+                if (it == g_fallThresholds.end()) {
+                    g_fallThresholds.emplace(asset, now);
+                    gn::log("no fall death: a fall check's threshold was %.1f m", now);
+                }
+                gn::api().write(at, &kNoFall, 4);
+            } else if (!on && it != g_fallThresholds.end()) {
+                if (now == kNoFall) gn::api().write(at, &it->second, 4);
+                g_fallThresholds.erase(it);
+            }
+        }
+    }
+    g_fallOrig(asset, info);
+}
+
+// The thresholds the trainer raised, back as they were (unloading). An asset of a level that has
+// gone is skipped: its memory no longer holds a fall check asset.
+void fallPutBack() {
+    std::lock_guard<std::mutex> lock(g_fallM);
+    for (const auto& [asset, was] : g_fallThresholds) {
+        void* vt = nullptr;
+        if (gn::api().read(asset, &vt, sizeof(vt)) != GN_OK ||
+            reinterpret_cast<uint64_t>(vt) != gn::engine::constant::RayCastCollisionProcessorAsset_vtable)
+            continue;
+        char* at = static_cast<char*>(asset) + gn::engine::constant::RayCastCollisionProcessorAsset_FallThreshold;
+        float now = 0.f;
+        if (gn::api().read(at, &now, 4) == GN_OK && now == kNoFall) gn::api().write(at, &was, 4);
+    }
+    g_fallThresholds.clear();
+}
+
+void hookFallCheck() {
+    namespace f = gn::engine::function;
+    // The code this was read from: FallThreshold read at +0x432 (movss xmm0,[rsi+40h]).
+    const uint8_t want[5] = {0xF3, 0x0F, 0x10, 0x46, 0x40};
+    uint8_t got[5] = {};
+    if (gn::api().read(reinterpret_cast<void*>(f::RayCastCollisionProcessor_update + 0x432), got, 5) != GN_OK || std::memcmp(got, want, 5) != 0) {
+        gn::log("no fall death: the fall check does not look as expected; not available");
+        return;
+    }
+    g_fallHooked = gn::hookFunction(f::RayCastCollisionProcessor_update, &fallUpdate, &g_fallOrig);
+    if (!g_fallHooked) gn::log("no fall death: could not hook the fall check; not available");
 }
 
 // ---- save / load ---------------------------------------------------------------------------------------
@@ -461,22 +537,37 @@ void bhopArm() {
 
 // ---- client tick -----------------------------------------------------------------------------------------
 bool g_fast = false;   // fast loads running (client thread)
-float g_simFps = 30.f; // MaxSimFps before it
+constexpr float kFastLoadSpeed = 3000.f;
+
+// The slider multiplies the game's own time scale rather than replacing it: the game's slow motion
+// writes TimeScale every frame while it eases and 1.0 when it ends, which would wipe a plain value. A
+// value the trainer didn't write is the game's, kept as the base (from the cinematic tools' research,
+// Research_GameSpeed_2026-10-25). Client thread.
+// Fast loads use the same path at 3000x while loading (written once, the game's later writes wiped it,
+// and the slider at 4x loaded faster; the user, 2026-11-03).
+void applyGameSpeed() {
+    gn::Object ts = gn::settings("GameTimeSettings");
+    float now = 1.f;
+    if (!ts.get("TimeScale", now)) return;
+    if (g_speedWritten < 0.f || std::fabs(now - g_speedWritten) > 1e-5f) g_speedBase = now;
+    const float speed = g_fast ? kFastLoadSpeed : g_timeScale.load();
+    if (std::fabs(speed - 1.f) < 1e-4f) {
+        if (g_speedWritten >= 0.f) ts.set("TimeScale", g_speedBase), g_speedWritten = -1.f; // hand it back
+        return;
+    }
+    const float want = g_speedBase * speed;
+    if (std::fabs(now - want) > 1e-6f) ts.set("TimeScale", want);
+    g_speedWritten = want;
+}
 
 void clientTick(float dt) {
     const gn::GameState gs = gn::gameState();
     g_loading = gs.loading != 0;
     g_timeOfDay = gs.time_of_day;
 
-    // Fast loads: let the simulation run flat out, but only while loading.
-    const bool wantFast = g_fastLoads && gs.loading;
-    if (wantFast != g_fast) {
-        g_fast = wantFast;
-        gn::Object ts = gn::settings("GameTimeSettings");
-        if (g_fast) ts.get("MaxSimFps", g_simFps); // put back exactly what it was
-        ts.set("MaxSimFps", g_fast ? 50000.f : g_simFps);
-        ts.set("TimeScale", g_fast ? 3000.f : g_timeScale.load());
-    }
+    // Fast loads: the game's clock at 3000x, but only while loading.
+    g_fast = g_fastLoads && gs.loading;
+    applyGameSpeed();
     if (g_freezeTime) gn::setTimeOfDay(g_frozenTime);
 
     void* faith = gn::localClientCharacter();
@@ -562,9 +653,17 @@ void clientTick(float dt) {
     }
     bhopCheck(m, p.y, dt);
 
-    // No stumble (and god mode: falls are deaths in MEC, not damage): a fall only counts from where
+    // No stumble (and god mode, and no fall death: falls are deaths in MEC, not damage): a fall only counts from where
     // Faith is now.
-    if ((g_noStumble || g_god) && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
+    // No fall death: what the fall check did, in the log (while it's untested in game).
+    static float fallLogT = 0.f;
+    static int fallLogs = 0;
+    if (g_noFallDeath && fallLogs < 6 && (fallLogT += dt) >= 10.f) {
+        fallLogT = 0.f, ++fallLogs;
+        gn::log("no fall death: the fall check ran %u times (%u with its asset) in 10 s; Faith at y %.1f", g_fallCalls.exchange(0),
+                g_fallOurs.exchange(0), p.y);
+    }
+    if ((g_noStumble || g_god || (g_noFallDeath && p.y > -100.f)) && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
         gn::Movement w{};
         w.last_ground_y = p.y;
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
@@ -651,11 +750,15 @@ void worldTab() {
         ImGui::TextDisabled("No time of day clock in this level");
     }
     float scale = g_timeScale;
-    if (ImGui::SliderFloat("Game time scale", &scale, 0.1f, 10.f)) {
-        if (g_timeScaleOriginal < 0.f && !gn::settings("GameTimeSettings").get("TimeScale", g_timeScaleOriginal)) g_timeScaleOriginal = 1.f;
-        g_timeScale = scale;
-        gn::runOnClient([scale] { gn::settings("GameTimeSettings").set("TimeScale", scale); });
+    if (ImGui::SliderFloat("Game speed", &scale, 0.05f, 4.f, "%.2fx", ImGuiSliderFlags_Logarithmic)) g_timeScale = scale;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("1x")) g_timeScale = 1.f;
+    // The game simulates at most one 30 Hz tick a frame, so above 1x it reaches frame rate / 30.
+    if (g_timeScale > 1.f) {
+        const float most = ImGui::GetIO().Framerate / 30.f;
+        if (most < g_timeScale) ImGui::TextDisabled("At %.0f fps the game reaches at most %.1fx", ImGui::GetIO().Framerate, most);
     }
+    ImGui::TextDisabled("On top of the game's own slow motion");
     ImGui::SeparatorText("Post-processing");
     static const char* const kPost[3][2] = {{"Bloom", "BloomEnable"}, {"Blur", "BlurEnable"}, {"Vignette", "VignetteEnable"}};
     gn::Object pp = gn::settings("GlobalPostProcessSettings");
@@ -684,6 +787,11 @@ void trainerTab() {
     }
     v = g_noStumble;
     if (ImGui::Checkbox(withKey("No stumble", "no_stumble").c_str(), &v)) g_noStumble = v;
+    if (g_fallHooked) {
+        v = g_noFallDeath;
+        if (ImGui::Checkbox("No fall death", &v)) g_noFallDeath = v;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Long falls don't kill her (and the Ant fall check is raised, for AI too). Below y -100 they still do. The street kill floors still kill.");
+    }
     v = g_sameWall;
     if (ImGui::Checkbox("Same wall climbs / runs", &v)) g_sameWall = v;
     v = g_infClimbs;
@@ -826,6 +934,7 @@ struct FloatSetting {
 };
 // God mode, noclip and frozen time are left out: they start off each run.
 const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall", &g_sameWall},
+                              {"no_fall_death", &g_noFallDeath},
                               {"inf_climbs", &g_infClimbs},        {"inf_runs", &g_infRuns},
                               {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
@@ -916,6 +1025,7 @@ void hud() {
         std::string on;
         if (g_god) on += "God  ";
         if (g_noclip) on += "Noclip  ";
+        if (g_noFallDeath) on += "NoFallDeath  ";
         if (g_noStumble) on += "NoStumble  ";
         if (g_sameWall) on += "SameWall  ";
         if (g_infClimbs) on += "InfClimbs  ";
@@ -949,6 +1059,7 @@ GN_MOD("mec-trainer") {
     loadSettings();
     volumes::loadSettings();
     blockUploads();
+    hookFallCheck();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });
@@ -992,15 +1103,15 @@ GN_MOD_UNLOAD() {
         for (uint32_t i = 0; i < gn::tuningCount(); ++i)
             if (gn::tuningAt(i, t)) gn::setTuning(t.name, t.default_value);
     }
-    const float scale = g_timeScaleOriginal;
     const auto post = g_postOriginal;
-    gn::runOnClient([scale, post] {
+    gn::runOnClient([post] {
         gn::Object ts = gn::settings("GameTimeSettings");
-        if (g_fast) ts.set("MaxSimFps", g_simFps), g_fast = false;
-        if (scale >= 0.f) ts.set("TimeScale", scale);
+        g_fast = false;
+        if (g_speedWritten >= 0.f) ts.set("TimeScale", g_speedBase), g_speedWritten = -1.f;
         for (const auto& [field, on] : post) gn::settings("GlobalPostProcessSettings").set(field, on);
     });
     volumes::unload();
+    fallPutBack();
     gn::log("unloading: god mode, noclip, free camera, tuning, time scale and post-processing put back");
     return true;
 }

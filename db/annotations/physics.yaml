@@ -76,6 +76,18 @@ functions:
   - { name: PamOBBCollision_disable, va: 0x143335ff0, signature: "void(void* collision)", note: "+0x95 = 0, takes the body out of the world (0x1434f6610, 0x1434f65f0).", confidence: inferred, sources: [ghidra] }
   - { name: PamOBBCollision_deinit, va: 0x143335b30, signature: "void(void* collision)", note: "Vtable +0x88: disables if enabled, destroys the body (0x1434eba50(owner, id, {realm, 1})), then the base deinit 0x143168770.", confidence: inferred, sources: [ghidra] }
   - { name: Entity_resolveTransform, va: 0x143165bc0, signature: "LinearTransform*(void* data, LinearTransform* out, void* bus)", note: "A data's Transform through its bus's property context (blueprint parents applied).", confidence: inferred, sources: [ghidra] }
+  - name: PhysicsWorld_create
+    va: 0x1434e4da0
+    signature: "void*(void* world, void* desc)"
+    note: >-
+      Makes a physics world (0xBB0 bytes; client, server and the client's effect world) and its
+      hknpWorld (0x1434d0ff0) from a description: bodies desc +0x64 (+1), motions +0x68,
+      constraints +0x6c, broadphase +0x40, gravity +0x50. The body count also sizes the game's
+      16-bit record table. It connects the buffer-full signals: constraints grow (0x1434f3010),
+      bodies and motions get an empty stub, so a full body buffer makes Havok write past it.
+      From the cinematic tools' research (Research_Havok_2026-10-25); checked in Ghidra 2026-11-03.
+    confidence: confirmed
+    sources: [research, ghidra]
   - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
@@ -153,6 +165,8 @@ constants:
   - { name: HavokWorld_FilterOwner, value: 0x150 }
   - { name: FilterOwner_Filter, value: 0x4d0 }
   - { name: Physics_Owner, value: 0x8, confidence: inferred, sources: [research], note: "The object Physics_castRay's hits are resolved against." }
+  - { name: PhysicsWorldDesc_BodyCapacity, value: 0x64, confidence: confirmed, sources: [research, ghidra], note: "u32; the game's settings give 16384 (Havok adds 1). PhysicsWorld_create reads it at 0x1434e51f2." }
+  - { name: PhysicsWorldDesc_MotionCapacity, value: 0x68, confidence: confirmed, sources: [research, ghidra], note: "u32; 8192 from the game's settings." }
   - { name: PhysicsOwner_Objects, value: 0x130, confidence: inferred, sources: [research], note: "Table of physics objects, indexed by the low 16 bits of a hit's body (0x1434ee750)." }
   - { name: Entity_Flags, value: 0x18, confidence: inferred, sources: [research], note: "u32 flags of an entity." }
   - { name: EntityFlag_NotifyTransform, value: 0x8, confidence: inferred, sources: [research], note: "SpatialEntity_setTransform calls vtable +0xe0 (transform changed) when set." }

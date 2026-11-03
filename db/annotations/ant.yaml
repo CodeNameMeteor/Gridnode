@@ -3,6 +3,17 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: RayCastCollisionProcessor_update
+    va: 0x142ce8200
+    signature: "void(void* asset, void* updateInfo)"
+    note: >-
+      The fall check (Ant RayCastCollisionProcessorAsset, vtable 0x141a62ee0, slot 4): ground contact
+      from the RayCastBus hits; on contact DistanceFromLastGroundHeight = 0, else it adds dt x the
+      downward speed; HasFallenPastThreshold = -FallThreshold (+0x40, f32, 10 m in the constructor) >
+      distance (written at 0x142ce864c). The animation graph does the death fall from that flag. From
+      the cinematic tools' research (Research_Ground_Level_2026-11-01 2.2); checked in Ghidra 2026-11-03.
+    confidence: confirmed
+    sources: [research, ghidra]
   - name: ServerWriteAntGameStateEntity_onEvent
     va: 0x1433acd90
     signature: "void(void* entity, void* event)"
@@ -777,3 +788,7 @@ hooks:
     signature: "void(void* writer, void* state, u64 value)"
     note: "The bool output writer of an ANT binding (IsSoftLanding). Slot read from the game image 2026-11-03."
     confidence: inferred
+
+constants:
+  - { name: RayCastCollisionProcessorAsset_vtable, value: 0x141a62ee0, confidence: confirmed, sources: [research, ghidra], note: "The fall check asset's vtable (made by 0x142cd15f0, 0x50 bytes)." }
+  - { name: RayCastCollisionProcessorAsset_FallThreshold, value: 0x40, confidence: confirmed, sources: [research, ghidra], note: "f32: metres of fall before HasFallenPastThreshold (10 in the constructor)." }

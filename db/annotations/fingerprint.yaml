@@ -40,6 +40,8 @@ fingerprint:
     - { at: MessageManager_unregisterListener, bytes: "48 8B 09 EB 0B", required: false }
     - { at: 0x142a3ad50, bytes: "89 54 24 10 55 53 56 57 41 54 41 56 41 57", required: false, note: "registerListener's implementation" }
     - { at: RaycastQuery_execute, bytes: "48 89 E0 55 56 57 41 56 41 57 48 8D A8 08 FF FF FF 48 81 EC D0 01 00 00", required: false, note: "Optional: only ray casts depend on it." }
+    - { at: PhysicsWorld_create, skip: 0x452, bytes: "8B 7E 64 FF C7 48 8B 4E 20", required: false, note: "Optional: only the larger physics worlds depend on it (mov edi,[rsi+64h]; inc edi: the body count)." }
+    - { at: RayCastCollisionProcessor_update, skip: 0x432, bytes: "F3 0F 10 46 40", required: false, note: "Optional: only the trainer's no fall death depends on it (movss xmm0,[rsi+40h]: FallThreshold)." }
     - { at: Physics_castRay, bytes: "49 89 E3 57 48 81 EC F0 02 00 00", required: false, note: "Optional: only picking objects by ray depends on it." }
     - { at: ClientPlayer_overrideInputState, skip: 0x11, bytes: "48 83 B9 C0 14 00 00 00 75 31", required: false, note: "Optional: only actions (gn::jump) depend on it (cmp qword [rcx+14c0h],0; jnz)." }
     - { at: getCompartment, bytes: "0F B7 C1 48 8D 0D", required: false, note: "Optional: only assets depend on it (movzx eax,cx; lea rcx,[ResourceGroups])." }

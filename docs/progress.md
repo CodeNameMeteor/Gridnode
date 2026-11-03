@@ -14,6 +14,12 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **From the cinematic tools' research, first part** (2026-11-03, untested in game). GridNode makes
+  every physics world with room for 65,536 bodies (PhysicsWorld_create; the game's 16,384 and empty
+  "buffer full" handlers crash Havok). Trainer: the game speed slider multiplies the game's own slow
+  motion (0.05x - 4x, notes the frame rate / 30 limit); "No fall death" raises the Ant fall check's
+  threshold (RayCastCollisionProcessor_update) and resets her fall height (as god mode does), not
+  below y -100; the user: works. Fast loads use the speed path at 3000x while loading.
 - **The cinematic tools' research read** (2026-11-03): 47 files from a contributor, same game build;
   what GridNode can use, ranked, is in `docs/research/ct-research.md` (nothing annotated yet).
 - **What a ray hit, collision bodies (API 18)** (2026-11-03, untested in game). `raycast_object`
