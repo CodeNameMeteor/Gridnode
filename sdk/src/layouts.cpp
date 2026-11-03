@@ -6060,11 +6060,23 @@ bool computeView(gn_view& out) {
 void snapshotView() {
     gn_view v;
     const bool ok = computeView(v);
+    static bool said = false, lastOk = false;
+    if (ok != lastOk || !said) { // diagnostics for the free camera case above
+        static int n = 0;
+        if (n++ < 40)
+            GN_LOG("layouts: view %s (free camera %s, camera at %.1f %.1f %.1f)", ok ? "available" : "unavailable", g_cam.active ? "on" : "off",
+                   v.position[0], v.position[1], v.position[2]);
+        said = true, lastOk = ok;
+    }
     std::lock_guard<std::mutex> lock(g_viewM);
     g_viewSnap = v, g_viewSnapOk = ok;
 }
 
 bool view(gn_view& out) {
+    // On the render thread (mods drawing): the view now, as before the copy existed. With the copy
+    // only, volumes stopped showing in the layout editor's free camera (user, 2026-11-03; why is not
+    // known yet: snapshotView logs when the copy comes and goes). Other threads get the copy.
+    if (ui::isRenderThread()) return computeView(out);
     std::lock_guard<std::mutex> lock(g_viewM);
     out = g_viewSnapOk ? g_viewSnap : gn_view{};
     return g_viewSnapOk;

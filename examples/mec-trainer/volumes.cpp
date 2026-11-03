@@ -868,6 +868,19 @@ void tab() {
     ImGui::TextDisabled("(what each reaches, to gridnode.log)");
     ImGui::TextDisabled("%d triggers in the level, %d with shapes%s", g_total.load(), g_withShapes.load(),
                         g_pending ? " (still sorting the near ones)" : "");
+    {
+        // Where GridNode says the camera is (the volumes are drawn from it), next to Faith: a stale or
+        // missing view is the first thing to rule out when they do not show.
+        gn::ui::View v;
+        gn::Vec3 at{};
+        void* faith = gn::localClientCharacter();
+        const bool haveFaith = faith && gn::positionOf(faith, at);
+        if (gn::ui::view(v))
+            ImGui::TextDisabled("view from (%.1f, %.1f, %.1f), %.0f x %.0f; Faith at (%.1f, %.1f, %.1f)", v.position[0], v.position[1], v.position[2],
+                                v.width, v.height, haveFaith ? at.x : 0.f, haveFaith ? at.y : 0.f, haveFaith ? at.z : 0.f);
+        else
+            ImGui::TextDisabled("no view (GridNode has no camera now): nothing can be drawn");
+    }
     ImGui::SeparatorText("Nearest shown (hover to light one up; Log: everything it does, to gridnode.log)");
     std::lock_guard<std::mutex> lock(g_shownM);
     int n = 0;
