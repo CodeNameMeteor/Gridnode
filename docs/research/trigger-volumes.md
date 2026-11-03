@@ -24,7 +24,7 @@ from the code, not tested).
 |---|---|
 | `PamServerAreaTriggerEntity` (0x1890 bytes, vtable 0x141c4b168) | The game's own trigger: about 1,000 to 1,450 live in the city. **Not** a subclass of `ServerAreaTriggerEntity` in the type list (asking for the base class finds none of them). Its vf15 (0x14395bc50) builds two geometry caches with `FUN_14330bac0` from the data's `Geometry` links (0x31fb3b9f = djb2 "Geometry"): +0x1b8 (the one tested) and +0x70. |
 | `ServerAreaTriggerEntity` (vtable 0x141b58bb0) | The engine's: cache at +0x1a8, tested in its vf25 (0x1433c8230) by `FUN_14330d320`. None seen live in the city. |
-| `PamServerKillVolumeEntity`, `CameraEnterAreaTriggerEntity`, `PamServerMissionCheckpointEntity` | No cache at either offset; not drawn yet. |
+| `PamServerKillVolumeEntity`, `CameraEnterAreaTriggerEntity`, `PamServerMissionCheckpointEntity` | No cache at either trigger offset; a kill volume keeps its own at +0x38 (below). |
 
 Both have the bus's interface at +0x20 (**the bus is 8 bytes before it**) and the data
 (`PamAreaTriggerData`) at +0x28.
@@ -103,6 +103,29 @@ The Old Friends skip runners use is an area trigger about 120 m across under the
 `NewPositionTransform` (TeleportEntityData +0x20; `CheckBelowGround` +0x18), in the next area. The
 Volumes tab has a Teleports category and draws a line to where each one sends her (as authored: a
 link may set the transform at run time).
+
+## Kill volumes
+
+`PamServerKillVolumeEntity` (0x68 bytes, vtable 0x141c50698) builds the same geometry cache as the
+area triggers, at **+0x38**: its vf15 (0x143971260) calls `FUN_14330bac0` with its data's `Geometry`
+links (0x31fb3b9f), reads `Enabled` into +0x62 and, when set, registers with a manager that tests
+them (0x14396cc00; vf17 0x143971050 takes it out). Its data, `PamKillVolumeEntityData` (type info
+0x14287fa18, 0x20 bytes): `DamageType` +0x18, `Enabled` +0x1c, `KillEnemies` +0x1d, `KillPlayer`
++0x1e (2026-11-03, read in Ghidra; the first try, sorting triggers that link to one, found none).
+
+## Movement blockers (barriers)
+
+Not triggers: `OBBCollisionEntity` boxes, as the layout editor reads them (`sdk/src/layouts.cpp`):
+world transform +0x50, enabled +0x95, the data's `HalfExtents` +0x60, and on
+`PamOBBCollisionEntityData` the can't stand / climb / vault / wall run flags at +0x90..0x93. The
+Volumes tab draws them too.
+
+## Safe spawn blockers
+
+Many triggers reach a `PamSafeSpawnLockerEntityData` (`BlockReturnTeleport` +0x18; see
+[city-alert.md](city-alert.md)): while Faith is inside, the game sets no safe spawn (user,
+2026-11-03). Their names have "safespawn" in, so they sorted as checkpoints and crowded that
+category; the Volumes tab has its own category for them now (off by default).
 
 ## Key checkpoints (story checkpoints)
 

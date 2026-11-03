@@ -221,6 +221,29 @@ void applyRawMouse() {
     if (const int w = g_wheel.exchange(0)) io.AddMouseWheelEvent(0.f, static_cast<float>(w) / WHEEL_DELTA);
 }
 
+// A mouse button let go while the menu is closed and nothing is captured still reaches ImGui, or a
+// button pressed while it was (the free camera's key on a mouse button turning it off) stays down
+// there for good, and ImGui ignores every window while a button pressed outside them is held: the
+// menu could not be clicked (2026-11-03, the free camera on MOUSE5).
+void rawMouseUps(LPARAM l) {
+    RAWINPUT ri{};
+    UINT size = sizeof(ri);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(l), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) return;
+    if (ri.header.dwType != RIM_TYPEMOUSE) return;
+    const USHORT b = ri.data.mouse.usButtonFlags;
+    uint32_t up = 0;
+    if (b & RI_MOUSE_LEFT_BUTTON_UP) up |= 1;
+    if (b & RI_MOUSE_RIGHT_BUTTON_UP) up |= 2;
+    if (b & RI_MOUSE_MIDDLE_BUTTON_UP) up |= 4;
+    if (b & RI_MOUSE_BUTTON_4_UP) up |= 8;
+    if (b & RI_MOUSE_BUTTON_5_UP) up |= 16;
+    if (up) g_btnUp |= up;
+}
+
+bool isButtonUp(UINT msg) {
+    return msg == WM_LBUTTONUP || msg == WM_RBUTTONUP || msg == WM_MBUTTONUP || msg == WM_XBUTTONUP;
+}
+
 // 1 = key press, 2 = key release, 0 = not the keyboard.
 int rawKeyEvent(LPARAM l) {
     RAWINPUT ri{};
@@ -248,6 +271,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     if (msg == WM_DEVICECHANGE && g_ready) queueImGui(hwnd, msg, w, l);
+    if (!(g_open || g_capture) && g_ready) { // releases still reach ImGui (rawMouseUps)
+        if (msg == WM_INPUT) rawMouseUps(l);
+        else if (isButtonUp(msg)) queueImGui(hwnd, msg, w, l);
+    }
     if ((g_open || g_capture) && g_ready) {
         // Key releases still reach the game, so a key held when the menu opened is released there.
         if (keyUp) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);

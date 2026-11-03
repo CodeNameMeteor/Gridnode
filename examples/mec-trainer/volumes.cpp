@@ -6,6 +6,7 @@
 //     (PamServerAreaTriggerEntity +0x1b8, ServerAreaTriggerEntity +0x1a8)
 //   - categories: the bus's event connections from the trigger's data, followed two steps through
 //     logic in the same bus; prefab references name their blueprint (Gameplay/Logic/PF_SafeSpawnControl)
+//   - barriers (OBBCollisionEntity boxes) are drawn with them, in a category of their own
 //
 // Threads: the client tick reads the game (a few new triggers per tick, nearest first) and publishes
 // the lines to draw; the render thread draws them and owns the settings.
@@ -30,7 +31,7 @@ namespace volumes {
 namespace {
 
 // ---- categories ----------------------------------------------------------------------------------
-enum Cat { kChallenge, kTeleport, kCutscene, kCheckpoint, kMission, kCityAlert, kAi, kSound, kOther, kCats };
+enum Cat { kChallenge, kTeleport, kKill, kCutscene, kCheckpoint, kSpawnLock, kBarrier, kMission, kCityAlert, kAi, kSound, kOther, kCats };
 struct CatInfo {
     const char* key;
     const char* label;
@@ -40,8 +41,11 @@ struct CatInfo {
 const CatInfo kCatInfo[kCats] = {
     {"challenge", "Dashes and challenges", IM_COL32(255, 150, 30, 240), true},
     {"teleport", "Teleports (fall catchers, skips)", IM_COL32(0, 255, 230, 240), true},
+    {"kill", "Kill volumes", IM_COL32(255, 0, 60, 240), true},
     {"cutscene", "Cutscenes and scripted scenes", IM_COL32(255, 80, 200, 230), true},
     {"checkpoint", "Checkpoints and spawns", IM_COL32(80, 255, 120, 230), true},
+    {"spawn_lock", "Safe spawn blockers (no safe spawn set inside)", IM_COL32(210, 255, 140, 200), false},
+    {"barrier", "Movement blockers (barriers)", IM_COL32(0, 140, 255, 220), false},
     {"mission", "Mission logic and markers", IM_COL32(255, 200, 60, 230), false},
     {"city_alert", "City alert and safe zones", IM_COL32(80, 200, 255, 230), false},
     {"ai", "AI spawns", IM_COL32(255, 90, 60, 230), false},
@@ -54,9 +58,12 @@ const CatInfo kCatInfo[kCats] = {
 int categoryOf(const std::string& s) {
     auto has = [&](const char* k) { return s.find(k) != std::string::npos; };
     if (has("challenge") || has("dash") || has("sharedcontent") || has("timetrial") || has("finishline") || has("/race")) return kChallenge;
-    if (has("teleportentitydata")) return kTeleport; // Old Friends' fall catcher under the roofs (2026-11-02)
+    if (has("teleportentitydata")) return kTeleport;
+    // A trigger that switches a kill volume (the kill volumes themselves are drawn from their own cache).
+    if (has("killvolume")) return kKill; // Old Friends' fall catcher under the roofs (2026-11-02)
     if (has("me_sound") || has("soundentity") || has("voiceover") || has("mixerentity") || has("/vo/") || has("music")) return kSound;
     if (has("timeline") || has("cinematic") || has("sequence") || has("cutscene") || has("animations/") || has("anim_")) return kCutscene;
+    if (has("safespawnlocker")) return kSpawnLock; // PamSafeSpawnLocker: Faith sets no safe spawn inside (user, 2026-11-03)
     if (has("checkpoint") || has("safespawn") || has("respawn") || has("spawncontrol") || has("savegame")) return kCheckpoint;
     if (has("cityalert")) return kCityAlert;
     if (has("aigroup") || has("/ai/") || has("aispawn")) return kAi;
@@ -187,9 +194,16 @@ void addShape(std::vector<Line>& out, const M& world, void* s) {
 // The trigger's shapes in world space. Its geometry cache (FUN_14330d320): +0x08 shapes
 // (BaseShapeData*[], count at -4), +0x10 world -> local transforms (0x40 each, count at -4), +0x20
 // kind: 1 in world space, 2 one transform (none: the bus's), 3 one per shape, 4 looked up each test.
+// A kill volume builds the same cache, at +0x38 (PamServerKillVolumeEntity vf15 0x143971260, with
+// FUN_14330bac0 from its data's Geometry links, like the triggers' vf15).
+size_t cacheOffset(const char* cls) {
+    if (!std::strcmp(cls, "PamServerKillVolumeEntity")) return 0x38;
+    return std::strncmp(cls, "Pam", 3) == 0 ? 0x1b8 : 0x1a8;
+}
+
 std::vector<Line> shapesOf(void* e, const char* cls) {
     std::vector<Line> out;
-    const char* g = static_cast<char*>(e) + (std::strncmp(cls, "Pam", 3) == 0 ? 0x1b8 : 0x1a8);
+    const char* g = static_cast<char*>(e) + cacheOffset(cls);
     const int kind = rd<int>(g, 0x20);
     if (kind < 1 || kind > 3) return out;
     char* shapes = rd<char*>(g, 0x08);
@@ -276,7 +290,10 @@ struct Volume {
     std::string hay;  // every target, lower case, for the search
     bool teleports = false;
     gn::Vec3 teleportTo; // a teleport it fires: TeleportEntityData NewPositionTransform (+0x20), as authored
+    bool barrier = false; // an OBB collision entity, not a trigger
 };
+
+std::string eventText(uint32_t id);
 
 // A target that is a placed blueprint (a prefab or sublevel reference) whose peer in this bus is a
 // FullEntityBusBridge: the bridge's onEvent (vtable +0x20, 0x14314a5d0) fires the event in the bridged
@@ -380,6 +397,8 @@ void classify(void* e, Volume& v) {
                     const size_t open = name.find('['), slash = name.rfind('/');
                     v.why = open == std::string::npos ? name : name.substr(slash != std::string::npos && slash > open ? slash + 1 : open + 1);
                     if (!v.why.empty() && v.why.back() == ']') v.why.pop_back();
+                    if (cat == kKill) // which input: Enable / Disable say it is only switched by this trigger
+                        v.why += "." + eventText(c->tev) + (rd<uint8_t>(c->dst, 0x1e) ? "" : " (not the player)");
                 }
             }
             if (st.depth < 2) todo.push_back({st.bus, c->dst, st.depth + 1, 0});
@@ -403,10 +422,25 @@ std::string eventText(uint32_t id) {
 // every link its events follow, four steps deep, out of blueprints through their interfaces.
 void describe(void* e) {
     const gn::Type t = gn::Type::of(e);
+    if (auto it = g_all.find(e); it != g_all.end() && it->second.barrier) {
+        const Volume& v = it->second;
+        void* data = rd<void*>(e, 0x28);
+        const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
+        const gn::Vec3 h = data ? rd<gn::Vec3>(data, 0x60) : gn::Vec3{};
+        gn::log("volumes: barrier %p (%s), data %s %p: centre (%.1f, %.1f, %.1f), half extents (%.2f, %.2f, %.2f), body %08x%s%s", e,
+                t ? t.name() : "?", dt ? dt.name() : "?", data, v.centre.x, v.centre.y, v.centre.z, h.x, h.y, h.z, rd<uint32_t>(e, 0x90),
+                v.why.empty() ? "" : ": ", v.why.c_str());
+        return;
+    }
     void* data = rd<void*>(e, 0x28);
     const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
-    gn::log("volumes: trigger %p (%s), data %s %p: Delay %.2f, RunOnce %d, Enabled %d", e, t ? t.name() : "?", dt ? dt.name() : "?", data,
-            data ? rd<float>(data, 0x60) : 0.f, data ? rd<uint8_t>(data, 0x64) : 0, data ? rd<uint8_t>(data, 0x65) : 0);
+    if (t && !std::strcmp(t.name(), "PamServerKillVolumeEntity"))
+        gn::log("volumes: kill volume %p, data %p: DamageType %d, Enabled %d (now %d), KillEnemies %d, KillPlayer %d", e, data,
+                data ? rd<int32_t>(data, 0x18) : -1, data ? rd<uint8_t>(data, 0x1c) : 0, rd<uint8_t>(e, 0x62), data ? rd<uint8_t>(data, 0x1d) : 0,
+                data ? rd<uint8_t>(data, 0x1e) : 0);
+    else
+        gn::log("volumes: trigger %p (%s), data %s %p: Delay %.2f, RunOnce %d, Enabled %d", e, t ? t.name() : "?", dt ? dt.name() : "?", data,
+                data ? rd<float>(data, 0x60) : 0.f, data ? rd<uint8_t>(data, 0x64) : 0, data ? rd<uint8_t>(data, 0x65) : 0);
     if (auto it = g_all.find(e); it != g_all.end() && !it->second.lines.empty()) {
         const Volume& v = it->second;
         gn::log("  shapes: %d lines, centre (%.1f, %.1f, %.1f), %.1f m across", int(v.lines.size()), v.centre.x, v.centre.y, v.centre.z, v.reach * 2.f);
@@ -551,11 +585,21 @@ void clientTick(float dt) {
 
     // What exists now: new triggers get their shapes, gone ones are dropped.
     std::unordered_set<void*> alive;
-    for (const char* cls : {"PamServerAreaTriggerEntity", "ServerAreaTriggerEntity"}) {
+    for (const char* cls : {"PamServerAreaTriggerEntity", "ServerAreaTriggerEntity", "PamServerKillVolumeEntity"}) {
         gn::entitiesOfClass(cls, [&](void* e, gn::Type type) {
             if (!alive.insert(e).second || g_all.count(e)) return;
             Volume v;
             v.lines = shapesOf(e, type.name());
+            if (!std::strcmp(type.name(), "PamServerKillVolumeEntity")) {
+                // Data (PamKillVolumeEntityData): DamageType +0x18, KillEnemies +0x1d, KillPlayer +0x1e; the
+                // entity's +0x62 is its Enabled as read at start (vf15).
+                void* d = rd<void*>(e, 0x28);
+                v.classified = true, v.cats = 1u << kKill, v.primary = kKill;
+                const bool player = d && rd<uint8_t>(d, 0x1e), enemies = d && rd<uint8_t>(d, 0x1d);
+                v.why = player ? (enemies ? "Faith and enemies" : "Faith") : enemies ? "enemies only" : "nobody (flags off)";
+                if (!rd<uint8_t>(e, 0x62)) v.why += ", disabled at start";
+                v.hay = "killvolume pamkillvolumeentitydata " + lower(v.why);
+            }
             if (!v.lines.empty()) {
                 gn::Vec3 lo = v.lines[0].a, hi = lo;
                 for (const Line& l : v.lines)
@@ -568,6 +612,61 @@ void clientTick(float dt) {
             }
             g_all.emplace(e, std::move(v));
         });
+    }
+    // Barriers, as the layout editor finds them (layouts.cpp): OBBCollisionEntity, both realms (one
+    // drawn: the server half where both have the same data at the same place). Its world transform at
+    // +0x50 (set when it is enabled), enabled +0x95, server +0x18 bit 0; the box is the data's
+    // HalfExtents (+0x60). PamOBBCollisionEntityData +0x90..0x93: can't stand, climb, vault, wall run.
+    // Read again each time: the layout editor moves them.
+    struct Bar {
+        void* e;
+        void* data;
+        M t;
+        bool server;
+    };
+    std::vector<Bar> bars;
+    gn::entitiesOfClass("OBBCollisionEntity", [&](void* e, gn::Type) {
+        void* data = rd<void*>(e, 0x28);
+        const gn::Type dt = data ? gn::Type::of(data) : gn::Type();
+        if (!dt || !std::strstr(dt.name(), "OBBCollisionEntityData")) return; // another layout
+        bars.push_back({e, data, readM(static_cast<char*>(e) + 0x50), (rd<uint32_t>(e, 0x18) & 1) != 0});
+    });
+    std::unordered_multimap<void*, const Bar*> serverHalves; // by data
+    for (const Bar& b : bars)
+        if (b.server) serverHalves.emplace(b.data, &b);
+    for (const Bar& b : bars) {
+        if (!b.server) {
+            bool twin = false;
+            for (auto [i, end] = serverHalves.equal_range(b.data); i != end && !twin; ++i)
+                twin = std::fabs(i->second->t.r[3][0] - b.t.r[3][0]) + std::fabs(i->second->t.r[3][1] - b.t.r[3][1]) +
+                           std::fabs(i->second->t.r[3][2] - b.t.r[3][2]) < 0.01f;
+            if (twin) continue;
+        }
+        const gn::Vec3 h = rd<gn::Vec3>(b.data, 0x60);
+        if (!std::isfinite(b.t.r[3][0]) || !std::isfinite(h.x) || !std::isfinite(h.y) || !std::isfinite(h.z)) continue;
+        if (std::fabs(b.t.r[0][0]) + std::fabs(b.t.r[0][1]) + std::fabs(b.t.r[0][2]) < 0.01f) continue; // never enabled: no transform yet
+        alive.insert(b.e);
+        Volume v;
+        v.barrier = true, v.classified = true, v.cats = 1u << kBarrier, v.primary = kBarrier;
+        addBox(v.lines, b.t, {0, 0, 0}, h);
+        gn::Vec3 lo = v.lines[0].a, hi = lo;
+        for (const Line& l : v.lines)
+            for (const gn::Vec3& p : {l.a, l.b})
+                lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)}, hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+        v.lo = lo, v.hi = hi, v.centre = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+        const float dx = hi.x - lo.x, dy = hi.y - lo.y, dz = hi.z - lo.z;
+        v.reach = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+        const gn::Type dt = gn::Type::of(b.data);
+        if (std::strstr(dt.name(), "Pam")) {
+            uint8_t cant[4] = {};
+            gn::api().read(static_cast<char*>(b.data) + 0x90, cant, sizeof(cant));
+            static const char* kWhat[4] = {"stand", "climb", "vault", "wall run"};
+            for (int i = 0; i < 4; ++i)
+                if (cant[i]) v.why += (v.why.empty() ? "no " : ", ") + std::string(kWhat[i]);
+        }
+        if (!rd<uint8_t>(b.e, 0x95)) v.why += v.why.empty() ? "disabled" : " (disabled)";
+        v.hay = "barrier obbcollision " + v.why;
+        g_all[b.e] = std::move(v);
     }
     for (auto it = g_all.begin(); it != g_all.end();) it = alive.count(it->first) ? std::next(it) : g_all.erase(it);
 
@@ -609,7 +708,7 @@ void clientTick(float dt) {
             if (!v.classified) classify(e, v);
             if (!(v.cats & (1u << kChallenge)) || ++challenges > 40) continue;
             const gn::Type t = gn::Type::of(e);
-            const char* g = static_cast<char*>(e) + (std::strncmp(t.name(), "Pam", 3) == 0 ? 0x1b8 : 0x1a8);
+            const char* g = static_cast<char*>(e) + cacheOffset(t.name());
             char* shapes = rd<char*>(g, 0x08);
             float d = -1.f;
             if (!v.lines.empty()) {
