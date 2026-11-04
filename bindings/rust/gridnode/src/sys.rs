@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 21;
+pub const GN_API_VERSION: u32 = 22;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -60,6 +60,7 @@ pub type gn_entity_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: 
 pub type gn_movement_fn = Option<unsafe extern "C" fn(e: *const gn_movement_event, now: *const gn_movement, user: *mut c_void)>;
 pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, event_id: u32, user: *mut c_void)>;
 pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
+pub type gn_progress_flag_fn = Option<unsafe extern "C" fn(flag: *const gn_progress_flag, user: *mut c_void)>;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -242,6 +243,22 @@ pub struct gn_game_state {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_progress_flag {
+    pub flag: *mut c_void,
+    pub name: *const c_char,
+    pub group: *const c_char,
+    pub name_hash: u32,
+    pub mission_index: u32,
+    pub value: i32,
+    pub max_value: i32,
+    pub clamp: u8,
+    pub online: u8,
+    pub has_value: u8,
+    pub reserved: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_api {
     pub version: u32,
     pub size: u32,
@@ -361,6 +378,14 @@ pub struct gn_api {
     pub body_push: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, change: *const f32) -> c_int>,
     pub physics_gravity: Option<unsafe extern "C" fn(realm: c_int, out: *mut f32) -> c_int>,
     pub physics_set_gravity: Option<unsafe extern "C" fn(realm: c_int, g: *const f32) -> c_int>,
+    pub character_health: Option<unsafe extern "C" fn(server_character: *mut c_void, health: *mut f32, max_health: *mut f32) -> c_int>,
+    pub character_set_health: Option<unsafe extern "C" fn(server_character: *mut c_void, health: f32) -> c_int>,
+    pub waypoint: Option<unsafe extern "C" fn(out: *mut f32) -> c_int>,
+    pub checkpoint: Option<unsafe extern "C" fn(out: *mut f32) -> c_int>,
+    pub progress_flags: Option<unsafe extern "C" fn(fn_: gn_progress_flag_fn, user: *mut c_void) -> c_int>,
+    pub progress_find: Option<unsafe extern "C" fn(name: *const c_char, out: *mut gn_progress_flag) -> c_int>,
+    pub progress_set: Option<unsafe extern "C" fn(flag: *mut c_void, value: i32, now: *mut i32) -> c_int>,
+    pub mission: Option<unsafe extern "C" fn(index: *mut i32, name: *mut c_char, name_size: usize) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -383,4 +408,5 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 936);
+const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1000);

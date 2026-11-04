@@ -14,6 +14,21 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 22: health, the waypoint, the checkpoint, the mission** (2026-11-04, untested in game). From
+  the user's Cheat Engine table (`docs/research/cheat-table.md`; `db/annotations/gamestate.yaml`):
+  `character_health` / `character_set_health` (health component +0x20, max +0x24), `waypoint`
+  (PamClientUIMapEntity +0x128 -> +0x2270), `checkpoint` (the spawn updater's first entity, the
+  table's path; the first read logs each object's type). Progression (the save's flags, for save
+  editors): `progress_flags` / `progress_find` from PamProgressionData's reflected fields, values
+  from the progression manager's map, `progress_set` through the game's setter
+  (ProgressionManager_setFlag 0x1439e3d90, checked in the decompiler; flags that sync to online
+  stats refused), `mission` (index and name: SystemGeneratedFlags.Flags[0]'s value). Console:
+  `progress [filter]`, `progress NAME VALUE`. Trainer: To the waypoint / checkpoint, One-hit KSEC,
+  Faith's health with Full, the mission.
+  Fixed (2026-11-04, a crash in game): unloading or reloading a mod whose gn_mod_load had failed ran
+  its gn_mod_unload with no API (a trainer built for API 22 on an older GridNode). GridNode now only
+  asks loaded mods to stop, GN_MOD_UNLOAD returns at once without an API, and GN_MOD / gn_mod! return
+  2 for "GridNode too old", which the log says plainly.
 - **API 21: body velocities and gravity; Field diff** (2026-11-04, untested in game).
   `body_velocity`, `body_set_velocity`, `body_push` (dynamic bodies, world space, through
   hknpWorld_setBodyVelocity); `physics_gravity` / `physics_set_gravity` per realm (hknpWorld +0x4c0,

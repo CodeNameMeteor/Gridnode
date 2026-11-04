@@ -36,11 +36,16 @@ pub unsafe fn __load(api: *const sys::gn_api, name: &str, main: fn() -> bool) ->
     }
     let a = &*api;
     if a.version < sys::GN_API_VERSION || (a.size as usize) < core::mem::size_of::<sys::gn_api>() {
-        return 1; // an older GridNode than this mod was built for
+        return 2; // an older GridNode than this mod was built for (GridNode says so)
     }
     let _ = API.set(Api(a));
     let _ = NAME.set(CString::new(name).unwrap_or_default());
     if guard("the mod's main", false, main) { 0 } else { 1 }
+}
+
+#[doc(hidden)]
+pub fn __loaded() -> bool {
+    API.get().is_some()
 }
 
 /// Defines the mod's entry point. The closure runs once, on GridNode's thread, and returns
@@ -63,6 +68,9 @@ macro_rules! gn_mod_unload {
     ($unload:expr) => {
         #[no_mangle]
         pub unsafe extern "C" fn gn_mod_unload() -> core::ffi::c_int {
+            if !$crate::__loaded() {
+                return 0; // never loaded: nothing to stop
+            }
             let f: fn() -> bool = $unload;
             if f() { 0 } else { 1 }
         }
@@ -372,6 +380,83 @@ pub fn gravity(realm: i32) -> Option<[f32; 3]> {
 /// Sets a realm's gravity (None: the game's back). Kept for later worlds; undone when the mod unloads.
 pub fn set_gravity(realm: i32, g: Option<[f32; 3]>) -> i32 {
     unsafe { (api().physics_set_gravity.unwrap())(realm, g.as_ref().map_or(core::ptr::null(), |x| x.as_ptr())) }
+}
+/// A server character's (health, max health). Server thread.
+pub fn health(server_character: *mut c_void) -> Option<(f32, f32)> {
+    let (mut h, mut m) = (0.0f32, 0.0f32);
+    (unsafe { (api().character_health.unwrap())(server_character, &mut h, &mut m) } == 0).then_some((h, m))
+}
+/// Writes a server character's health only (0 is not a death). Server thread.
+pub fn set_health(server_character: *mut c_void, health: f32) -> i32 {
+    unsafe { (api().character_set_health.unwrap())(server_character, health) }
+}
+/// The map marker, if one is set.
+pub fn waypoint() -> Option<[f32; 3]> {
+    let mut v = [0.0f32; 3];
+    (unsafe { (api().waypoint.unwrap())(v.as_mut_ptr()) } == 0).then_some(v)
+}
+/// Where Faith comes back after a death.
+pub fn checkpoint() -> Option<[f32; 3]> {
+    let mut v = [0.0f32; 3];
+    (unsafe { (api().checkpoint.unwrap())(v.as_mut_ptr()) } == 0).then_some(v)
+}
+/// A progression flag (the save's): its name, group, value now and limits.
+#[derive(Clone, Debug)]
+pub struct ProgressFlag {
+    pub flag: *mut c_void,
+    pub name: String,
+    pub group: String,
+    pub name_hash: u32,
+    pub mission_index: u32,
+    pub value: Option<i32>,
+    pub max_value: i32,
+    pub clamp: bool,
+    /// Its value goes to online stats: `progress_set` refuses it.
+    pub online: bool,
+}
+fn progress_flag(f: &sys::gn_progress_flag) -> ProgressFlag {
+    let s = |p: *const c_char| if p.is_null() { String::new() } else { unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned() };
+    ProgressFlag {
+        flag: f.flag,
+        name: s(f.name),
+        group: s(f.group),
+        name_hash: f.name_hash,
+        mission_index: f.mission_index,
+        value: (f.has_value != 0).then_some(f.value),
+        max_value: f.max_value,
+        clamp: f.clamp != 0,
+        online: f.online != 0,
+    }
+}
+/// Every progression flag the game defines, with its value now (empty when not available).
+pub fn progress_flags() -> Vec<ProgressFlag> {
+    unsafe extern "C" fn each(f: *const sys::gn_progress_flag, user: *mut c_void) {
+        (*(user as *mut Vec<ProgressFlag>)).push(progress_flag(&*f));
+    }
+    let mut out: Vec<ProgressFlag> = Vec::new();
+    unsafe { (api().progress_flags.unwrap())(Some(each), &mut out as *mut _ as *mut c_void) };
+    out
+}
+/// One progression flag by name.
+pub fn progress_find(name: &str) -> Option<ProgressFlag> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let mut f: sys::gn_progress_flag = unsafe { core::mem::zeroed() };
+    (unsafe { (api().progress_find.unwrap())(c.as_ptr(), &mut f) } == 0).then(|| progress_flag(&f))
+}
+/// Sets a flag through the game's setter; Ok(the value the game kept). Server thread.
+pub fn progress_set(flag: *mut c_void, value: i32) -> Result<i32, i32> {
+    let mut now = 0i32;
+    match unsafe { (api().progress_set.unwrap())(flag, value, &mut now) } {
+        0 => Ok(now),
+        e => Err(e),
+    }
+}
+/// The active mission: (index, name); index 0 is none.
+pub fn mission() -> Option<(i32, String)> {
+    let mut i = 0i32;
+    let mut buf = [0 as c_char; 128];
+    (unsafe { (api().mission.unwrap())(&mut i, buf.as_mut_ptr(), buf.len()) } == 0)
+        .then(|| (i, unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()))
 }
 /// Where the mod's DLL is installed (`mods\\` or `mods\\<name>\\`): its own files.
 pub fn mod_dir() -> String {

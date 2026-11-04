@@ -162,6 +162,7 @@ add_library(gridnode SHARED
   sdk/src/sounds.cpp
   sdk/src/tracer.cpp
   sdk/src/fielddiff.cpp
+  sdk/src/gamestate.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
   sdk/src/settings.cpp

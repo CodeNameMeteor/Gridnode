@@ -234,8 +234,9 @@ void start(Mod& m) {
     } else {
         // What it set up before failing goes: a failed mod is not left half running (its detours stayed in, 2026-11-03).
         const size_t hooks = takeOut(m.code, m.info.id, nullptr);
-        GN_LOG("mods: %s returned %d from gn_mod_load; what it had set up is taken out (%llu hooks)", name.c_str(), r,
-               static_cast<unsigned long long>(hooks));
+        GN_LOG("mods: %s returned %d from gn_mod_load; what it had set up is taken out (%llu hooks)%s", name.c_str(), r,
+               static_cast<unsigned long long>(hooks), r == 2 ? ": it was built for a newer GridNode (GN_MOD returns 2 then)" : "");
+        if (r == 2) m.info.status = "needs a newer GridNode";
     }
 }
 
@@ -310,7 +311,10 @@ bool unload(Mod& m, bool all = false) {
             return false;
         }
     }
-    if (auto stop = reinterpret_cast<UnloadFn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_unload")))) {
+    // Only a mod whose gn_mod_load succeeded is asked to stop: one that refused to load (an older
+    // GridNode than it needs) has no API to stop with, and its unload crashed on that (2026-11-04).
+    auto stop = m.info.loaded ? reinterpret_cast<UnloadFn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_unload"))) : nullptr;
+    if (stop) {
         int r = 0;
         try {
             r = stop();

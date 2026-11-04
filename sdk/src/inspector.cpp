@@ -959,7 +959,21 @@ void remember(const std::string& line) {
     if (g_cmdHistory.size() > 200) g_cmdHistory.erase(g_cmdHistory.begin());
 }
 
+std::string g_conInsert; // a line clicked in the output, for the input (render thread)
+bool g_conPick = false;   // the input takes the focus for it
+
 int inputCallback(ImGuiInputTextCallbackData* d) {
+    if (d->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
+        // After the focus moved here (which selects all), the clicked line's command, cursor at the end.
+        if (!g_conInsert.empty()) {
+            d->DeleteChars(0, d->BufTextLen);
+            d->InsertChars(0, g_conInsert.c_str());
+            d->ClearSelection();
+            d->CursorPos = d->BufTextLen;
+            g_conInsert.clear();
+        }
+        return 0;
+    }
     if (d->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
         if (g_cmdHistory.empty()) return 0;
         const int before = g_cmdHistPos;
@@ -1040,8 +1054,34 @@ void drawConsole(bool* open) {
             while (clip.Step())
                 for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
                     const std::string& l = g_conLines[size_t(i)];
+                    // Each line can be picked: a progress flag's line ("NAME  [GROUP]  value") puts
+                    // "progress NAME " in the input for its new value; any other line is copied.
+                    const size_t group = l.find("  [");
+                    const bool flag = group != std::string::npos && group > 0 && l.find(' ') == group && l[0] != '>';
+                    ImGui::PushID(i);
+                    const bool picked = ImGui::Selectable("##line", false, ImGuiSelectableFlags_AllowOverlap);
+                    const bool hovered = ImGui::IsItemHovered();
+                    if (ImGui::BeginPopupContextItem("line")) {
+                        if (ImGui::MenuItem("Copy the line")) ImGui::SetClipboardText(l.c_str());
+                        if (flag && ImGui::MenuItem("Copy the flag's name")) ImGui::SetClipboardText(l.substr(0, group).c_str());
+                        if (ImGui::MenuItem("Copy everything")) {
+                            std::string all;
+                            for (const std::string& x : g_conLines) all += x + "\n";
+                            ImGui::SetClipboardText(all.c_str());
+                        }
+                        ImGui::EndPopup();
+                    }
+                    ImGui::SameLine(0.f, 0.f);
+                    ImGui::SetCursorPosX(ImGui::GetCursorStartPos().x);
                     if (!l.empty() && l[0] == '>') ImGui::TextColored(ImVec4(1.f, 0.6f, 0.45f, 1.f), "%s", l.c_str());
                     else ImGui::TextUnformatted(l.c_str());
+                    if (hovered) ImGui::SetTooltip(flag ? "Click: progress %s (then type its value). Right-click: copy." : "Click: copy the line. Right-click: more.",
+                                                   flag ? l.substr(0, group).c_str() : "");
+                    if (picked) {
+                        if (flag) g_conInsert = "progress " + l.substr(0, group) + " ", g_conPick = true;
+                        else ImGui::SetClipboardText(l.c_str());
+                    }
+                    ImGui::PopID();
                 }
             if (g_conScroll) {
                 ImGui::SetScrollHereY(1.f);
@@ -1050,6 +1090,7 @@ void drawConsole(bool* open) {
         }
         ImGui::EndChild();
         static bool refocus = false;
+        if (g_conPick) refocus = true, g_conPick = false;
         if (refocus) {
             ImGui::SetKeyboardFocusHere(); // keep typing after Enter
             refocus = false;
@@ -1057,7 +1098,7 @@ void drawConsole(bool* open) {
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
         bool run = ImGui::InputTextWithHint("##in", "command (Up/Down: history, Tab: complete)", input, sizeof(input),
                                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory |
-                                                ImGuiInputTextFlags_CallbackCompletion,
+                                                ImGuiInputTextFlags_CallbackCompletion | ImGuiInputTextFlags_CallbackAlways,
                                             &inputCallback, const_cast<std::vector<ConsoleCommand>*>(&cmds));
         ImGui::SameLine();
         run |= ImGui::Button("Run");

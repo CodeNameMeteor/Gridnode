@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 21 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity */
+#define GN_API_VERSION 22 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -305,6 +305,22 @@ typedef struct gn_game_state {
     int32_t dash_started;
     float time_of_day;      /* seconds; -1 when there is no clock */
 } gn_game_state;
+
+/* A progression flag (API 22). Strings and pointers stay valid while the level does. */
+typedef struct gn_progress_flag {
+    void* flag;             /* the game's PamProgressionFlag (for progress_set) */
+    const char* name;       /* its Name */
+    const char* group;      /* the flag group or mission it is in ("" if none) */
+    uint32_t name_hash;     /* NameHash: the key the game stores the value by */
+    uint32_t mission_index; /* the mission it belongs to (0: none) */
+    int32_t value;          /* now (0 when the game holds no value for it) */
+    int32_t max_value;      /* MaxValue (with clamp, values stay in 0 .. max_value) */
+    uint8_t clamp;
+    uint8_t online;         /* its value goes to online stats: progress_set refuses it */
+    uint8_t has_value;      /* the game holds a value for it */
+    uint8_t reserved;
+} gn_progress_flag;
+typedef void (*gn_progress_flag_fn)(const gn_progress_flag* flag, void* user);
 
 typedef struct gn_api {
     uint32_t version;         /* GN_API_VERSION of the host */
@@ -766,6 +782,42 @@ typedef struct gn_api {
      * mod that set it unloads. Any thread. GN_ERR_UNAVAILABLE: no world yet (gravity: no level). */
     int (*physics_gravity)(int realm, float out[3]);
     int (*physics_set_gravity)(int realm, const float g[3]);
+
+    /* ==== GN_API_VERSION 22 =================================================================== */
+
+    /* ---- health ------------------------------------------------------------------------------------
+     * A server character's health and max health, from its health component (Faith: 100 / 100 as
+     * the game makes her; a KSEC: hits, 3 / 3). character_set_health writes the health only: the
+     * game's damage path is not run, so 0 is not a death; the next hit acts on the new value.
+     * Server thread. GN_ERR_ARGUMENT: not a server character; GN_ERR_UNAVAILABLE: no health
+     * component. */
+    int (*character_health)(void* server_character, float* health, float* max_health);
+    int (*character_set_health)(void* server_character, float health);
+
+    /* ---- where to go -------------------------------------------------------------------------------
+     * waypoint: the map marker the player set (world space; its height is the street's, so under a
+     * building it is not where to stand); GN_ERR_NOT_FOUND when none is set.
+     * checkpoint: where Faith comes back after a death. Any thread (they read).
+     * GN_ERR_UNAVAILABLE: not found in this level or not as expected. */
+    int (*waypoint)(float out[3]);
+    int (*checkpoint)(float out[3]);
+
+    /* ---- progression -------------------------------------------------------------------------------
+     * The save's progression: every flag the game defines (PamProgressionData: flag groups,
+     * missions' flags, the system's generated flags) with its value in the running game. What the
+     * game saves is these values, so a change is in the next save the game makes.
+     * progress_flags calls fn for each (names and pointers are valid during the call); returns how
+     * many, negative on an error. progress_find: one flag by name (case sensitive).
+     * progress_set sets one through the game's own setter (it clamps, sends
+     * PamProgressionFlagUpdatedMessage, tells missions and the entities bound to the flag), and
+     * returns GN_OK with *now the value the game kept. A flag that syncs to online stats
+     * (gn_progress_flag.online) is refused (GN_ERR_UNAVAILABLE): GridNode leaves online services
+     * alone. progress_set: server thread; the others any thread (they read).
+     * mission: the active mission's index (0: none) and, when name is given, its name. */
+    int (*progress_flags)(gn_progress_flag_fn fn, void* user);
+    int (*progress_find)(const char* name, gn_progress_flag* out);
+    int (*progress_set)(void* flag, int32_t value, int32_t* now);
+    int (*mission)(int32_t* index, char* name, size_t name_size);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

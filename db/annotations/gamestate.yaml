@@ -1,0 +1,39 @@
+# Health, the map waypoint, the last checkpoint and the active mission: from the user's Cheat Engine
+# table (docs/research/cheat-table.md), checked in Ghidra on 2026-11-04 as each note says. GridNode
+# checks every object on the way by its reflected type.
+defaults: { confidence: inferred, sources: [cheat-table, ghidra] }
+
+globals:
+  - name: SpawnEntityUpdater
+    va: 0x142548128
+    type: "void*"
+    note: "The ServerSpawnEntity updater (made by the ServerSpawnEntity constructor 0x14337cd70; 0xa0 bytes, realm 1). An entity updater's entities start inline at +0x70 (0x14316ff10 points +0x48, +0x50, +0x68 there). The table's checkpoint: [+0x70] +0x28 -> +0x38 -> +0x158 -> +0x170 (Vec3)."
+  - name: UIMapEntityUpdater
+    va: 0x1425789b0
+    type: "void*[2]"
+    note: "The PamClientUIMapEntity updaters, one per realm (0x14394bc70 makes one on first use; index = entity flags & 1). The table's waypoint: [[0] +0x70] (the map entity) +0x128 -> +0x2270 (Vec3)."
+  - name: ProgressionManager
+    va: 0x14257c9d8
+    type: "void*"
+    note: "The server's progression values (the save's flags): +0x20 buckets (u64 each), +0x28 bucket count (u32); an entry is { u32 key (a PamProgressionFlag's NameHash), ..., +0x18 i32 value, +0x28 next }, the end marker is buckets[count] (lookup 0x1439da880, also 0x1439e1b60, 0x1439e41f0). The table's active mission is the entry in bucket +0x1858 (one bucket count only)."
+  - name: ProgressionSettings
+    va: 0x14257cb98
+    type: "PamProgressionSettings*"
+    note: "Set on first use by SettingsManager_getByType(PamProgressionSettings) (0x1439e3d90); GridNode finds the settings object by its type instead. +0x20 PlayerProgressionData (PamProgressionData, reflected)."
+
+functions:
+  - name: ProgressionManager_setFlag
+    va: 0x1439e3d90
+    signature: "int32_t(void* manager, PamProgressionFlag* flag, int32_t value, bool add, bool notifyMissions, bool onlyInItsMission)"
+    note: "Sets (add: adds to) a flag's value: clamps it to [0, MaxValue] when the flag's Clamp is set, tells the mission manager when it is the active mission flag (PlayerProgressionData.SystemGeneratedFlags.Flags[0]), the reward conditions, the PamServerProgressionFlagEntity objects bound to the flag, flag group entities, mission entities (notifyMissions), and sends PamProgressionFlagUpdatedMessage (flag NameHash, value) on the server's message manager. onlyInItsMission: a flag with a MissionIndex is only set while that mission is active. Returns the new value. Server (g_serverGameContext). Checked in the decompiler, 2026-11-04."
+
+constants:
+  - { name: HealthComponent_Health, value: 0x20, note: "f32, a server health component's health (PamServerHumanHealthComponent: the table; PamServerAIHealthComponent: the Field diff window, 3 -> 2 -> 0 under hits)." }
+  - { name: HealthComponent_MaxHealth, value: 0x24, note: "f32 (the table)." }
+  - { name: EntityUpdater_Entities, value: 0x70 }
+  - { name: UIMap_Waypoint, value: 0x128, note: "PamClientUIMapEntity +0x128 -> +0x2270: the waypoint (Vec3, the table)." }
+  - { name: Waypoint_Position, value: 0x2270 }
+  - { name: Progression_Buckets, value: 0x20 }
+  - { name: Progression_BucketCount, value: 0x28 }
+  - { name: Progression_EntryValue, value: 0x18 }
+  - { name: Progression_EntryNext, value: 0x28 }

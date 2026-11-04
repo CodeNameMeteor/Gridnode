@@ -414,6 +414,14 @@ const gn_api* api() {
         a.body_push = apiBodyPush;
         a.physics_gravity = physicsGravity;
         a.physics_set_gravity = apiSetGravity;
+        a.character_health = characterHealth;
+        a.character_set_health = characterSetHealth;
+        a.waypoint = waypoint;
+        a.checkpoint = checkpoint;
+        a.progress_flags = progressFlags;
+        a.progress_find = progressFind;
+        a.progress_set = progressSet;
+        a.mission = mission;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

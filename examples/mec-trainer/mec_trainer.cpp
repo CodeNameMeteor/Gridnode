@@ -311,6 +311,71 @@ void setGodMode(bool on) {
     });
 }
 
+// ---- arriving somewhere far ------------------------------------------------------------------------
+// After a long teleport the game has not streamed in the ground there yet: she would fall through it
+// (or into a kill volume). So she is held at the target (client tick, as noclip does) while the
+// server tick casts a ray down, and let go onto the ground once it is there; at most 15 s.
+struct Arrival {
+    bool on = false, found = false;
+    float at[3] = {};
+    float groundY = 0.f;
+    ULONGLONG start = 0;
+    std::string what;
+} g_arrival; // (g_m)
+
+void arriveAt(const char* what, const float at[3]) {
+    std::lock_guard<std::mutex> lock(g_m);
+    g_arrival = Arrival{};
+    g_arrival.on = true, g_arrival.what = what, g_arrival.start = GetTickCount64();
+    for (int i = 0; i < 3; ++i) g_arrival.at[i] = at[i];
+}
+
+// Server tick: is the ground there yet?
+void arrivalServer() {
+    float at[3];
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (!g_arrival.on || g_arrival.found) return;
+        for (int i = 0; i < 3; ++i) at[i] = g_arrival.at[i];
+    }
+    gn::RayHit hit;
+    if (!gn::raycast({at[0], at[1] + 2.f, at[2]}, {at[0], at[1] - 60.f, at[2]}, hit)) return;
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_arrival.on) g_arrival.found = true, g_arrival.groundY = hit.position[1];
+}
+
+// Client tick: hold her, or let her go. True while she is held.
+bool arrivalClient() {
+    Arrival a;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        a = g_arrival;
+    }
+    if (!a.on) return false;
+    const float waited = (GetTickCount64() - a.start) / 1000.f;
+    gn::Movement w{};
+    if (a.found || waited > 15.f) {
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_arrival.on = false;
+        }
+        const float y = a.found ? a.groundY + 0.1f : a.at[1];
+        gn::setPosition({a.at[0], y, a.at[2]});
+        w.last_ground_y = y;
+        w.state = 2;
+        gn::setMovement(w, GN_MOVE_LAST_GROUND_Y | GN_MOVE_STATE | GN_MOVE_SPEED);
+        char b[128];
+        if (a.found) snprintf(b, sizeof(b), "At the %s: the ground loaded after %.1f s", a.what.c_str(), waited);
+        else snprintf(b, sizeof(b), "At the %s: no ground under her after 15 s, let go", a.what.c_str());
+        status(b);
+        return false;
+    }
+    gn::setPosition({a.at[0], a.at[1], a.at[2]});
+    w.last_ground_y = -2000.f; // no fall damage from the hold
+    gn::setMovement(w, GN_MOVE_LAST_GROUND_Y | GN_MOVE_SPEED);
+    return true;
+}
+
 void savePosition() {
     gn::runOnServer([] {
         void* faith = gn::localServerCharacter();
@@ -332,14 +397,24 @@ void loadPosition() {
     gn::runOnServer([] {
         gn::Transform t;
         float speed;
+        bool saved;
         {
             std::lock_guard<std::mutex> lock(g_m);
-            if (!g_saved) return status("Load: nothing saved");
+            saved = g_saved;
             t = g_savedAt;
             speed = g_savedSpeed;
         }
+        // status() takes g_m itself: called under the lock above it threw (a crash, 2026-11-04).
+        if (!saved) return status("Load: nothing saved");
         void* faith = gn::localServerCharacter();
+        gn::Vec3 was{};
+        const bool distant = faith && gn::positionOf(faith, was) &&
+                         std::hypot(was.x - t.trans[0], was.z - t.trans[2]) > 150.f; // likely not streamed in
         if (!faith || gn::teleport(faith, t) != GN_OK) return status("Load: teleport refused");
+        if (distant) {
+            arriveAt("saved position", t.trans);
+            return status("Loaded far away: waiting for the ground there");
+        }
         gn::runOnClient([speed] {
             gn::Movement m{};
             m.last_ground_y = -2000.f; // no fall damage from where Faith was
@@ -529,8 +604,59 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
             chain ? "last landing" : "ray's contact height", vy, next - target, dt * 1000.f);
 }
 
+// ---- health, the waypoint, the checkpoint (API 22) ---------------------------------------------------
+std::atomic<bool> g_oneHit{false};       // every KSEC down to 1 hit
+std::atomic<float> g_health{-1.f}, g_maxHealth{-1.f};
+std::atomic<int> g_mission{0};
+std::atomic<bool> g_haveMission{false};
+std::string g_missionName; // (g_m)
+
+// Faith to a place (the checkpoint), as loadPosition does: no fall damage after it.
+void teleportTo(const char* what, bool (*where)(gn::Vec3&), float up) {
+    gn::runOnServer([what, where, up] {
+        gn::Vec3 at;
+        if (!where(at)) {
+            char b[96];
+            snprintf(b, sizeof(b), "No %s to go to", what);
+            return status(b);
+        }
+        gn::Transform t{};
+        t.right[0] = t.up[1] = t.forward[2] = 1.f;
+        t.trans[0] = at.x, t.trans[1] = at.y + up, t.trans[2] = at.z;
+        void* faith = gn::localServerCharacter();
+        if (!faith || gn::teleport(faith, t) != GN_OK) return status("Teleport refused");
+        arriveAt(what, t.trans); // held there until the ground streams in
+        char b[128];
+        snprintf(b, sizeof(b), "To the %s (%.1f, %.1f, %.1f): waiting for the ground", what, at.x, at.y, at.z);
+        status(b); // logs it too
+    });
+}
+
+void healthTick(void* faith) {
+    float h = -1.f, m = -1.f;
+    if (gn::health(faith, h, m)) g_health = h, g_maxHealth = m;
+    else g_health = -1.f;
+    int32_t id = 0;
+    std::string name;
+    g_haveMission = gn::mission(id, &name);
+    g_mission = id;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        g_missionName = name;
+    }
+    if (!g_oneHit) return;
+    static int said = 0;
+    gn::entitiesOfClass("ServerCharacterEntity", [&](void* e, gn::Type) {
+        float eh, em;
+        if (e == faith || !gn::health(e, eh, em) || eh <= 1.f) return;
+        if (gn::setHealth(e, 1.f) == GN_OK && said++ < 10) gn::log("one hit: a %s's health %.1f -> 1", gn::Type::of(e).name(), eh);
+    });
+}
+
 void serverTick(float) {
     void* faith = gn::localServerCharacter();
+    if (faith) healthTick(faith);
+    arrivalServer();
     gn::Vec3 p;
     if (!faith || !gn::positionOf(faith, p)) return;
     gn::RayHit hit;
@@ -672,6 +798,10 @@ void clientTick(float dt) {
     }
     if (g_noclipActive) {
         noclipClient(m, keys);
+        g_havePrevY = false;
+        return;
+    }
+    if (arrivalClient()) {
         g_havePrevY = false;
         return;
     }
@@ -839,6 +969,23 @@ void trainerTab() {
     bool v;
     v = g_god;
     if (ImGui::Checkbox(withKey("God mode", "god").c_str(), &v)) g_god = v, setGodMode(v);
+    ImGui::SameLine();
+    v = g_oneHit;
+    if (ImGui::Checkbox("One-hit KSEC", &v)) g_oneHit = v;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every other character's health down to 1 (a KSEC has 3: one per hit).");
+    if (const float h = g_health.load(); h >= 0.f) {
+        ImGui::TextDisabled("Health %.1f / %.1f", h, g_maxHealth.load());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Full")) gn::runOnServer([] {
+            float hh, mm;
+            if (void* f = gn::localServerCharacter(); f && gn::health(f, hh, mm)) gn::setHealth(f, mm);
+        });
+    }
+    if (g_haveMission) {
+        std::lock_guard<std::mutex> lock(g_m);
+        ImGui::SameLine();
+        ImGui::TextDisabled("  mission %d %s", g_mission.load(), g_missionName.c_str());
+    }
     v = g_noclip;
     if (ImGui::Checkbox(withKey("Noclip", "noclip").c_str(), &v)) g_noclip = v;
     if (g_noclip) {
@@ -913,6 +1060,8 @@ void trainerTab() {
     if (ImGui::Button(withKey("Load", "load").c_str())) loadPosition();
     ImGui::SameLine();
     if (ImGui::Button("Jump")) gn::jump();
+    // No "to the waypoint": the marker's height is the street's, so she landed under buildings (user, 2026-11-04).
+    if (ImGui::Button("To the checkpoint")) teleportTo("checkpoint", gn::checkpoint, 0.5f);
     {
         std::lock_guard<std::mutex> lock(g_m);
         if (!g_status.empty()) ImGui::TextDisabled("%s", g_status.c_str());

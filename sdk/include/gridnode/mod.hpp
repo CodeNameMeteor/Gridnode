@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <initializer_list>
 #include <string>
@@ -60,19 +61,37 @@ inline uint64_t rva(uint64_t va) { return api().rva(va); }
 template <class Fn> Fn function(uint64_t va) { return reinterpret_cast<Fn>(static_cast<uintptr_t>(rva(va))); }
 
 // ---- threads ---------------------------------------------------------------------------------
+namespace detail {
+// A mod's callback, kept from throwing into GridNode (the exception would cross two runtimes): what
+// it threw goes to the log.
+template <class Fn> void guarded(const char* what, Fn&& fn) {
+#if defined(__cpp_exceptions) || defined(_CPPUNWIND)
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        log("%s threw: %s", what, e.what());
+    } catch (...) {
+        log("%s threw", what);
+    }
+#else
+    (void)what;
+    fn();
+#endif
+}
+} // namespace detail
 template <class F> bool onServerTick(F f) {
     auto* p = detail::keep(std::function<void(float)>(std::move(f)));
-    return api().on_server_tick([](float dt, void* u) { (*static_cast<std::function<void(float)>*>(u))(dt); }, p) == GN_OK;
+    return api().on_server_tick([](float dt, void* u) { detail::guarded("a server tick", [&] { (*static_cast<std::function<void(float)>*>(u))(dt); }); }, p) == GN_OK;
 }
 template <class F> bool onClientTick(F f) {
     auto* p = detail::keep(std::function<void(float)>(std::move(f)));
-    return api().on_client_tick([](float dt, void* u) { (*static_cast<std::function<void(float)>*>(u))(dt); }, p) == GN_OK;
+    return api().on_client_tick([](float dt, void* u) { detail::guarded("a client tick", [&] { (*static_cast<std::function<void(float)>*>(u))(dt); }); }, p) == GN_OK;
 }
 template <class F> void runOnServer(F f) {
     auto* p = new std::function<void()>(std::move(f));
     api().run_on_server([](void* u) {
         auto* fn = static_cast<std::function<void()>*>(u);
-        (*fn)();
+        detail::guarded("a runOnServer task", [&] { (*fn)(); });
         delete fn;
     }, p);
 }
@@ -80,7 +99,7 @@ template <class F> void runOnClient(F f) {
     auto* p = new std::function<void()>(std::move(f));
     api().run_on_client([](void* u) {
         auto* fn = static_cast<std::function<void()>*>(u);
-        (*fn)();
+        detail::guarded("a runOnClient task", [&] { (*fn)(); });
         delete fn;
     }, p);
 }
@@ -363,6 +382,46 @@ inline bool gravity(int realm, Vec3& out) {
 inline int setGravity(int realm, const Vec3* g) {
     const float v[3] = {g ? g->x : 0.f, g ? g->y : 0.f, g ? g->z : 0.f};
     return api().physics_set_gravity(realm, g ? v : nullptr);
+}
+
+// ---- health, where to go (API 22) ------------------------------------------------------------------
+// A server character's health and max health (Faith: 100; a KSEC: hits, 3). Server thread.
+inline bool health(void* serverCharacter, float& health, float& maxHealth) {
+    return api().character_health(serverCharacter, &health, &maxHealth) == GN_OK;
+}
+// Writes the health only (0 is not a death: the next hit acts on it). Server thread.
+inline int setHealth(void* serverCharacter, float health) { return api().character_set_health(serverCharacter, health); }
+// The map marker; false when none is set. Any thread.
+inline bool waypoint(Vec3& out) {
+    float v[3];
+    if (api().waypoint(v) != GN_OK) return false;
+    out = {v[0], v[1], v[2]};
+    return true;
+}
+// Where Faith comes back after a death. Any thread.
+inline bool checkpoint(Vec3& out) {
+    float v[3];
+    if (api().checkpoint(v) != GN_OK) return false;
+    out = {v[0], v[1], v[2]};
+    return true;
+}
+// ---- progression (API 22): the save's flags ---------------------------------------------------------
+// fn(const gn_progress_flag&) for every flag the game defines, with its value now; how many
+// (negative: not available, e.g. no level). Any thread.
+template <class F> int progressFlags(F fn) {
+    return api().progress_flags([](const gn_progress_flag* f, void* u) { (*static_cast<F*>(u))(*f); }, &fn);
+}
+// One flag by name (case sensitive). Any thread.
+inline bool progressFind(const char* name, gn_progress_flag& out) { return api().progress_find(name, &out) == GN_OK; }
+// Sets a flag through the game's setter (it clamps, tells missions, sends the flag update message);
+// *now: the value the game kept. Flags that sync to online stats are refused. Server thread.
+inline int progressSet(void* flag, int32_t value, int32_t* now = nullptr) { return api().progress_set(flag, value, now); }
+// The active mission's index (0: none) and its name. Any thread.
+inline bool mission(int32_t& index, std::string* name = nullptr) {
+    char b[128] = {};
+    if (api().mission(&index, name ? b : nullptr, sizeof(b)) != GN_OK) return false;
+    if (name) *name = b;
+    return true;
 }
 
 // ---- the mod's folder (API 20) ------------------------------------------------------------------
@@ -668,7 +727,7 @@ private:
 #define GN_MOD(NAME)                                                                              \
     static bool gn_mod_main();                                                                    \
     extern "C" GN_MOD_EXPORT int gn_mod_load(const gn_api* api) {                                 \
-        if (!api || api->version < GN_API_VERSION || api->size < sizeof(gn_api)) return 1;         \
+        if (!api || api->version < GN_API_VERSION || api->size < sizeof(gn_api)) return 2; /* GridNode too old */ \
         ::gn::detail::apiPtr() = api;                                                             \
         ::gn::detail::modName() = NAME;                                                           \
         return gn_mod_main() ? 0 : 1;                                                             \
@@ -697,5 +756,8 @@ private:
 
 #define GN_MOD_UNLOAD()                                                                           \
     static bool gn_mod_unload_main();                                                             \
-    extern "C" GN_MOD_EXPORT int gn_mod_unload() { return gn_mod_unload_main() ? 0 : 1; }          \
+    extern "C" GN_MOD_EXPORT int gn_mod_unload() {                                                \
+        if (!::gn::detail::apiPtr()) return 0; /* never loaded: nothing to stop */                \
+        return gn_mod_unload_main() ? 0 : 1;                                                      \
+    }                                                                                             \
     static bool gn_mod_unload_main()

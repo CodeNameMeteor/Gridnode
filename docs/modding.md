@@ -252,6 +252,11 @@ std::string level = gn::levelName();
 | `soundPlay(assetPath[, pos, event])` / `soundEvent` / `soundMove` / `soundPlaying` / `soundStop` | client | A voice of the game's sound system for a loaded sound asset; event null plays its default start. Stopped when the mod unloads (API 19). |
 | `bodyVelocity` / `bodySetVelocity` / `bodyPush(entity, body, change)` | the entity's realm | A moving (dynamic) body's velocity, world space; a static body reads zeros and can't be set (API 21). The city's worlds hold almost no dynamic bodies: in game, every prop near Faith was static. |
 | `gravity(realm, out)` / `setGravity(realm, g)` | any | A physics world's gravity (0 client, 1 server; the client's effect world too). It moves dynamic bodies only, not Faith's own movement or the bodies the game moves with animations, so in the city it has almost nothing to act on. Kept for later worlds, undone when the mod unloads; `nullptr` puts the game's back (API 21). |
+| `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |
+| `waypoint(out)` / `checkpoint(out)` | any | The map marker (false when none is set), where Faith comes back after a death. From the user's Cheat Engine table's paths, checked by type on the way (API 22). |
+| `progressFlags(fn)` / `progressFind(name, out)` | any | The save's progression: every flag `PamProgressionData` defines (flag groups, missions' flags, the system's generated ones) with its name, group, value now, max and clamp (API 22). |
+| `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. A flag that syncs to online stats is refused. The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
+| `mission(index, &name)` | any | The active mission's index (0: none) and name (API 22). |
 | `characterDespawn(serverCharacter)` | server | An AI taken away as its spawner's Unspawn would; not Faith (API 19). |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
 

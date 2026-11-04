@@ -201,6 +201,16 @@ int apiBodySetVelocity(void* entity, uint32_t body, const float* linear, const f
 int apiBodyPush(void* entity, uint32_t body, const float* change);
 int physicsGravity(int realm, float* out);
 int physicsSetGravity(int realm, const float* g, const void* caller);
+// gamestate.cpp (API 22)
+int characterHealth(void* character, float* health, float* maxHealth); // server thread
+int characterSetHealth(void* character, float health);                 // server thread
+int waypoint(float* out);
+int checkpoint(float* out);
+int progressFlags(gn_progress_flag_fn fn, void* user);
+int progressFind(const char* name, gn_progress_flag* out);
+int progressSet(void* flag, int32_t value, int32_t* now); // server thread
+int mission(int32_t* index, char* name, size_t size);
+std::string progressCommand(const std::string& args); // the console's "progress [FILTER | NAME VALUE]"
 void forgetGravity(const CodeRange& r);
 bool cameraTransform(gn_transform& out); // the local player's camera
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
