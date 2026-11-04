@@ -63,13 +63,13 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   are the spawners whose template is `Characters/SpawnTemplates/Enemy/...` (the user's spawner logs:
   team is 2 for everyone). While on and no mission runs, the spawner's spawn (vtable +0xd0, slot
   hook) returns null for them and the ones out are despawned once a second; Faith's own spawner is
-  never touched. World tab → Research → Log characters lists characters with their templates.
+  never touched. (The research logger that found the templates was taken out of the World tab.)
 - **API 24 and trainer HUD** (user, 2026-11-04; untested in game). `action_held` (the player's own
   input by action, from the live EntryInputState). The free camera's key list is top right, and mods
   add rows to it (`gn::ui::freecamRow`). Trainer: its keys in that list; a show / hide trigger volumes
   key (3); health, position, speed and the mission on the Player tab; bhop practice in the middle of
   the screen (the landing bar, then ON TIME / EARLY / LATE / MISSED for the player's own jump on each
-  wall run or swing landing; presses the trainer made are not judged).
+  wall run jump's landing, state 8 only since 2026-11-04; presses the trainer made are not judged).
 - **Trainer fixes** (2026-11-04, from the user's log): movement blockers off crashed when turned off
   (it enabled barriers the game never had: PamOBBCollision_enableClient+0x82); now only barriers it
   disabled, with a body, go back. Noclip sends Faith to her safe spawn while the camera flies.

@@ -377,31 +377,6 @@ void ksecTick(float dt) {
     });
 }
 
-// Research: the characters alive with their spawners' templates (what told KSEC apart, above).
-void logCharacters() {
-    gn::runOnServer([] {
-        void* faith = gn::localServerCharacter();
-        gn::Vec3 me{};
-        if (!faith || !gn::positionOf(faith, me)) return gn::log("research: no Faith");
-        int32_t mission = 0;
-        std::string missionName;
-        gn::mission(mission, &missionName);
-        gn::log("research: characters near (%.1f, %.1f, %.1f), mission %d %s", me.x, me.y, me.z, mission, missionName.c_str());
-        int n = 0;
-        gn::entitiesOfClass("ServerCharacterEntity", [&](void* c, gn::Type t) {
-            gn::Vec3 p{};
-            void* spawner = nullptr;
-            if (c == faith || n >= 60 || !gn::positionOf(c, p)) return;
-            gn::read(static_cast<char*>(c) + 0x138, spawner);
-            const float dx = p.x - me.x, dz = p.z - me.z;
-            gn::log("research:   %s at %.1f m, spawner %p, KSEC %d, template %s", t.name(), std::sqrt(dx * dx + dz * dz), spawner, spawner && ksecSpawner(spawner) ? 1 : 0,
-                    spawnerTemplate(spawner).c_str());
-            ++n;
-        });
-        gn::log("research: %d characters (besides Faith)", n);
-    });
-}
-
 // ---- save / load ---------------------------------------------------------------------------------------
 std::mutex g_m;
 bool g_saved = false;
@@ -690,12 +665,13 @@ void onMove(const gn::MovementEvent& e, const gn::Movement&) {
     if (e.kind == GN_MOVE_EVENT_LANDED) {
         g_chainFrom = e.old_state == 8 || e.old_state == 25 ? e.old_state : 0;
         if (!g_chainFrom) g_chain = 0;
-        if (g_chainFrom) {
+        if (g_chainFrom == 8) { // the practice judges wall run landings only
             std::lock_guard<std::mutex> lock(g_practiceM);
             g_practice.landMs = nowMs(), g_practice.landFrom = g_chainFrom;
         }
     } else if (e.kind == GN_MOVE_EVENT_STATE && e.state != 0 && g_chainFrom) {
-        const bool hit = e.state == g_chainFrom;
+        const int from = g_chainFrom;
+        const bool hit = e.state == from;
         if (hit) {
             const int n = g_chain.fetch_add(1) + 1;
             if (n > g_bestChain) g_bestChain = n;
@@ -704,7 +680,7 @@ void onMove(const gn::MovementEvent& e, const gn::Movement&) {
         }
         g_chainFrom = 0;
         // The practice result, for the player's own presses only (not one the trainer just made).
-        if (g_landHud && GetTickCount() - g_lastHop > 500) {
+        if (g_landHud && from == 8 && GetTickCount() - g_lastHop > 500) {
             ULONGLONG press, land, air;
             {
                 std::lock_guard<std::mutex> lock(g_practiceM);
@@ -988,7 +964,9 @@ void clientTick(float dt) {
         gn::Landing lp{};
         const bool fresh = m.on_ground != 0 && gn::landingPrediction(lp) && lp.age_ms < 100 && lp.ticks_to_hit > 0.f;
         g_landTicks = lp.ticks_to_hit, g_landSoft = lp.soft_landing != 0;
-        g_landShow = fresh && lp.hit_height < p.y; // as auto-bhop: a hit above her feet is not a landing
+        // Only in the wall run jump (state 8), the one bhop the practice is for (user, 2026-11-04); a hit
+        // above her feet is not a landing (as auto-bhop).
+        g_landShow = fresh && m.state == 8 && lp.hit_height < p.y;
     } else {
         g_landShow = false;
     }
@@ -1174,10 +1152,6 @@ void worldTab() {
     if (ImGui::Checkbox("No city alerts (free roam)", &v)) g_noAlerts = v;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A KSEC alert ends as soon as it starts, and one already running ends. Not during missions.");
-    if (ImGui::CollapsingHeader("Research")) {
-        if (ImGui::Button("Log characters")) logCharacters();
-        ImGui::TextDisabled("The characters alive and their spawners' templates, to gridnode.log.");
-    }
     ImGui::SeparatorText("Post-processing");
     static const char* const kPost[3][2] = {{"Bloom", "BloomEnable"}, {"Blur", "BlurEnable"}, {"Vignette", "VignetteEnable"}};
     gn::Object pp = gn::settings("GlobalPostProcessSettings");
@@ -1351,8 +1325,8 @@ void settingsTab() {
     if (ImGui::Checkbox("Bhop practice", &v)) g_landHud = v;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("In the middle of the screen: the time to the landing (the game's prediction) as a bar running\n"
-                          "down to the jump window (green: jump now, red: a soft landing, no bhop), and after each bhop\n"
-                          "landing whether your own jump was on time, early or late.");
+                          "down to the jump window (green: jump now, red: a soft landing, no bhop), and after each wall\n"
+                          "run jump's landing whether your own jump was on time, early or late. Wall run jumps only.");
     ImGui::SeparatorText("Unload");
     if (ImGui::Button("Unload the trainer")) gn::unloadSelf(); // everything it changed goes back (GN_MOD_UNLOAD)
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts back what it changed and unloads it; GridNode's Mods list loads it again.");

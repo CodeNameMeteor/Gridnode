@@ -50,7 +50,7 @@ Six runs of the trainer's logger (free roam at three places, under the city, and
 - **Missions use the same KSEC templates** (Protector, SubProtector in "Be Like Water"): telling a
   mission's KSEC apart needs the mission index (`gn::mission`, 0 in free roam).
 - The spawners' own position (their data's `ControllableTransform`) is local to their blueprint: no
-  spawner was within 200 m by it, so the logger now lists characters only.
+  spawner was within 200 m by it. (The logger was taken out of the trainer once No KSEC was built.)
 
 Built from this: the trainer's World tab → **No KSEC (free roam)**.
 
