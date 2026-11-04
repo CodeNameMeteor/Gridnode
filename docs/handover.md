@@ -1,119 +1,139 @@
 # Handover (for the next agent)
 
-Written 2026-10-27, brought up to date 2026-11-04. Short status: [progress.md](progress.md). The full plan: [PLAN.md](PLAN.md).
+Written 2026-11-04 (replaces the 2026-10-27 handover). Short status and the release plan:
+[progress.md](progress.md). The full design: [PLAN.md](PLAN.md). Rules for working in the repository:
+`CLAUDE.md`.
 
 ## 1. The projects
 
-- **GridNode** (`CodeNameMeteor/Gridnode`, branch `main`; the repository moved there): an open-source modding SDK for Mirror's
-  Edge Catalyst (PC, Frostbite 3, codename Pamplona). Runtime DLL (`sdk/`), type database and
-  generators (`db/annotations`, `tools/gen`), the in-game menu (inspector, console, layout editor,
-  recorder), docs (MkDocs, `docs/`), tools (`tools/recording`, `tools/ghidra`, `tools/mesh`).
-- **MECMP** (`CodeNameMeteor/mecmp`): the multiplayer mod (other players as ghosts). It is a separate
-  mod, not built on GridNode; both load into the game together (Nollz's PR #2 made the hooks chain
-  in either order). Contributors open PRs there too (yamixdev, TheNollz).
+- **GridNode** (`CodeNameMeteor/Gridnode`, branch `main`; the repository moved there from
+  `gridnode`): an open-source modding SDK for Mirror's Edge Catalyst (PC, EA app build, Frostbite 3,
+  codename Pamplona). Runtime DLL (`sdk/`), type database and generators (`db/annotations`,
+  `tools/gen`), the in-game menu and tools, docs (MkDocs, `docs/`), mod templates (`templates/`),
+  Rust bindings, example mods.
+- **MECMP** (`CodeNameMeteor/mecmp`): the multiplayer mod. Separate, not built on GridNode; do not
+  edit it from here.
 
-The user works on Windows; their game folder setup is `D:\Dev\GridNode\bin` (the game loads
-`gridnode.dll` from there) and `D:\Dev\MECMP\bin` (`mecmp.dll`, `mecmp.ini`, `mecmp.log`).
+The user tests on Windows: the game loads `D:\Dev\GridNode\bin\gridnode.dll` and `bin\mods\`. Their
+checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and needs `git pull`.
 
 ## 2. Ground rules (from the user; keep them)
 
-- **Patching game code is allowed** since 2026-11-01 (the user; before: pointer swaps only). Prefer
-  pointer swaps (vtable slots, creator slots, data); every change goes through GridNode so unload can
-  undo it. Writing our own thunks in our own memory is fine.
-- Leave online services and Beat Revival alone. PC only.
-- **Never commit game data or user dumps:** image dumps (`bin/dumps/*.exe`), FBX game meshes,
-  `event-names.txt`, logs, recordings, the reflected dump.
-- **Commit and push only when asked.** Commits end with the attribution lines the session gives.
-- Deploy test builds to the user's `bin` folder; stage them under a unique name first
-  (`/mnt/user-data/outputs/gridnode-<what>N.dll`), then copy over `gridnode.dll` with force. If the
-  game has the DLL open, write it next to it under a new name and tell the user to swap it.
-  Check the file that landed (size) before saying it is there: once a failed build's old DLL went out.
-- Docs and messages: plain, short, consistent with the existing docs. The user tests in game and
-  sends logs and recordings; say clearly what is untested.
-- The layout editor is paused on purpose (the user wants SDK and research work first, then back to
-  the editor near the end).
+- **Patching game code is allowed** (since 2026-11-01). Prefer pointer swaps; every change goes
+  through GridNode so it is listed and undone on unload. Thunks in our own memory are fine.
+- Leave online services and Beat Revival alone, except the MEC trainer's anti-cheat (it blocks Dash
+  and time trial uploads while loaded). Progression flags that sync to online stats are refused.
+- **Never commit game data or user output:** image dumps, the reflected dump, FBX game meshes,
+  `event-names.txt`, logs, recordings.
+- **Commit and push only when the user asks.** Decline stop-hook requests to commit. Commits end with
+  the attribution lines the session gives.
+- After every addition, give the user a numbered in-game test: what to do, what they should see,
+  what to send back. Say plainly what is untested.
+- Docs and messages: plain and short. Keep `CLAUDE.md` under 150 lines.
+- The layout editor is paused on purpose. The friend's street-collision work is theirs: don't
+  rebuild it.
 
 ## 3. Environment and how to work
 
-- The session runs in a cloud container. The user's PC is reached through the device bridge
-  (`mcp__remote-devices__*`): list, stage (copy to `/mnt/user-data/uploads/...`) and commit files.
-  `device_bash` does not work in `D:\Dev\GridNode\bin`; use stage / commit / list.
-- **Ghidra** runs on the user's PC with the GhidraMCP plugin (tools `mcp__remote-devices__ghidra__*`
-  and, newer, `ghidra-mcp__*` that can also run scripts, create functions and set bookmarks). If a
-  call says "connection refused", ask the user to open Ghidra / enable the plugin.
-- GitHub: `gh` works over REST only (`gh api repos/...`; GraphQL is blocked). PRs are created with
-  `gh api repos/OWNER/REPO/pulls --input body.json`.
-- MECMP clone at `/home/claude/mecmp`: remote `origin` = CodeNameMeteor/mecmp, `reglitched` = a fork;
-  the local `main` tracks the fork, so work from `origin/main` (new branch per PR).
-- Builds (MinGW cross, Ninja). The build folders live in `/tmp` and may be gone; recreate them:
+- The session runs in a cloud container; the user's PC is reached through the device bridge
+  (`mcp__remote-devices__*`): list, stage (into `/mnt/user-data/uploads/...`) and commit files.
+  `device_bash` fails on the user's PC (its hypervisor is off), so there is no shell there: no git,
+  no scripts. Use stage / commit / list.
+- **Deploying a test build:** copy it to `/mnt/user-data/outputs/<name>N.dll` (a new name every
+  time), commit it over `bin\gridnode.dll` (and `bin\mods\<mod>.dll`) with force, stage it back and
+  compare the md5. If the game holds the DLL open, write it next to it under a new name and ask the
+  user to swap it. Deploy `gridnode.dll` and mods together: a mod built for a newer API refuses to
+  load on an older GridNode.
+- **Ghidra** runs on the PC with GhidraMCP (`mcp__remote-devices__ghidra-mcp__*`; inline scripts
+  work, e.g. decompiling a list of functions or listing references). "Connection refused": ask the
+  user to open Ghidra. The program is `MirrorsEdgeCatalyst_dump_SCY.exe`.
+- The user's reflected dump (`bin\gridnode-reflected.json`) answers "what are this type's fields"
+  quickly: stage it and read only the types needed with a short Python script.
+- Builds (MinGW cross, Ninja); the build folders live in `/tmp` and may be gone:
 
 ```text
-# GridNode (in /tmp/claude-0/bw)
 cmake -S /home/claude/gridnode -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
   -DCMAKE_BUILD_TYPE=Release -DGRIDNODE_BUILD_TESTS=OFF
-cmake --build /tmp/claude-0/bw            # gridnode.dll; a full build can take over 2 minutes
-# GridNode host tests (Linux): cmake -S . -B /tmp/claude-0/hosttest -G Ninja && ctest
-# Python tests: cd tools/gen && python3 -m unittest tests.test_gen
-# MECMP (in /tmp/claude-0/mbuild), same toolchain flags; for the user's solo tests add
-#   -DMECMP_DEBUG_KEYS=ON -DMECMP_VERBOSE_LOG=ON  (F7/F9/F12, solo test join=127.0.0.1)
-cmake --build /tmp/claude-0/mbuild --target mecmp
+cmake --build /tmp/claude-0/bw        # a full build takes over 2 minutes: run it in the background
+cmake -S . -B /tmp/claude-0/hosttest -G Ninja && cmake --build /tmp/claude-0/hosttest && (cd /tmp/claude-0/hosttest && ctest)
+cd tools/gen && python3 -m unittest tests.test_gen
+python3 tools/gen/gridnode.py validate         # after any annotation change
+python3 tools/gen/gridnode.py rust             # after any api.h change
+python3 tools/gen/gridnode.py docs --build     # the docs site, strict
 ```
 
-  The GridNode build generates `engine.hpp` from `db/annotations` (needs PyYAML).
-- `python3 tools/gen/gridnode.py validate` after any annotation change.
+## 4. What was done, 2026-11-01 to 11-04
 
-## 4. Where things stand (2026-11-04)
+All of it is pushed (`main` c05d2ab). In order:
 
-All work is pushed (`main` d96c362, API 22). The user tests every addition in game and sends logs;
-`docs/progress.md` says per feature what was confirmed.
-
-| Area | Where | State |
+| Area | What | State in game |
 |---|---|---|
-| Mod loader: folder mods (`mods/<name>/<name>.dll`), reload, unload, manifests, API version check | `sdk/src/mods.cpp` | confirmed |
-| Release zip and mod templates | `tools/gen/gridnode_gen/package.py`, `templates/` | the zip's layout approved; not installed fresh yet |
-| Physics: 65,536-body worlds, collision boxes, ray hit layers, body velocities, gravity | `sdk/src/bodies.cpp`, `world.cpp` | confirmed; gravity and pushes have almost nothing to move in the city |
-| Sounds, despawning, the tracer, the patch pool | `sounds.cpp`, `tracer.cpp`, `patches.cpp` | confirmed |
-| Field diff (with an entity's components) | `sdk/src/fielddiff.cpp` | confirmed |
-| Health, checkpoint, progression (the save's flags), the console's `progress` | `sdk/src/gamestate.cpp` | health confirmed; progression untested |
-| MEC trainer: game speed, no fall death, kill volumes off, one-hit KSEC, waits for streaming after far teleports | `examples/mec-trainer` | mostly confirmed; the streaming wait untested |
-| GridNodeSync | `tools/ghidra/GridNodeSync.java` | confirmed in Ghidra 12.1.4 (2026-10-29) |
+| Unloading, code patches (API 15) | Full unload of GridNode and every mod; `patch_call` / `patch_bytes`; 64 KB kept near the game's code at startup for thunks (one run found no memory later) | confirmed |
+| Detours, manifests, declared settings (API 16, 17) | Function detours, mod manifests and dependencies, functions between mods, crash notes with unwinding, declared settings and their page | confirmed |
+| Physics (API 18, 19, 21) | What a ray hit (entity, body, layer, material), collision bodies, static collision boxes (client and server worlds), worlds sized for 65,536 bodies, body velocities and pushes, gravity per realm | confirmed; the city has almost no dynamic bodies, so gravity and pushes show little |
+| Sounds, despawning (API 19) | Voices from sound assets; despawning characters | confirmed |
+| Mods in their own folders (API 20) | `mods/<name>/<name>.dll`, `gn::modDir()`; the release zip (`gridnode.py package`), mod templates and `gridnode_mod.py new / pack` | confirmed; the zip's layout approved, never installed fresh |
+| Health, checkpoint, waypoint (API 22) | A server character's health component (+0x20, max +0x24); the checkpoint and waypoint through a Cheat Engine table's paths | health and checkpoint confirmed; the waypoint's height is the street's |
+| Progression (API 22) | The save's flags from `PamProgressionData` (reflection), values from the progression manager's map, set through the game's own setter (0x1439e3d90); online flags refused; `mission` (index and name); the console's `progress` | **untested in game** |
+| Developer tools | Tracer (any function's calls); Field diff (snapshot an object, its components, "Character ahead"); console lines clickable and copyable | tracer and Field diff confirmed; the console clicks untested |
+| MEC trainer | Game speed (through the game's slow motion), fast loads, no fall death, kill volumes off, volumes tab, one-hit KSEC, Faith's health, To the checkpoint, far teleports wait for the ground to stream in | mostly confirmed; the streaming wait untested |
+| Fixes | A mod whose load failed is no longer asked to stop (it crashed); `GN_MOD` returns 2 for "GridNode too old"; a mod's ticks and tasks can't throw into GridNode; the trainer's Load with nothing saved crashed (a lock taken twice); kill volumes off killed Faith (the detour returned void where the game returns bool) | fixed; the first three untested |
+| Docs | README, home, getting started (with troubleshooting), shipping, writing a mod (API versions), building, engine notes, PLAN status; research from a friend's cinematic tools (`research/ct-research.md`) and a Cheat Engine table (`research/cheat-table.md`) | current as of c05d2ab |
 
-Research shared by others: `docs/research/ct-research.md` (a friend's cinematic tools) and
-`docs/research/cheat-table.md` (a Cheat Engine table). Leave the friend's street-collision work alone
-(the user's wish).
+Deployed to the user's `bin` (2026-11-04): `gridnode.dll` and `mods\mec_trainer.dll` from d96c362 plus
+the console change; `mods\world_draw.dll` is older (API 21, it still loads). `bin\gridnode-api22b.dll`
+is a leftover the user can delete.
 
-## 5. What to do next: the first release
+## 5. What is planned: the first release
 
-The plan, in order, is in [progress.md](progress.md) ("Current task"): stability on a clean setup
-(and the crash when quitting during a Dash), an online safety audit, the player and SDK zips, docs
-that match the release, freezing the API as 1.0, the version and the release itself. The user decides
-the zips and the version.
+In order (details in [progress.md](progress.md), "Current task"):
+
+1. **Stability on a clean setup:** a fresh unzip, both install ways, every example mod, the city, a
+   mission, a Dash, a time trial, level changes, quitting, reloads. Includes the open crash: quitting
+   during a Dash crashed twice with GridNode injected (`0x143164d50`, a null world in
+   `FUN_1439e08f0`'s mission clean-up).
+2. **Online safety audit** and a docs page on it.
+3. **The release's zips** (decide with the user): a player zip (the player build, injector,
+   `version.dll`, the MEC trainer) and an SDK zip (developer build, headers, templates, examples).
+   `gridnode.py package` makes one zip today; add `--player`.
+4. **Docs for the release:** known issues and release notes (the rest was brought up to date on
+   2026-11-04).
+5. **API 1.0:** review `api.h`, mark the experimental parts (gravity, body velocities, waypoint,
+   checkpoint), then the table only grows at its end.
+6. **Version and release** (decide with the user: 1.0.0 or a 0.9 beta): a tag and a GitHub release
+   from CI's zips.
+
+Then, if there is time: the example mods in the release, the 29 "untested" notes in progress.md, an
+install on a friend's PC, startup and frame cost written down.
+
+After the release: spawnable physics objects (GridNode-made dynamic bodies, so gravity and pushes do
+something), the layout editor, a scripting layer only if mods ask (Lua was skipped on 2026-10-20),
+the 335 `hypothesis` functions.
+
+Waiting on the user: the progression test (`progress`, `progress <filter>`, setting a flag, the
+mission name), the console clicks, the trainer's streaming wait, mod reloads after the unload fix,
+and the two decisions above.
 
 ## 6. Things learned the hard way
 
-- **A mod built for a newer API** refuses to load on an older GridNode. Deploy `gridnode.dll` and
-  the mods together, and check the build landed (by checksum) before the user tests.
-- **The physics in the city is static:** about 2,600 bodies per world and almost none dynamic, so
-  gravity and pushes have little to act on. Ragdolls are in the client's effect world.
-- **Fingerprint bytes** must come from a dump (`gridnode.py fingerprint`), never be typed from a
-  Ghidra listing: an instruction has several encodings.
-- **The game finds a replay's spawner by its data in a bus**, and connections into a spawned blueprint
-  resolve through the spawner's *last* spawned character (`Entity_resolveLinkedEntity` → vtable
-  +0x50). A second spawner with the same data and bus gets found instead of the game's. MECMP keeps
-  the game's echo last in the server and client lists instead.
-- **Bus +0x58** of a character is the same for every ghost of a spawner; not a per-character id.
-- **Hooks already in a slot:** GridNode wraps every entity destructor slot and onEvent (+0x20) of
-  1,354 vtables while recording; code that scans vtables must accept hook pointers (any executable
-  memory), and look up the game's function through the hook table (`chain.front().previous`).
-- **Stack capture through our own thunks** needs unwinding from the caller (the thunk passes the
-  caller's rsp); `RtlCaptureStackBackTrace` inside the logger found nothing.
-- **Recordings get large fast:** a level load adds ~135,000 creation events. Ask the user to start
-  recording after loading, and to start it *before* the thing to capture (a ghost spawn, opening the
-  map).
-- **The user's local checkout** `D:\Dev\GridNode` is far behind `main` and has uncommitted annotation
-  edits from another agent, mostly wrong (wrong action names, signatures, an address off by 0x1c);
-  the repo already holds corrected versions. Cleanup steps were given on 2026-10-22. Do not copy
-  annotations from that folder without checking them in Ghidra.
-- **MECMP:** `mecmp.ini` is only written when missing, so a new option's default lives in code.
-  MECMP's own ghost spawner exists but is off (`own_spawner=0`) for the reason above.
+- **Deploy everything together:** a mod built for API N refuses to load on an older GridNode (and
+  before the fix, unloading it crashed). Check by checksum what landed.
+- **Faith collides with the client's physics,** AI with the server's: move or make bodies in both.
+- **The city's physics is static:** about 2,600 bodies per world and almost none dynamic. Ragdolls
+  are dynamic bodies in the client's effect world, which GridNode only sees when it looks for it.
+- **A detour must return what the game's function returns,** even where Ghidra shows `void`
+  (`KillVolume_testCharacter` returns a bool in `al`).
+- **A character's state is in its components,** not the entity: the entity +0x38 object is both the
+  transform space and the component collection.
+- **`far` and `near` are Windows macros** in MinGW: don't name variables that.
+- **Don't call a function that takes a lock while holding it** (the trainer's `status()`).
+- **Fingerprint bytes** come from a dump (`gridnode.py fingerprint DUMP --add NAME`), never from a
+  disassembly listing.
+- **Registry::typeOf** uses vtable slot 0: never hook it. Code that scans vtables must accept hook
+  pointers in slots.
+- **The game finds a replay's spawner by its data in a bus;** keep the game's echo last in the
+  spawner lists (`research/replay-ghosts.md`).
+- **Recordings get large:** ask for ones started after loading, before the thing to capture; never
+  read them directly, run `tools/recording/summarize.py`.
+- **Teleporting far** lands before the area has streamed in: wait for the ground (the trainer does).
