@@ -124,7 +124,7 @@ struct CodeRange {
 };
 void forgetSettings(const CodeRange& r); // a mod's declared settings and listeners (modsettings.cpp)
 void forgetTicks(const CodeRange& r);    // at the next tick of each realm (server().removing())
-size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_client tasks, now
+size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_client tasks, now (just before its DLL is freed)
 bool taskLive(const thread::Dispatcher::Task& t); // false for a task into a mod being unloaded
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
 void forgetCreated(const CodeRange& r);

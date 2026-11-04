@@ -498,7 +498,8 @@ void forgetTicks(const CodeRange& r) {
 }
 
 size_t forgetTasks(const CodeRange& r) {
-    // run_on_server / run_on_client tasks still queued. A dropped task's user pointer is not freed:
+    // run_on_server / run_on_client tasks still queued when the mod's DLL is about to be freed (a
+    // realm that did not tick during the unload's wait). A dropped task's user pointer is not freed:
     // that is the mod's memory (gridnode/mod.hpp frees its closure inside the task), so a few bytes
     // leak rather than freed code run.
     auto mine = [r](const thread::Dispatcher::Task& t) {

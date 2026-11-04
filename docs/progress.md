@@ -49,15 +49,20 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **Reload fixes** (2026-11-04, from the user's log): a mod's tasks posted in its gn_mod_unload run
+  again before the free (they were dropped at take-out); the MEC trainer's kill volume hook accepts
+  GridNode's detour entry left from the last load (it was "not available" after every reload).
 - **Progression flags marked online are set by default** (user, 2026-11-04: many never reach an
   online service). `progress_set` and the console's `progress` set them; the log notes each one.
   `online_allow` now covers online console commands only.
 - **Review fixes and API 23** (2026-11-04, from the code review; untested in game). Crash notes: each
   fault address logged once (handled faults no longer use up a cap of 3), buffers static (a stack
   overflow writes its address and registers only), mods found by gridnode.ini's folder, any case.
-  Unload: a mod's queued `run_on_server` / `run_on_client` tasks are dropped (at take-out and again
-  just before the free; a dropped task's closure leaks a few bytes), skipped at dispatch while it
-  unloads, and `removing()` covers a tick that was already running them. `pollMods` keeps Reload /
+  Unload: a mod's queued `run_on_server` / `run_on_client` tasks run during the unload's wait (its
+  gn_mod_unload posts the ones that put the game back); what a realm that did not tick still holds is
+  dropped just before the free (a dropped task's closure leaks a few bytes), and `removing()` covers
+  a tick that was already running them. (First version dropped them at take-out: the trainer's
+  restore tasks were lost, 2026-11-04.) `pollMods` keeps Reload /
   Unload / Load asked for while one ran. Detours: the entry is written and recorded under one lock
   (an unload in between left an unlisted jump); failures give back the thunk room and slot.
   `pauseOthers` takes a second snapshot after pausing; patch_bytes over 16 bytes also waits for

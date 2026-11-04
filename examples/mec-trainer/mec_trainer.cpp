@@ -278,7 +278,12 @@ void hookKillVolumes() {
     namespace f = gn::engine::function;
     const uint8_t want[11] = {0x53, 0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x02};
     uint8_t got[11] = {};
-    if (gn::api().read(reinterpret_cast<void*>(f::KillVolume_testCharacter), got, sizeof(got)) != GN_OK || std::memcmp(got, want, sizeof(got)) != 0) {
+    // After a reload GridNode's detour entry is still there (a jmp over the first 5 bytes; it stays
+    // until GridNode unloads): the rest must still be the game's. Checking all 11 bytes refused the
+    // hook on every reload (2026-11-04).
+    const bool ok = gn::api().read(reinterpret_cast<void*>(f::KillVolume_testCharacter), got, sizeof(got)) == GN_OK &&
+                    (std::memcmp(got, want, sizeof(got)) == 0 || (got[0] == 0xE9 && std::memcmp(got + 5, want + 5, sizeof(got) - 5) == 0));
+    if (!ok) {
         gn::log("kill volumes off: the kill volume test does not look as expected; not available");
         return;
     }

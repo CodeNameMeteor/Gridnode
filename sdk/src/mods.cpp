@@ -72,29 +72,6 @@ std::wstring g_startingPath;
 // (g_expM) Mods that called online_allow, by id: their reason. Taken out with the mod (takeOut).
 std::map<std::string, std::string> g_online;
 
-// Mods being taken out right now. unload() works on a copy of the mod, so g_mods still says
-// "loaded" meanwhile; modCodeLive asks this first (a task queued for it is not run then).
-std::mutex g_unloadingM;
-std::vector<CodeRange> g_unloading; // (g_unloadingM)
-
-struct Unloading {
-    CodeRange code;
-    explicit Unloading(const CodeRange& c) : code(c) {
-        std::lock_guard<std::mutex> lock(g_unloadingM);
-        g_unloading.push_back(c);
-    }
-    ~Unloading() {
-        std::lock_guard<std::mutex> lock(g_unloadingM);
-        for (auto it = g_unloading.begin(); it != g_unloading.end(); ++it)
-            if (it->begin == code.begin && it->end == code.end) {
-                g_unloading.erase(it);
-                break;
-            }
-    }
-    Unloading(const Unloading&) = delete;
-    Unloading& operator=(const Unloading&) = delete;
-};
-
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
 std::wstring g_folder;   // the mods folder, with a trailing backslash
@@ -224,7 +201,6 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     const size_t hooksOut = forgetHooks(code, refused);
     forgetPatches(code);
     forgetTicks(code);
-    forgetTasks(code);
     forgetCreated(code);
     forgetLevel(code);
     forgetMessages(code);
@@ -366,7 +342,6 @@ bool unload(Mod& m, bool all = false) {
         }
     }
     const CodeRange code = imageOf(m.module);
-    const Unloading unloading(code);
     std::vector<std::string> refused;
     const size_t hooksOut = takeOut(code, m.info.id, &refused);
     configFlush(true);
@@ -399,8 +374,10 @@ bool unload(Mod& m, bool all = false) {
         forgetExports(code, m.info.id);
         return false;
     }
-    // No thread runs its code now, so nothing can queue a new task for it: whatever was queued
-    // since takeOut (a tick of it still running then) goes before the free.
+    // Its queued tasks ran during the wait above: gn_mod_unload posts the ones that put the game
+    // back (the trainer's time scale and god mode), so they are not taken out with its callbacks
+    // (taking them out at once left those undone, 2026-11-04). Only what a realm that was not
+    // ticking still holds goes now, before the free: nothing can queue more, no thread is in its code.
     forgetTasks(code);
     FreeLibrary(m.module);
     m.module = nullptr;
@@ -656,11 +633,6 @@ bool onlineAllowed(const void* caller) {
 }
 
 bool modCodeLive(const void* fn) {
-    {
-        std::lock_guard<std::mutex> lock(g_unloadingM);
-        for (const CodeRange& r : g_unloading)
-            if (r.has(fn)) return false;
-    }
     std::lock_guard<std::mutex> lock(g_modsM);
     for (const Mod& m : g_mods)
         if (m.module && m.code.has(fn)) return m.info.loaded && !m.inert;
