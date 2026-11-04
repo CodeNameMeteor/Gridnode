@@ -59,6 +59,11 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   No city alerts: an active PamServerCityAlertManager gets its deactivate event (0x798161be) when
   no mission runs. **To research:** taking free-roam KSEC away (which characters are free-roam KSEC,
   their spawners) and stopping an alert from starting rather than ending it.
+- **No KSEC (free roam)** (2026-11-04, untested in game; `docs/research/ksec-spawning.md`). KSEC
+  are the spawners whose template is `Characters/SpawnTemplates/Enemy/...` (the user's spawner logs:
+  team is 2 for everyone). While on and no mission runs, the spawner's spawn (vtable +0xd0, slot
+  hook) returns null for them and the ones out are despawned once a second; Faith's own spawner is
+  never touched. World tab → Research → Log characters lists characters with their templates.
 - **API 24 and trainer HUD** (user, 2026-11-04; untested in game). `action_held` (the player's own
   input by action, from the live EntryInputState). The free camera's key list is top right, and mods
   add rows to it (`gn::ui::freecamRow`). Trainer: its keys in that list; a show / hide trigger volumes

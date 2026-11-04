@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -292,6 +293,112 @@ void alertsTick(float dt, bool freeRoam) {
         uint8_t active = 0;
         if (!gn::read(static_cast<char*>(e) + 0x175, active) || !active) return;
         if (gn::sendEvent(e, "0x798161be") && g_alertsEnded.fetch_add(1) < 20) gn::log("no city alerts: an alert was ended");
+    });
+}
+
+// ---- no free-roam KSEC ------------------------------------------------------------------------------------
+// Every character in the city comes from a PamServerCharacterSpawnEntity (db/annotations/spawn.yaml;
+// docs/research/ksec-spawning.md). The spawner's data (+0x30, a CharacterSpawnReferenceObjectData) has
+// its Template at +0x198, an asset whose name (+0x10) says what it makes: KSEC are
+// "Characters/SpawnTemplates/Enemy/..." (SubProtector, Protector, Enforcer); runners, civilians, Black
+// November and the story's people are ".../Male/" and ".../Female/", ghosts ".../Projection/" (the
+// trainer's spawner log, 2026-11-04). Team does not tell them apart: all were team 2. A character
+// points back at its spawner at +0x138.
+// While on and no mission runs: the spawn (spawner vtable +0xd0, ServerCharacterSpawnEntity_
+// spawnAtSpawnPoint, which already returns null when the game refuses a spawn) gives null for a KSEC
+// spawner, and KSEC already out are despawned. Missions have KSEC of the same templates ("Be Like
+// Water"), so a running mission is left alone.
+std::atomic<bool> g_noKsec{false};
+std::atomic<int> g_ksecBlocked{0}, g_ksecRemoved{0};
+using SpawnFn = void* (*)(void* spawner, void* info);
+SpawnFn g_spawnOrig = nullptr;
+bool g_spawnHooked = false;
+
+std::string assetName(void* asset) {
+    void* name = nullptr;
+    char b[160] = {};
+    if (!asset || !gn::read(static_cast<char*>(asset) + 0x10, name) || !name) return "-";
+    gn::api().read(name, b, sizeof(b) - 1);
+    size_t n = 0;
+    while (n < sizeof(b) - 1 && b[n] >= 32) ++n;
+    return n ? std::string(b, n) : std::string("-");
+}
+
+std::string spawnerTemplate(void* spawner) {
+    void *data = nullptr, *tpl = nullptr;
+    if (!spawner || !gn::read(static_cast<char*>(spawner) + 0x30, data) || !data || !gn::read(static_cast<char*>(data) + 0x198, tpl)) return "-";
+    return assetName(tpl);
+}
+
+// A KSEC spawner, by its template; remembered per spawner (the server thread only: spawns and its tick).
+bool ksecSpawner(void* spawner) {
+    static std::unordered_map<void*, bool> known;
+    if (known.size() > 4096) known.clear(); // spawners come and go with streaming
+    if (auto it = known.find(spawner); it != known.end()) return it->second;
+    std::string t = spawnerTemplate(spawner);
+    for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool ksec = t.find("/spawntemplates/enemy/") != std::string::npos;
+    known.emplace(spawner, ksec);
+    return ksec;
+}
+
+std::atomic<bool> g_freeRoam{false}; // no mission runs (server tick)
+
+bool faithSpawner(void* spawner) { // her own safe spawn is one of these spawners: never touched
+    void* faith = gn::localServerCharacter();
+    void* hers = nullptr;
+    return faith && gn::read(static_cast<char*>(faith) + 0x138, hers) && hers == spawner;
+}
+
+void* spawnDetour(void* spawner, void* info) {
+    if (g_noKsec && g_freeRoam && !faithSpawner(spawner) && ksecSpawner(spawner)) {
+        if (g_ksecBlocked.fetch_add(1) < 10) gn::log("no free-roam KSEC: a spawn of %s stopped", spawnerTemplate(spawner).c_str());
+        return nullptr; // as the game does when it refuses a spawn
+    }
+    return g_spawnOrig(spawner, info);
+}
+
+void hookSpawns() {
+    namespace k = gn::engine::cls::PamServerCharacterSpawnEntity;
+    g_spawnHooked = gn::hookSlot(k::vtable + k::vf::spawn, k::va::spawn, &spawnDetour, &g_spawnOrig);
+    if (!g_spawnHooked) gn::log("no free-roam KSEC: the spawner's spawn could not be hooked; not available");
+}
+
+// Server tick, once a second while on: KSEC already in the city go (a mission's are left).
+void ksecTick(float dt) {
+    static float t = 0.f;
+    if (!g_noKsec || !g_freeRoam || (t += dt) < 1.f) return;
+    t = 0.f;
+    void* faith = gn::localServerCharacter();
+    gn::entitiesOfClass("ServerCharacterEntity", [&](void* c, gn::Type) {
+        void* spawner = nullptr;
+        if (c == faith || !gn::read(static_cast<char*>(c) + 0x138, spawner) || !spawner || !ksecSpawner(spawner)) return;
+        if (gn::characterDespawn(c) == GN_OK && g_ksecRemoved.fetch_add(1) < 20) gn::log("no free-roam KSEC: a %s taken away", spawnerTemplate(spawner).c_str());
+    });
+}
+
+// Research: the characters alive with their spawners' templates (what told KSEC apart, above).
+void logCharacters() {
+    gn::runOnServer([] {
+        void* faith = gn::localServerCharacter();
+        gn::Vec3 me{};
+        if (!faith || !gn::positionOf(faith, me)) return gn::log("research: no Faith");
+        int32_t mission = 0;
+        std::string missionName;
+        gn::mission(mission, &missionName);
+        gn::log("research: characters near (%.1f, %.1f, %.1f), mission %d %s", me.x, me.y, me.z, mission, missionName.c_str());
+        int n = 0;
+        gn::entitiesOfClass("ServerCharacterEntity", [&](void* c, gn::Type t) {
+            gn::Vec3 p{};
+            void* spawner = nullptr;
+            if (c == faith || n >= 60 || !gn::positionOf(c, p)) return;
+            gn::read(static_cast<char*>(c) + 0x138, spawner);
+            const float dx = p.x - me.x, dz = p.z - me.z;
+            gn::log("research:   %s at %.1f m, spawner %p, KSEC %d, template %s", t.name(), std::sqrt(dx * dx + dz * dz), spawner, spawner && ksecSpawner(spawner) ? 1 : 0,
+                    spawnerTemplate(spawner).c_str());
+            ++n;
+        });
+        gn::log("research: %d characters (besides Faith)", n);
     });
 }
 
@@ -727,7 +834,9 @@ void serverTick(float dt) {
     void* faith = gn::localServerCharacter();
     if (faith) healthTick(faith);
     barriersTick(true, dt);
-    alertsTick(dt, g_haveMission && g_mission == 0);
+    g_freeRoam = g_haveMission && g_mission == 0;
+    alertsTick(dt, g_freeRoam);
+    ksecTick(dt);
     arrivalServer();
     gn::Vec3 p;
     if (!faith || !gn::positionOf(faith, p)) return;
@@ -1050,10 +1159,25 @@ void worldTab() {
         ImGui::SameLine();
         ImGui::TextDisabled("(%d nearby)", g_barriersDisabled.load());
     }
+    if (g_spawnHooked) {
+        v = g_noKsec;
+        if (ImGui::Checkbox("No KSEC (free roam)", &v)) g_noKsec = v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("KSEC are not spawned in the city, and the ones out there are taken away. Runners and the\n"
+                              "story's people stay. Not during missions: a mission's KSEC are left alone.");
+        if (g_noKsec) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d stopped, %d taken away)", g_ksecBlocked.load(), g_ksecRemoved.load());
+        }
+    }
     v = g_noAlerts;
     if (ImGui::Checkbox("No city alerts (free roam)", &v)) g_noAlerts = v;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A KSEC alert ends as soon as it starts, and one already running ends. Not during missions.");
+    if (ImGui::CollapsingHeader("Research")) {
+        if (ImGui::Button("Log characters")) logCharacters();
+        ImGui::TextDisabled("The characters alive and their spawners' templates, to gridnode.log.");
+    }
     ImGui::SeparatorText("Post-processing");
     static const char* const kPost[3][2] = {{"Bloom", "BloomEnable"}, {"Blur", "BlurEnable"}, {"Vignette", "VignetteEnable"}};
     gn::Object pp = gn::settings("GlobalPostProcessSettings");
@@ -1249,6 +1373,7 @@ struct FloatSetting {
 // God mode, noclip and frozen time are left out: they start off each run.
 const BoolSetting kBools[] = {{"same_wall", &g_sameWall},          {"kill_volumes_off", &g_killOff},
                               {"barriers_off", &g_barriersOff},    {"no_city_alerts", &g_noAlerts},
+                              {"no_ksec", &g_noKsec},
                               {"inf_climbs", &g_infClimbs},        {"inf_runs", &g_infRuns},
                               {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
@@ -1357,6 +1482,7 @@ void hud() {
         if (g_killOff) on += "NoKillVolumes  ";
         if (g_barriersOff) on += "NoBlockers  ";
         if (g_noAlerts) on += "NoAlerts  ";
+        if (g_noKsec) on += "NoKSEC  ";
         if (g_sameWall) on += "SameWall  ";
         if (g_infClimbs) on += "InfClimbs  ";
         if (g_infRuns) on += "InfRuns  ";
@@ -1391,6 +1517,7 @@ GN_MOD("mec-trainer") {
     volumes::loadSettings();
     blockUploads();
     hookKillVolumes();
+    hookSpawns();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });

@@ -1,6 +1,6 @@
 # Handover (for the next agent)
 
-Written 2026-11-04 (replaces the 2026-10-27 handover). Short status and the release plan:
+Written 2026-11-04, brought up to date the same evening (replaces the 2026-10-27 handover). Short status and the release plan:
 [progress.md](progress.md). The full design: [PLAN.md](PLAN.md). Rules for working in the repository:
 `CLAUDE.md`.
 
@@ -15,7 +15,9 @@ Written 2026-11-04 (replaces the 2026-10-27 handover). Short status and the rele
   edit it from here.
 
 The user tests on Windows: the game loads `D:\Dev\GridNode\bin\gridnode.dll` and `bin\mods\`. Their
-checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and needs `git pull`.
+checkout `D:\Dev\GridNode` lags `main` (on 2026-11-04 a pull only fetched and left it at 4b45881, so
+their own build was the old code): tell them `git pull --ff-only`, and check `.git/refs/heads/main`
+against `origin/main` when their build looks old.
 
 ## 2. Ground rules (from the user; keep them)
 
@@ -40,9 +42,9 @@ checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and 
   (`mcp__remote-devices__*`): list, stage (into `/mnt/user-data/uploads/...`) and commit files.
   `device_bash` fails on the user's PC (its hypervisor is off), so there is no shell there: no git,
   no scripts. Use stage / commit / list.
-- **Deploying a test build:** copy it to `/mnt/user-data/outputs/<name>N.dll` (a new name every
-  time), commit it over `bin\gridnode.dll` (and `bin\mods\<mod>.dll`) with force, stage it back and
-  compare the md5. If the game holds the DLL open, write it next to it under a new name and ask the
+- **Deploy after every build** (user, 2026-11-04): copy it to `/mnt/user-data/outputs/<name>N.dll` (a
+  new name every time), commit it over `bin\gridnode.dll` (and `bin\mods\<mod>.dll`, the injector when
+  it changed) with force, stage it back and compare the md5. If the game holds the DLL open, write it next to it under a new name and ask the
   user to swap it. Deploy `gridnode.dll` and mods together: a mod built for a newer API refuses to
   load on an older GridNode.
 - **Ghidra** runs on the PC with GhidraMCP (`mcp__remote-devices__ghidra-mcp__*`; inline scripts
@@ -50,7 +52,9 @@ checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and 
   user to open Ghidra. The program is `MirrorsEdgeCatalyst_dump_SCY.exe`.
 - The user's reflected dump (`bin\gridnode-reflected.json`) answers "what are this type's fields"
   quickly: stage it and read only the types needed with a short Python script.
-- Builds (MinGW cross, Ninja); the build folders live in `/tmp` and may be gone:
+- Builds (MinGW cross, Ninja); the build folders live in `/tmp` and may be gone. A fresh container
+  needs `apt-get update` before the MinGW install, and a configure that failed on a missing compiler
+  must have its build folder deleted before trying again:
 
 ```text
 cmake -S /home/claude/gridnode -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
@@ -82,9 +86,23 @@ All of it is pushed (`main` c05d2ab). In order:
 | Fixes | A mod whose load failed is no longer asked to stop (it crashed); `GN_MOD` returns 2 for "GridNode too old"; a mod's ticks and tasks can't throw into GridNode; the trainer's Load with nothing saved crashed (a lock taken twice); kill volumes off killed Faith (the detour returned void where the game returns bool) | fixed; the first three untested |
 | Docs | README, home, getting started (with troubleshooting), shipping, writing a mod (API versions), building, engine notes, PLAN status; research from a friend's cinematic tools (`research/ct-research.md`) and a Cheat Engine table (`research/cheat-table.md`) | current as of c05d2ab |
 
-Deployed to the user's `bin` (2026-11-04): `gridnode.dll` and `mods\mec_trainer.dll` from d96c362 plus
-the console change; `mods\world_draw.dll` is older (API 21, it still loads). `bin\gridnode-api22b.dll`
-is a leftover the user can delete.
+### The afternoon of 2026-11-04 (API 23, 24; trainer 1.4.0)
+
+Pushed: 1f06664, 9608164, 31afe2d, 1add893, 59efbcb, and the KSEC commit after them.
+
+| Area | What | State in game |
+|---|---|---|
+| Review fixes | From a code review (`reviews/`): crash notes log each fault address once (handled faults used up a cap of 3); static handler buffers; mods found by gridnode.ini's folder; a mod's queued tasks run during its unload's wait and only leftovers are dropped before the free; Reload / Unload asked for during one are kept; detour entry written and recorded under one lock; `pauseOthers` second snapshot; patch_bytes waits for return addresses too; mod exports read from the file (`pe_file.cpp`); settings file names; hex event ids; CI hardened (SHA-pinned actions, sanitizers, ruff, rustfmt, clippy) | reloads and keys confirmed after the task fix; the rest untested |
+| Online rule (API 23) | `online_allow(mod, reason)`: a mod's online console commands are refused until it calls it, then logged with `!!! ONLINE` and shown in orange in the Mods list; `settings_find` warns. Progression flags marked online are set by default (user: many are not online). The trainer never opts in. `view_get_ex` (sized `gn_view`); `gn_ray_hit` is fixed | untested |
+| Player input (API 24) | `action_held`: the player's own input by action (the live EntryInputState) | untested |
+| Free camera keys | Top right; mods add rows (`gn::ui::freecamRow`, `freecamSeparator`) | untested |
+| Injector | The 3 s settle after the game's window is back (a review change had cut it to 0.5 s; the game hung when its window was not opened) | untested |
+| MEC trainer 1.4.0 | Noclip flies the free camera, Faith waits at her safe spawn and lands at the camera, last ground -300; tabs Trainer / Player (Faith's health and position, movement tuning) / World / Volumes / Settings (keys, HUD, unload); World: kill volumes off, movement blockers off (each barrier's own disable / enable, both realms), no city alerts (the manager's deactivate event, outside missions), no KSEC (below); bhop practice in the middle of the screen (ON TIME / EARLY / LATE / MISSED from the player's own jump); key 3 shows trigger volumes; the banner only says "MEC Trainer Loaded". Removed: no fall death, one-hit KSEC, no stumble, To the checkpoint | noclip, safe spawn, bhop and the volume key seen working in the user's log; the rest untested |
+| No KSEC (free roam) | KSEC are spawners whose template is `Characters/SpawnTemplates/Enemy/...` (from the trainer's character log: team is 2 for everyone). A slot hook on the spawner's spawn (vtable +0xd0) returns null for them while no mission runs, and the ones out are despawned; Faith's own spawner is never touched (`research/ksec-spawning.md`) | **untested in game** |
+
+Deployed to the user's `bin` (2026-11-04, evening): `gridnode.dll` (API 24), `gridnode_inject.exe`
+(the 3 s settle back) and `mods\mec_trainer.dll` with No KSEC. `bin\gridnode-polish1.dll` is a
+leftover the user can delete.
 
 ## 5. What is planned: the first release
 
@@ -94,7 +112,8 @@ In order (details in [progress.md](progress.md), "Current task"):
    mission, a Dash, a time trial, level changes, quitting, reloads. Includes the open crash: quitting
    during a Dash crashed twice with GridNode injected (`0x143164d50`, a null world in
    `FUN_1439e08f0`'s mission clean-up).
-2. **Online safety audit** and a docs page on it.
+2. **Online safety audit** and a docs page on it. The rule is now enforced in code (`online_allow`,
+   API 23) and described in modding.md ("Online services"); what is left is the list and the page.
 3. **The release's zips** (decide with the user): a player zip (the player build, injector,
    `version.dll`, the MEC trainer) and an SDK zip (developer build, headers, templates, examples).
    `gridnode.py package` makes one zip today; add `--player`.
@@ -112,9 +131,14 @@ After the release: spawnable physics objects (GridNode-made dynamic bodies, so g
 something), the layout editor, a scripting layer only if mods ask (Lua was skipped on 2026-10-20),
 the 335 `hypothesis` functions.
 
-Waiting on the user: the progression test (`progress`, `progress <filter>`, setting a flag, the
-mission name), the console clicks, the trainer's streaming wait, mod reloads after the unload fix,
-and the two decisions above.
+Waiting on the user: the No KSEC test (free roam, a runner nearby, a mission with KSEC), movement
+blockers off and no city alerts in game, the bhop practice's early / late results, the progression
+test (`progress`, setting a flag that is marked online), the console clicks, whether the 16:09 run on
+2026-11-04 (log ended after "level: ended") was a quit or a crash, and the two decisions above.
+
+Open research: whether a mission spawns its KSEC before the mission index is set (No KSEC would stop
+those); stopping an alert from starting instead of ending it (the manager's pause / force-off inputs,
+`research/city-alert.md`).
 
 ## 6. Things learned the hard way
 
@@ -138,3 +162,15 @@ and the two decisions above.
 - **Recordings get large:** ask for ones started after loading, before the thing to capture; never
   read them directly, run `tools/recording/summarize.py`.
 - **Teleporting far** lands before the area has streamed in: wait for the ground (the trainer does).
+- **A mod's gn_mod_unload posts tasks that put the game back:** never drop a mod's queued tasks when
+  its callbacks come out, only just before the DLL is freed (doing it early lost the trainer's time
+  scale and god mode restore, 2026-11-04).
+- **GridNode's detour entry stays after a mod unloads:** a mod that checks a function's first bytes
+  before hooking sees GridNode's jmp on a reload (the trainer's kill volumes were "not available").
+- **Only re-enable what you disabled:** enabling a barrier the game never enabled builds its body
+  from data it may not have, and crashed (`PamOBBCollision_enableClient+0x82`).
+- **Read the code before "fixing" a review item:** the injector already waited for the game's window;
+  the review's change only shortened the settle and made the game hang.
+- **A spawner's data position (`ControllableTransform`) is local to its blueprint,** not the world.
+- **Faith's own safe spawn is a PamServerCharacterSpawnEntity:** anything that blocks spawners must
+  leave hers alone.
