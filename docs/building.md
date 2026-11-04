@@ -23,6 +23,25 @@ The build needs Python 3 with PyYAML (`pip install pyyaml`): `gridnode/engine.hp
 
 Outputs: `gridnode.dll`, `version.dll`, `gridnode_inject.exe`, and the example mods in `build/mods/`.
 
+Options (`-D...=ON/OFF` when configuring):
+
+| Option | Default | |
+|---|---|---|
+| `GRIDNODE_PLAYER_BUILD` | OFF | the player build: the mod loader without the developer tools ([Shipping a mod](shipping.md)) |
+| `GRIDNODE_BUILD_EXAMPLES` | ON | the example mods |
+| `GRIDNODE_BUILD_TESTS` | ON | the host-side tests (`ctest`; off when cross-compiling) |
+
+The host-side tests (reflection walker, runtime core, the x64 decoder, the engine header, types,
+the Rust harness) build on Linux or Windows without the game:
+
+```text
+cmake -S . -B build-host -G Ninja && cmake --build build-host && (cd build-host && ctest)
+cd tools/gen && python3 -m unittest tests.test_gen     # the Python tools
+```
+
+A release zip from a build: `python tools/gen/gridnode.py package --build build --examples`
+([Releases and mod templates](packaging.md)).
+
 ## Your type headers
 
 After the first in-game dump:
@@ -52,6 +71,9 @@ GridNode's annotations merged in.
 | `fingerprint DUMP [--write] [--add NAME] [--mecmp DIR]` | fingerprint bytes from a dump of the game (see contributing) |
 | `annotations-diff OTHER [--base B] [--inbox FILE]` | compare two annotation sets (folders or `git:REF`) |
 | `ghidra-export` / `ghidra-import FILE [--who NAME]` / `ghidra-relay FILE [--who NAME]` | GridNodeSync files (see contributing) |
+| `compare GRIDNODE_JSON GHIDRA_JSON` | compare GridNode's dump with a FrostbiteTypeDumper dump |
+| `package [--build DIR] [--examples]` | a release zip ([Releases and mod templates](packaging.md)) |
+| `new-mod NAME [--rust] [--sdk DIR]` / `pack-mod DLL [--file F ...]` | a mod from the template, and a mod's zip for others |
 
 ## These docs
 

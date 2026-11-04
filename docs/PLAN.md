@@ -11,7 +11,8 @@ It has three parts that share one source of truth:
 
 This plan is based on the material in `PreFindings/` (research.md, mec_reversing_notes.md, review.md,
 the FrostbiteTypeDumper script and its PC outputs, the MECMP docs and the EBX XML dump) and on the
-MECMP source in `D:\Dev\MECMP`. Status: **M0 to M3 done (2026-10-19).** See §8.
+MECMP source in `D:\Dev\MECMP`. Status (2026-11-04): **M0 to M6 done**, M5.5 and M9 done in game, M7
+(custom maps) paused, M8 ongoing; next is the first release (M10, the plan in `progress.md`). See §8.
 
 **Decisions**
 
@@ -352,11 +353,12 @@ Each milestone ends with something testable in game.
 | **M4** ✅ | Entity + world API and inspector: `OnCreated<T>` for all creators, transforms, components, teleport, raycast, level events; ImGui inspector | Speedrun-trainer example (save/load position) works; inspector browses live entities and edits fields |
 | **M4.5** ✅ | Settings and console: every settings object exposed (inspector tab, `gn::settings`), the game's console callable from GridNode (all commands, trusted path), network-critical settings and commands marked with a warning | A setting that the player console cannot reach is changed from the GridNode menu and from a mod, and works in game |
 | **M5** ✅ | Message system (listen to any engine message: `gn::onMessage`; sending in M8); ray casts; C ABI review; Rust bindings crate (generated); Lua decision (deferred, then skipped) | A mod is told about a chosen engine message with its fields read by name; the trainer's speed readout uses a message or ray cast instead of polling |
-| **M5.5** | MEC_Trainer port (follow-up: `jump()` from the player's own jump binding instead of Space): keys and `jump()`, Faith's movement, movement tuning by name, game state (API 6); `examples/probe` research mod; `examples/mec-trainer` | The trainer's features work through GridNode with no raw pointer chains in the mod |
+| **M5.5** ✅ | MEC_Trainer port (follow-up: `jump()` from the player's own jump binding instead of Space): keys and `jump()`, Faith's movement, movement tuning by name, game state (API 6); `examples/probe` research mod; `examples/mec-trainer` | The trainer's features work through GridNode with no raw pointer chains in the mod |
 | **M6** ✅ | Docs (published guides + local full reference), GridNodeSync import/export, Frosty assessment for part 3 (`docs/assets-assessment.md`) | Docs build in CI; a rename in Ghidra round-trips into YAML and back |
-| **M7** | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
+| **M7** (paused) | Custom maps, loaded at runtime through GridNode (decided 2026-10-20): assets by name, entities picked / moved / spawned / removed in game, layout files applied when a level loads, an overlay layout editor; then the Blender (glTF) add-on | A layout made in the editor is saved, comes back when the level loads after a restart, and round-trips through Blender |
 | **M8** | Research track (runs alongside): `gn::events` (PC fireEvent / property set), a general client-frame hook, level loading for custom maps, PS4 → PC name transfer | Each item lands as annotations + an SDK feature when confirmed |
-| **M9** | (1-4 done 2026-11-03: detours, manifests, crash notes, declared settings) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
+| **M9** ✅ | (done 2026-11-03 / 04: detours, manifests, crash notes, declared settings, mods in their own folders, the release zip and mod templates) What other loaders give mod authors (BepInEx, MelonLoader, Reloaded-II, UE4SS, SKSE; planned 2026-11-03): see [M9 plan](#m9-plan-a-loader-like-the-others) | Each item works in game from a mod |
+| **M10** | The first release: stability on a clean setup, an online safety audit, the player and SDK zips, docs that match, API 1.0, the version and the release (the plan: `progress.md`, "Current task") | Someone else installs a release from its zip and docs alone and plays with the example mods |
 
 ---
 

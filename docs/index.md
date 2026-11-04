@@ -15,22 +15,27 @@ known about the engine.
 
 | | |
 |---|---|
+| Mods | C, C++ (a plain C ABI) and Rust; `mods/<name>.dll` or `mods/<name>/<name>.dll`; reload and unload while the game runs; manifests, dependencies, functions shared between mods |
 | Reflection | 9,988 engine types by name: fields, enums, sizes, `typeOf(object)` |
-| Entities | creation callbacks per class, components, transforms, the game's own teleport |
+| Entities | creation callbacks per class, components, transforms, entities near a point or of a class, events between entities, the game's own teleport, despawning characters |
 | Threads | server and client ticks, `runOnServer` / `runOnClient` |
-| Hooks | chained pointer hooks (vtable and creator slots); code patches for direct calls, undone on unload |
-| World | Faith on client and server, level events, ray casts |
-| Faith | movement state, wall counters, speed, camera; jump and any input action, whatever the binding; god mode; movement tuning by name |
-| Engine systems | settings (every settings class, by name), the console (every command), engine messages |
-| Overlay | a shared Dear ImGui overlay (INSERT), an inspector for entities, types, settings and messages |
-| Languages | C and C++ (a plain C ABI) and Rust |
+| Hooks | chained pointer hooks (vtable and creator slots), function detours and call patches, all undone on unload |
+| Physics | ray casts (entity, body, layer, material), collision bodies, static collision boxes, body velocities, gravity |
+| Faith | movement state, wall counters, speed, camera, health; jump and any input action, whatever the binding; god mode; movement tuning by name; movement events |
+| Game state | levels, settings (every settings class, by name), the console (every command), engine messages, sounds, the checkpoint, the save's progression flags and missions |
+| Overlay | a shared Dear ImGui overlay (INSERT): mods' windows, drawing in the world, declared settings and hotkeys |
+
+The developer build adds research tools: the inspector (entities, types, settings, messages), the
+console, the [Recorder](recording.md), a function tracer, a field diff window, the
+[Layout editor](layout-editor.md) (paused for now) and a game image dump.
 
 ## Rules GridNode follows
 
-- Hooks swap pointers in vtables and creator tables. Game code is patched only where no pointer
-  reaches (a direct call), through GridNode, which lists every patch and undoes it on unload.
+- Every change to the game goes through GridNode, which lists it and undoes it on unload. Pointer
+  swaps are preferred (vtable and creator slots); code is patched where no pointer reaches.
 - Nothing runs until the build check passes; on any other build GridNode stays passive.
 - Nothing from the game is published: each user generates their own reflected data, and the full
   reflected reference in these docs is built locally from it.
-- Online services, Denuvo and the EA app are left alone. Settings and console commands that touch
-  online play are marked and ask before changing.
+- Online services, Beat Revival, Denuvo and the EA app are left alone. Settings and console commands
+  that touch online play are marked and ask before changing; progression flags that go to online
+  stats can't be set.

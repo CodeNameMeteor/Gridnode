@@ -6,6 +6,10 @@ developer build of GridNode and not in the player build (see [Shipping a mod](sh
 
 Open the GridNode menu (Insert) and choose **Layout editor**.
 
+!!! note "Paused"
+    Work on the layout editor is paused while the SDK gets ready for release; what is here works as
+    described, but it is not finished.
+
 ## Free camera
 
 **F7** (or the editor's *Free camera* box) detaches the camera from Faith. With the menu closed

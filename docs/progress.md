@@ -43,8 +43,8 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 9. **A friend's PC.** One install by someone else from the zip and the docs alone.
 10. **Cost.** Startup (about 2 s, 2,164 hooks) and frame time with and without GridNode, written down.
 
-**After the release:** spawnable physics objects, the layout editor (paused on purpose), Lua or
-another scripting layer if mods want it, the 335 `hypothesis` functions.
+**After the release:** spawnable physics objects, the layout editor (paused on purpose), a scripting layer only if
+mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
 - **API 22: health, the waypoint, the checkpoint, the mission** (2026-11-04, untested in game). From

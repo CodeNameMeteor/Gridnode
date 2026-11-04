@@ -18,7 +18,7 @@ classes:
       ComponentEntity's range (SpatialEntity ends at 0x28, ComponentEntity at 0x40).
     members:
       - { offset: 0x30, name: data, type: "EntityData*", note: "The entity's data (shared by every entity made from the same asset: do not write it)." }
-      - { offset: 0x38, name: transformSpace, type: "EntityTransformSpace*", note: "Read by SpatialEntity_setTransform; see EntityTransformSpace." }
+      - { offset: 0x38, name: transformSpace, type: "EntityTransformSpace*", note: "Read by SpatialEntity_setTransform; see EntityTransformSpace. Also the component collection ComponentEntity_destroyComponents walks (u8 slot count at +8, 0x20-byte slots from +0x10, the component at slot +0x10); the Field diff window lists components from it." }
 
   - name: Component
     realm: any

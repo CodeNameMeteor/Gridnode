@@ -2,8 +2,8 @@
 
 Players need GridNode to run your mod, but not GridNode's developer tools. Ship the **player build**
 of `gridnode.dll`: the mod loader, the API, the overlay for your mod's windows, and saved layouts
-(custom maps), without the inspector, console window, Layout editor, free camera, Recorder or the
-type dump.
+(custom maps), without the inspector, console window, tracer, field diff, Layout editor, free camera,
+Recorder or the type dump.
 
 ## Get the player build
 
@@ -21,21 +21,32 @@ level, the loaded mods and the mods' own windows only. It does not write `gridno
 
 ## What to put in the download
 
+Your mod's own zip is made by `gridnode_mod.py pack` ([Releases and mod templates](packaging.md#shipping-a-mod)):
+`mods/<name>/<name>.dll` and its files, unzipped next to `gridnode.dll`. Players install GridNode
+once from its release zip and add mods to it. Shipping GridNode with your mod instead:
+
 ```text
-MirrorsEdgeCatalyst/            the player's game folder
-  version.dll                   loads GridNode when the game starts
+YourMod/                        anywhere: the player injects with gridnode_inject.exe
   gridnode.dll                  the player build
+  gridnode_inject.exe
   gridnode.ini                  optional (see below)
   mods/
-    your_mod.dll
+    your_mod/
+      your_mod.dll
+      ...                       its files (gn::modDir() finds them)
   layouts/                      only if you ship a custom map
     Levels_SP_SP_MainCity_SP_MainCity/
       your_map.yaml
       last.txt                  the layout to load: "your_map"
     settings.txt                autoload=1
+  start-with-the-game/
+    version.dll                 optional: with gridnode.dll and mods/ in the game folder, GridNode
+                                loads with the game every time
 ```
 
-- **Mods** are DLLs in `mods/`, loaded at startup ([Writing a mod](modding.md)).
+- **Mods** are `mods/<name>.dll` or `mods/<name>/<name>.dll`, loaded at startup ([Writing a mod](modding.md)).
+  A mod refuses to load on an older GridNode than it was built for, and the log says so: say which
+  GridNode it needs.
 - **Custom maps** are layouts made with the Layout editor (developer build): copy the level's
   folder from your `layouts/`. With `autoload=1` in `layouts/settings.txt` and the layout's name
   in the level's `last.txt`, it loads when the level starts. Teleport points
@@ -67,5 +78,5 @@ inspector=0
 editor=0      ; Layout editor, free camera and their keys (saved layouts still load)
 recorder=0
 console=0
-dev_info=0    ; the menu's World and Hooks sections, Dear ImGui metrics
+dev_info=0    ; the menu's World, Game image and Hooks sections, Dear ImGui metrics
 ```

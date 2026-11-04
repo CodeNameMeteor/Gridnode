@@ -7,9 +7,10 @@ repository; everyone generates their own dump.
 
 ## Making a dump
 
-1. Put `gridnode.dll` and `version.dll` in the game folder (or inject `gridnode.dll` with
-   `gridnode_inject.exe`).
-2. Start the game and wait for the main menu. `gridnode.log` says `dump: written to ...`.
+1. Start the game with a developer build of GridNode: run `gridnode_inject.exe` from GridNode's
+   folder ([Getting started](getting-started.md)), or load it with the game through `version.dll`.
+   A player build does not write the dump unless `[dump] mode=always`.
+2. Wait for the main menu. `gridnode.log` says `dump: written to ...`.
 3. The file is `gridnode-reflected.json` next to `gridnode.dll`. Copy it to `db/reflected/` in your
    GridNode checkout.
 

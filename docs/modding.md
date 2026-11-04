@@ -11,7 +11,7 @@ calls its `gn_mod_load`: dependencies first (below), otherwise in file name orde
 GN_MOD("my-mod") {
     gn::log("hello");
     gn::onClientTick([](float dt) { /* every client tick, on the client game thread */ });
-    return true;                 // false: the mod failed to load (it stays loaded but GridNode says so)
+    return true;                 // false: the mod failed to load (what it set up is taken out, and GridNode says so)
 }
 ```
 
@@ -21,6 +21,20 @@ in `build/mods/`), or in your own project: add `sdk/include` and the generated
 pointers handed to `gn_mod_load` (`gridnode/api.h`), so a mod can be built with MSVC, MinGW or
 clang, independently of how `gridnode.dll` was built. The quickest start is a release's template:
 `python sdk/templates/gridnode_mod.py new my_mod` ([packaging.md](packaging.md)).
+
+## API versions
+
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 22 now (its comment
+lists what each version added). The table only grows at its end, so a mod built for API N loads on
+any GridNode with API N or newer. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
+`gn_mod_load` without running the mod; the log says "it was built for a newer GridNode" and the Mods
+list "needs a newer GridNode". Say which GridNode your mod needs when you ship it.
+
+Memory, for what the API does not cover: `gn::read(address, out)` and `gn::write(address, value)`
+(fault tolerant: false on an unreadable or unwritable address), `gn::rva(va)` (a Ghidra address, at
+the game's preferred base 0x140000000, to where the game is loaded now) and
+`gn::function<Fn>(va)` (a game function to call). `gridnode/engine.hpp` names the addresses we
+know (`gn::engine::function::...`, `global::...`, `constant::...`).
 
 ## Manifest and other mods (API 16)
 
@@ -247,13 +261,14 @@ std::string level = gn::levelName();
 | `raycastObject(from, to, hit)` | server | A thin ray that says what it hit: `hit.entity` (the server entity owning the body; null for level geometry), `hit.body`, `hit.part` (a prop inside a static model group). API 19 adds `hit.layer` (the collision layer: 1 Static, 2 Dynamic, 3 Player, 4 AI, 14 Character, ...), `filter_info` and `material`. Looks through the physics entities: per click, not per tick (API 18). |
 | `entityBodies(entity)` | any | A physics entity's collision body ids (API 18). |
 | `bodyTransform` / `bodySetTransform(entity, body, t)` | the entity's realm | Where a body's collision is, and moving it as the game teleports a body. Moving an entity does not move its bodies; a group's shared body gives `GN_ERR_UNAVAILABLE`. Each realm has its own physics: Faith walks into the client half's bodies, so move both (API 18). |
+| `setTransform(entity, t)` | the entity's realm | Moves a spatial entity as the game does (`SpatialEntity_setTransform`); its collision bodies stay where they were. |
 | `entityOtherHalf(entity)` | any | The same object in the other realm (server to client and back), or null (API 18). |
 | `boxAdd(at, halfExtents)` / `boxMove` / `boxRemove` / `boxState` | any | A static collision box in the client's physics world (what Faith collides with), made at its next physics update; it borrows a nearby static body's identity, so hits on it report that body's material. One in the server's world too, for AI (API 19; the server half since 2026-11-04). Gone when the mod unloads (API 19). |
 | `soundPlay(assetPath[, pos, event])` / `soundEvent` / `soundMove` / `soundPlaying` / `soundStop` | client | A voice of the game's sound system for a loaded sound asset; event null plays its default start. Stopped when the mod unloads (API 19). |
 | `bodyVelocity` / `bodySetVelocity` / `bodyPush(entity, body, change)` | the entity's realm | A moving (dynamic) body's velocity, world space; a static body reads zeros and can't be set (API 21). The city's worlds hold almost no dynamic bodies: in game, every prop near Faith was static. |
 | `gravity(realm, out)` / `setGravity(realm, g)` | any | A physics world's gravity (0 client, 1 server; the client's effect world too). It moves dynamic bodies only, not Faith's own movement or the bodies the game moves with animations, so in the city it has almost nothing to act on. Kept for later worlds, undone when the mod unloads; `nullptr` puts the game's back (API 21). |
 | `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |
-| `waypoint(out)` / `checkpoint(out)` | any | The map marker (false when none is set), where Faith comes back after a death. From the user's Cheat Engine table's paths, checked by type on the way (API 22). |
+| `waypoint(out)` / `checkpoint(out)` | any | The map marker (false when none is set; its height is the street's, so under a building it is not where to stand) and where Faith comes back after a death. From a Cheat Engine table's paths, checked by type on the way (API 22). |
 | `progressFlags(fn)` / `progressFind(name, out)` | any | The save's progression: every flag `PamProgressionData` defines (flag groups, missions' flags, the system's generated ones) with its name, group, value now, max and clamp (API 22). |
 | `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. A flag that syncs to online stats is refused. The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
 | `mission(index, &name)` | any | The active mission's index (0: none) and name (API 22). |
@@ -294,7 +309,14 @@ gn::setTimeOfDay(12 * 3600.f);
   they are reached by fixed paths. Each object on the way is checked by its vtable, and a value is
   only written after GridNode has seen its default at that address; until then `available` is 0
   and `tuning_set` refuses. The values are shared by every character and stay until set back.
-- **God mode** is the game's own `GameSettings.IsGodMode` (`gn::settings`).
+- **God mode** (`gn::godMode(true)`, server thread) sets the `IsImmortal` property of Faith's own
+  health component, as the game's logic would; it is per component, so call it again after a respawn
+  (the MEC trainer does each server tick). `gn::health` / `gn::setHealth` (API 22) read and write the
+  health itself.
+- **Moving Faith without a teleport:** `gn::setPosition(p)` (any thread) writes the position the
+  animation system holds for her: the camera and her state carry on, and physics may push her back
+  out of geometry. The MEC trainer's noclip calls it every client tick; for a normal move, teleport.
+  Falls still kill in god mode: that is not damage in MEC (see `GN_MOVE_LAST_GROUND_Y`).
 - **Landing prediction** (API 8). Every tick while Faith is in the air, the animation system
   predicts when and where she will hit the ground (`PositionPredictionProcessorAsset`).
   `gn::landingPrediction(l)` gives its latest prediction for her: `ticks_to_hit` in 60ths of a
@@ -566,7 +588,8 @@ gn::onMessage("ServerPlayer", [](const void*, const gn_message_info& info) { gn:
   shows them (pointers to known objects are links).
 - Messages an entity sends to its own components (e.g. `CharacterToComponentsOnTeleportedMessage`
   from the game's teleport) do not go through the managers and are not seen here.
-- Sending messages is planned for M8.
+- Sending messages is not in the API yet (on the list for after the first release). Events between
+  entities can be sent ([Events between entities](#events-between-entities-api-11-sending-api-12)).
 
 ## Name hashes
 
