@@ -605,6 +605,13 @@ void logAimed() {
     else gn::log("volumes: no trigger in the middle of the screen");
 }
 
+void toggleShow() {
+    const bool on = !g_on;
+    g_on = on;
+    gn::config::setBool("volumes.on", on);
+    gn::log("volumes: %s", on ? "shown" : "hidden");
+}
+
 void togglePick() {
     g_pick = !g_pick;
     if (!g_pick) g_aimed = nullptr;

@@ -8,20 +8,22 @@
 //   - time scale, sim rate, post-processing, god mode: settings by name (GameTimeSettings, ...)
 //   - time of day: gn::setTimeOfDay, the level's own clock (checked by type)
 //   - save / load position: the game's own teleport on the server thread
-//   - noclip: gn::setPosition every client tick (no teleport, so the camera stays free)
+//   - noclip: GridNode's free camera flies (no collision, nothing to grab, no falling); Faith is
+//     teleported to it when noclip goes off, with no fall damage until she lands
 //   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
 //   - trigger volumes: the level's area triggers drawn by category (volumes.cpp)
+//   - World: kill volumes off, movement blockers (invisible barriers) off, no city alerts in free roam
 //   - a soft anti-cheat: while the trainer is loaded, Dash and time trial times and ghosts are not
 //     uploaded (the gateway backend's upload requests are dropped), a new best Dash time is not
-//     saved (a code patch, gn::patchCall), and the screen says so
+//     saved (a code patch, gn::patchCall); the screen says "MEC Trainer Loaded", the log the rest
 //     (docs/research in db/annotations/online.yaml)
 //   - the window lives in GridNode's overlay (INSERT); the HUD stays on screen
 //
 // Hotkeys (GridNode hotkeys, kept in mods/mec-trainer.ini; defaults as in MEC_Trainer):
-//   1 god mode   2 noclip   3 no stumble   4 save position   5 load position
-//   F arm the bunny hop   (none) auto bunny hop on / off   (rebound in the trainer's Keys tab)
+//   1 god mode   2 noclip   4 save position   5 load position
+//   F arm the bunny hop   (none) auto bunny hop on / off   (rebound in the trainer's Settings tab)
 //   6 free camera   7 teleport to its crosshair   8 teleport to it (GridNode's free camera)
-//   E / R noclip slower / faster   (noclip: WASD, Space up, Shift / C down; fixed keys)
+//   noclip flies as the free camera does: WASD, Q / E down / up, Shift / Ctrl faster / slower, wheel
 //
 // Settings (sliders, checkboxes) are kept in mods/mec-trainer.ini between runs (gn::config), except
 // god mode, noclip and frozen time, which start off.
@@ -50,10 +52,9 @@
 namespace {
 
 // ---- settings (render thread writes, ticks read) ------------------------------------------------------
-std::atomic<bool> g_god{false}, g_noclip{false}, g_noStumble{false}, g_sameWall{false}, g_infClimbs{false},
-    g_infRuns{false}, g_fastLoads{false}, g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_noFallDeath{false},
-    g_killOff{false};
-std::atomic<float> g_noclipSpeed{0.5f}, g_frozenTime{0.f}, g_timeScale{1.f};
+std::atomic<bool> g_god{false}, g_noclip{false}, g_sameWall{false}, g_infClimbs{false}, g_infRuns{false}, g_fastLoads{false},
+    g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_killOff{false}, g_barriersOff{false}, g_noAlerts{false};
+std::atomic<float> g_frozenTime{0.f}, g_timeScale{1.f};
 
 // ---- what the client tick saw (render thread shows it) ------------------------------------------------
 std::atomic<bool> g_haveFaith{false};
@@ -184,77 +185,6 @@ void blockUploads() {
                         : "anti-cheat: COULD NOT stop new best Dash times being saved");
 }
 
-// ---- no fall death ---------------------------------------------------------------------------------------
-// The fall death comes from Ant's fall check (RayCastCollisionProcessor_update): past FallThreshold
-// metres of falling (10 by default) it sets HasFallenPastThreshold and the animation graph plays the
-// death fall, whatever she lands on. While on, each fall check asset's threshold is raised (its own
-// value kept, and put back when it is switched off or the trainer unloads). It's per asset: AI using
-// the same asset get it too. Below y -100 the check works as normal, so a fall out of the level ends.
-// From the cinematic tools' research (Research_Ground_Level_2026-11-01 2.2).
-using FallUpdateFn = void (*)(void* asset, void* info);
-FallUpdateFn g_fallOrig = nullptr;
-std::mutex g_fallM;
-std::unordered_map<void*, float> g_fallThresholds; // (g_fallM) asset -> the game's threshold
-bool g_fallHooked = false;
-constexpr float kNoFall = 1e9f;
-std::atomic<uint32_t> g_fallCalls{0}, g_fallOurs{0}; // calls to the fall check, and with the expected asset (diagnostics)
-
-void fallUpdate(void* asset, void* info) {
-    namespace c = gn::engine::constant;
-    void* vt = nullptr;
-    g_fallCalls.fetch_add(1, std::memory_order_relaxed);
-    if (gn::api().read(asset, &vt, sizeof(vt)) == GN_OK && reinterpret_cast<uint64_t>(vt) == c::RayCastCollisionProcessorAsset_vtable) {
-        g_fallOurs.fetch_add(1, std::memory_order_relaxed);
-        char* at = static_cast<char*>(asset) + c::RayCastCollisionProcessorAsset_FallThreshold;
-        const bool on = g_noFallDeath && g_py > -100.f;
-        float now = 0.f;
-        if (gn::api().read(at, &now, 4) == GN_OK) {
-            std::lock_guard<std::mutex> lock(g_fallM);
-            auto it = g_fallThresholds.find(asset);
-            if (on && now != kNoFall) {
-                if (it == g_fallThresholds.end()) {
-                    g_fallThresholds.emplace(asset, now);
-                    gn::log("no fall death: a fall check's threshold was %.1f m", now);
-                }
-                gn::api().write(at, &kNoFall, 4);
-            } else if (!on && it != g_fallThresholds.end()) {
-                if (now == kNoFall) gn::api().write(at, &it->second, 4);
-                g_fallThresholds.erase(it);
-            }
-        }
-    }
-    g_fallOrig(asset, info);
-}
-
-// The thresholds the trainer raised, back as they were (unloading). An asset of a level that has
-// gone is skipped: its memory no longer holds a fall check asset.
-void fallPutBack() {
-    std::lock_guard<std::mutex> lock(g_fallM);
-    for (const auto& [asset, was] : g_fallThresholds) {
-        void* vt = nullptr;
-        if (gn::api().read(asset, &vt, sizeof(vt)) != GN_OK ||
-            reinterpret_cast<uint64_t>(vt) != gn::engine::constant::RayCastCollisionProcessorAsset_vtable)
-            continue;
-        char* at = static_cast<char*>(asset) + gn::engine::constant::RayCastCollisionProcessorAsset_FallThreshold;
-        float now = 0.f;
-        if (gn::api().read(at, &now, 4) == GN_OK && now == kNoFall) gn::api().write(at, &was, 4);
-    }
-    g_fallThresholds.clear();
-}
-
-void hookFallCheck() {
-    namespace f = gn::engine::function;
-    // The code this was read from: FallThreshold read at +0x432 (movss xmm0,[rsi+40h]).
-    const uint8_t want[5] = {0xF3, 0x0F, 0x10, 0x46, 0x40};
-    uint8_t got[5] = {};
-    if (gn::api().read(reinterpret_cast<void*>(f::RayCastCollisionProcessor_update + 0x432), got, 5) != GN_OK || std::memcmp(got, want, 5) != 0) {
-        gn::log("no fall death: the fall check does not look as expected; not available");
-        return;
-    }
-    g_fallHooked = gn::hookFunction(f::RayCastCollisionProcessor_update, &fallUpdate, &g_fallOrig);
-    if (!g_fallHooked) gn::log("no fall death: could not hook the fall check; not available");
-}
-
 // ---- kill volumes off -------------------------------------------------------------------------------------
 // A kill volume tests each character in it (KillVolume_testCharacter) and kills one inside; skipped,
 // nobody is killed by one: the street kill floors, fans, the monorail (AI too). The streets have no
@@ -291,6 +221,80 @@ void hookKillVolumes() {
     if (!g_killHooked) gn::log("kill volumes off: could not hook the kill volume test; not available");
 }
 
+// ---- movement blockers off -------------------------------------------------------------------------------
+// The invisible barriers (PamOBBCollisionEntity, both realms; docs/research/barriers-and-magropes.md):
+// each one's body is taken out of its world with the barrier's own disable (0x143335ff0), and put back
+// with its enable (server 0x143333310, client 0x143333590), all three reading the realm from the
+// entity. Faith collides with the client's, AI with the server's, so both. Barriers stream in with the
+// level and their logic can enable them again: each realm looks once a second, on its own thread.
+struct BarrierRealm {
+    std::vector<void*> off; // barriers this trainer disabled (that realm's thread only)
+    float t = 1.f;
+    bool was = false;       // g_barriersOff at the last look
+};
+BarrierRealm g_barServer, g_barClient;
+std::atomic<int> g_barriersDisabled{0};
+
+bool isBarrier(void* e) { // the class GridNode read this layout off (its deinit at vtable +0x88)
+    void* vt = nullptr;
+    void* deinit = nullptr;
+    return gn::read(e, vt) && vt && gn::read(static_cast<char*>(vt) + 0x88, deinit) &&
+           reinterpret_cast<uint64_t>(deinit) == gn::rva(gn::engine::function::PamOBBCollision_deinit);
+}
+
+// One realm's barriers: disabled while the option is on, the trainer's ones enabled again when it goes
+// off (or the trainer unloads: putBack). Only live barriers are touched (one that streamed out is gone).
+void barriersTick(bool server, float dt, bool putBack = false) {
+    namespace f = gn::engine::function;
+    BarrierRealm& r = server ? g_barServer : g_barClient;
+    const bool want = g_barriersOff && !putBack;
+    if (!putBack && (r.t += dt) < 1.f && want == r.was) return;
+    r.t = 0.f;
+    r.was = want;
+    if (!want && r.off.empty()) return;
+    using Fn = void (*)(void*);
+    const auto disable = gn::function<Fn>(f::PamOBBCollision_disable);
+    const auto enable = gn::function<Fn>(server ? f::PamOBBCollision_enable : f::PamOBBCollision_enableClient);
+    namespace k = gn::engine::constant;
+    std::vector<void*> still;
+    gn::entitiesOfClass("OBBCollisionEntity", [&](void* e, gn::Type) {
+        uint32_t flags = 0, body = 0xffffffffu;
+        uint8_t enabled = 0;
+        if (!gn::read(static_cast<char*>(e) + 0x18, flags) || ((flags & 1) != 0) != server || !isBarrier(e)) return;
+        if (!gn::read(static_cast<char*>(e) + k::OBBCollision_Enabled, enabled) || !gn::read(static_cast<char*>(e) + k::OBBCollision_BodyId, body))
+            return;
+        const bool ours = std::find(r.off.begin(), r.off.end(), e) != r.off.end();
+        // Only barriers the trainer itself took out go back in, and only with a body: enabling one the
+        // game never enabled builds its body from data it may not have (no PhysicsBodies), which read
+        // a bad pointer and crashed (PamOBBCollision_enableClient+0x82, 2026-11-04).
+        if (want) {
+            if (enabled && body != 0xffffffffu) disable(e), still.push_back(e);
+            else if (ours) still.push_back(e); // still out (ours since an earlier look)
+        } else if (ours && !enabled && body != 0xffffffffu) {
+            enable(e);
+        }
+    });
+    r.off = want ? still : std::vector<void*>{};
+    if (server) g_barriersDisabled = static_cast<int>(r.off.size());
+}
+
+// ---- no city alerts (free roam) ---------------------------------------------------------------------------
+// The city alert has one owner, PamServerCityAlertManager (docs/research/city-alert.md); its own
+// "deactivate" event (0x798161be, what reaching a safehouse sends) ends an alert. Only outside missions:
+// a story mission's chase is its own. KSEC already out in the streets are not taken away (to research).
+std::atomic<int> g_alertsEnded{0};
+
+void alertsTick(float dt, bool freeRoam) {
+    static float t = 0.f;
+    if (!g_noAlerts || !freeRoam || (t += dt) < 0.5f) return;
+    t = 0.f;
+    gn::entitiesOfClass("PamServerCityAlertManager", [](void* e, gn::Type) {
+        uint8_t active = 0;
+        if (!gn::read(static_cast<char*>(e) + 0x175, active) || !active) return;
+        if (gn::sendEvent(e, "0x798161be") && g_alertsEnded.fetch_add(1) < 20) gn::log("no city alerts: an alert was ended");
+    });
+}
+
 // ---- save / load ---------------------------------------------------------------------------------------
 std::mutex g_m;
 bool g_saved = false;
@@ -302,12 +306,6 @@ void status(const char* s) {
     gn::log("%s", s);
     std::lock_guard<std::mutex> lock(g_m);
     g_status = s;
-}
-
-bool gameFocused() {
-    DWORD pid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    return pid == GetCurrentProcessId();
 }
 
 void setGodMode(bool on) {
@@ -430,37 +428,51 @@ void loadPosition() {
     });
 }
 
-// ---- noclip: Faith's position written directly every client tick (as MEC_Trainer did), so the camera
-// stays free; she flies where the camera looks. -----------------------------------------------------------
+// ---- noclip: GridNode's free camera flies, and Faith is put where it is when noclip goes off --------------
+// Writing her position every tick (as MEC_Trainer did) left her character in the game's physics: she
+// grabbed ledges and walls on the way and fell between ticks (user, 2026-11-04). The free camera has no
+// collision. No god mode with it: her last ground is kept far below (-300) so the landing is not a fall.
 std::atomic<bool> g_noclipActive{false};
-float g_noclipPos[3] = {}; // client thread only
+bool g_noclipFlew = false; // the free camera was seen flying since noclip went on (it starts at the next frame; client thread)
+constexpr float kNoFallGround = -300.f;
 
-void noclipClient(const gn::Movement& m, bool keys) {
-    float delta[3] = {};
-    if (keys) {
-        const float* f = m.camera_forward; // includes up / down: W flies where the camera points
-        // Sideways from the camera, flat on the ground (A goes this way, D the other).
-        float rx = f[2], rz = -f[0];
-        const float len = std::sqrt(rx * rx + rz * rz);
-        if (len > 1e-4f) rx /= len, rz /= len;
-        if (GetAsyncKeyState('W') & 0x8000) delta[0] += f[0], delta[1] += f[1], delta[2] += f[2];
-        if (GetAsyncKeyState('S') & 0x8000) delta[0] -= f[0], delta[1] -= f[1], delta[2] -= f[2];
-        if (GetAsyncKeyState('A') & 0x8000) delta[0] += rx, delta[2] += rz;
-        if (GetAsyncKeyState('D') & 0x8000) delta[0] -= rx, delta[2] -= rz;
-        if (GetAsyncKeyState(VK_SPACE) & 0x8000) delta[1] += 0.6f;
-        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) || (GetAsyncKeyState('C') & 0x8000)) delta[1] -= 0.6f;
-        if (GetAsyncKeyState('R') & 0x8000) g_noclipSpeed = std::min(g_noclipSpeed.load() + 0.05f, 10.f);
-        if (GetAsyncKeyState('E') & 0x8000) g_noclipSpeed = std::max(g_noclipSpeed.load() - 0.05f, 0.1f);
+void noclipOn() {
+    if (!gn::freecamOn() && !gn::freecam(true)) {
+        g_noclip = false;
+        return status("Noclip: not available (no Faith)");
     }
-    for (int i = 0; i < 3; ++i) g_noclipPos[i] += delta[i] * g_noclipSpeed.load();
-    gn::setPosition({g_noclipPos[0], g_noclipPos[1], g_noclipPos[2]});
-    // Keep Faith out of falling and wall states while she floats.
-    gn::Movement w{};
-    w.state = 2;
-    w.speed = 0.f;
-    w.last_ground_y = -2000.f;
-    gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED | GN_MOVE_LAST_GROUND_Y | GN_MOVE_WALL_COUNT | GN_MOVE_WALL_CLIMBS |
-                           GN_MOVE_WALL_RUNS);
+    g_noclipActive = true;
+    g_noclipFlew = false;
+    // Faith waits at her safe spawn (where she comes back after a death) while the camera flies: left in
+    // the air she fell and could die there (user, 2026-11-04). Held there until its ground has streamed in.
+    gn::runOnServer([] {
+        gn::Vec3 at;
+        void* faith = gn::localServerCharacter();
+        if (!faith || !gn::checkpoint(at)) return gn::log("noclip: no safe spawn found; Faith stays where she was");
+        gn::Transform t{};
+        t.right[0] = t.up[1] = t.forward[2] = 1.f;
+        t.trans[0] = at.x, t.trans[1] = at.y + 0.5f, t.trans[2] = at.z;
+        if (gn::teleport(faith, t) != GN_OK) return gn::log("noclip: the teleport to the safe spawn was refused");
+        arriveAt("safe spawn", t.trans);
+    });
+}
+
+// Faith to the camera, facing the way it looks; held there while the ground streams in when far.
+void noclipOff() {
+    g_noclipActive = false;
+    {
+        std::lock_guard<std::mutex> lock(g_m); // a wait at the safe spawn still running would hold her there
+        g_arrival.on = false;
+    }
+    gn::Freecam c{};
+    if (!gn::freecamState(c) || !c.on) return; // the free camera was left some other way: she stays
+    const float at[3] = {c.position[0], c.position[1], c.position[2]};
+    const bool distant = std::hypot(at[0] - g_px.load(), at[2] - g_pz.load()) > 150.f; // likely not streamed in
+    if (!gn::teleportToFreecam(false)) {
+        gn::freecam(false);
+        return status("Noclip: the teleport was refused");
+    }
+    if (distant) arriveAt("noclip's end", at);
 }
 
 // ---- bunny hop -------------------------------------------------------------------------------------------
@@ -509,24 +521,106 @@ std::atomic<int> g_chain{0}, g_bestChain{0};
 std::atomic<bool> g_logMoves{false};
 int g_chainFrom = 0; // (client thread) the state she landed out of, 0 when not on a bhop landing
 
+DWORD g_bhopArmedAt = 0, g_lastHop = 0;
+
+// ---- bhop practice: how the player's own jump lined up with the landing --------------------------------
+// The player's jump comes from gn::actionHeld (their real input, whatever it is bound to): its press is
+// the first client tick it is held. A bhop landing is a LANDED event out of a wall run or swing; the
+// state right after it says hit or miss (onMove). A miss with a press before the landing was early
+// (released before it); one with the press after the landing, within 0.4 s, was late. Times are client
+// ticks, 33 ms apart, so a result is good to a tick. Presses the trainer made (Arm, Auto) are not judged.
+struct Practice {
+    ULONGLONG pressMs = 0;   // the player's last jump press
+    ULONGLONG airMs = 0;     // the last take-off: the press that made it is not the bhop's
+    ULONGLONG landMs = 0;    // the last bhop landing
+    int landFrom = 0;        // its state (8 / 25)
+    ULONGLONG waitLate = 0;  // a miss with no press before it: a press until this time is "late"
+    std::string text;        // the last result, shown for a moment
+    ImU32 colour = 0;
+    ULONGLONG shownAt = 0;
+};
+std::mutex g_practiceM;
+Practice g_practice; // (g_practiceM)
+bool g_jumpWas = false; // client thread
+
+ULONGLONG nowMs() { return GetTickCount64(); }
+
+void practiceResult(const std::string& text, ImU32 colour) {
+    std::lock_guard<std::mutex> lock(g_practiceM);
+    g_practice.text = text, g_practice.colour = colour, g_practice.shownAt = nowMs();
+}
+
+// Client tick: the player's jump presses.
+void practiceTick() {
+    const int held = gn::actionHeld(GN_ACTION_JUMP);
+    if (held < 0) return;
+    const bool down = held != 0;
+    if (down && !g_jumpWas) {
+        const ULONGLONG t = nowMs();
+        ULONGLONG lateFrom = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_practiceM);
+            g_practice.pressMs = t;
+            if (g_practice.waitLate && t <= g_practice.waitLate) lateFrom = g_practice.landMs, g_practice.waitLate = 0;
+        }
+        if (lateFrom) {
+            char b[64];
+            snprintf(b, sizeof(b), "LATE by %llu ms", static_cast<unsigned long long>(t - lateFrom));
+            practiceResult(b, IM_COL32(255, 120, 60, 255));
+        }
+    }
+    g_jumpWas = down;
+}
+
 void onMove(const gn::MovementEvent& e, const gn::Movement&) {
     if (g_logMoves)
         gn::log("movement: %s, state %d -> %d", e.kind == GN_MOVE_EVENT_LANDED ? "landed" : e.kind == GN_MOVE_EVENT_AIRBORNE ? "airborne" : "state",
                 e.old_state, e.state);
+    if (e.kind == GN_MOVE_EVENT_AIRBORNE) {
+        std::lock_guard<std::mutex> lock(g_practiceM);
+        g_practice.airMs = nowMs();
+    }
     if (e.kind == GN_MOVE_EVENT_LANDED) {
         g_chainFrom = e.old_state == 8 || e.old_state == 25 ? e.old_state : 0;
         if (!g_chainFrom) g_chain = 0;
+        if (g_chainFrom) {
+            std::lock_guard<std::mutex> lock(g_practiceM);
+            g_practice.landMs = nowMs(), g_practice.landFrom = g_chainFrom;
+        }
     } else if (e.kind == GN_MOVE_EVENT_STATE && e.state != 0 && g_chainFrom) {
-        if (e.state == g_chainFrom) {
+        const bool hit = e.state == g_chainFrom;
+        if (hit) {
             const int n = g_chain.fetch_add(1) + 1;
             if (n > g_bestChain) g_bestChain = n;
         } else {
             g_chain = 0;
         }
         g_chainFrom = 0;
+        // The practice result, for the player's own presses only (not one the trainer just made).
+        if (g_landHud && GetTickCount() - g_lastHop > 500) {
+            ULONGLONG press, land, air;
+            {
+                std::lock_guard<std::mutex> lock(g_practiceM);
+                press = g_practice.pressMs, land = g_practice.landMs, air = g_practice.airMs;
+            }
+            // A press in this jump's air time (after the take-off it made: the wall jump's own press is not it).
+            const bool before = press && press <= land && press > air + 100 && land - press < 1000;
+            char b[64];
+            if (hit) {
+                snprintf(b, sizeof(b), before ? "ON TIME (%llu ms before the landing)" : "ON TIME",
+                         static_cast<unsigned long long>(before ? land - press : 0));
+                practiceResult(b, IM_COL32(60, 230, 100, 255));
+            } else if (before) {
+                snprintf(b, sizeof(b), "EARLY by %llu ms", static_cast<unsigned long long>(land - press));
+                practiceResult(b, IM_COL32(255, 210, 60, 255));
+            } else {
+                std::lock_guard<std::mutex> lock(g_practiceM);
+                g_practice.waitLate = land + 400; // a press soon after is late; none at all: missed
+                g_practice.text = "MISSED (no jump)", g_practice.colour = IM_COL32(220, 70, 70, 255), g_practice.shownAt = nowMs();
+            }
+        }
     }
 }
-DWORD g_bhopArmedAt = 0, g_lastHop = 0;
 
 // Client tick only.
 float g_prevY = 0.f, g_prevVy = 0.f;
@@ -609,33 +703,11 @@ void bhopCheck(const gn::Movement& m, float y, float dt) {
             chain ? "last landing" : "ray's contact height", vy, next - target, dt * 1000.f);
 }
 
-// ---- health, the waypoint, the checkpoint (API 22) ---------------------------------------------------
-std::atomic<bool> g_oneHit{false};       // every KSEC down to 1 hit
+// ---- health and the mission (API 22) ------------------------------------------------------------------
 std::atomic<float> g_health{-1.f}, g_maxHealth{-1.f};
 std::atomic<int> g_mission{0};
 std::atomic<bool> g_haveMission{false};
 std::string g_missionName; // (g_m)
-
-// Faith to a place (the checkpoint), as loadPosition does: no fall damage after it.
-void teleportTo(const char* what, bool (*where)(gn::Vec3&), float up) {
-    gn::runOnServer([what, where, up] {
-        gn::Vec3 at;
-        if (!where(at)) {
-            char b[96];
-            snprintf(b, sizeof(b), "No %s to go to", what);
-            return status(b);
-        }
-        gn::Transform t{};
-        t.right[0] = t.up[1] = t.forward[2] = 1.f;
-        t.trans[0] = at.x, t.trans[1] = at.y + up, t.trans[2] = at.z;
-        void* faith = gn::localServerCharacter();
-        if (!faith || gn::teleport(faith, t) != GN_OK) return status("Teleport refused");
-        arriveAt(what, t.trans); // held there until the ground streams in
-        char b[128];
-        snprintf(b, sizeof(b), "To the %s (%.1f, %.1f, %.1f): waiting for the ground", what, at.x, at.y, at.z);
-        status(b); // logs it too
-    });
-}
 
 void healthTick(void* faith) {
     float h = -1.f, m = -1.f;
@@ -649,18 +721,13 @@ void healthTick(void* faith) {
         std::lock_guard<std::mutex> lock(g_m);
         g_missionName = name;
     }
-    if (!g_oneHit) return;
-    static int said = 0;
-    gn::entitiesOfClass("ServerCharacterEntity", [&](void* e, gn::Type) {
-        float eh, em;
-        if (e == faith || !gn::health(e, eh, em) || eh <= 1.f) return;
-        if (gn::setHealth(e, 1.f) == GN_OK && said++ < 10) gn::log("one hit: a %s's health %.1f -> 1", gn::Type::of(e).name(), eh);
-    });
 }
 
-void serverTick(float) {
+void serverTick(float dt) {
     void* faith = gn::localServerCharacter();
     if (faith) healthTick(faith);
+    barriersTick(true, dt);
+    alertsTick(dt, g_haveMission && g_mission == 0);
     arrivalServer();
     gn::Vec3 p;
     if (!faith || !gn::positionOf(faith, p)) return;
@@ -740,7 +807,6 @@ void clientTick(float dt) {
     g_haveFaith = have;
     static bool havePrev = false;
     if (!have) {
-        g_noclipActive = false;
         g_havePrevY = false;
         havePrev = false;
         return;
@@ -776,33 +842,31 @@ void clientTick(float dt) {
     g_speed = m.speed;
     g_state = m.state;
     g_lastGroundY = m.last_ground_y;
-    const bool keys = gameFocused() && !gn::ui::menuOpen(); // noclip's movement keys (fixed, held)
 
-    // Noclip.
-    static int g_noclipGrace = 0;
-    if (g_noclip && !g_noclipActive) {
-        g_noclipPos[0] = p.x, g_noclipPos[1] = p.y, g_noclipPos[2] = p.z;
-        g_noclipActive = true;
-    } else if (!g_noclip && g_noclipActive) {
-        // Let go where she is, standing and still. As in MEC_Trainer the last ground stays far below
-        // her (-2000), so the drop cannot count as a fall; kept until she is down (the ray cast finds
-        // the ground under her feet) and a moment after, at most 15 s.
-        g_noclipActive = false;
-        gn::Movement w{};
-        w.state = 2;
-        gn::setMovement(w, GN_MOVE_STATE | GN_MOVE_SPEED);
-        g_noclipGrace = 450;
+    // Noclip: on and off from here (the client thread, like its hotkey); no fall damage while it flies
+    // and until she is down after it (the ray finds the ground under her), at most 15 s.
+    static int noclipGrace = 0;
+    if (g_noclip && !g_noclipActive) noclipOn();
+    else if (!g_noclip && g_noclipActive) noclipOff(), noclipGrace = 450;
+    else if (g_noclipActive) {
+        const bool flying = gn::freecamOn();
+        if (flying) g_noclipFlew = true;
+        else if (g_noclipFlew) g_noclip = false, g_noclipActive = false, noclipGrace = 450; // the camera was left another way
     }
-    if (g_noclipGrace > 0) {
-        const float gd = g_groundDist.load();
-        if (gd >= 0.f && gd < 0.15f && g_noclipGrace > 15) g_noclipGrace = 15; // landed: half a second more
-        --g_noclipGrace;
+    if (g_noclipActive || noclipGrace > 0) {
+        if (!g_noclipActive) {
+            const float gd = g_groundDist.load();
+            // Landed: half a second more. Not in the first third of a second: the teleport is at the next
+            // frame, and until then the ray still finds the ground where she stood.
+            if (gd >= 0.f && gd < 0.15f && noclipGrace > 15 && noclipGrace < 440) noclipGrace = 15;
+            --noclipGrace;
+        }
         gn::Movement w{};
-        w.last_ground_y = -2000.f;
+        w.last_ground_y = kNoFallGround;
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
     }
     if (g_noclipActive) {
-        noclipClient(m, keys);
+        arrivalClient(); // her wait at the safe spawn
         g_havePrevY = false;
         return;
     }
@@ -811,6 +875,7 @@ void clientTick(float dt) {
         return;
     }
     if (g_landHud) {
+        practiceTick();
         gn::Landing lp{};
         const bool fresh = m.on_ground != 0 && gn::landingPrediction(lp) && lp.age_ms < 100 && lp.ticks_to_hit > 0.f;
         g_landTicks = lp.ticks_to_hit, g_landSoft = lp.soft_landing != 0;
@@ -820,8 +885,8 @@ void clientTick(float dt) {
     }
     bhopCheck(m, p.y, dt);
 
-    // No stumble (and god mode, and no fall death: falls are deaths in MEC, not damage): a fall only counts from where
-    // Faith is now.
+    // God mode: a fall only counts from where Faith is now (falls are deaths in MEC, not damage), so no
+    // stumble or fall death either.
     // Kill volumes off: where she last stood, and a fall out of the level (through a street with no
     // collision) puts her back there.
     static gn::Transform lastStood{};
@@ -850,15 +915,7 @@ void clientTick(float dt) {
         if (const uint32_t n = g_killSpared.exchange(0)) gn::log("kill volumes off: %u kill volume tests skipped in 10 s", n);
     }
 
-    // No fall death: what the fall check did, in the log (while it's untested in game).
-    static float fallLogT = 0.f;
-    static int fallLogs = 0;
-    if (g_noFallDeath && fallLogs < 6 && (fallLogT += dt) >= 10.f) {
-        fallLogT = 0.f, ++fallLogs;
-        gn::log("no fall death: the fall check ran %u times (%u with its asset) in 10 s; Faith at y %.1f", g_fallCalls.exchange(0),
-                g_fallOurs.exchange(0), p.y);
-    }
-    if ((g_noStumble || g_god || (g_noFallDeath && p.y > -100.f)) && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
+    if (g_god && m.last_ground_y - p.y >= 1.f && m.state != 3 && m.state != 4) {
         gn::Movement w{};
         w.last_ground_y = p.y;
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
@@ -881,7 +938,28 @@ void clientTick(float dt) {
 }
 
 // ---- window -------------------------------------------------------------------------------------------
-void movementTab() {
+void playerTab() {
+    ImGui::SeparatorText("Faith");
+    if (!g_haveFaith) {
+        ImGui::TextDisabled("Not in a level");
+    } else {
+        if (const float h = g_health.load(); h >= 0.f) {
+            ImGui::Text("Health %.1f / %.1f", h, g_maxHealth.load());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Full")) gn::runOnServer([] {
+                float hh, mm;
+                if (void* f = gn::localServerCharacter(); f && gn::health(f, hh, mm)) gn::setHealth(f, mm);
+            });
+        }
+        ImGui::Text("Position (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
+        ImGui::Text("Speed %.1f m/s   state %d   last ground %.1f", g_hSpeed.load(), g_state.load(), g_lastGroundY.load());
+        if (g_haveMission) {
+            std::lock_guard<std::mutex> lock(g_m);
+            if (g_mission) ImGui::Text("Mission %d %s", g_mission.load(), g_missionName.c_str());
+            else ImGui::TextDisabled("Free roam (no mission)");
+        }
+    }
+    ImGui::SeparatorText("Movement");
     if (ImGui::Button("Reset all to default")) {
         gn::Tuning t;
         for (uint32_t i = 0; i < gn::tuningCount(); ++i)
@@ -954,6 +1032,28 @@ void worldTab() {
         if (most < g_timeScale) ImGui::TextDisabled("At %.0f fps the game reaches at most %.1fx", ImGui::GetIO().Framerate, most);
     }
     ImGui::TextDisabled("On top of the game's own slow motion");
+    ImGui::SeparatorText("Hazards");
+    bool v;
+    if (g_killHooked) {
+        v = g_killOff;
+        if (ImGui::Checkbox("Kill volumes off", &v)) g_killOff = v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("No kill volume kills anyone (street kill floors, fans; AI too). The streets have no\n"
+                              "collision: falling below y -50 puts her back where she last stood.");
+    }
+    v = g_barriersOff;
+    if (ImGui::Checkbox("Movement blockers off", &v)) g_barriersOff = v;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The level's invisible barriers (no standing, climbing, vaulting or wall running there) are\n"
+                          "taken out, and put back when this goes off.");
+    if (g_barriersOff) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d nearby)", g_barriersDisabled.load());
+    }
+    v = g_noAlerts;
+    if (ImGui::Checkbox("No city alerts (free roam)", &v)) g_noAlerts = v;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A KSEC alert ends as soon as it starts, and one already running ends. Not during missions.");
     ImGui::SeparatorText("Post-processing");
     static const char* const kPost[3][2] = {{"Bloom", "BloomEnable"}, {"Blur", "BlurEnable"}, {"Vignette", "VignetteEnable"}};
     gn::Object pp = gn::settings("GlobalPostProcessSettings");
@@ -974,43 +1074,12 @@ void trainerTab() {
     bool v;
     v = g_god;
     if (ImGui::Checkbox(withKey("God mode", "god").c_str(), &v)) g_god = v, setGodMode(v);
-    ImGui::SameLine();
-    v = g_oneHit;
-    if (ImGui::Checkbox("One-hit KSEC", &v)) g_oneHit = v;
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every other character's health down to 1 (a KSEC has 3: one per hit).");
-    if (const float h = g_health.load(); h >= 0.f) {
-        ImGui::TextDisabled("Health %.1f / %.1f", h, g_maxHealth.load());
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Full")) gn::runOnServer([] {
-            float hh, mm;
-            if (void* f = gn::localServerCharacter(); f && gn::health(f, hh, mm)) gn::setHealth(f, mm);
-        });
-    }
-    if (g_haveMission) {
-        std::lock_guard<std::mutex> lock(g_m);
-        ImGui::SameLine();
-        ImGui::TextDisabled("  mission %d %s", g_mission.load(), g_missionName.c_str());
-    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("No damage, no fall deaths, no stumbles.");
     v = g_noclip;
     if (ImGui::Checkbox(withKey("Noclip", "noclip").c_str(), &v)) g_noclip = v;
-    if (g_noclip) {
-        float s = g_noclipSpeed;
-        if (ImGui::SliderFloat("Noclip speed  [E / R]", &s, 0.1f, 5.f, "%.2fx")) g_noclipSpeed = s;
-    }
-    v = g_noStumble;
-    if (ImGui::Checkbox(withKey("No stumble", "no_stumble").c_str(), &v)) g_noStumble = v;
-    if (g_killHooked) {
-        v = g_killOff;
-        if (ImGui::Checkbox("Kill volumes off", &v)) g_killOff = v;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("No kill volume kills anyone (street kill floors, fans; AI too). The streets have no\n"
-                              "collision: falling below y -50 puts her back where she last stood.");
-    }
-    if (g_fallHooked) {
-        v = g_noFallDeath;
-        if (ImGui::Checkbox("No fall death", &v)) g_noFallDeath = v;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Long falls don't kill her (and the Ant fall check is raised, for AI too). Below y -100 they still do. The street kill floors still kill.");
-    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fly through anything: W A S D, Q / E down / up, Shift / Ctrl faster / slower, wheel: speed.\n"
+                          "Off: Faith lands where you are (no fall damage).");
     v = g_sameWall;
     if (ImGui::Checkbox("Same wall climbs / runs", &v)) g_sameWall = v;
     v = g_infClimbs;
@@ -1065,8 +1134,6 @@ void trainerTab() {
     if (ImGui::Button(withKey("Load", "load").c_str())) loadPosition();
     ImGui::SameLine();
     if (ImGui::Button("Jump")) gn::jump();
-    // No "to the waypoint": the marker's height is the street's, so she landed under buildings (user, 2026-11-04).
-    if (ImGui::Button("To the checkpoint")) teleportTo("checkpoint", gn::checkpoint, 0.5f);
     {
         std::lock_guard<std::mutex> lock(g_m);
         if (!g_status.empty()) ImGui::TextDisabled("%s", g_status.c_str());
@@ -1082,44 +1149,49 @@ void trainerTab() {
     v = g_keepFlying;
     if (ImGui::Checkbox("Keep flying after a teleport", &v)) g_keepFlying = v;
     ImGui::TextDisabled("Mouse looks, W A S D fly, Q / E down / up, Shift / Ctrl faster / slower, wheel: speed.");
-    ImGui::SeparatorText("HUD");
-    v = g_hud;
-    if (ImGui::Checkbox("Player info", &v)) g_hud = v;
-    ImGui::SameLine();
-    v = g_cheatList;
-    if (ImGui::Checkbox("Active cheats", &v)) g_cheatList = v;
-    v = g_landHud;
-    if (ImGui::Checkbox("Landing prediction", &v)) g_landHud = v;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("In the air: the game's predicted time to the landing and a bar that runs down to it. Green\n"
-                          "is the tick auto-bhop presses on (below \"Press below\"), red a soft landing (no bhop).");
-    ImGui::SeparatorText("Unload");
-    if (ImGui::Button("Unload the trainer")) gn::unloadSelf(); // everything it changed goes back (GN_MOD_UNLOAD)
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts back what it changed and unloads it; GridNode's Mods list loads it again.");
-    ImGui::SameLine();
-    if (ImGui::Button("Unload GridNode too")) gn::unloadGridNode();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every mod and GridNode itself: the game as if none of it had loaded.");
 }
 
-// A bar of the predicted time to the landing (12/60 s full), with a tick at the press threshold.
-void landingHud() {
-    if (!g_landShow) {
-        ImGui::TextDisabled("Landing: -");
-        return;
+// Bhop practice, in the middle of the screen (below the crosshair): the game's predicted time to the
+// landing as a bar running down to the press threshold, and how the player's last jump lined up.
+void landingPractice() {
+    if (!g_landHud || !g_haveFaith) return;
+    std::string text;
+    ImU32 colour = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_practiceM);
+        if (nowMs() - g_practice.shownAt < 1500) text = g_practice.text, colour = g_practice.colour;
     }
-    const float t = g_landTicks, below = g_bhopPredictBelow;
-    const bool soft = g_landSoft, window = t <= below;
-    ImGui::Text("Landing in %.2f/60 s%s", t, soft ? "   soft (no bhop)" : window ? "   bhop window" : "");
-    constexpr float kFull = 12.f;
-    const ImVec2 a = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetFontSize() * 12, h = ImGui::GetFontSize() * 0.5f;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = soft ? IM_COL32(220, 60, 60, 255) : window ? IM_COL32(60, 210, 90, 255) : IM_COL32(200, 200, 200, 200);
-    dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 120));
-    dl->AddRectFilled(a, ImVec2(a.x + w * std::min(t / kFull, 1.f), a.y + h), col);
-    const float mx = a.x + w * std::min(below / kFull, 1.f);
-    dl->AddLine(ImVec2(mx, a.y - 2.f), ImVec2(mx, a.y + h + 2.f), IM_COL32(255, 255, 255, 255), 2.f);
-    ImGui::Dummy(ImVec2(w, h));
+    if (!g_landShow && text.empty()) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.62f), ImGuiCond_Always, ImVec2(0.5f, 0.f));
+    ImGui::SetNextWindowBgAlpha(0.45f);
+    const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::Begin("##mec_bhop", nullptr, f)) {
+        const float w = ImGui::GetFontSize() * 16, h = ImGui::GetFontSize() * 0.7f;
+        if (g_landShow) {
+            const float t = g_landTicks, below = g_bhopPredictBelow;
+            const bool soft = g_landSoft, window = t <= below;
+            ImGui::Text("Landing in %.0f ms%s", t * 1000.f / 60.f, soft ? "   soft landing: no bhop" : window ? "   JUMP NOW" : "");
+            constexpr float kFull = 12.f;
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImU32 col = soft ? IM_COL32(220, 60, 60, 255) : window ? IM_COL32(60, 210, 90, 255) : IM_COL32(200, 200, 200, 200);
+            dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), IM_COL32(0, 0, 0, 120));
+            dl->AddRectFilled(at, ImVec2(at.x + w * std::min(t / kFull, 1.f), at.y + h), col);
+            const float mx = at.x + w * std::min(below / kFull, 1.f);
+            dl->AddLine(ImVec2(mx, at.y - 3.f), ImVec2(mx, at.y + h + 3.f), IM_COL32(255, 255, 255, 255), 2.f);
+            ImGui::Dummy(ImVec2(w, h));
+        } else {
+            ImGui::Dummy(ImVec2(w, 0.f));
+        }
+        if (!text.empty()) {
+            const float x = (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text.c_str()).x) * 0.5f;
+            if (x > 0.f) ImGui::SetCursorPosX(x);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(colour), "%s", text.c_str());
+        }
+    }
+    ImGui::End();
 }
 
 // Every hotkey, rebound here (kept in mods/mec-trainer.ini as key.<id>).
@@ -1128,20 +1200,41 @@ struct KeyRow {
     const char* label;
 };
 const KeyRow kKeyRows[] = {{"god", "God mode on / off"},
-                           {"noclip", "Noclip on / off (god mode with it)"},
-                           {"no_stumble", "No stumble on / off"},
+                           {"noclip", "Noclip on / off"},
                            {"save", "Save position"},
                            {"load", "Load position"},
                            {"bhop_arm", "Bunny hop: arm one hop (auto off)"},
                            {"bhop_auto", "Bunny hop: auto on / off"},
                            {"freecam", "Free camera on / off"},
                            {"tp_crosshair", "Free camera: teleport Faith to the crosshair"},
-                           {"tp_freecam", "Free camera: teleport Faith to the camera"}};
+                           {"tp_freecam", "Free camera: teleport Faith to the camera"},
+                           {"vol_show", "Show / hide trigger volumes"},
+                           {"vol_pick", "Volumes: picking on / off"},
+                           {"vol_log", "Volumes: log the picked trigger"}};
 
-void keysTab() {
+void settingsTab() {
+    ImGui::SeparatorText("Keys");
     ImGui::TextDisabled("Click a key, then press the new one. Escape: no key. Backspace: the default.");
     for (const KeyRow& k : kKeyRows) gn::ui::hotkeyRow(k.id, k.label);
-    ImGui::TextDisabled("Noclip: WASD, Space up, Shift / C down, E / R slower / faster (fixed).");
+    ImGui::TextDisabled("Noclip and the free camera: W A S D, Q / E down / up, Shift / Ctrl faster / slower, wheel: speed.");
+    ImGui::SeparatorText("HUD");
+    bool v = g_hud;
+    if (ImGui::Checkbox("Player info", &v)) g_hud = v;
+    ImGui::SameLine();
+    v = g_cheatList;
+    if (ImGui::Checkbox("Active cheats", &v)) g_cheatList = v;
+    v = g_landHud;
+    if (ImGui::Checkbox("Bhop practice", &v)) g_landHud = v;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("In the middle of the screen: the time to the landing (the game's prediction) as a bar running\n"
+                          "down to the jump window (green: jump now, red: a soft landing, no bhop), and after each bhop\n"
+                          "landing whether your own jump was on time, early or late.");
+    ImGui::SeparatorText("Unload");
+    if (ImGui::Button("Unload the trainer")) gn::unloadSelf(); // everything it changed goes back (GN_MOD_UNLOAD)
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts back what it changed and unloads it; GridNode's Mods list loads it again.");
+    ImGui::SameLine();
+    if (ImGui::Button("Unload GridNode too")) gn::unloadGridNode();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every mod and GridNode itself: the game as if none of it had loaded.");
 }
 
 // ---- settings kept between runs (mods/mec-trainer.ini) -------------------------------------------------
@@ -1154,15 +1247,15 @@ struct FloatSetting {
     std::atomic<float>* v;
 };
 // God mode, noclip and frozen time are left out: they start off each run.
-const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall", &g_sameWall},
-                              {"no_fall_death", &g_noFallDeath},   {"kill_volumes_off", &g_killOff},
+const BoolSetting kBools[] = {{"same_wall", &g_sameWall},          {"kill_volumes_off", &g_killOff},
+                              {"barriers_off", &g_barriersOff},    {"no_city_alerts", &g_noAlerts},
                               {"inf_climbs", &g_infClimbs},        {"inf_runs", &g_infRuns},
                               {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
                               {"bhop.auto", &g_bhopAuto},          {"bhop.wall_runs", &g_bhopWall},
                               {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction},
                               {"freecam.stay_flying", &g_keepFlying}}; // (a new key: the old one saved the first default, off)
-const FloatSetting kFloats[] = {{"noclip.speed", &g_noclipSpeed},  {"bhop.press_below", &g_bhopPredictBelow},
+const FloatSetting kFloats[] = {{"bhop.press_below", &g_bhopPredictBelow},
                                 {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs}};
 
 void loadSettings() {
@@ -1187,8 +1280,8 @@ void window() {
             trainerTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Movement")) {
-            movementTab();
+        if (ImGui::BeginTabItem("Player")) {
+            playerTab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("World")) {
@@ -1199,8 +1292,8 @@ void window() {
             volumes::tab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Keys")) {
-            keysTab();
+        if (ImGui::BeginTabItem("Settings")) {
+            settingsTab();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -1209,24 +1302,40 @@ void window() {
     saveSettings();
 }
 
-// Always on screen while the trainer is loaded (not an option): runs made with it are marked.
+// The trainer's keys under GridNode's in the free camera's key list (top right while it flies).
+void freecamKeys() {
+    if (!gn::freecamOn() || gn::ui::menuOpen()) return;
+    auto key = [](const char* id) {
+        const std::string k = gn::hotkeyName(id);
+        return k.empty() ? std::string("none") : k;
+    };
+    gn::ui::freecamSeparator("MEC Trainer");
+    if (g_noclipActive) gn::ui::freecamRow(key("noclip"), "noclip off: Faith lands here");
+    else gn::ui::freecamRow(key("freecam"), "back to Faith");
+    gn::ui::freecamRow(key("tp_crosshair"), "teleport Faith to the crosshair");
+    gn::ui::freecamRow(key("tp_freecam"), "teleport Faith to the camera");
+    gn::ui::freecamRow(key("vol_show"), volumes::anyShown() ? "hide trigger volumes" : "show trigger volumes");
+    if (volumes::anyShown()) {
+        gn::ui::freecamRow(key("vol_pick"), "pick the trigger in the middle");
+        gn::ui::freecamRow(key("vol_log"), "log the picked trigger");
+    }
+}
+
+// Always on screen while the trainer is loaded (not an option): runs made with it are marked. It says
+// nothing about the upload block (user, 2026-11-04); the log does.
 void trainerMark() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const bool blocked = g_uploadBlock.load() == 2 && g_bestGuard.load();
-    char text[160], skipped[48] = "";
-    if (const int n = g_blockedCount.load() + g_bestsKept.load()) snprintf(skipped, sizeof(skipped), " (%d stopped)", n);
-    snprintf(text, sizeof(text),
-             blocked ? "MEC Trainer loaded - Dash and time trial times are not uploaded or saved%s" : "MEC Trainer loaded - times NOT blocked%s",
-             skipped);
+    const char* text = "MEC Trainer Loaded";
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     const ImVec2 size = ImGui::CalcTextSize(text);
     const ImVec2 at(vp->WorkPos.x + (vp->WorkSize.x - size.x) * 0.5f, vp->WorkPos.y + 6.f);
     dl->AddRectFilled(ImVec2(at.x - 8.f, at.y - 3.f), ImVec2(at.x + size.x + 8.f, at.y + size.y + 3.f), IM_COL32(0, 0, 0, 140), 4.f);
-    dl->AddText(at, blocked ? IM_COL32(255, 200, 60, 255) : IM_COL32(255, 80, 80, 255), text);
+    dl->AddText(at, IM_COL32(255, 200, 60, 255), text);
 }
 
 void hud() {
     trainerMark();
+    landingPractice();
     if (!g_haveFaith) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
@@ -1237,7 +1346,6 @@ void hud() {
         if (ImGui::Begin("##mec_hud", nullptr, f)) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
             ImGui::Text("Speed %.1f m/s   State %d", g_hSpeed.load(), g_state.load());
-            if (g_landHud) landingHud();
             if (g_chain || g_bestChain) ImGui::Text("Bhop chain %d   best %d", g_chain.load(), g_bestChain.load());
         }
         ImGui::End();
@@ -1246,9 +1354,9 @@ void hud() {
         std::string on;
         if (g_god) on += "God  ";
         if (g_noclip) on += "Noclip  ";
-        if (g_noFallDeath) on += "NoFallDeath  ";
         if (g_killOff) on += "NoKillVolumes  ";
-        if (g_noStumble) on += "NoStumble  ";
+        if (g_barriersOff) on += "NoBlockers  ";
+        if (g_noAlerts) on += "NoAlerts  ";
         if (g_sameWall) on += "SameWall  ";
         if (g_infClimbs) on += "InfClimbs  ";
         if (g_infRuns) on += "InfRuns  ";
@@ -1264,7 +1372,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.3.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.4.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))
@@ -1274,6 +1382,7 @@ GN_MOD("mec-trainer") {
     gn::exportFn("godMode", &trainerGodMode);
     if (!gn::ui::onDraw([](bool menuOpen) {
             volumes::draw();
+            freecamKeys();
             hud();
             if (menuOpen) window();
         }))
@@ -1281,16 +1390,11 @@ GN_MOD("mec-trainer") {
     loadSettings();
     volumes::loadSettings();
     blockUploads();
-    hookFallCheck();
     hookKillVolumes();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });
-    gn::hotkey("noclip", "Noclip on / off (god mode with it)", '2', [] {
-        g_noclip = !g_noclip;
-        if (g_noclip && !g_god) g_god = true, setGodMode(true);
-    });
-    gn::hotkey("no_stumble", "No stumble on / off", '3', [] { g_noStumble = !g_noStumble; });
+    gn::hotkey("noclip", "Noclip on / off", '2', [] { g_noclip = !g_noclip; });
     gn::hotkey("save", "Save position", '4', savePosition);
     gn::hotkey("load", "Load position", '5', loadPosition);
     gn::hotkey("bhop_arm", "Bunny hop: arm one hop (auto off)", 'F', bhopArm);
@@ -1301,15 +1405,17 @@ GN_MOD("mec-trainer") {
     gn::hotkey("freecam", "Free camera on / off", '6', toggleFreecam);
     gn::hotkey("tp_crosshair", "Free camera: teleport Faith to the crosshair", '7', teleportCrosshair);
     gn::hotkey("tp_freecam", "Free camera: teleport Faith to the camera", '8', teleportFreecam);
+    gn::hotkey("vol_show", "Show / hide trigger volumes", '3', volumes::toggleShow);
     gn::hotkey("vol_pick", "Volumes: picking on / off (the trigger in the middle of the screen lights up)", '0', volumes::togglePick);
     gn::hotkey("vol_log", "Volumes: log the picked trigger", '9', volumes::logAimed);
     gn::onMovement(onMove);
     gn::onClientTick([](float dt) {
         clientTick(dt);
+        barriersTick(false, dt);
         volumes::clientTick(dt);
     });
     gn::onServerTick(serverTick);
-    gn::log("ready: INSERT for the window; keys in its Keys tab (1 god, 2 noclip, 3 no stumble, 4 save, 5 load, F bunny hop)");
+    gn::log("ready: INSERT for the window; keys in its Settings tab (1 god, 2 noclip, 4 save, 5 load, F bunny hop)");
     return true;
 }
 
@@ -1318,7 +1424,7 @@ GN_MOD("mec-trainer") {
 // tasks posted here run before the trainer is freed.
 GN_MOD_UNLOAD() {
     // Only what is not kept in the ini (a frame may still save the settings before the UI goes).
-    g_noclip = false, g_bhopArmed = false, g_freezeTime = false;
+    g_noclip = false, g_noclipActive = false, g_bhopArmed = false, g_freezeTime = false;
     if (g_god.exchange(false)) gn::runOnServer([] { gn::godMode(false); });
     if (gn::freecamOn()) gn::freecam(false);
     if (g_tuned.exchange(false)) {
@@ -1333,8 +1439,10 @@ GN_MOD_UNLOAD() {
         if (g_speedWritten >= 0.f) ts.set("TimeScale", g_speedBase), g_speedWritten = -1.f;
         for (const auto& [field, on] : post) gn::settings("GlobalPostProcessSettings").set(field, on);
     });
+    // The barriers it took out, back in (each realm on its own thread; these tasks run before the free).
+    gn::runOnServer([] { barriersTick(true, 0.f, true); });
+    gn::runOnClient([] { barriersTick(false, 0.f, true); });
     volumes::unload();
-    fallPutBack();
-    gn::log("unloading: god mode, noclip, free camera, tuning, time scale and post-processing put back");
+    gn::log("unloading: god mode, noclip, free camera, tuning, time scale, post-processing and barriers put back");
     return true;
 }

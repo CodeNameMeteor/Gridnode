@@ -327,6 +327,17 @@ void prepareOverride() {
 }
 } // namespace
 
+int actionHeld(uint32_t hash) {
+    // The player's live state (not GridNode's override): what the keys and pad say now.
+    const int bit = digitalBit(hash);
+    if (bit < 0) return -GN_ERR_NOT_FOUND;
+    const uintptr_t player = clientPlayer();
+    const uintptr_t live = player ? ptr(player + ka::ClientPlayer_InputState) : 0;
+    uint64_t bits = 0;
+    if (!live || !mem::read(live + ka::EntryInputState_Digital, bits)) return -GN_ERR_UNAVAILABLE;
+    return static_cast<int>((bits >> bit) & 1u);
+}
+
 int actionPress(uint32_t hash, uint32_t ticks) {
     if (digitalBit(hash) < 0) return GN_ERR_NOT_FOUND;
     std::lock_guard<std::mutex> lock(g_actM);

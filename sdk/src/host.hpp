@@ -230,6 +230,7 @@ int keyFind(const char* name);
 int keyPress(int key, uint32_t ticks);
 int jump();
 int actionPress(uint32_t hash, uint32_t ticks);
+int actionHeld(uint32_t hash); // the player's live input: 1 / 0, or -GN_ERR_*
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
 int jumpHeld();       // the player's jump action: 1 held, 0 not, -1 unavailable

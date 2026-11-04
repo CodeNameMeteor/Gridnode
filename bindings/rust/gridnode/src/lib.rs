@@ -618,6 +618,14 @@ pub fn key_press(key: i32, ticks: u32) -> bool {
 pub fn action_press(action_hash: u32, ticks: u32) -> bool {
     unsafe { (api().action_press.unwrap())(action_hash, ticks) == 0 }
 }
+/// Whether the player holds the action now (their real input, whatever it is bound to; API 24).
+/// `None` when it cannot be read (no Faith, no such action).
+pub fn action_held(action_hash: u32) -> Option<bool> {
+    match unsafe { (api().action_held.unwrap())(action_hash) } {
+        r if r >= 0 => Some(r != 0),
+        _ => None,
+    }
+}
 /// Makes Faith jump: the jump action, whatever key is bound (the game decides what it becomes).
 pub fn jump() -> bool {
     unsafe { (api().jump.unwrap())() == 0 }

@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 23 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex */
+#define GN_API_VERSION 24 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held) */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -840,6 +840,16 @@ typedef struct gn_api {
      * grow at its end later. GN_ERR_ARGUMENT: size below the API 10 layout. */
     int (*online_allow)(const char* mod, const char* reason);
     int (*view_get_ex)(gn_view* out, uint32_t size);
+
+    /* ==== GN_API_VERSION 24 =================================================================== */
+
+    /* ---- the player's own input ---------------------------------------------------------------------
+     * action_held: whether the player holds an input action now (by its hash, e.g. GN_ACTION_JUMP),
+     * whatever key or button it is bound to: 1 held, 0 not, or a negative error (-GN_ERR_NOT_FOUND: no
+     * such digital action; -GN_ERR_UNAVAILABLE: no Faith). It reads the player's real input, so
+     * action_press (and jump) do not show in it. The game updates it once a frame; read it on the
+     * client tick for timing. Any thread (it reads). */
+    int (*action_held)(uint32_t action_hash);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

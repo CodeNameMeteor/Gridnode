@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 23 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 24 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -307,7 +307,9 @@ gn::setTimeOfDay(12 * 3600.f);
   instead when the player has flag 0x40 (`db/annotations/input.yaml`). `gn::jump()` copies the live
   input into that override, sets the jump action (`GN_ACTION_JUMP`) and raises the flag for four
   ticks, so it works whatever key the player bound to jump. `gn::actionPress(hash, ticks)` does the
-  same for any digital action. Writing the movement state yourself (`GN_MOVE_STATE`) is possible but
+  same for any digital action. `gn::actionHeld(hash)` (API 24; Rust `action_held`) reads whether the
+  player holds an action now, from their real input (GridNode's own presses don't show in it): the
+  MEC trainer's bhop practice times the player's jump with it. Writing the movement state yourself (`GN_MOVE_STATE`) is possible but
   skips the animation system's decision.
 - **Tuning** values belong to the animation system's assets, which reflection does not describe, so
   they are reached by fixed paths. Each object on the way is checked by its vtable, and a value is
@@ -497,6 +499,11 @@ hotkeys still work. `gn::teleportToCrosshair()` puts Faith where its crosshair p
 hits within 200 m, else at the camera) and `gn::teleportToFreecam()` at the camera itself, facing the
 way it looks; with `keepFlying` false the view goes back to her. It works without the Layout editor
 tool (player builds too). In Rust: `freecam`, `freecam_state`, `freecam_teleport`.
+
+Its key list sits top right while it flies with the menu closed. A mod adds its own keys there from
+its `onDraw`: `gn::ui::freecamSeparator("My mod")`, then `gn::ui::freecamRow(key, "what it does")` per
+key (GridNode draws the list first in the frame, so these go at its end; nothing happens while it is
+not shown).
 
 ### Entities of a class (API 14)
 

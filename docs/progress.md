@@ -49,6 +49,25 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **MEC trainer 1.4.0, polish** (user, 2026-11-04; untested in game). Noclip flies GridNode's free
+  camera (no grabbing, no falling) and puts Faith there when it goes off, last ground -300 until she
+  lands, no god mode with it. Tabs: Trainer, Player (Movement tuning as its section), World (kill
+  volumes off, movement blockers off, no city alerts in free roam), Volumes, Settings (keys, HUD,
+  unload). Taken out: no fall death, one-hit KSEC, no stumble (god mode does it), To the checkpoint.
+  The top of the screen says only "MEC Trainer Loaded". Movement blockers off: each barrier's own
+  disable / enable on both realms (PamOBBCollision_enableClient 0x143333590, read in Ghidra).
+  No city alerts: an active PamServerCityAlertManager gets its deactivate event (0x798161be) when
+  no mission runs. **To research:** taking free-roam KSEC away (which characters are free-roam KSEC,
+  their spawners) and stopping an alert from starting rather than ending it.
+- **API 24 and trainer HUD** (user, 2026-11-04; untested in game). `action_held` (the player's own
+  input by action, from the live EntryInputState). The free camera's key list is top right, and mods
+  add rows to it (`gn::ui::freecamRow`). Trainer: its keys in that list; a show / hide trigger volumes
+  key (3); health, position, speed and the mission on the Player tab; bhop practice in the middle of
+  the screen (the landing bar, then ON TIME / EARLY / LATE / MISSED for the player's own jump on each
+  wall run or swing landing; presses the trainer made are not judged).
+- **Trainer fixes** (2026-11-04, from the user's log): movement blockers off crashed when turned off
+  (it enabled barriers the game never had: PamOBBCollision_enableClient+0x82); now only barriers it
+  disabled, with a body, go back. Noclip sends Faith to her safe spawn while the camera flies.
 - **Reload fixes** (2026-11-04, from the user's log): a mod's tasks posted in its gn_mod_unload run
   again before the free (they were dropped at take-out); the MEC trainer's kill volume hook accepts
   GridNode's detour entry left from the last load (it was "not available" after every reload).
@@ -71,6 +90,8 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   `con`/`nul`, 64 chars), hex event ids over 32 bits refused, long event-name lines, the stack
   EntityEvent padded, the injector waits for the game's window and checks the copy's path length,
   jcc prefixes comment, 66-prefixed branches refused, `write()` into code logged (not recorded).
+  (The injector's wait was reverted on 2026-11-04: it already waited for the game's window, so the
+  change only cut the settle to 0.5 s, and the game hung when its window stayed in the background.)
   **Online rule changed (user, 2026-11-04):** mods may change online services on purpose if they
   say so (`online_allow(mod, reason)`, API 23): until then their online console commands and online
   progression flags were refused (no longer, see above); afterwards each is logged with `!!! ONLINE` and the Mods list shows

@@ -3691,10 +3691,12 @@ void freeCamFrame(bool menuOpen) {
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
-    if (!menuOpen) { // the keys, top left, while flying with the menu closed
+    if (!menuOpen) { // the keys, top right, while flying with the menu closed (mods' HUDs sit top left)
+        // Mods add their own rows to this window from their on_ui (they draw after it in the same
+        // frame): gn::ui::freecamRow in gridnode/ui.hpp.
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         const float pad = ImGui::GetFontSize();
-        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + pad, vp->Pos.y + pad), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - pad, vp->Pos.y + pad), ImGuiCond_Always, ImVec2(1.f, 0.f));
         ImGui::SetNextWindowBgAlpha(0.55f);
         ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                                                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);

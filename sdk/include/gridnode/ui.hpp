@@ -66,6 +66,37 @@ template <class F> bool onDraw(F f) {
 inline bool menuOpen() { return api().ui_menu_open() != 0; }
 
 namespace detail {
+// The free camera's key list window, to add to (false: it is not shown now).
+inline bool freecamBegin() {
+    if (menuOpen() || !freecamOn()) return false;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float pad = ImGui::GetFontSize();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - pad, vp->Pos.y + pad), ImGuiCond_Always, ImVec2(1.f, 0.f));
+    ImGui::Begin("##freecam", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+    return true;
+}
+} // namespace detail
+
+// A row in the free camera's key list (top right while it flies with the menu closed): a mod's own
+// keys next to GridNode's. Call it from onDraw; GridNode draws the list first in the frame, so the
+// rows go at its end. Does nothing while the list is not shown.
+inline void freecamRow(const std::string& key, const char* what) {
+    if (!detail::freecamBegin()) return;
+    ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "%s", key.c_str());
+    ImGui::SameLine(ImGui::GetFontSize() * 7.5f);
+    ImGui::TextUnformatted(what);
+    ImGui::End();
+}
+// A line between groups of rows, with a heading when text is given.
+inline void freecamSeparator(const char* text = nullptr) {
+    if (!detail::freecamBegin()) return;
+    ImGui::Separator();
+    if (text) ImGui::TextUnformatted(text);
+    ImGui::End();
+}
+
+namespace detail {
 // The hotkey's button (and "default" when changed); the label, if any, between them.
 inline bool hotkeyParts(const char* id, const char* text, float width) {
     HotkeyInfo h;

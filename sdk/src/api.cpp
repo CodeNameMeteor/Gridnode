@@ -479,6 +479,7 @@ const gn_api* api() {
         a.mission = mission;
         a.online_allow = apiOnlineAllow;
         a.view_get_ex = apiViewGetEx;
+        a.action_held = actionHeld;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

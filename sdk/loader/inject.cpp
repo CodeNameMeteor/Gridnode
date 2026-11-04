@@ -25,8 +25,9 @@ namespace {
 
 const wchar_t* kGameExe = L"MirrorsEdgeCatalyst.exe";
 const wchar_t* kEngineModule = L"Engine.BuildInfo_Win64_retail.dll"; // only the game itself loads it
-constexpr DWORD kSettleMs = 500;      // after its window is up
-constexpr DWORD kWindowWaitMs = 30000; // at most, for the game's window (then it goes ahead anyway)
+// After the game shows up (findGame: the engine loaded and a window up), let it finish starting. 0.5 s
+// was likely too short: the game hung on start when its window was not opened (user, 2026-11-04).
+constexpr DWORD kSettleMs = 3000;
 
 std::vector<DWORD> gameProcesses() {
     std::vector<DWORD> pids;
@@ -113,29 +114,6 @@ bool gridNodeActive(DWORD pid) {
     if (!m) return false;
     CloseHandle(m);
     return true;
-}
-
-// A visible top-level window of pid: the game has started (its D3D device is made with it), the
-// ready signal for injecting. A fixed wait was too short on a slow start and long for nothing on a
-// fast one (review, 2026-11-04).
-bool hasWindow(DWORD pid) {
-    struct Find {
-        DWORD pid;
-        bool found;
-    } f{pid, false};
-    EnumWindows(
-        [](HWND w, LPARAM p) -> BOOL {
-            auto* f = reinterpret_cast<Find*>(p);
-            DWORD owner = 0;
-            GetWindowThreadProcessId(w, &owner);
-            if (owner == f->pid && IsWindowVisible(w) && !GetWindow(w, GW_OWNER)) {
-                f->found = true;
-                return FALSE;
-            }
-            return TRUE;
-        },
-        reinterpret_cast<LPARAM>(&f));
-    return f.found;
 }
 
 const wchar_t* fileName(const wchar_t* path) {
@@ -280,14 +258,9 @@ int wmain(int argc, wchar_t** argv) {
             }
             Sleep(500);
         }
-        wprintf(L"Game found; waiting for its window...\n");
-        const DWORD pid = game.pid;
-        const ULONGLONG start = GetTickCount64();
-        while (!hasWindow(pid) && GetTickCount64() - start < kWindowWaitMs) {
-            Sleep(250);
-            if (findGame().pid != pid) break; // closed (checked below)
-        }
+        wprintf(L"Game found; giving it a moment to finish starting...\n");
         Sleep(kSettleMs);
+        const DWORD pid = game.pid;
         game = findGame();
         if (game.pid != pid) {
             wprintf(L"FAILED: the game closed while starting.\n");

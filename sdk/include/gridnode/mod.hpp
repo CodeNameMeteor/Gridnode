@@ -461,6 +461,9 @@ inline bool keyPress(int key, uint32_t ticks = 4) { return api().key_press(key, 
 inline bool jump() { return api().jump() == GN_OK; }
 // Holds an input action (GN_ACTION_JUMP, or another action's hash) for `ticks` client ticks.
 inline bool actionPress(uint32_t actionHash, uint32_t ticks = 4) { return api().action_press(actionHash, ticks) == GN_OK; }
+// Whether the player holds the action now (their real input, whatever it is bound to; API 24): 1 / 0,
+// negative when it cannot be read (no Faith, no such action).
+inline int actionHeld(uint32_t actionHash) { return api().action_held(actionHash); }
 
 using Movement = gn_movement;
 // Faith's movement state, wall counters, ground, speed and camera direction.
