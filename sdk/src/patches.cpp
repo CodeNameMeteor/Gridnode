@@ -35,30 +35,63 @@ struct Patch {
 std::mutex g_m;
 std::vector<Patch> g_patches; // (g_m)
 
+using QueryThreadFn = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+QueryThreadFn g_queryThread = nullptr; // NtQueryInformationThread, looked up before any pause
+
 // Every other thread of the game paused (handles in `out`, to resume). The list is made before the
 // first pause: nothing may allocate or log while threads are paused (one may hold the heap's lock).
 // GridNode's own threads are paused too; that is safe whatever locks the caller holds, because the
 // paused section (thread contexts, VirtualProtect, a memcpy, FlushInstructionCache) takes no lock
 // and so never waits on a paused thread (review, 2026-11-03).
+//
+// A thread started between the snapshot and the pauses would run on: once every thread in the
+// snapshot is paused no new one can be started (only a running thread starts one), so a second
+// snapshot then finds any that slipped through, and they are paused too (review, 2026-11-04). The
+// snapshot takes no heap lock (toolhelp maps its own section), and the vectors were reserved first.
 void pauseOthers(std::vector<HANDLE>& out) {
-    std::vector<DWORD> ids;
-    if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
+    constexpr size_t kSpare = 64; // threads that may appear between snapshots
+    if (!g_queryThread) // before any pause (GetProcAddress may take the loader lock)
+        g_queryThread = reinterpret_cast<QueryThreadFn>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread")));
+    std::vector<DWORD> ids, seen;
+    const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
+    auto snapshot = [&](std::vector<DWORD>& into) {
+        into.clear();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) return;
         THREADENTRY32 te{};
         te.dwSize = sizeof(te);
-        const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
         for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
-            if (te.th32OwnerProcessID == pid && te.th32ThreadID != me) ids.push_back(te.th32ThreadID);
+            if (te.th32OwnerProcessID == pid && te.th32ThreadID != me && into.size() < into.capacity()) into.push_back(te.th32ThreadID);
         CloseHandle(snap);
-    }
+    };
+    ids.reserve(4096);
+    snapshot(ids);
+    seen.reserve(ids.size() + kSpare);
     std::vector<HANDLE> opened;
-    opened.reserve(ids.size());
+    opened.reserve(ids.size() + kSpare);
     for (DWORD id : ids)
         if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, id)) opened.push_back(h);
     out.clear();
-    out.reserve(opened.size());
+    out.reserve(opened.capacity());
     for (HANDLE h : opened) {
         if (SuspendThread(h) != DWORD(-1)) out.push_back(h); // reserved: no allocation
         else CloseHandle(h);
+    }
+    // With the others paused: anything new since the first snapshot (a few rounds: one that slipped
+    // through may have started another before it was paused).
+    for (int round = 0; round < 4; ++round) {
+        seen.resize(0);
+        snapshot(seen);
+        bool any = false;
+        for (DWORD id : seen) {
+            if (std::find(ids.begin(), ids.end(), id) != ids.end() || ids.size() >= ids.capacity() || out.size() >= out.capacity()) continue;
+            ids.push_back(id);
+            HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, id);
+            if (!h) continue;
+            if (SuspendThread(h) != DWORD(-1)) out.push_back(h), any = true;
+            else CloseHandle(h);
+        }
+        if (!any) break;
     }
 }
 
@@ -70,12 +103,50 @@ void resumeAll(std::vector<HANDLE>& hs) {
     hs.clear();
 }
 
-// A paused thread whose next instruction is in [at, at + n).
-bool anyThreadIn(const std::vector<HANDLE>& hs, uintptr_t at, size_t n) {
+// The top of a paused thread's stack (its TEB's StackBase), or 0.
+uintptr_t stackBase(HANDLE h) {
+    struct {
+        LONG exitStatus;
+        void* teb;
+        void* clientId[2];
+        ULONG_PTR affinity;
+        LONG priority, basePriority;
+    } info{};
+    if (!g_queryThread || g_queryThread(h, 0 /* ThreadBasicInformation */, &info, sizeof(info), nullptr) < 0 || !info.teb) return 0;
+    uintptr_t base = 0; // NT_TIB.StackBase at +8 (the thread's own TEB, readable from here)
+    return mem::read(reinterpret_cast<uintptr_t>(info.teb) + 8, base) ? base : 0;
+}
+
+// v looks like a return address: a call instruction (E8 rel32, FF /2 with a ModRM) ends there.
+bool afterCall(uintptr_t v) {
+    uint8_t b[7] = {};
+    if (!mem::read(v - 7, b, sizeof(b))) return false;
+    if (b[2] == 0xe8) return true;                                 // call rel32
+    if (b[5] == 0xff && ((b[6] >> 3) & 7) == 2) return true;     // call r/m (2 bytes: call rax...)
+    if (b[4] == 0xff && ((b[5] >> 3) & 7) == 2) return true;     // call [r+d8]
+    if (b[1] == 0xff && ((b[2] >> 3) & 7) == 2) return true;     // call [rip+d32] / [r+d32]
+    return false;
+}
+
+// A paused thread whose next instruction is in [at, at + n), or (returns) that will return into it:
+// a call whose return address lands inside the bytes (patch_bytes over a call). The stack is scanned
+// for such return addresses rather than unwound (the unwinder can take a lock a paused thread holds);
+// a stale one only makes the write wait and try again.
+bool anyThreadIn(const std::vector<HANDLE>& hs, uintptr_t at, size_t n, bool returns = false) {
     for (HANDLE h : hs) {
         alignas(16) CONTEXT ctx{};
         ctx.ContextFlags = CONTEXT_CONTROL;
-        if (GetThreadContext(h, &ctx) && ctx.Rip >= at && ctx.Rip < at + n) return true;
+        if (!GetThreadContext(h, &ctx)) continue;
+        if (ctx.Rip >= at && ctx.Rip < at + n) return true;
+        if (!returns) continue;
+        const uintptr_t top = stackBase(h);
+        if (!top) continue;
+        constexpr size_t kScan = 64 * 1024; // the frames that matter are near the top
+        for (uintptr_t sp = ctx.Rsp & ~uintptr_t(7); sp + 8 <= top && sp < ctx.Rsp + kScan; sp += 8) {
+            uintptr_t v = 0;
+            if (!mem::read(sp, v)) break;
+            if (v > at && v < at + n && afterCall(v)) return true;
+        }
     }
     return false;
 }
@@ -126,7 +197,7 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused =
         for (int attempt = 0; attempt < 100 && !written; ++attempt) {
             std::vector<HANDLE> paused;
             pauseOthers(paused);
-            if (!anyThreadIn(paused, at, n)) {
+            if (!anyThreadIn(paused, at, n, true)) {
                 memcpy(reinterpret_cast<void*>(at), bytes, n);
                 written = true;
             }
@@ -280,6 +351,13 @@ uint8_t* codeRoom(uintptr_t site, size_t n) {
     return t;
 }
 
+// (g_thunkM) Room from codeRoom that was never used (the patch failed before anything could run
+// it) taken back, when it is the newest; otherwise it stays unused.
+void codeGiveBack(uint8_t* t, size_t n) {
+    n = (n + 15) & ~size_t(15);
+    if (g_thunkPage && t + n == g_thunkPage + g_thunkUsed) g_thunkUsed -= n;
+}
+
 // (g_thunkM) Writes code into room from codeRoom. A page that could not be had read-write-execute
 // is read-write until its first code is done, then executable: a later write makes it writable for
 // a moment with every other thread paused (thunks already on it may be running), instead of
@@ -331,9 +409,9 @@ bool overlaps(uintptr_t at, size_t n) { // g_m held
 
 // written: the bytes are already there (a detour's entry, written with the other threads stopped);
 // `original` then holds what was there before.
-int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what,
-        const uint8_t* written = nullptr) {
-    std::lock_guard<std::mutex> lock(g_m);
+// (g_m held)
+int addLocked(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what,
+              const uint8_t* written = nullptr) {
     if (unloading()) return GN_ERR_UNAVAILABLE;
     if (overlaps(at, n)) {
         GN_LOG("[%s] patch at %llx: another patch is there", mod, static_cast<unsigned long long>(mem::va(at)));
@@ -349,6 +427,11 @@ int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t
     GN_LOG("[%s] patched %llu bytes at %llx (%s)", mod, static_cast<unsigned long long>(n), static_cast<unsigned long long>(mem::va(at)), what.c_str());
     g_patches.push_back(std::move(p));
     return GN_OK;
+}
+
+int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what) {
+    std::lock_guard<std::mutex> lock(g_m);
+    return addLocked(mod, at, bytes, n, owner, what);
 }
 
 bool undo(const Patch& p) {
@@ -473,6 +556,7 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
     std::string why;
     if (!x64::trampoline(code, sizeof(code), fn, 5, reinterpret_cast<uint64_t>(room), tramp, copied, &why, &starts) || tramp.size() > 0x60) {
         GN_LOG("[%s] hook_function %llx: %s", mod, static_cast<unsigned long long>(mem::va(fn)), why.empty() ? "trampoline too long" : why.c_str());
+        codeGiveBack(room, 128);
         return GN_ERR_SLOT;
     }
     uint8_t* stub = room + 0x70;
@@ -482,38 +566,63 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
         if (uint8_t* p = poolPage(false, unused); p && reaches(p, reinterpret_cast<uintptr_t>(stub))) g_slotPage = p;
         if (!g_slotPage) g_slotPage = allocNear(reinterpret_cast<uintptr_t>(stub), false, unused);
         g_slotUsed = 0;
-        if (!g_slotPage) return GN_ERR_UNAVAILABLE;
+        if (!g_slotPage) {
+            codeGiveBack(room, 128);
+            return GN_ERR_UNAVAILABLE;
+        }
     }
     auto* slot = reinterpret_cast<uint64_t*>(g_slotPage + g_slotUsed);
     g_slotUsed += 8;
+    // Until the entry jump is written nothing can reach the room or the slot: a failure before that
+    // gives both back (they leaked, review 2026-11-04).
+    auto giveBack = [&] {
+        if (reinterpret_cast<uint8_t*>(slot) + 8 == g_slotPage + g_slotUsed) g_slotUsed -= 8;
+        codeGiveBack(room, 128);
+    };
     *slot = reinterpret_cast<uint64_t>(room);
     uint8_t block[128] = {};
     memcpy(block, tramp.data(), tramp.size());
     const int32_t toSlot = static_cast<int32_t>(reinterpret_cast<intptr_t>(slot) - reinterpret_cast<intptr_t>(stub + 6));
     block[0x70] = 0xff, block[0x71] = 0x25; // jmp [rip+toSlot]
     memcpy(block + 0x72, &toSlot, 4);
-    if (!codeWrite(room, block, sizeof(block)) || !codeDone(room, 128)) return GN_ERR_UNAVAILABLE;
+    if (!codeWrite(room, block, sizeof(block)) || !codeDone(room, 128)) {
+        giveBack();
+        return GN_ERR_UNAVAILABLE;
+    }
     // The entry: jmp rel32 to the stub, GridNode's patch (undone when GridNode is unloaded).
     uint8_t entry[5] = {0xe9};
     const int32_t toStub = static_cast<int32_t>(reinterpret_cast<intptr_t>(stub) - static_cast<intptr_t>(fn + 5));
     memcpy(entry + 1, &toStub, 4);
-    {
-        std::lock_guard<std::mutex> lock(g_m);
-        if (overlaps(fn, 5)) {
-            GN_LOG("[%s] hook_function %llx: a code patch is there", mod, static_cast<unsigned long long>(mem::va(fn)));
-            return GN_ERR_SLOT;
-        }
+    // The overlap check, the write and the record under one lock: an unload or another patch
+    // between the write and the record left a live jump that unload did not know of (review,
+    // 2026-11-04).
+    std::lock_guard<std::mutex> patchLock(g_m);
+    if (unloading()) {
+        giveBack();
+        return GN_ERR_UNAVAILABLE;
+    }
+    if (overlaps(fn, 5)) {
+        GN_LOG("[%s] hook_function %llx: a code patch is there", mod, static_cast<unsigned long long>(mem::va(fn)));
+        giveBack();
+        return GN_ERR_SLOT;
     }
     int moved = 0;
     if (!writeEntry(fn, entry, copied, starts, room, moved)) {
         GN_LOG("[%s] hook_function %llx: the entry could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(fn)),
                static_cast<unsigned long>(GetLastError()));
+        giveBack();
         return GN_ERR_SLOT;
     }
     char what[96];
     snprintf(what, sizeof(what), "detour entry (%llu bytes moved%s)", static_cast<unsigned long long>(copied),
              moved ? ", a thread moved into the trampoline" : "");
-    add("GridNode", fn, entry, 5, reinterpret_cast<uintptr_t>(&detourSlot), what, code); // listed, undone at a full unload
+    // Listed, undone at a full unload. Cannot fail here (checked above, under the same lock); if it
+    // ever does, the entry goes back at once rather than stay unlisted.
+    if (addLocked("GridNode", fn, entry, 5, reinterpret_cast<uintptr_t>(&detourSlot), what, code) != GN_OK) {
+        if (!writeCode(fn, code, 5)) GN_LOG("[%s] hook_function %llx: the entry could not be put back", mod, static_cast<unsigned long long>(mem::va(fn)));
+        // The room and slot stay: a thread may already be in the trampoline.
+        return GN_ERR_SLOT;
+    }
     out = {room, slot};
     g_detours[fn] = out;
     return GN_OK;

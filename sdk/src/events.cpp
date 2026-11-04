@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -184,9 +185,15 @@ const std::unordered_map<uint32_t, std::string>& names() {
         for (const char* n : kCommon) add(n);
         FILE* f = g_namesFile.empty() ? nullptr : _wfopen(g_namesFile.c_str(), L"rb");
         if (f) {
-            char line[256];
-            while (fgets(line, sizeof(line), f)) {
-                std::string n = line;
+            // Whole lines, however long: fgets with a fixed buffer split a long line into a
+            // second, made-up name (review, 2026-11-04).
+            std::string n;
+            for (bool more = true; more;) {
+                n.clear();
+                int c = 0;
+                while ((c = fgetc(f)) != EOF && c != '\n') n += static_cast<char>(c);
+                more = c != EOF;
+                if (n.empty() && !more) break;
                 if (n.empty() || n[0] == '#') continue;                                      // a comment
                 if (const size_t tab = n.find('\t'); tab != std::string::npos) n.resize(tab); // "name<TAB># note"
                 while (!n.empty() && (n.back() == '\n' || n.back() == '\r' || n.back() == ' ')) n.pop_back();
@@ -204,11 +211,21 @@ const std::unordered_map<uint32_t, std::string>& names() {
     return table;
 }
 
+// A hex id ("0x2734a476") that does not fit in 32 bits: no event has it. strtoul is 32 bits on
+// Windows and saturated such a value to 0xffffffff, a different event (review, 2026-11-04).
+bool badHex(const char* event) {
+    if (!event || event[0] != '0' || (event[1] != 'x' && event[1] != 'X')) return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long v = strtoull(event + 2, &end, 16);
+    return end && *end == 0 && end != event + 2 && (errno == ERANGE || v > 0xffffffffull);
+}
+
 uint32_t idOf(const char* event) {
-    if (!event || !*event) return 0;
+    if (!event || !*event || badHex(event)) return 0;
     // A name, or its hash as hex ("0x2734a476") for events nobody has named yet.
     char* end = nullptr;
-    const unsigned long v = (event[0] == '0' && (event[1] == 'x' || event[1] == 'X')) ? strtoul(event + 2, &end, 16) : 0;
+    const unsigned long long v = (event[0] == '0' && (event[1] == 'x' || event[1] == 'X')) ? strtoull(event + 2, &end, 16) : 0;
     return end && *end == 0 && end != event + 2 ? static_cast<uint32_t>(v) : hash(event);
 }
 
@@ -225,11 +242,15 @@ bool send(uintptr_t entity, const reflect::Type* type, uint32_t id) {
         const uintptr_t v = mem::readOr<uintptr_t>(entity);
         const uintptr_t f = v ? mem::readOr<uintptr_t>(v + kOnEventSlot) : 0;
         if (!f) return;
+        // The engine's EntityEvent is these 16 bytes. Zeroed room after them, in case a class's
+        // onEvent reads an event subclass's fields past them: it then reads zeros on our stack,
+        // never past the end of it (not seen in Ghidra so far; review, 2026-11-04).
         struct {
             uintptr_t vtable;
             uint32_t id;
             uint32_t kind;
-        } event{mem::rva(kEntityEventVtable), id, 0};
+            uint8_t room[48];
+        } event{mem::rva(kEntityEventVtable), id, 0, {}};
         reinterpret_cast<void (*)(uintptr_t, void*, void*, void*)>(f)(entity, &event, nullptr, nullptr);
     };
     if (mem::readOr<uint32_t>(entity + 0x18) & 1) server().post(deliver);
@@ -258,7 +279,7 @@ std::string name(uint32_t id) {
 namespace gn::host {
 
 int onEvent(const std::string& mod, const char* event, const char* className, gn_event_fn fn, void* user) {
-    if (!fn) return GN_ERR_ARGUMENT;
+    if (!fn || events::badHex(event)) return GN_ERR_ARGUMENT; // 0 would mean every event
     events::Listener l;
     l.mod = mod, l.fn = fn, l.user = user;
     l.id = events::idOf(event);

@@ -16,9 +16,11 @@ a release, "should" before if there is time, the rest after. Open decisions for 
    crashed twice with GridNode injected (`0x143164d50`, a null world in `FUN_1439e08f0`'s mission
    clean-up): find out whose fault it is and fix or guard it.
 2. **Online safety audit.** One list of everything that could reach EA's services or Beat Revival,
-   checked in code: the console's online commands (confirmation), settings marked online, the
-   trainer's upload block, progression flags that sync to online (refused), nothing else sending.
-   A short docs page "GridNode and online play".
+   checked in code: the console's online commands (confirmation; mods: refused without
+   `online_allow`, enforced in `consoleRunFor` since 2026-11-04), settings marked online (mods
+   warned), the trainer's upload block, progression flags that sync to online (refused without
+   `online_allow`), nothing else sending. A short docs page "GridNode and online play" (modding.md
+   has the rule now: "Online services").
 3. **What the release is (decide).** Proposed: two zips. *GridNode* for players: the player build
    (no inspector, console, editor, recorder), `gridnode_inject.exe`, `version.dll`, `mods/`. *GridNode
    SDK* for modders: the developer build, `sdk/` (headers, ImGui, Rust crate, templates) and the
@@ -47,6 +49,27 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **Review fixes and API 23** (2026-11-04, from the code review; untested in game). Crash notes: each
+  fault address logged once (handled faults no longer use up a cap of 3), buffers static (a stack
+  overflow writes its address and registers only), mods found by gridnode.ini's folder, any case.
+  Unload: a mod's queued `run_on_server` / `run_on_client` tasks are dropped (at take-out and again
+  just before the free; a dropped task's closure leaks a few bytes), skipped at dispatch while it
+  unloads, and `removing()` covers a tick that was already running them. `pollMods` keeps Reload /
+  Unload / Load asked for while one ran. Detours: the entry is written and recorded under one lock
+  (an unload in between left an unlisted jump); failures give back the thunk room and slot.
+  `pauseOthers` takes a second snapshot after pausing; patch_bytes over 16 bytes also waits for
+  return addresses into the bytes. Mod exports read from the file (`pe_file.cpp`), not
+  `DONT_RESOLVE_DLL_REFERENCES`. Smaller: tick originals atomic, settings file names (lower case, no
+  `con`/`nul`, 64 chars), hex event ids over 32 bits refused, long event-name lines, the stack
+  EntityEvent padded, the injector waits for the game's window and checks the copy's path length,
+  jcc prefixes comment, 66-prefixed branches refused, `write()` into code logged (not recorded).
+  **Online rule changed (user, 2026-11-04):** mods may change online services on purpose if they
+  say so (`online_allow(mod, reason)`, API 23): until then their online console commands and online
+  progression flags are refused; afterwards each is logged with `!!! ONLINE` and the Mods list shows
+  the mod in orange with its reason. The aim is stopping the trainer being used to cheat: the
+  console's `progress` never sets online flags and the trainer never opts in. `view_get_ex` (sized
+  gn_view); `gn_ray_hit` is fixed. CI: read-only permissions, actions pinned by SHA, one run per
+  branch, sanitizers on the runtime core and x64 tests, ruff, rustfmt and clippy.
 - **API 22: health, the waypoint, the checkpoint, the mission** (2026-11-04, untested in game). From
   the user's Cheat Engine table (`docs/research/cheat-table.md`; `db/annotations/gamestate.yaml`):
   `character_health` / `character_set_health` (health component +0x20, max +0x24), `waypoint`
@@ -509,7 +532,8 @@ renderer: try them in the console first. Our own `gn::ui::box3d` can draw trigge
 
 ## Decisions and gotchas
 - Patching game code is allowed since 2026-11-01 (prefer pointer swaps; everything undoable through GridNode).
-  Leave online services and Beat Revival alone, except the trainer's upload block. PC only.
+  Online services (user, 2026-11-04): mods may change them on purpose after `online_allow` (warned,
+  logged, shown in the Mods list); the trainer never does, and keeps its upload block. PC only.
 - Never commit game data or user dumps (dumps, FBX game meshes, event-names.txt, logs, recordings).
 - Commit / push only when asked. Deploy test builds under a unique file name first.
 - A fingerprint's bytes come from a dump, never from a disassembly listing (one instruction has

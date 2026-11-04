@@ -217,7 +217,7 @@ def build(geom: F.Node, matrix, uv_name: str | None, label: str):
     verts: list[tuple] = []
     seen: dict[tuple, int] = {}
     tris: list[tuple[int, int, int]] = []
-    corner, polygon, start = 0, 0, 0
+    polygon, start = 0, 0
     for k, raw in enumerate(pvi):
         if raw >= 0:
             continue

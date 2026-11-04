@@ -445,6 +445,10 @@ void drawMain() {
         if (g_settings.inspector || g_settings.console || g_settings.editor || g_settings.recorder || g_settings.devInfo) ImGui::Separator();
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
             const std::vector<ModInfo> mods = modList();
+            const size_t online = static_cast<size_t>(std::count_if(mods.begin(), mods.end(), [](const ModInfo& m) { return !m.online.empty(); }));
+            if (online)
+                ImGui::TextColored(ImVec4(1.f, 0.65f, 0.3f, 1.f), "%llu mod%s change%s online services (below)", static_cast<unsigned long long>(online),
+                                   online == 1 ? "" : "s", online == 1 ? "s" : "");
             if (mods.empty()) ImGui::TextDisabled("No mods loaded.");
             for (const ModInfo& m : mods) {
                 ImGui::PushID(m.file.c_str());
@@ -456,6 +460,18 @@ void drawMain() {
                 ImGui::SameLine();
                 if (m.loaded) ImGui::TextDisabled("loaded");
                 else ImGui::TextColored(ImVec4(1.f, 0.5f, 0.4f, 1.f), m.result ? "failed (%d)" : "unloaded", m.result);
+                if (!m.online.empty()) {
+                    // It called online_allow: the player should see that it changes online play.
+                    ImGui::TextColored(ImVec4(1.f, 0.65f, 0.3f, 1.f), "    ONLINE: changes online services on purpose");
+                    ImGui::Indent();
+                    ImGui::PushTextWrapPos(0.f);
+                    ImGui::TextColored(ImVec4(1.f, 0.65f, 0.3f, 1.f), "%s", m.online.c_str());
+                    ImGui::PopTextWrapPos();
+                    ImGui::Unindent();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Its online console commands and online progression flags are allowed and logged.\n"
+                                          "This can affect your EA account, online stats and leaderboards, and Beat Revival.");
+                }
                 if (m.reloadable && !m.inMemory) {
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Load")) modLoad(m.file);

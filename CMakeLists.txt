@@ -36,6 +36,7 @@ add_library(gn_reflect STATIC
   sdk/src/config_core.cpp
   sdk/src/x64.cpp
   sdk/src/mod_order.cpp
+  sdk/src/pe_file.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)

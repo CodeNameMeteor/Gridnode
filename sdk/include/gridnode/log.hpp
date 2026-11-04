@@ -26,6 +26,7 @@ void write(const char* fmt, ...)
     ;
 
 void writeTry(const char* fmt, ...); // as write, but skips the line rather than wait for the lock (crash handler)
+void writeLineTry(const char* line); // writeTry for a line formatted by the caller (no stack buffer)
 } // namespace gn::log
 
 #define GN_LOG(...) ::gn::log::write(__VA_ARGS__)

@@ -162,9 +162,33 @@ std::string cleanValue(const std::string& value) {
 }
 
 std::string fileName(const std::string& mod) {
+    // Lower case: Windows names ignore case, so "Trainer" and "trainer" are one file either way (and
+    // an existing "Trainer.ini" is still found as "trainer.ini").
     std::string f;
-    for (char c : mod) f += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.') ? c : '_';
+    for (char c : mod) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        f += (std::isalnum(u) || c == '-' || c == '_' || c == '.') ? static_cast<char>(std::tolower(u)) : '_';
+    }
     if (f.empty() || f.find_first_not_of('.') == std::string::npos) f = "_" + f; // never "", "." or ".."
+    // Device names Windows reserves whatever follows them ("con.ini" is the console, not a file).
+    static const char* const kReserved[] = {"con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+                                            "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"};
+    const std::string stem = f.substr(0, f.find('.'));
+    for (const char* r : kReserved)
+        if (stem == r) {
+            f = "_" + f;
+            break;
+        }
+    // At most 64 characters: a longer id keeps its start and gets a hash of the whole (two long ids
+    // with the same start stay apart).
+    constexpr size_t kMax = 64;
+    if (f.size() > kMax) {
+        uint32_t h = 2166136261u; // FNV-1a
+        for (char c : mod) h = (h ^ static_cast<unsigned char>(c)) * 16777619u;
+        char tail[10];
+        snprintf(tail, sizeof(tail), "-%08x", h);
+        f = f.substr(0, kMax - 9) + tail;
+    }
     return f;
 }
 

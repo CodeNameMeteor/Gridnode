@@ -36,6 +36,8 @@ console, the [Recorder](recording.md), a function tracer, a field diff window, t
 - Nothing runs until the build check passes; on any other build GridNode stays passive.
 - Nothing from the game is published: each user generates their own reflected data, and the full
   reflected reference in these docs is built locally from it.
-- Online services, Beat Revival, Denuvo and the EA app are left alone. Settings and console commands
-  that touch online play are marked and ask before changing; progression flags that go to online
-  stats can't be set.
+- GridNode itself leaves online services, Beat Revival, Denuvo and the EA app alone. Settings and
+  console commands that touch online play are marked and ask before changing. A mod may change online
+  services on purpose only after saying so (`online_allow`): it is then shown in orange in the Mods
+  list, and every online command it runs is logged. The MEC trainer never does, and blocks Dash and
+  time trial uploads while it is loaded.

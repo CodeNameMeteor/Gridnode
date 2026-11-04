@@ -82,6 +82,7 @@ struct ModInfo {
     std::string status;       // the last reload, for the menu
     // From its manifest (gn_mod_info); id defaults to the file name without .dll.
     std::string id, name, version, author, description, depends;
+    std::string online;       // the reason it gave online_allow: it changes online services on purpose ("" if not)
 };
 std::vector<ModInfo> modList();
 void modReload(const std::string& file);             // any thread: done on GridNode's thread
@@ -96,6 +97,13 @@ void* modImport(const void* caller, const char* modId, const char* name); // gn_
 int modVersion(const char* modId, char* out, size_t size);               // gn_api mod_version
 // A callback queued for later may only run while its mod is loaded: false once fn's mod was unloaded.
 bool modCodeLive(const void* fn);
+// Online services (gn_api online_allow): a mod says it changes them on purpose (restoring or
+// replacing online features). Until it does, GridNode refuses its online console commands and its
+// online progression flags. Code that is not a mod's (GridNode's own menu, which asks the player)
+// counts as allowed. onlineAllow logs a warning; the reason is shown in the menu's Mods list.
+int onlineAllow(const void* caller, const char* mod, const char* reason);
+bool onlineAllowed(const void* caller);
+std::string modNameAt(const void* caller); // the id of the mod whose code holds caller, or 
 
 // Declared mod settings (modsettings.cpp): gn_api setting_*; settingComments for the settings file.
 int settingAdd(const char* mod, const gn_setting* s, const void* caller);
@@ -117,6 +125,8 @@ struct CodeRange {
 };
 void forgetSettings(const CodeRange& r); // a mod's declared settings and listeners (modsettings.cpp)
 void forgetTicks(const CodeRange& r);    // at the next tick of each realm (server().removing())
+size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_client tasks, now
+bool taskLive(const thread::Dispatcher::Task& t); // false for a task into a mod being unloaded
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
 void forgetCreated(const CodeRange& r);
 void forgetLevel(const CodeRange& r);
@@ -208,7 +218,9 @@ int waypoint(float* out);
 int checkpoint(float* out);
 int progressFlags(gn_progress_flag_fn fn, void* user);
 int progressFind(const char* name, gn_progress_flag* out);
-int progressSet(void* flag, int32_t value, int32_t* now); // server thread
+// server thread; onlineBy: the mod that called online_allow (a flag that goes to online stats is
+// refused without one)
+int progressSet(void* flag, int32_t value, int32_t* now, const char* onlineBy);
 int mission(int32_t* index, char* name, size_t size);
 std::string progressCommand(const std::string& args); // the console's "progress [FILTER | NAME VALUE]"
 void forgetGravity(const CodeRange& r);
@@ -400,6 +412,7 @@ bool isRenderThread(); // the thread drawing the overlay (Present)
 // Inspector (inspector.cpp): start() tracks entities from then on; draw() on the render thread.
 namespace crash {
 void install(); // logs the first few faults: address, registers, the unwound call stack with names
+void setModsFolder(const std::wstring& folder); // marks DLLs under it as mods in crash notes
 void refreshModules(); // the module table the handler names frames from (after modules load; not in a fault)
 void uninstall();
 }

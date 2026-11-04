@@ -21,7 +21,8 @@ std::string serialize(const Entries& entries, const std::string& header);
 bool validKey(const std::string& key);
 // A value the file can hold: one line, spaces at either end are lost.
 std::string cleanValue(const std::string& value);
-// The mod's file name without ".ini": letters, digits, '-', '_' and '.' kept, anything else '_'.
+// The mod's file name without ".ini": letters (lower case), digits, '-', '_' and '.' kept, anything
+// else '_'; never a reserved Windows device name (con, nul, com1...); at most 64 characters.
 std::string fileName(const std::string& mod);
 const std::string* find(const Entries& entries, const std::string& key);
 // Sets (or adds) the key; true when that changed the entries.

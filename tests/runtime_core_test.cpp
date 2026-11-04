@@ -15,6 +15,7 @@
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
 #include "gridnode/mod_order.hpp"
+#include "gridnode/pe_file.hpp"
 #include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
 
@@ -121,7 +122,8 @@ void testHookTable() {
                            mem[s] = v;
                            return true;
                        },
-                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; }});
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; },
+                       nullptr}); // no foreign hooks here
     uint64_t orig1 = 0, orig2 = 0, orig3 = 0;
     std::string why;
     CHECK(t.install("a", 0x1000, 0xA0, 0xD1, &orig1, &why) == hook::Result::Ok && orig1 == 0xA0 && mem[0x1000] == 0xD1);
@@ -259,6 +261,94 @@ void testDispatcher() {
     r.removeListeners([](const thread::Dispatcher::Tick& t) { return t.target<Tagged>() != nullptr && t.target<Tagged>()->tag == 1; });
     r.dispatch(0.f);
     CHECK(calls[1] == 1 && calls[0] == 3);
+
+    // Queued tasks of an unloading mod are dropped; the others still run.
+    thread::Dispatcher q;
+    struct Job {
+        int tag;
+        int* runs;
+        void operator()() const { ++runs[tag]; }
+    };
+    int runs[2] = {};
+    q.post(Job{0, runs});
+    q.post(Job{1, runs});
+    q.post(Job{1, runs});
+    CHECK(q.removeTasks([](const thread::Dispatcher::Task& t) { const Job* j = t.target<Job>(); return j && j->tag == 1; }) == 2);
+    CHECK(q.removing()); // until a whole tick has passed
+    q.dispatch(0.f);
+    CHECK(runs[0] == 1 && runs[1] == 0 && !q.removing());
+    // The filter skips a task whose code is being unloaded, at the moment it would run.
+    std::vector<std::string> qErrors;
+    q.setErrorSink([&](const std::string& e) { qErrors.push_back(e); });
+    q.setTaskFilter([](const thread::Dispatcher::Task& t) { const Job* j = t.target<Job>(); return !j || j->tag != 1; });
+    q.post(Job{1, runs});
+    q.post(Job{0, runs});
+    q.dispatch(0.f);
+    CHECK(runs[0] == 2 && runs[1] == 0 && qErrors.size() == 1);
+    // removing() stays true while a tick that took tasks before the removal is still running them.
+    thread::Dispatcher w;
+    std::atomic<bool> inTask{false}, release{false};
+    w.post([&] {
+        inTask = true;
+        while (!release) std::this_thread::yield();
+    });
+    std::thread ticker([&] { w.dispatch(0.f); });
+    while (!inTask) std::this_thread::yield();
+    w.removeTasks([](const thread::Dispatcher::Task&) { return true; });
+    CHECK(w.removing());
+    release = true;
+    ticker.join();
+    CHECK(w.removing()); // that tick started before the removal: the next one must pass first
+    w.dispatch(0.f);
+    CHECK(!w.removing());
+}
+
+// A minimal PE32+ file with an export table naming the given functions.
+std::vector<uint8_t> fakeDll(const std::vector<std::string>& names) {
+    std::vector<uint8_t> f(0x400, 0);
+    auto put16 = [&](size_t o, uint16_t v) { memcpy(&f[o], &v, 2); };
+    auto put32 = [&](size_t o, uint32_t v) { memcpy(&f[o], &v, 4); };
+    put16(0, 0x5a4d);
+    put32(0x3c, 0x80);
+    put32(0x80, 0x00004550);
+    const size_t coff = 0x84, opt = coff + 20;
+    put16(coff + 2, 1);   // one section
+    put16(coff + 16, 240); // optional header size (PE32+)
+    put16(opt, 0x20b);
+    put32(opt + 108, 16);  // data directories
+    put32(opt + 112, 0x1000); // export directory RVA
+    put32(opt + 116, 0x100);
+    const size_t sec = opt + 240;
+    memcpy(&f[sec], ".edata", 6);
+    put32(sec + 8, 0x200);  // virtual size
+    put32(sec + 12, 0x1000); // virtual address
+    put32(sec + 16, 0x200); // raw size
+    put32(sec + 20, 0x200); // raw offset: RVA 0x1000 is file offset 0x200
+    const size_t dir = 0x200;
+    put32(dir + 24, static_cast<uint32_t>(names.size()));
+    put32(dir + 32, 0x1040); // name pointers
+    size_t str = 0x80;       // strings at RVA 0x1080
+    for (size_t i = 0; i < names.size(); ++i) {
+        put32(dir + 0x40 + i * 4, static_cast<uint32_t>(0x1000 + str));
+        memcpy(&f[0x200 + str], names[i].c_str(), names[i].size() + 1);
+        str += names[i].size() + 1;
+    }
+    return f;
+}
+
+void testPeExports() {
+    const std::vector<uint8_t> dll = fakeDll({"gn_mod_info", "gn_mod_load", "gn_mod_unload"});
+    CHECK(pe::exportsName(dll.data(), dll.size(), "gn_mod_unload"));
+    CHECK(pe::exportsName(dll.data(), dll.size(), "gn_mod_load"));
+    CHECK(!pe::exportsName(dll.data(), dll.size(), "gn_mod"));          // a prefix is not a name
+    CHECK(!pe::exportsName(dll.data(), dll.size(), "gn_mod_unload_x"));
+    const std::vector<uint8_t> noUnload = fakeDll({"gn_mod_load"});
+    CHECK(!pe::exportsName(noUnload.data(), noUnload.size(), "gn_mod_unload"));
+    // Truncated or not a PE: false, never a read past the end.
+    for (size_t n : {size_t(0), size_t(2), size_t(0x90), size_t(0x210), size_t(0x2a0)}) CHECK(!pe::exportsName(dll.data(), n, "gn_mod_unload"));
+    std::vector<uint8_t> bad = dll;
+    bad[0] = 'X';
+    CHECK(!pe::exportsName(bad.data(), bad.size(), "gn_mod_unload"));
 }
 
 void testConfig() {
@@ -286,6 +376,15 @@ void testConfig() {
     CHECK(config::fileName("../x y") == ".._x_y");
     CHECK(config::fileName("..") == "_..");
     CHECK(config::fileName("") == "_");
+    CHECK(config::fileName("MEC-Trainer") == "mec-trainer"); // one file on Windows either way
+    CHECK(config::fileName("con") == "_con");
+    CHECK(config::fileName("NUL.x") == "_nul.x");
+    CHECK(config::fileName("com1") == "_com1");
+    CHECK(config::fileName("console") == "console");
+    {
+        const std::string a = config::fileName(std::string(80, 'a') + "1"), b = config::fileName(std::string(80, 'a') + "2");
+        CHECK(a.size() == 64 && b.size() == 64 && a != b);
+    }
 }
 
 void testMovementEvents() {
@@ -451,6 +550,7 @@ int main() {
     testRegistry();
     testHookTable();
     testDispatcher();
+    testPeExports();
     testConfig();
     testMovementEvents();
     testProjection();

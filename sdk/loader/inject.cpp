@@ -25,7 +25,8 @@ namespace {
 
 const wchar_t* kGameExe = L"MirrorsEdgeCatalyst.exe";
 const wchar_t* kEngineModule = L"Engine.BuildInfo_Win64_retail.dll"; // only the game itself loads it
-constexpr DWORD kSettleMs = 3000; // after the game shows up: let it finish starting
+constexpr DWORD kSettleMs = 500;      // after its window is up
+constexpr DWORD kWindowWaitMs = 30000; // at most, for the game's window (then it goes ahead anyway)
 
 std::vector<DWORD> gameProcesses() {
     std::vector<DWORD> pids;
@@ -112,6 +113,29 @@ bool gridNodeActive(DWORD pid) {
     if (!m) return false;
     CloseHandle(m);
     return true;
+}
+
+// A visible top-level window of pid: the game has started (its D3D device is made with it), the
+// ready signal for injecting. A fixed wait was too short on a slow start and long for nothing on a
+// fast one (review, 2026-11-04).
+bool hasWindow(DWORD pid) {
+    struct Find {
+        DWORD pid;
+        bool found;
+    } f{pid, false};
+    EnumWindows(
+        [](HWND w, LPARAM p) -> BOOL {
+            auto* f = reinterpret_cast<Find*>(p);
+            DWORD owner = 0;
+            GetWindowThreadProcessId(w, &owner);
+            if (owner == f->pid && IsWindowVisible(w) && !GetWindow(w, GW_OWNER)) {
+                f->found = true;
+                return FALSE;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&f));
+    return f.found;
 }
 
 const wchar_t* fileName(const wchar_t* path) {
@@ -256,9 +280,14 @@ int wmain(int argc, wchar_t** argv) {
             }
             Sleep(500);
         }
-        wprintf(L"Game found; giving it a moment to finish starting...\n");
-        Sleep(kSettleMs);
+        wprintf(L"Game found; waiting for its window...\n");
         const DWORD pid = game.pid;
+        const ULONGLONG start = GetTickCount64();
+        while (!hasWindow(pid) && GetTickCount64() - start < kWindowWaitMs) {
+            Sleep(250);
+            if (findGame().pid != pid) break; // closed (checked below)
+        }
+        Sleep(kSettleMs);
         game = findGame();
         if (game.pid != pid) {
             wprintf(L"FAILED: the game closed while starting.\n");
@@ -292,7 +321,12 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring dir(static_cast<const wchar_t*>(dll), fileName(dll));
         wchar_t copy[MAX_PATH] = L"";
         for (int k = 2; k < 100; ++k) {
-            swprintf(copy, MAX_PATH, L"%lsgridnode.copy-%d.dll", dir.c_str(), k);
+            const int n = swprintf(copy, MAX_PATH, L"%lsgridnode.copy-%d.dll", dir.c_str(), k);
+            if (n < 0 || n >= MAX_PATH) { // the folder's path is too long for the copy's name
+                copy[0] = 0;
+                SetLastError(ERROR_FILENAME_EXCED_RANGE);
+                break;
+            }
             if (!loadedModule(game.pid, fileName(copy)).empty()) continue;
             if (CopyFileW(dll, copy, FALSE)) break;
             copy[0] = 0;

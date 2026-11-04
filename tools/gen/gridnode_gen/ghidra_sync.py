@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 from .annotations import Database
-from .ctypes_ import TypeError_, parse_signature, parse_type
+from .ctypes_ import TypeError_, parse_signature
 
 FORMAT_IN = "gridnode-ghidra"          # GridNode -> Ghidra
 FORMAT_OUT = "gridnode-ghidra-export"  # Ghidra -> GridNode

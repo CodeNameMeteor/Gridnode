@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 22 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions) */
+#define GN_API_VERSION 23 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -137,7 +137,8 @@ typedef struct gn_message_info {
 typedef void (*gn_message_fn)(const void* message, const gn_message_info* info, void* user);
 
 
-/* The nearest thing a ray cast hit. */
+/* The nearest thing a ray cast hit. Fixed: this layout never changes (gn_ray_hit_ex holds one, and
+ * old mods pass it to raycast). New ray fields go at the end of gn_ray_hit_ex, which has a size. */
 typedef struct gn_ray_hit {
     float position[3];
     float normal[3];   /* the surface's normal at the hit */
@@ -252,7 +253,9 @@ typedef struct gn_movement_event {
 typedef void (*gn_movement_fn)(const gn_movement_event* e, const gn_movement* now, void* user);
 
 /* The camera as drawn this frame (view_get), to put world points on the screen: gridnode/projection.hpp
- * does the math, gn::ui::line3d and friends (gridnode/ui.hpp) draw with it. Frostbite is y up. */
+ * does the math, gn::ui::line3d and friends (gridnode/ui.hpp) draw with it. Frostbite is y up.
+ * Later versions may add fields at the end: view_get fills only the fields below (API 10), and
+ * view_get_ex (API 23) fills as many as both sides know, from the size the caller passes. */
 typedef struct gn_view {
     float position[3]; /* the camera, world space */
     float forward[3];  /* the way it looks (unit) */
@@ -316,7 +319,7 @@ typedef struct gn_progress_flag {
     int32_t value;          /* now (0 when the game holds no value for it) */
     int32_t max_value;      /* MaxValue (with clamp, values stay in 0 .. max_value) */
     uint8_t clamp;
-    uint8_t online;         /* its value goes to online stats: progress_set refuses it */
+    uint8_t online;         /* its value goes to online stats: progress_set refuses it until online_allow */
     uint8_t has_value;      /* the game holds a value for it */
     uint8_t reserved;
 } gn_progress_flag;
@@ -422,7 +425,8 @@ typedef struct gn_api {
     uint32_t (*settings_count)(void);
     int (*settings_at)(uint32_t index, const gn_type** type, void** object);
     /* Why changing this settings class or console group could affect online play / EA services,
-     * or null. GridNode never blocks these: it logs every change mods make to them. */
+     * or null. Online console commands need online_allow (API 23); settings objects cannot be
+     * checked (raw memory), so settings_find warns a mod that has not called it. */
     const char* (*online_warning)(const char* class_or_group);
 
     /* ---- console -------------------------------------------------------------------------------
@@ -811,13 +815,32 @@ typedef struct gn_api {
      * progress_set sets one through the game's own setter (it clamps, sends
      * PamProgressionFlagUpdatedMessage, tells missions and the entities bound to the flag), and
      * returns GN_OK with *now the value the game kept. A flag that syncs to online stats
-     * (gn_progress_flag.online) is refused (GN_ERR_UNAVAILABLE): GridNode leaves online services
-     * alone. progress_set: server thread; the others any thread (they read).
+     * (gn_progress_flag.online) is refused (GN_ERR_UNAVAILABLE) unless the mod called
+     * online_allow (API 23). progress_set: server thread; the others any thread (they read).
      * mission: the active mission's index (0: none) and, when name is given, its name. */
     int (*progress_flags)(gn_progress_flag_fn fn, void* user);
     int (*progress_find)(const char* name, gn_progress_flag* out);
     int (*progress_set)(void* flag, int32_t value, int32_t* now);
     int (*mission)(int32_t* index, char* name, size_t name_size);
+
+    /* ==== GN_API_VERSION 23 =================================================================== */
+
+    /* ---- online services, on purpose ---------------------------------------------------------------
+     * online_allow: the mod says it changes online services on purpose (restoring a feature EA
+     * turned off, pointing the game at a community server, ...); reason: one line saying what, shown
+     * in the menu's Mods list and written to the log with a warning. Until a mod calls it,
+     * console_run refuses online commands (GN_ERR_UNAVAILABLE; see online_warning) and progress_set
+     * refuses flags that go to online stats; afterwards both run, each one logged. Settings objects
+     * are raw memory, so writes to them cannot be checked: settings_find warns (once) when a mod that
+     * has not called this takes an online one. Taken back when the mod unloads. Any thread.
+     * GN_ERR_ARGUMENT: no reason, or not called from a mod's code.
+     * This is not for leaderboards: GridNode does not stop a mod that cheats online, but it makes
+     * sure the player can see which mods touch online play. The MEC trainer never calls it (while it
+     * is loaded, Dash and time trial uploads are blocked).
+     * view_get_ex: view_get with the size of the caller's gn_view (sizeof(gn_view)), so gn_view can
+     * grow at its end later. GN_ERR_ARGUMENT: size below the API 10 layout. */
+    int (*online_allow)(const char* mod, const char* reason);
+    int (*view_get_ex)(gn_view* out, uint32_t size);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

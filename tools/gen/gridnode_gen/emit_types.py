@@ -277,7 +277,7 @@ class Generator:
 
     def emit_struct(self, w, e: Emittable):
         w(e.header + "\n")
-        align = self.align_of(e.ident)
+        self.align_of(e.ident)  # fills emitted_sizes for the structs that follow
         alignas = f"alignas({e.align}) " if e.align else ""
         base = f" : {e.base}" if e.base else ""
         w(f"struct {alignas}{e.ident}{base} {{\n")

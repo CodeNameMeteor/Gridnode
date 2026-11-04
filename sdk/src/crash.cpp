@@ -1,4 +1,4 @@
-// Crash notes: the first few access violations (and similar faults) are written to gridnode.log
+// Crash notes: access violations (and similar faults) are written to gridnode.log, each fault address once,
 // with the faulting address, the thread (server, client, render), registers and the call stack,
 // so a crash can be traced to a function. The exception is passed on unchanged.
 //
@@ -9,6 +9,7 @@
 // stack for code addresses follows it.
 
 #include <windows.h>
+#include <cwctype>
 #include <tlhelp32.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <string>
 #include <memory>
 #include <vector>
 
@@ -26,7 +28,6 @@
 namespace gn::host::crash {
 namespace {
 
-std::atomic<int> g_logged{0};
 constexpr uintptr_t kGameBase = 0x140000000ull; // the game's preferred base (Ghidra's addresses)
 
 struct Module {
@@ -122,46 +123,92 @@ void threadText(char* out, size_t n) {
 
 bool onStack(uintptr_t sp, ULONG_PTR lo, ULONG_PTR hi) { return sp >= lo && sp + 8 <= hi && (sp & 7) == 0; }
 
-LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
+// One fault location is logged once: a vectored handler sees first-chance exceptions, and the game
+// (its SEH) and GridNode's own probing reads fault and recover all the time. A plain cap on the
+// count used to be spent on those, so the fatal crash was never written (review, 2026-11-04).
+// Each distinct (code, address) is logged the first time; repeats are only counted.
+constexpr int kSeen = 64;
+std::atomic<uint64_t> g_seen[kSeen];
+std::atomic<int> g_seenCount{0};
+std::atomic<uint32_t> g_repeats{0};
+
+// True when (code, rip) is new; false when it was logged already or the table is full.
+bool firstTime(DWORD code, uintptr_t rip) {
+    const uint64_t key = (static_cast<uint64_t>(rip) & 0x00ffffffffffffffull) | (static_cast<uint64_t>(code & 0xff) << 56);
+    const int n = std::min(g_seenCount.load(std::memory_order_acquire), kSeen);
+    for (int i = 0; i < n; ++i)
+        if (g_seen[i].load(std::memory_order_relaxed) == key) return false;
+    const int slot = g_seenCount.fetch_add(1, std::memory_order_acq_rel);
+    if (slot >= kSeen) return false;
+    g_seen[slot].store(key, std::memory_order_release);
+    return true;
+}
+
+// The handler's buffers are static, not on the faulting stack: a CONTEXT alone is 1.2 KB, and on
+// EXCEPTION_STACK_OVERFLOW there is little stack left. One thread at a time uses them; a fault
+// inside the handler on the same thread passes straight on.
+struct alignas(16) Scratch {
+    CONTEXT ctx;
+    char where[200], thread[160], mods[200], d[200], line[512];
+};
+Scratch g_scratch;
+std::atomic<DWORD> g_owner{0};
+
+bool takeScratch() {
+    const DWORD me = GetCurrentThreadId();
+    if (g_owner.load(std::memory_order_relaxed) == me) return false; // faulted inside the handler
+    for (int i = 0; i < 200; ++i) { // another thread is logging its crash: wait up to ~200 ms
+        DWORD none = 0;
+        if (g_owner.compare_exchange_strong(none, me, std::memory_order_acquire)) return true;
+        Sleep(1);
+    }
+    return false;
+}
+
+template <typename... A> void line(const char* fmt, A... a) {
+    snprintf(g_scratch.line, sizeof(g_scratch.line), fmt, a...);
+    ::gn::log::writeLineTry(g_scratch.line);
+}
+
+void report(EXCEPTION_POINTERS* ep) {
+    Scratch& s = g_scratch;
     const DWORD code = ep->ExceptionRecord->ExceptionCode;
-    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION &&
-        code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW)
-        return EXCEPTION_CONTINUE_SEARCH;
-    if (g_logged.fetch_add(1) >= 3) return EXCEPTION_CONTINUE_SEARCH;
     const CONTEXT* c = ep->ContextRecord;
     DWORD64 base0 = 0;
     const PRUNTIME_FUNCTION fe0 = RtlLookupFunctionEntry(c->Rip, &base0, nullptr);
-    char where[200];
-    describe(static_cast<uintptr_t>(c->Rip), fe0 ? static_cast<uintptr_t>(base0 + fe0->BeginAddress) : 0, where, sizeof(where));
-    char thread[160];
-    threadText(thread, sizeof(thread));
+    describe(static_cast<uintptr_t>(c->Rip), fe0 ? static_cast<uintptr_t>(base0 + fe0->BeginAddress) : 0, s.where, sizeof(s.where));
+    threadText(s.thread, sizeof(s.thread));
     const ULONG_PTR* info = ep->ExceptionRecord->ExceptionInformation;
-    ::gn::log::writeTry("crash: exception %08lx at %s%s%llx (%s)", code, where,
-                        code == EXCEPTION_ACCESS_VIOLATION ? (info[0] == 1 ? ", writing " : info[0] == 8 ? ", executing " : ", reading ") : ", ",
-                        static_cast<unsigned long long>(code == EXCEPTION_ACCESS_VIOLATION ? info[1] : 0), thread);
-    ::gn::log::writeTry("crash:   rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx", c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->R8,
-                        c->R9);
-    ::gn::log::writeTry("crash:   r10 %llx r11 %llx r12 %llx r13 %llx r14 %llx r15 %llx rbp %llx rsp %llx", c->R10, c->R11, c->R12, c->R13, c->R14, c->R15, c->Rbp,
-                        c->Rsp);
+    const uint32_t repeats = g_repeats.exchange(0);
+    line("crash: exception %08lx at %s%s%llx (%s)", code, s.where,
+         code == EXCEPTION_ACCESS_VIOLATION ? (info[0] == 1 ? ", writing " : info[0] == 8 ? ", executing " : ", reading ") : ", ",
+         static_cast<unsigned long long>(code == EXCEPTION_ACCESS_VIOLATION ? info[1] : 0), s.thread);
+    if (repeats) line("crash:   (%u repeat(s) of faults already logged since the last note)", repeats);
+    line("crash:   rax %llx rbx %llx rcx %llx rdx %llx rsi %llx rdi %llx r8 %llx r9 %llx", c->Rax, c->Rbx, c->Rcx, c->Rdx, c->Rsi, c->Rdi, c->R8, c->R9);
+    line("crash:   r10 %llx r11 %llx r12 %llx r13 %llx r14 %llx r15 %llx rbp %llx rsp %llx", c->R10, c->R11, c->R12, c->R13, c->R14, c->R15, c->Rbp,
+         c->Rsp);
+    // A stack overflow leaves too little stack for the unwinder (RtlVirtualUnwind and the module
+    // lookups have their own frames): the address and registers are what can be written safely.
+    if (code == EXCEPTION_STACK_OVERFLOW) return;
 
     // The call stack, unwound. Only within this thread's stack (a bad unwind must not fault here).
     ULONG_PTR lo = 0, hi = 0;
     GetCurrentThreadStackLimits(&lo, &hi);
-    CONTEXT ctx = *c;
+    CONTEXT& ctx = s.ctx;
+    ctx = *c;
     int frames = 0, leaves = 0;
-    char mods[200] = {};
+    s.mods[0] = 0;
     for (; frames < 32; ++frames) {
         const uintptr_t rip = static_cast<uintptr_t>(ctx.Rip);
         if (!isCode(rip)) break;
         DWORD64 base = 0;
         const PRUNTIME_FUNCTION fe = RtlLookupFunctionEntry(ctx.Rip, &base, nullptr);
         if (frames > 0) { // frame 0 is the line above
-            char d[200];
-            describe(rip, fe ? static_cast<uintptr_t>(base + fe->BeginAddress) : 0, d, sizeof(d));
-            ::gn::log::writeTry("crash:   #%02d %s", frames, d);
+            describe(rip, fe ? static_cast<uintptr_t>(base + fe->BeginAddress) : 0, s.d, sizeof(s.d));
+            line("crash:   #%02d %s", frames, s.d);
             const Module m = moduleOf(rip);
-            if (m.mod && !std::strstr(mods, m.name) && std::strlen(mods) + std::strlen(m.name) + 3 < sizeof(mods))
-                snprintf(mods + std::strlen(mods), sizeof(mods) - std::strlen(mods), "%s%s", *mods ? ", " : "", m.name);
+            if (m.mod && !std::strstr(s.mods, m.name) && std::strlen(s.mods) + std::strlen(m.name) + 3 < sizeof(s.mods))
+                snprintf(s.mods + std::strlen(s.mods), sizeof(s.mods) - std::strlen(s.mods), "%s%s", *s.mods ? ", " : "", m.name);
         }
         if (!onStack(static_cast<uintptr_t>(ctx.Rsp), lo, hi)) break;
         if (!fe) {
@@ -176,10 +223,10 @@ LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
         RtlVirtualUnwind(UNW_FLAG_NHANDLER, base, ctx.Rip, fe, &ctx, &handlerData, &establisher, nullptr);
         if (!onStack(static_cast<uintptr_t>(ctx.Rsp), lo, hi)) break;
     }
-    if (*mods) ::gn::log::writeTry("crash:   mods on this stack: %s", mods);
+    if (*s.mods) line("crash:   mods on this stack: %s", s.mods);
     if (frames < 4) {
         // The unwind stopped early: code addresses found on the stack, as before (callers, or leftovers).
-        ::gn::log::writeTry("crash:   the unwind stopped after %d frame(s); code addresses on the stack (not all are callers):", frames);
+        line("crash:   the unwind stopped after %d frame(s); code addresses on the stack (not all are callers):", frames);
         const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(c->Rsp);
         int shown = 0;
         for (int i = 0; i < 256 && shown < 16; ++i) {
@@ -188,18 +235,45 @@ LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
             if (!isCode(v) || !moduleOf(v).handle) continue;
             DWORD64 b = 0;
             const PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(v, &b, nullptr);
-            char d[200];
-            describe(v, f ? static_cast<uintptr_t>(b + f->BeginAddress) : 0, d, sizeof(d));
-            ::gn::log::writeTry("crash:   stack +%03x %s", i * 8, d);
+            describe(v, f ? static_cast<uintptr_t>(b + f->BeginAddress) : 0, s.d, sizeof(s.d));
+            line("crash:   stack +%03x %s", i * 8, s.d);
             ++shown;
         }
     }
+}
+
+LONG CALLBACK onException(EXCEPTION_POINTERS* ep) {
+    const DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION &&
+        code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (!takeScratch()) return EXCEPTION_CONTINUE_SEARCH;
+    if (firstTime(code, static_cast<uintptr_t>(ep->ContextRecord->Rip))) report(ep);
+    else g_repeats.fetch_add(1, std::memory_order_relaxed);
+    g_owner.store(0, std::memory_order_release);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
 void* g_handler = nullptr;
 
+std::wstring g_modsFolder; // lower case, ends in a backslash (gridnode.ini's [mods] folder)
+
+std::wstring lower(std::wstring w) {
+    for (wchar_t& ch : w) ch = static_cast<wchar_t>(towlower(ch));
+    for (wchar_t& ch : w)
+        if (ch == L'/') ch = L'\\';
+    return w;
+}
+
 } // namespace
+
+void setModsFolder(const std::wstring& folder) {
+    wchar_t full[MAX_PATH]; // "..\\" and the like resolved, as module paths are
+    const DWORD n = GetFullPathNameW(folder.c_str(), MAX_PATH, full, nullptr);
+    g_modsFolder = lower(n > 0 && n < MAX_PATH ? std::wstring(full, n) : folder);
+    if (!g_modsFolder.empty() && g_modsFolder.back() != L'\\') g_modsFolder += L'\\';
+    refreshModules();
+}
 
 void refreshModules() {
     auto rows = std::make_unique<std::vector<ModuleRow>>();
@@ -213,7 +287,10 @@ void refreshModules() {
         r.base = reinterpret_cast<uintptr_t>(me.modBaseAddr), r.end = r.base + me.modBaseSize;
         WideCharToMultiByte(CP_UTF8, 0, me.szModule, -1, r.name, sizeof(r.name) - 1, nullptr, nullptr);
         r.game = r.base == game;
-        r.mod = wcsstr(me.szExePath, L"\\mods\\") != nullptr; // mods\ or mods\.loaded\ (reloadable copies)
+        // In the mods folder (its .loaded\ copies too), wherever gridnode.ini puts it; paths compare
+        // without case (Windows paths do).
+        const std::wstring path = lower(me.szExePath);
+        r.mod = g_modsFolder.empty() ? path.find(L"\\mods\\") != std::wstring::npos : path.compare(0, g_modsFolder.size(), g_modsFolder) == 0;
         rows->push_back(r);
     }
     CloseHandle(snap);

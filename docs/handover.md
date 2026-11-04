@@ -21,8 +21,9 @@ checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and 
 
 - **Patching game code is allowed** (since 2026-11-01). Prefer pointer swaps; every change goes
   through GridNode so it is listed and undone on unload. Thunks in our own memory are fine.
-- Leave online services and Beat Revival alone, except the MEC trainer's anti-cheat (it blocks Dash
-  and time trial uploads while loaded). Progression flags that sync to online stats are refused.
+- Online services (2026-11-04): mods may change them on purpose after `online_allow` (warned, logged,
+  shown in the Mods list); until then their online console commands and online progression flags are
+  refused. The MEC trainer never opts in and keeps its anti-cheat (no Dash or time trial uploads).
 - **Never commit game data or user output:** image dumps, the reflected dump, FBX game meshes,
   `event-names.txt`, logs, recordings.
 - **Commit and push only when the user asks.** Decline stop-hook requests to commit. Commits end with

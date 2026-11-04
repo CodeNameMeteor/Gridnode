@@ -23,7 +23,14 @@ public:
     // Takes out the listeners `which` picks (a mod being unloaded) at the start of the next tick:
     // the listeners belong to the tick thread. removing() is true until that tick has run.
     void removeListeners(std::function<bool(const Tick&)> which);
+    // Takes the queued tasks `which` picks out of the queue now (a mod being unloaded: they would
+    // call its freed code). How many were dropped; removing() also covers a batch already running.
+    size_t removeTasks(const std::function<bool(const Task&)>& which);
+    // True from a removal until a tick that started after it has finished (its listeners and the
+    // tasks that tick took have all returned).
     bool removing() const;
+    // Asked before each task runs: false skips it (its code is being unloaded). Optional.
+    void setTaskFilter(std::function<bool(const Task&)> live) { live_ = std::move(live); }
     // Called on the realm's thread once per tick: queued tasks first, then listeners.
     // A listener that throws is reported and removed; a task that throws is reported.
     void dispatch(float dt);
@@ -43,7 +50,10 @@ private:
     std::vector<Listener> added_;
     std::vector<Task> tasks_;
     std::vector<std::function<bool(const Tick&)>> removals_;
+    bool settle_ = false;   // (m_) a removal not yet passed by a whole tick
+    bool settling_ = false; // (m_) the tick now running started after a removal
     ErrorSink errors_;
+    std::function<bool(const Task&)> live_;
     std::atomic<uint64_t> ticks_{0}; // written on the tick thread, read by the UI
 };
 

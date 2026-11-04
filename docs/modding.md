@@ -24,16 +24,19 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 22 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 23 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
-any GridNode with API N or newer. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
+any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
+`gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
 `gn_mod_load` without running the mod; the log says "it was built for a newer GridNode" and the Mods
 list "needs a newer GridNode". Say which GridNode your mod needs when you ship it.
 
 Memory, for what the API does not cover: `gn::read(address, out)` and `gn::write(address, value)`
 (fault tolerant: false on an unreadable or unwritable address), `gn::rva(va)` (a Ghidra address, at
 the game's preferred base 0x140000000, to where the game is loaded now) and
-`gn::function<Fn>(va)` (a game function to call). `gridnode/engine.hpp` names the addresses we
+`gn::function<Fn>(va)` (a game function to call). `gn::write` reaches the game's code too, but such a
+write is not recorded: nothing undoes it when the mod or GridNode unloads (the log says so once). Use
+`gn::patchBytes` for code. `gridnode/engine.hpp` names the addresses we
 know (`gn::engine::function::...`, `global::...`, `constant::...`).
 
 ## Manifest and other mods (API 16)
@@ -224,8 +227,9 @@ that depends on its address) and puts a jump at its entry; `original` runs the g
 (call it, or not, to replace it). Several mods may detour one function: they chain as hooks do. The
 detour runs on whatever thread calls the function, so keep it short and thread safe. It is taken out
 when the mod is unloaded; the entry jump goes when GridNode is. Refused (`false`, and a line in
-gridnode.log) for a function shorter than 5 bytes or one that jumps back into its first bytes. Rust:
-`hook_function`. Detoured functions are listed in the GridNode menu's Hooks section.
+gridnode.log) for a function shorter than 5 bytes or one that jumps back into its first bytes. Not
+detected: a branch from elsewhere in the function (a loop back to its start) into those first 5
+bytes; check the function in Ghidra before detouring it. Rust: `hook_function`. Detoured functions are listed in the GridNode menu's Hooks section.
 
 Another mod's hook in a slot GridNode wraps (MECMP's ServerGameWorld tick, for one) is chained
 the same way, whichever was loaded first: a slot that holds code of another loaded module is
@@ -270,7 +274,7 @@ std::string level = gn::levelName();
 | `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |
 | `waypoint(out)` / `checkpoint(out)` | any | The map marker (false when none is set; its height is the street's, so under a building it is not where to stand) and where Faith comes back after a death. From a Cheat Engine table's paths, checked by type on the way (API 22). |
 | `progressFlags(fn)` / `progressFind(name, out)` | any | The save's progression: every flag `PamProgressionData` defines (flag groups, missions' flags, the system's generated ones) with its name, group, value now, max and clamp (API 22). |
-| `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. A flag that syncs to online stats is refused. The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
+| `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. A flag that syncs to online stats is refused unless the mod called `allowOnline` (API 23). The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
 | `mission(index, &name)` | any | The active mission's index (0: none) and name (API 22). |
 | `characterDespawn(serverCharacter)` | server | An AI taken away as its spawner's Unspawn would; not Faith (API 19). |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
@@ -559,12 +563,39 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
   nothing until then.
 - Online play: settings classes and command groups that reach the network or EA's services
   (`Network`, `Online`, `Origin`, `Server`, `PamSocialPlay`, `PamStats`, ...) are marked.
-  `gn::onlineWarning(name)` says why. GridNode does not block them, but logs every change a mod
-  makes to them; the menu asks before changing them. Keep them alone unless you know what they do:
-  they can affect Beat Revival and your online profile.
+  `gn::onlineWarning(name)` says why. See [Online services](#online-services) below: a mod's online
+  console commands are refused until it calls `gn::allowOnline`.
 
 In game: GridNode menu → **Console** (every command, with search; Up / Down recall earlier lines,
 Tab completes a command name; online ones in orange ask for confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
+
+## Online services
+
+Mods may change online play on purpose: bringing back a feature EA turned off, pointing the game at a
+community server, changing how Beat Revival is reached. Cheating on leaderboards is not what this is
+for, and the player can always see which mods do it.
+
+```cpp
+GN_MOD("my-online-mod") {
+    gn::allowOnline("talks to the community Dash server instead of EA's"); // one line, shown to the player
+    return true;
+}
+```
+
+Until a mod calls `gn::allowOnline(reason)` (Rust: `allow_online`, API 23):
+
+- `gn::console` refuses online commands (`GN_ERR_UNAVAILABLE`, and a line in gridnode.log saying why);
+- `gn::progressSet` refuses flags that go to online stats (`gn_progress_flag.online`);
+- `gn::settings(className)` of an online settings class still works (settings are raw memory, which GridNode
+  cannot check), but logs a warning once per mod and class.
+
+After it, those run, and each one is logged with `!!! ONLINE`. The call itself writes a warning block
+to gridnode.log, and the menu's Mods list shows the mod in orange with its reason. It is taken back
+when the mod unloads.
+
+The console's own `progress NAME VALUE` never sets an online flag, and the menu's console asks the
+player before an online command. The MEC trainer never calls `allowOnline`; while it is loaded it
+blocks Dash and time trial uploads.
 
 ## Messages
 

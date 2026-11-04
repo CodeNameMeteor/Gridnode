@@ -34,7 +34,9 @@ bool decode(const uint8_t* p, size_t avail, Insn& out);
 // "jmp [rip+0]" and the address. Short branches become long ones; RIP-relative operands and
 // relative branches are re-aimed (refused when the new displacement does not fit in 32 bits).
 // Refused: an instruction not decoded, loop / jrcxz, a branch back into the copied bytes, or the
-// function ending (ret, jmp) before minBytes.
+// function ending (ret, jmp) before minBytes. Not detected: a branch from elsewhere in the function
+// (a loop back to its start) into the moved bytes; such a function cannot be detoured safely, and
+// only reading it in Ghidra shows that.
 // `starts` (may be null) receives each moved instruction's offset in the function and in the
 // trampoline: a thread stopped inside the moved bytes is moved to the same instruction there.
 bool trampoline(const uint8_t* code, size_t avail, uint64_t codeAddr, size_t minBytes, uint64_t trampAddr,

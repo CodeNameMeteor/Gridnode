@@ -4,6 +4,7 @@
 
 #include "gridnode/x64.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -178,6 +179,10 @@ bool trampoline(const uint8_t* code, size_t avail, uint64_t codeAddr, size_t min
         if (in.addr32) return fail("an instruction with an address-size prefix (0x67) in the first bytes");
         if (in.ret && copied + in.length < minBytes) return fail("the function returns within its first bytes (too short)");
         if (in.rel >= 0) {
+            // An operand-size prefix (66) on a branch would make it a 16-bit one: never in the game's
+            // prologues, and the re-encoding below assumes 64-bit branches, so refused.
+            const size_t opStart = static_cast<size_t>(in.rel) - (in.rel >= 2 && src[in.rel - 2] == 0x0f && (src[in.rel - 1] & 0xf0) == 0x80 ? 2 : 1);
+            if (std::find(src, src + opStart, uint8_t(0x66)) != src + opStart) return fail("a branch with an operand-size prefix in the first bytes");
             int64_t disp = 0;
             if (in.relSize == 1) disp = static_cast<int8_t>(src[in.rel]);
             else {
@@ -191,7 +196,9 @@ bool trampoline(const uint8_t* code, size_t avail, uint64_t codeAddr, size_t min
             std::vector<uint8_t> enc;
             if (in.call) enc = {0xe8};
             else if (in.jmp) enc = {0xe9};
-            else { // jcc: 7x rel8 or 0F 8x rel32 (prefixes before it are kept as they were)
+            else { // jcc: 7x rel8 or 0F 8x rel32
+                // Re-encoded from its condition alone: prefixes before it (branch hints 2E / 3E, BND
+                // F2) are dropped, which changes nothing they do on current CPUs.
                 const uint8_t cc = src[in.rel - 1] & 0x0f; // 7x rel8 or 0F 8x rel32
                 enc = {0x0f, uint8_t(0x80 | cc)};
             }

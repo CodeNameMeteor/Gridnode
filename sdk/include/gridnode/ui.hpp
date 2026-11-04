@@ -104,7 +104,7 @@ inline bool hotkeyRow(const char* id, const char* label, float width = 0.f) { re
 // camera; points behind it are not drawn. Colours are IM_COL32(r, g, b, a).
 using View = gn_view;
 // The camera this frame; false while there is none (loading, menus).
-inline bool view(View& out) { return api().view_get(&out) == GN_OK; }
+inline bool view(View& out) { return api().view_get_ex(&out, sizeof(out)) == GN_OK; }
 // A world point on the screen (pixels); false when it is behind the camera.
 inline bool toScreen(const View& v, const Vec3& p, ImVec2& out) {
     const float w[3] = {p.x, p.y, p.z};

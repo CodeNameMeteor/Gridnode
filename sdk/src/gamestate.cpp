@@ -285,7 +285,7 @@ int progressFind(const char* name, gn_progress_flag* out) {
     return GN_ERR_NOT_FOUND;
 }
 
-int progressSet(void* flag, int32_t value, int32_t* now) {
+int progressSet(void* flag, int32_t value, int32_t* now, const char* onlineBy) {
     if (!isServerThread()) return GN_ERR_THREAD;
     if (!build::codeMatches("ProgressionManager_setFlag")) return GN_ERR_UNAVAILABLE;
     Flag f;
@@ -296,10 +296,12 @@ int progressSet(void* flag, int32_t value, int32_t* now) {
         if (it == g_flags.all.end()) return GN_ERR_ARGUMENT; // not one of the game's flags
         f = *it;
     }
-    if (f.online) {
-        GN_LOG("progression: %s not set: its value goes to online stats", f.name.c_str());
+    if (f.online && !onlineBy) {
+        GN_LOG("progression: %s not set: its value goes to online stats (a mod that changes online services on purpose calls "
+               "online_allow first)", f.name.c_str());
         return GN_ERR_UNAVAILABLE;
     }
+    if (f.online) GN_LOG("!!! ONLINE: %s sets %s, which goes to online stats", onlineBy, f.name.c_str());
     const uintptr_t m = ptr(mem::rva(e::global::ProgressionManager));
     if (!m) return GN_ERR_UNAVAILABLE;
     using SetFn = int32_t (*)(uintptr_t, uintptr_t, int32_t, bool, bool, bool);
@@ -328,7 +330,7 @@ std::string progressCommand(const std::string& args) {
         const std::string name = a;
         server().post([flag, name, value] {
             int32_t now = 0;
-            if (progressSet(flag, static_cast<int32_t>(value), &now) != GN_OK) GN_LOG("progress %s %ld: refused", name.c_str(), value);
+            if (progressSet(flag, static_cast<int32_t>(value), &now, nullptr) != GN_OK) GN_LOG("progress %s %ld: refused", name.c_str(), value);
         });
         return "Setting " + a + " to " + b + " (was " + std::to_string(f.value) + "); the result goes to the log";
     }

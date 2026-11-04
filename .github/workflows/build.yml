@@ -2,19 +2,49 @@ name: build
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+
+# Read only: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# One run per branch or pull request: a newer push cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   host-tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Reflection walker test (sanitizers)
         run: |
           g++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -g \
             -Isdk/include tests/reflect_walker_test.cpp sdk/src/reflect/walker.cpp sdk/src/reflect/dump_json.cpp \
             -o reflect_walker_test
           ./reflect_walker_test
+      - name: Runtime core and x64 decoder tests (sanitizers)
+        run: |
+          SRC="sdk/src/reflect/walker.cpp sdk/src/reflect/dump_json.cpp sdk/src/reflect/registry.cpp sdk/src/hook_table.cpp \
+            sdk/src/dispatch.cpp sdk/src/config_core.cpp sdk/src/x64.cpp sdk/src/mod_order.cpp sdk/src/pe_file.cpp"
+          FLAGS="-std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -g -Isdk/include"
+          g++ $FLAGS tests/runtime_core_test.cpp $SRC -o runtime_core_test -pthread
+          ./runtime_core_test
+          g++ $FLAGS tests/x64_test.cpp $SRC -o x64_test
+          ./x64_test
+      - name: Python lint (syntax errors, undefined names, unused imports and variables)
+        run: |
+          pipx run ruff==0.16.9 check --select E9,F63,F7,F82,F401,F841 tools templates
+      - name: Rust format and lints
+        run: |
+          cargo fmt --check --manifest-path bindings/rust/gridnode/Cargo.toml
+          cargo fmt --check --manifest-path examples/hello-rust/Cargo.toml
+          cargo clippy --manifest-path bindings/rust/gridnode/Cargo.toml -- -D warnings
+          cargo clippy --manifest-path examples/hello-rust/Cargo.toml -- -D warnings
       - name: Install PyYAML
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: gridnode-gen tests and annotation check
@@ -38,15 +68,15 @@ jobs:
   docs:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - name: Build the docs site (published part, guides and annotated engine)
         run: |
           pip install -r docs/requirements.txt
           python tools/gen/gridnode.py docs --build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docs-site
           path: build/docs/site
@@ -54,7 +84,7 @@ jobs:
   windows-mingw:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install MinGW-w64 and PyYAML
         run: sudo apt-get update && sudo apt-get install -y g++-mingw-w64-x86-64 ninja-build python3-yaml
       - name: Configure and build (x64, Release)
@@ -75,12 +105,12 @@ jobs:
             -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_BUILD_TYPE=Release
           cmake --build build/modtest/b
       - name: Upload the release zip
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gridnode-release
           path: build/release/*.zip
       - name: Upload binaries
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gridnode-x64-mingw
           path: |
@@ -98,7 +128,7 @@ jobs:
             -DGRIDNODE_BUILD_TESTS=OFF -DGRIDNODE_BUILD_EXAMPLES=OFF -DGRIDNODE_PLAYER_BUILD=ON
           cmake --build build-player --target gridnode version_proxy
       - name: Upload the player build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gridnode-player-x64-mingw
           path: |
@@ -108,7 +138,7 @@ jobs:
   windows-msvc:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install PyYAML
         shell: pwsh
         run: |
@@ -132,7 +162,7 @@ jobs:
         shell: pwsh
         run: cargo build --release --manifest-path examples/hello-rust/Cargo.toml --target x86_64-pc-windows-msvc
       - name: Upload the Rust example mod
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hello-rust-x64-msvc
           path: examples/hello-rust/target/x86_64-pc-windows-msvc/release/hello_rust.dll

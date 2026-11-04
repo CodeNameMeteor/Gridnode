@@ -17,8 +17,13 @@ namespace {
 using UpdateFn = void (*)(void* world, void* updateInfo);
 // The game's functions (or an earlier hook). Written by HookTable::install before the slot is
 // swapped, so a detour never runs without them.
-uint64_t g_serverOrig = 0;
-uint64_t g_clientOrig = 0;
+// The game's postUpdate under each hook. The hook table rewrites these while a detour may be
+// reading them (a hook above ours removed: hook_table.cpp, one aligned 8-byte store), so they are
+// atomic; the table is given their address as a plain uint64_t*, which is the same object.
+std::atomic<uint64_t> g_serverOrig{0};
+std::atomic<uint64_t> g_clientOrig{0};
+static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t) && std::atomic<uint64_t>::is_always_lock_free,
+              "the hook table writes these as plain 8-byte values");
 std::atomic<DWORD> g_serverThread{0};
 std::atomic<DWORD> g_clientThread{0};
 
@@ -42,7 +47,7 @@ template <class F> void guarded(const char* what, F&& f) {
 }
 
 void serverPostUpdate(void* world, void* updateInfo) {
-    reinterpret_cast<UpdateFn>(g_serverOrig)(world, updateInfo);
+    reinterpret_cast<UpdateFn>(g_serverOrig.load(std::memory_order_acquire))(world, updateInfo);
     if (unloaded()) return; // kept in place by a hook over it: the game's update only
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("server messages", [] { messagesServerTick(); });
@@ -51,7 +56,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
 }
 
 void clientPostUpdate(void* world, void* updateInfo) {
-    reinterpret_cast<UpdateFn>(g_clientOrig)(world, updateInfo);
+    reinterpret_cast<UpdateFn>(g_clientOrig.load(std::memory_order_acquire))(world, updateInfo);
     if (unloaded()) return;
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("world", [] { worldClientTick(); });
@@ -81,9 +86,11 @@ TickStatus installTicks() {
     };
     server().setErrorSink(report("server"));
     client().setErrorSink(report("client"));
+    server().setTaskFilter(taskLive);
+    client().setTaskFilter(taskLive);
     TickStatus s;
-    s.server = install(engine::hook::ServerGameWorld_postUpdate, &serverPostUpdate, &g_serverOrig);
-    s.client = install(engine::hook::ClientGameWorld_postUpdate, &clientPostUpdate, &g_clientOrig);
+    s.server = install(engine::hook::ServerGameWorld_postUpdate, &serverPostUpdate, reinterpret_cast<uint64_t*>(&g_serverOrig));
+    s.client = install(engine::hook::ClientGameWorld_postUpdate, &clientPostUpdate, reinterpret_cast<uint64_t*>(&g_clientOrig));
     return s;
 }
 

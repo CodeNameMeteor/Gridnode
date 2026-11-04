@@ -24,6 +24,7 @@
 
 #include "gridnode/log.hpp"
 #include "gridnode/mod_order.hpp"
+#include "gridnode/pe_file.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -68,6 +69,31 @@ std::map<std::string, std::set<std::string>> g_importers; // (g_expM) exporter i
 std::string g_startingId;
 CodeRange g_startingCode;
 std::wstring g_startingPath;
+// (g_expM) Mods that called online_allow, by id: their reason. Taken out with the mod (takeOut).
+std::map<std::string, std::string> g_online;
+
+// Mods being taken out right now. unload() works on a copy of the mod, so g_mods still says
+// "loaded" meanwhile; modCodeLive asks this first (a task queued for it is not run then).
+std::mutex g_unloadingM;
+std::vector<CodeRange> g_unloading; // (g_unloadingM)
+
+struct Unloading {
+    CodeRange code;
+    explicit Unloading(const CodeRange& c) : code(c) {
+        std::lock_guard<std::mutex> lock(g_unloadingM);
+        g_unloading.push_back(c);
+    }
+    ~Unloading() {
+        std::lock_guard<std::mutex> lock(g_unloadingM);
+        for (auto it = g_unloading.begin(); it != g_unloading.end(); ++it)
+            if (it->begin == code.begin && it->end == code.end) {
+                g_unloading.erase(it);
+                break;
+            }
+    }
+    Unloading(const Unloading&) = delete;
+    Unloading& operator=(const Unloading&) = delete;
+};
 
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
@@ -80,13 +106,19 @@ FILETIME writeTime(const std::wstring& path) {
 }
 bool sameTime(const FILETIME& a, const FILETIME& b) { return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime; }
 
-// Whether the DLL exports gn_mod_unload, read without running it (no DllMain, no imports).
+// Whether the DLL exports gn_mod_unload, read from the file (no DllMain, no imports, nothing mapped).
 bool exportsUnload(const std::wstring& path) {
-    HMODULE m = LoadLibraryExW(path.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
-    if (!m) return false;
-    const bool has = GetProcAddress(m, "gn_mod_unload") != nullptr;
-    FreeLibrary(m);
-    return has;
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    std::vector<uint8_t> bytes;
+    if (GetFileSizeEx(f, &size) && size.QuadPart > 0 && size.QuadPart < (256ll << 20)) {
+        bytes.resize(static_cast<size_t>(size.QuadPart));
+        DWORD got = 0;
+        if (!ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr) || got != bytes.size()) bytes.clear();
+    }
+    CloseHandle(f);
+    return pe::exportsName(bytes.data(), bytes.size(), "gn_mod_unload");
 }
 
 CodeRange imageOf(HMODULE m) {
@@ -192,6 +224,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     const size_t hooksOut = forgetHooks(code, refused);
     forgetPatches(code);
     forgetTicks(code);
+    forgetTasks(code);
     forgetCreated(code);
     forgetLevel(code);
     forgetMessages(code);
@@ -201,6 +234,10 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetSettings(code);
     ui::forgetUi(code);
     forgetExports(code, id);
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        g_online.erase(id);
+    }
     forgetBoxes(code);
     forgetSounds(code);
     forgetGravity(code);
@@ -297,6 +334,7 @@ bool unload(Mod& m, bool all = false) {
     if (!m.module) return true;
     if (m.inert) { // everything of it is out already: only the free is left
         if (!waitCodeQuiet(m.module, ("mods: " + name).c_str(), 1000)) return false;
+        forgetTasks(imageOf(m.module)); // queued by a thread that was still in its code
         FreeLibrary(m.module);
         m.module = nullptr, m.code = CodeRange{}, m.inert = false;
         m.info.status = "unloaded (Load brings it back)";
@@ -328,6 +366,7 @@ bool unload(Mod& m, bool all = false) {
         }
     }
     const CodeRange code = imageOf(m.module);
+    const Unloading unloading(code);
     std::vector<std::string> refused;
     const size_t hooksOut = takeOut(code, m.info.id, &refused);
     configFlush(true);
@@ -360,6 +399,9 @@ bool unload(Mod& m, bool all = false) {
         forgetExports(code, m.info.id);
         return false;
     }
+    // No thread runs its code now, so nothing can queue a new task for it: whatever was queued
+    // since takeOut (a tick of it still running then) goes before the free.
+    forgetTasks(code);
     FreeLibrary(m.module);
     m.module = nullptr;
     m.code = CodeRange{};
@@ -382,12 +424,17 @@ void reload(Mod& m) {
 } // namespace
 
 std::vector<ModInfo> modList() {
-    std::lock_guard<std::mutex> lock(g_modsM);
     std::vector<ModInfo> out;
-    for (const Mod& m : g_mods) {
-        out.push_back(m.info);
-        out.back().inMemory = m.module != nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_modsM);
+        for (const Mod& m : g_mods) {
+            out.push_back(m.info);
+            out.back().inMemory = m.module != nullptr;
+        }
     }
+    std::lock_guard<std::mutex> lock(g_expM); // not nested in g_modsM
+    for (ModInfo& i : out)
+        if (const auto it = g_online.find(i.id); it != g_online.end() && i.loaded) i.online = it->second;
     return out;
 }
 
@@ -468,10 +515,18 @@ void pollMods() {
         } else {
             reload(work);
         }
+        // Requests made while this ran (the menu's Reload clicked twice, the mod asking to unload,
+        // Auto reload turned on) are kept, not overwritten by the copy: the copy's own were taken
+        // (cleared) under the lock above, so any set now are new.
         std::lock_guard<std::mutex> lock(g_modsM);
-        const bool autoReload = g_mods[i].info.autoReload; // may have been changed meanwhile
-        g_mods[i] = work;
-        g_mods[i].info.autoReload = autoReload;
+        Mod& cur = g_mods[i];
+        const bool reloadWanted = cur.reloadWanted, unloadWanted = cur.unloadWanted, loadWanted = cur.loadWanted;
+        const bool autoReload = cur.info.autoReload;
+        cur = std::move(work);
+        cur.info.autoReload = autoReload;
+        cur.reloadWanted = reloadWanted && cur.module; // only what still applies to the new state
+        cur.unloadWanted = unloadWanted && cur.module;
+        cur.loadWanted = loadWanted && !cur.module;
     }
 }
 
@@ -567,7 +622,45 @@ void* modImport(const void* caller, const char* modId, const char* name) {
     return it->second.fn;
 }
 
+std::string modNameAt(const void* caller) {
+    std::string id;
+    CodeRange unused;
+    modAtAddress(caller, id, unused);
+    return id;
+}
+
+int onlineAllow(const void* caller, const char* mod, const char* reason) {
+    if (!reason || !*reason) return GN_ERR_ARGUMENT;
+    std::string id;
+    CodeRange unused;
+    if (!modAtAddress(caller, id, unused)) return GN_ERR_ARGUMENT; // only a mod declares this
+    const std::string why(reason, strnlen(reason, 200));
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (const auto it = g_online.find(id); it != g_online.end() && it->second == why) return GN_OK;
+        g_online[id] = why;
+    }
+    GN_LOG("!!! ONLINE: mod %s (%s) changes online services on purpose: %s", id.c_str(), mod ? mod : "?", why.c_str());
+    GN_LOG("!!! ONLINE: its online console commands and online progression flags are allowed from now on, and every one is logged.");
+    GN_LOG("!!! ONLINE: this can affect your EA account, online stats and leaderboards, and services such as Beat Revival.");
+    GN_LOG("!!! ONLINE: use it only if you trust this mod. Cheating on leaderboards is not what this is for.");
+    return GN_OK;
+}
+
+bool onlineAllowed(const void* caller) {
+    std::string id;
+    CodeRange unused;
+    if (!modAtAddress(caller, id, unused)) return true; // GridNode's own code (the menu asks the player itself)
+    std::lock_guard<std::mutex> lock(g_expM);
+    return g_online.count(id) != 0;
+}
+
 bool modCodeLive(const void* fn) {
+    {
+        std::lock_guard<std::mutex> lock(g_unloadingM);
+        for (const CodeRange& r : g_unloading)
+            if (r.has(fn)) return false;
+    }
     std::lock_guard<std::mutex> lock(g_modsM);
     for (const Mod& m : g_mods)
         if (m.module && m.code.has(fn)) return m.info.loaded && !m.inert;

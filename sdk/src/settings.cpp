@@ -8,8 +8,9 @@
 // every registered command works. Commands run on the client thread.
 //
 // Online play: settings classes and command groups that reach EA's services or the network are
-// flagged (onlineWarning). GridNode never blocks them; the UI asks for a confirmation and the log
-// records every change a mod makes to them.
+// flagged (onlineWarning). The menu asks the player for a confirmation. A mod's online console
+// commands are refused until it calls online_allow (api.cpp consoleRunFor), then each is logged;
+// settings objects are raw memory, so a mod that takes an online one without it is warned instead.
 
 #include <windows.h>
 

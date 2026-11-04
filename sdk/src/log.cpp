@@ -101,6 +101,21 @@ void writeTry(const char* fmt, ...) {
     g_mutex.unlock();
 }
 
+void writeLineTry(const char* line) {
+    // A line already formatted (the crash handler formats into static memory): no stack buffer here.
+    if (!g_mutex.try_lock()) return;
+    const size_t len = strlen(line);
+    emitLocked(line, len);
+    if (len == 0 || line[len - 1] != '\n') {
+        OutputDebugStringA("\n");
+        if (g_file && !g_full) {
+            fputc('\n', g_file);
+            fflush(g_file);
+        }
+    }
+    g_mutex.unlock();
+}
+
 void write(const char* fmt, ...) {
     char msg[2048];
     SYSTEMTIME st;

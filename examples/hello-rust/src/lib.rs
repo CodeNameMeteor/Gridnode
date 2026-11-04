@@ -38,8 +38,14 @@ gridnode::gn_mod!("hello-rust", || {
         s = 0.0;
         let faith = gridnode::local_server_character();
         if let Some(p) = gridnode::position_of(faith) {
-            let below = gridnode::raycast([p[0], p[1] + 0.5, p[2]], [p[0], p[1] - 100.0, p[2]], 0.0);
-            log!("server: ground {}", below.map(|h| format!("hit at y = {:.2}", h.position[1])).unwrap_or("none".into()));
+            let below =
+                gridnode::raycast([p[0], p[1] + 0.5, p[2]], [p[0], p[1] - 100.0, p[2]], 0.0);
+            log!(
+                "server: ground {}",
+                below
+                    .map(|h| format!("hit at y = {:.2}", h.position[1]))
+                    .unwrap_or("none".into())
+            );
         }
     });
 

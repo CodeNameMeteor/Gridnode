@@ -240,6 +240,7 @@ bool run(HMODULE self) {
            GRIDNODE_PLAYER_BUILD ? "player" : "developer", s.ui.inspector, s.ui.editor, s.ui.recorder, s.ui.console);
     host::ui::install(s.ui);
 
+    host::crash::setModsFolder(s.modsFolder);
     host::configStart(s.modsFolder); // mods' settings live next to them
     if (s.modsEnabled) host::loadMods(s.modsFolder);
     else GN_LOG("mods: disabled in gridnode.ini");

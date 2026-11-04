@@ -6,6 +6,9 @@
 #endif
 
 #include <cstring>
+#include <mutex>
+#include <set>
+#include <string>
 
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -177,7 +180,21 @@ int apiRead(const void* address, void* out, size_t size) {
     return out && mem::read(reinterpret_cast<uintptr_t>(address), out, size) ? GN_OK : GN_ERR_ARGUMENT;
 }
 int apiWrite(void* address, const void* data, size_t size) {
-    return data && mem::write(reinterpret_cast<uintptr_t>(address), data, size) ? GN_OK : GN_ERR_ARGUMENT;
+    const uintptr_t at = reinterpret_cast<uintptr_t>(address);
+    // write() reaches the game's code too (WriteProcessMemory changes the protection), but such a
+    // write is not in the patch list: nothing undoes it on unload. Said once per run; patch_bytes is
+    // the recorded way (docs/modding.md).
+    if (data && size && mem::inImage(at)) {
+        static std::atomic<bool> told{false};
+        for (const mem::Section& sec : mem::imageSections())
+            if (sec.region.code && at < sec.region.end && at + size > sec.region.begin) {
+                if (!told.exchange(true))
+                    GN_LOG("write: a mod wrote %llu bytes of the game's code at %llx; that is not recorded or undone on unload (use patch_bytes)",
+                           static_cast<unsigned long long>(size), static_cast<unsigned long long>(mem::va(at)));
+                break;
+            }
+    }
+    return data && mem::write(at, data, size) ? GN_OK : GN_ERR_ARGUMENT;
 }
 
 int apiOnCreated(const char* mod, const char* className, gn_created_fn fn, void* user) {
@@ -215,7 +232,6 @@ int apiUiCheck(const char* mod, const char* v, size_t io, size_t style, size_t v
 }
 int apiUiMenuOpen() { return ui::menuOpen() ? 1 : 0; }
 
-void* apiSettingsFind(const char* name) { return name ? reinterpret_cast<void*>(settingsFind(name)) : nullptr; }
 uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsList().size()); }
 int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
     const std::vector<SettingsEntry> l = settingsList();
@@ -226,12 +242,21 @@ int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
 }
 const char* apiOnlineWarning(const char* name) { return name ? onlineWarning(name) : nullptr; }
 
-int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* user) {
+int consoleRunFor(const char* mod, const char* line, gn_console_fn fn, void* user, const void* caller) {
     if (!line) return GN_ERR_ARGUMENT;
     if (!consoleAvailable()) return GN_ERR_UNAVAILABLE;
     const std::string who = mod ? mod : "?";
     const std::string l = line;
-    if (const char* why = commandOnline(l)) GN_LOG("[%s] console: \"%s\" (online: %s)", who.c_str(), l.c_str(), why);
+    if (const char* why = commandOnline(l)) {
+        // Online commands need the mod to have said it changes online services (online_allow):
+        // enforced here, where the command runs, not only in the menu (review, 2026-11-04).
+        if (!onlineAllowed(caller)) {
+            GN_LOG("[%s] console: \"%s\" refused (online: %s). A mod that changes online services on purpose calls online_allow first.",
+                   who.c_str(), l.c_str(), why);
+            return GN_ERR_UNAVAILABLE;
+        }
+        GN_LOG("!!! ONLINE: [%s] console: \"%s\" (%s)", who.c_str(), l.c_str(), why);
+    }
     client().post([who, l, fn, user] {
         const std::string out = consoleRun(l);
         // Queued, then its mod unloaded: its callback is gone with it (the command still ran).
@@ -239,6 +264,24 @@ int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* use
     });
     return GN_OK;
 }
+
+// A mod that takes an online settings object without having called online_allow: GridNode cannot
+// see the writes it makes (raw memory), so it warns once per mod and class instead.
+void* settingsFindFor(const char* name, const void* caller) {
+    if (!name) return nullptr;
+    void* obj = reinterpret_cast<void*>(settingsFind(name));
+    if (const char* why = obj ? onlineWarning(name) : nullptr; why && !onlineAllowed(caller)) {
+        static std::mutex m;
+        static std::set<std::string> told;
+        const std::string mod = modNameAt(caller), key = mod + "/" + name;
+        std::lock_guard<std::mutex> lock(m);
+        if (told.insert(key).second)
+            GN_LOG("WARNING: mod %s took %s (online: %s). Changing it can affect online play; a mod that does so on purpose calls "
+                   "online_allow.", mod.c_str(), name, why);
+    }
+    return obj;
+}
+
 uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommands().size()); }
 int apiConsoleCommandAt(uint32_t i, gn_command* out) {
     const std::vector<ConsoleCommand> c = consoleCommands();
@@ -284,6 +327,25 @@ GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, vo
 GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
 GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
 GN_NOINLINE int apiModDir(char* out, size_t size) { return modDir(GN_CALLER, out, size); }
+GN_NOINLINE int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* user) { return consoleRunFor(mod, line, fn, user, GN_CALLER); }
+GN_NOINLINE void* apiSettingsFind(const char* name) { return settingsFindFor(name, GN_CALLER); }
+GN_NOINLINE int apiOnlineAllow(const char* mod, const char* reason) { return onlineAllow(GN_CALLER, mod, reason); }
+GN_NOINLINE int apiProgressSet(void* flag, int32_t value, int32_t* now) {
+    const void* caller = GN_CALLER;
+    const std::string by = onlineAllowed(caller) ? modNameAt(caller) : std::string();
+    // GridNode's own code is "allowed" by onlineAllowed but is no mod: its flags stay refused here
+    // (the console's progress command refuses online flags for the player, the trainer's way to cheat).
+    return progressSet(flag, value, now, by.empty() ? nullptr : by.c_str());
+}
+GN_NOINLINE int apiViewGetEx(gn_view* out, uint32_t size) {
+    // The caller's size says how much of gn_view it has: a later gn_view may grow at its end, and
+    // a host fills only the fields both know (the rest stay as the caller set them).
+    if (!out || size < sizeof(gn_view)) return GN_ERR_ARGUMENT;
+    gn_view v{};
+    const int r = apiViewGet(&v);
+    if (r == GN_OK) memcpy(out, &v, sizeof(v) < size ? sizeof(v) : size);
+    return r;
+}
 GN_NOINLINE int apiSetGravity(int realm, const float* g) { return physicsSetGravity(realm, g, GN_CALLER); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
@@ -420,8 +482,10 @@ const gn_api* api() {
         a.checkpoint = checkpoint;
         a.progress_flags = progressFlags;
         a.progress_find = progressFind;
-        a.progress_set = progressSet;
+        a.progress_set = apiProgressSet;
         a.mission = mission;
+        a.online_allow = apiOnlineAllow;
+        a.view_get_ex = apiViewGetEx;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;
@@ -438,6 +502,24 @@ void forgetTicks(const CodeRange& r) {
     };
     server().removeListeners(mine);
     client().removeListeners(mine);
+}
+
+size_t forgetTasks(const CodeRange& r) {
+    // run_on_server / run_on_client tasks still queued. A dropped task's user pointer is not freed:
+    // that is the mod's memory (gridnode/mod.hpp frees its closure inside the task), so a few bytes
+    // leak rather than freed code run.
+    auto mine = [r](const thread::Dispatcher::Task& t) {
+        const CallTask* c = t.target<CallTask>();
+        return c && r.has(reinterpret_cast<void*>(c->fn));
+    };
+    const size_t n = server().removeTasks(mine) + client().removeTasks(mine);
+    if (n) GN_LOG("mods: %llu queued task(s) of an unloading mod dropped", static_cast<unsigned long long>(n));
+    return n;
+}
+
+bool taskLive(const thread::Dispatcher::Task& t) {
+    const CallTask* c = t.target<CallTask>();
+    return !c || modCodeLive(reinterpret_cast<const void*>(c->fn));
 }
 
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused) {

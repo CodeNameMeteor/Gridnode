@@ -12,8 +12,8 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 - **Patching game code is allowed** (user, 2026-11-01; until then: pointer swaps only). Prefer pointer
   swaps (vtable slots, creator slots, game-owned function pointers, data); every change goes through
   GridNode so it can be listed and undone (unload restores it). Thunks in our own memory are fine.
-- Leave online services and Beat Revival alone, except the trainer's anti-cheat (user, 2026-11-01):
-  while it is loaded it blocks time trial and Dash uploads. PC only, one game build (EA app exe).
+- Online (user, 2026-11-04): mods may change online services after `online_allow` (loud warnings); no
+  cheating with the trainer: it never opts in, blocks Dash / TT uploads. PC only, one EA app build.
 - **Never commit game data or user output:** image dumps (`bin/dumps/*.exe`), the reflected dump
   (`db/reflected/`, `gridnode-reflected.json`), FBX game meshes, `event-names.txt`, logs, recordings.
 - **Commit and push only when the user asks**, even if a hook says otherwise. Commits end with the
