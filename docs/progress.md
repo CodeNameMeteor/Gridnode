@@ -3,15 +3,48 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
-## Current task
-2026-10-29: handover steps 1 to 4 done, then frame and event names. Test build `gridnode-watchlock8.dll` deployed to
-`D:\Dev\GridNode\bin\gridnode.dll`: destroyed lines, objects, list watches and the tracing fix are
-confirmed in game, as are the class picker and the faster watches.
-**GridNodeSync confirmed in Ghidra 12.1.4** (2026-10-29, run through the MCP with script arguments):
-export (632 functions, 30 labels; backup in `bin/ghidra-test/my-names-before.json`), annotations import
-(45 structs, 124 names, 539 of the user's kept, 573 comments, 0 problems), a recording's import (515
-comments, 606 bookmarks on the call instructions); a second import changes nothing; the export reads
-back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
+## Current task: getting GridNode ready for its first release (plan, 2026-11-04)
+Everything up to API 22 is committed (d96c362). The plan below is in order: the "must" items before
+a release, "should" before if there is time, the rest after. Open decisions for the user are marked
+**(decide)**.
+
+**Must**
+1. **Stability on a clean setup.** Unzip the release zip somewhere new (not `D:\Dev\GridNode\bin`),
+   inject with `gridnode_inject.exe`, then once more with `version.dll`; with no mods, then each
+   example mod. Load the city, the map, a mission, a Dash, a time trial, the menus, a level change,
+   quit. Reload and unload each mod a few times. Fix every crash. Known: quitting during a Dash
+   crashed twice with GridNode injected (`0x143164d50`, a null world in `FUN_1439e08f0`'s mission
+   clean-up): find out whose fault it is and fix or guard it.
+2. **Online safety audit.** One list of everything that could reach EA's services or Beat Revival,
+   checked in code: the console's online commands (confirmation), settings marked online, the
+   trainer's upload block, progression flags that sync to online (refused), nothing else sending.
+   A short docs page "GridNode and online play".
+3. **What the release is (decide).** Proposed: two zips. *GridNode* for players: the player build
+   (no inspector, console, editor, recorder), `gridnode_inject.exe`, `version.dll`, `mods/`. *GridNode
+   SDK* for modders: the developer build, `sdk/` (headers, ImGui, Rust crate, templates) and the
+   example mods. `gridnode.py package` makes one zip today; add `--player`.
+4. **Docs that match the release.** README (its status still says M6/M7 and lists old examples),
+   getting started (unzip anywhere and inject; the game folder only for `version.dll`), shipping a
+   mod (`mods/<name>/`, `gridnode_mod.py pack`), a troubleshooting page (where the log is, "build
+   check failed" = another game build, what a `crash:` block means, how to report one), known issues,
+   release notes.
+5. **API 1.0.** From the release on the table only grows at its end, and a mod built for API N loads
+   on any GridNode with API N or newer (GN_MOD returns 2 otherwise, and the log says so). Before
+   freezing: review `api.h` for names and threads we would regret, and mark what is experimental in
+   the docs (gravity and body velocities: the city has almost no dynamic bodies; waypoint: street
+   height; checkpoint: the table's path, not understood).
+6. **Version and how to release (decide).** 1.0.0, or 0.9 as a beta first. A tag, a GitHub release
+   from CI's zips, the release notes.
+
+**Should**
+7. **The example mods in the release.** Players get the MEC trainer (and hello?). World draw, probe
+   and the detour demo are test harnesses: source in the SDK zip only.
+8. **The "untested" list.** 29 notes in this file say untested: test, mark experimental, or take out.
+9. **A friend's PC.** One install by someone else from the zip and the docs alone.
+10. **Cost.** Startup (about 2 s, 2,164 hooks) and frame time with and without GridNode, written down.
+
+**After the release:** spawnable physics objects, the layout editor (paused on purpose), Lua or
+another scripting layer if mods want it, the 335 `hypothesis` functions.
 
 ## Done recently
 - **API 22: health, the waypoint, the checkpoint, the mission** (2026-11-04, untested in game). From
@@ -450,7 +483,7 @@ Confirmed: the landing late-load fix (auto-bhop), the Keys tab's click-to-rebind
 The crash when quitting during a Dash (0x143164d50, a null world in the mission clean-up
 `FUN_1439e08f0`) happens only with GridNode injected; not explained yet.
 
-## Next steps
+## Older next steps (research; after the release plan above)
 1. The 335 `hypothesis` functions left (all have signatures now): read them one by one, area by area
    (resources, render, levels, reflection, startup first).
 2. In game: the class picker, and every-frame watches (their cost shows as *last reading*; does a

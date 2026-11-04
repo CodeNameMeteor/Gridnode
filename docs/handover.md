@@ -1,10 +1,10 @@
 # Handover (for the next agent)
 
-Written 2026-10-27. Short status: [progress.md](progress.md). The full plan: [PLAN.md](PLAN.md).
+Written 2026-10-27, brought up to date 2026-11-04. Short status: [progress.md](progress.md). The full plan: [PLAN.md](PLAN.md).
 
 ## 1. The projects
 
-- **GridNode** (`CodeNameMeteor/gridnode`, branch `main`): an open-source modding SDK for Mirror's
+- **GridNode** (`CodeNameMeteor/Gridnode`, branch `main`; the repository moved there): an open-source modding SDK for Mirror's
   Edge Catalyst (PC, Frostbite 3, codename Pamplona). Runtime DLL (`sdk/`), type database and
   generators (`db/annotations`, `tools/gen`), the in-game menu (inspector, console, layout editor,
   recorder), docs (MkDocs, `docs/`), tools (`tools/recording`, `tools/ghidra`, `tools/mesh`).
@@ -63,49 +63,39 @@ cmake --build /tmp/claude-0/mbuild --target mecmp
   The GridNode build generates `engine.hpp` from `db/annotations` (needs PyYAML).
 - `python3 tools/gen/gridnode.py validate` after any annotation change.
 
-## 4. Where things stand (2026-10-27)
+## 4. Where things stand (2026-11-04)
 
-All work is pushed (GridNode `main` 14507f0). MECMP PRs #102 to #106 are merged. Open elsewhere:
-GridNode PR #1 (an old code review), MECMP #112 (yamixdev) and #95 (Nollz, WIP PVP), not ours.
+All work is pushed (`main` d96c362, API 22). The user tests every addition in game and sends logs;
+`docs/progress.md` says per feature what was confirmed.
 
-Recent features (details in progress.md and the docs):
-
-| Feature | Where | State |
+| Area | Where | State |
 |---|---|---|
-| Game image dump (menu → Game image) | `sdk/src/mem.cpp` `dumpImage`, `sdk/src/ui.cpp` | confirmed in game |
-| `gridnode.py fingerprint` (GridNode + `--mecmp`) | `tools/gen/gridnode_gen/fingerprint_gen.py` | checked against a real dump |
-| Recorder: trace a class's virtual calls | `sdk/src/recorder.cpp` (`traceClass`, `writeThunk`, `callerStack`) | confirmed in game, stacks too |
-| Recorder: watch fields, send an event, callers | `sdk/src/recorder.cpp` | built 2026-10-22, lightly used |
-| `annotations-diff`, `ghidra-import --who`, `ghidra-relay` | `tools/gen/gridnode_gen/` | tested in Python |
-| GridNodeSync comment blocks and comment export | `tools/ghidra/GridNodeSync.java` | **never compiled / run in Ghidra** |
-| Barriers and magropes in the layout editor (save, copy) | `sdk/src/layouts.cpp` | moving confirmed; save/copy untested |
+| Mod loader: folder mods (`mods/<name>/<name>.dll`), reload, unload, manifests, API version check | `sdk/src/mods.cpp` | confirmed |
+| Release zip and mod templates | `tools/gen/gridnode_gen/package.py`, `templates/` | the zip's layout approved; not installed fresh yet |
+| Physics: 65,536-body worlds, collision boxes, ray hit layers, body velocities, gravity | `sdk/src/bodies.cpp`, `world.cpp` | confirmed; gravity and pushes have almost nothing to move in the city |
+| Sounds, despawning, the tracer, the patch pool | `sounds.cpp`, `tracer.cpp`, `patches.cpp` | confirmed |
+| Field diff (with an entity's components) | `sdk/src/fielddiff.cpp` | confirmed |
+| Health, checkpoint, progression (the save's flags), the console's `progress` | `sdk/src/gamestate.cpp` | health confirmed; progression untested |
+| MEC trainer: game speed, no fall death, kill volumes off, one-hit KSEC, waits for streaming after far teleports | `examples/mec-trainer` | mostly confirmed; the streaming wait untested |
+| GridNodeSync | `tools/ghidra/GridNodeSync.java` | confirmed in Ghidra 12.1.4 (2026-10-29) |
 
-Research notes worth reading first: `docs/research/replay-ghosts.md` (ghost spawning, the map's echo),
-`city-alert.md`, `startup-sequence.md`, `barriers-and-magropes.md`, `render-objects.md`.
-Annotations for the spawner / replay work: `db/annotations/spawn.yaml` (end of the functions list).
+Research shared by others: `docs/research/ct-research.md` (a friend's cinematic tools) and
+`docs/research/cheat-table.md` (a Cheat Engine table). Leave the friend's street-collision work alone
+(the user's wish).
 
-## 5. What to do next (proposed to the user 2026-10-27, not started)
+## 5. What to do next: the first release
 
-1. **Run GridNodeSync in Ghidra** (import and export once) and fix what breaks: the 2026-10-22
-   changes (`setComment` blocks, `blockKey`, comment export) were written without a Ghidra to compile
-   them. Check with a friend relay too (`gridnode.py ghidra-relay`).
-2. **Recordings into Ghidra:** a command (`summarize.py --ghidra OUT` or `gridnode.py
-   recording-to-ghidra`) that writes a GridNodeSync import from a recording: create functions at the
-   unwind-table starts of frames Ghidra has no function for (e.g. `0x1431c7faa`, `0x142d46e1b` were
-   return addresses outside any function), bookmark call sites with what came through (event /
-   message / traced call), and comment functions with hit counts and the recording's name.
-   GridNodeSync would need a "create function" and "bookmark" entry kind.
-3. **Pointer names in recordings:** record entity destruction (the destructor hooks exist, see
-   `research/destroying-entities.md`) and keep a table of pointers seen (type, data, created and
-   destroyed times) so exports and summaries name objects.
-4. **Watch a list:** like field watches, for a vector of entity pointers (begin/end at an offset),
-   recording adds, removes and order changes with each entry's type. MECMP had a temporary version
-   (`trace:` lines in its verbose log) for spawner lists.
-5. **Runtime class structs in Ghidra** for the classes in use (spawners, replay entities,
-   characters), from reflected sizes plus annotated members, with vtable types.
+The plan, in order, is in [progress.md](progress.md) ("Current task"): stability on a clean setup
+(and the crash when quitting during a Dash), an online safety audit, the player and SDK zips, docs
+that match the release, freezing the API as 1.0, the version and the release itself. The user decides
+the zips and the version.
 
 ## 6. Things learned the hard way
 
+- **A mod built for a newer API** refuses to load on an older GridNode. Deploy `gridnode.dll` and
+  the mods together, and check the build landed (by checksum) before the user tests.
+- **The physics in the city is static:** about 2,600 bodies per world and almost none dynamic, so
+  gravity and pushes have little to act on. Ragdolls are in the client's effect world.
 - **Fingerprint bytes** must come from a dump (`gridnode.py fingerprint`), never be typed from a
   Ghidra listing: an instruction has several encodings.
 - **The game finds a replay's spawner by its data in a bus**, and connections into a spawned blueprint
