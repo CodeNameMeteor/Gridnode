@@ -303,8 +303,9 @@ inline int bodySetTransform(void* entity, uint32_t body, const gn_transform& to)
 inline void* entityOtherHalf(void* entity) { return api().entity_other_half(entity); }
 
 // ---- collision boxes (API 19) ------------------------------------------------------------------
-// A static box in the client's physics world (what Faith collides with), made at its next physics
-// update. 0 if it could not be asked for. Any thread; the mod's boxes go when it is unloaded.
+// A static box in the client's physics world (what Faith collides with) and the server's (AI), made
+// at each one's next physics update. 0 if it could not be asked for. Any thread; the mod's boxes go
+// when it is unloaded.
 inline uint32_t boxAdd(const gn_transform& at, const Vec3& halfExtents) {
     const float h[3] = {halfExtents.x, halfExtents.y, halfExtents.z};
     uint32_t box = 0;

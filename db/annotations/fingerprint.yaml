@@ -77,3 +77,4 @@ fingerprint:
     - { at: hkTransform_fromQuat, bytes: "48 83 EC 18 0F 28 15 65 3E 04 FE 0F 29 34 24 0F", required: false, note: "Optional: only collision boxes depend on it." }
     - { at: SoundSystem_createVoice, bytes: "48 8B 0D D1 FA 3F FF E9 74 69 03 00", required: false, note: "Optional: only mods' sounds depend on it." }
     - { at: Entity_requestDestroy, bytes: "8B 41 18 49 89 D0 48 89 CA C1 E8 0A A8 01", required: false, note: "Optional: only character_despawn depends on it." }
+    - { at: KillVolume_testCharacter, bytes: "53 48 81 EC B0 00 00 00 48 8B 02 F3 0F 10 05 99", required: false, note: "Optional: only the trainer's kill volumes off depends on it." }

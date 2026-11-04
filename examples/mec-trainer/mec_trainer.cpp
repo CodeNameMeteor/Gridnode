@@ -51,7 +51,8 @@ namespace {
 
 // ---- settings (render thread writes, ticks read) ------------------------------------------------------
 std::atomic<bool> g_god{false}, g_noclip{false}, g_noStumble{false}, g_sameWall{false}, g_infClimbs{false},
-    g_infRuns{false}, g_fastLoads{false}, g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_noFallDeath{false};
+    g_infRuns{false}, g_fastLoads{false}, g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_noFallDeath{false},
+    g_killOff{false};
 std::atomic<float> g_noclipSpeed{0.5f}, g_frozenTime{0.f}, g_timeScale{1.f};
 
 // ---- what the client tick saw (render thread shows it) ------------------------------------------------
@@ -252,6 +253,37 @@ void hookFallCheck() {
     }
     g_fallHooked = gn::hookFunction(f::RayCastCollisionProcessor_update, &fallUpdate, &g_fallOrig);
     if (!g_fallHooked) gn::log("no fall death: could not hook the fall check; not available");
+}
+
+// ---- kill volumes off -------------------------------------------------------------------------------------
+// A kill volume tests each character in it (KillVolume_testCharacter) and kills one inside; skipped,
+// nobody is killed by one: the street kill floors, fans, the monorail (AI too). The streets have no
+// collision of their own, so falling through one is caught below (back to where she last stood).
+// It returns whether the character is inside (the shape test's al, passed on): a void stand-in left
+// whatever was in al, the setting's 1, and every volume killed her at once (2026-11-04).
+using KillTestFn = bool (*)(void* volume, void* character);
+KillTestFn g_killOrig = nullptr;
+bool g_killHooked = false;
+std::atomic<uint32_t> g_killSpared{0};
+
+bool killTest(void* volume, void* character) {
+    if (g_killOff) {
+        g_killSpared.fetch_add(1, std::memory_order_relaxed);
+        return false; // not inside
+    }
+    return g_killOrig(volume, character);
+}
+
+void hookKillVolumes() {
+    namespace f = gn::engine::function;
+    const uint8_t want[11] = {0x53, 0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x02};
+    uint8_t got[11] = {};
+    if (gn::api().read(reinterpret_cast<void*>(f::KillVolume_testCharacter), got, sizeof(got)) != GN_OK || std::memcmp(got, want, sizeof(got)) != 0) {
+        gn::log("kill volumes off: the kill volume test does not look as expected; not available");
+        return;
+    }
+    g_killHooked = gn::hookFunction(f::KillVolume_testCharacter, &killTest, &g_killOrig);
+    if (!g_killHooked) gn::log("kill volumes off: could not hook the kill volume test; not available");
 }
 
 // ---- save / load ---------------------------------------------------------------------------------------
@@ -655,6 +687,34 @@ void clientTick(float dt) {
 
     // No stumble (and god mode, and no fall death: falls are deaths in MEC, not damage): a fall only counts from where
     // Faith is now.
+    // Kill volumes off: where she last stood, and a fall out of the level (through a street with no
+    // collision) puts her back there.
+    static gn::Transform lastStood{};
+    static bool haveStood = false;
+    if (m.state == 1 && p.y > -40.f) {
+        lastStood = gn::Transform{};
+        lastStood.right[0] = lastStood.up[1] = lastStood.forward[2] = 1.f;
+        lastStood.trans[0] = p.x, lastStood.trans[1] = p.y + 0.5f, lastStood.trans[2] = p.z;
+        haveStood = true;
+    }
+    if (g_killOff && haveStood && p.y < -50.f && !g_noclip) {
+        const gn::Transform to = lastStood;
+        gn::log("kill volumes off: Faith fell below y -50; back to (%.1f, %.1f, %.1f)", to.trans[0], to.trans[1], to.trans[2]);
+        gn::runOnServer([to] {
+            if (void* f = gn::localServerCharacter()) gn::teleport(f, to);
+        });
+        gn::Movement w{};
+        w.last_ground_y = to.trans[1];
+        gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
+        haveStood = false; // once per fall
+    }
+
+    static float killLogT = 0.f;
+    if ((killLogT += dt) >= 10.f) {
+        killLogT = 0.f;
+        if (const uint32_t n = g_killSpared.exchange(0)) gn::log("kill volumes off: %u kill volume tests skipped in 10 s", n);
+    }
+
     // No fall death: what the fall check did, in the log (while it's untested in game).
     static float fallLogT = 0.f;
     static int fallLogs = 0;
@@ -787,6 +847,13 @@ void trainerTab() {
     }
     v = g_noStumble;
     if (ImGui::Checkbox(withKey("No stumble", "no_stumble").c_str(), &v)) g_noStumble = v;
+    if (g_killHooked) {
+        v = g_killOff;
+        if (ImGui::Checkbox("Kill volumes off", &v)) g_killOff = v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("No kill volume kills anyone (street kill floors, fans; AI too). The streets have no\n"
+                              "collision: falling below y -50 puts her back where she last stood.");
+    }
     if (g_fallHooked) {
         v = g_noFallDeath;
         if (ImGui::Checkbox("No fall death", &v)) g_noFallDeath = v;
@@ -934,7 +1001,7 @@ struct FloatSetting {
 };
 // God mode, noclip and frozen time are left out: they start off each run.
 const BoolSetting kBools[] = {{"no_stumble", &g_noStumble},        {"same_wall", &g_sameWall},
-                              {"no_fall_death", &g_noFallDeath},
+                              {"no_fall_death", &g_noFallDeath},   {"kill_volumes_off", &g_killOff},
                               {"inf_climbs", &g_infClimbs},        {"inf_runs", &g_infRuns},
                               {"fast_loads", &g_fastLoads},        {"hud.player_info", &g_hud},
                               {"hud.cheats", &g_cheatList},        {"hud.landing", &g_landHud},
@@ -1026,6 +1093,7 @@ void hud() {
         if (g_god) on += "God  ";
         if (g_noclip) on += "Noclip  ";
         if (g_noFallDeath) on += "NoFallDeath  ";
+        if (g_killOff) on += "NoKillVolumes  ";
         if (g_noStumble) on += "NoStumble  ";
         if (g_sameWall) on += "SameWall  ";
         if (g_infClimbs) on += "InfClimbs  ";
@@ -1060,6 +1128,7 @@ GN_MOD("mec-trainer") {
     volumes::loadSettings();
     blockUploads();
     hookFallCheck();
+    hookKillVolumes();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });

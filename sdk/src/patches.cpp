@@ -163,7 +163,8 @@ constexpr int kTriesPerRegion = 8;     // the lowest addresses of each free regi
 constexpr ULONGLONG kMaxSearchMs = 2000;
 
 // exec: code (read-write-execute, else read-write: writable says which); otherwise data (read-write).
-uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
+// size: 0x1000, or more for the pool below (a multiple of the allocation granularity).
+uint8_t* allocNear(uintptr_t site, bool exec, bool& writable, size_t size = 0x1000) {
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
     const uintptr_t gran = si.dwAllocationGranularity ? si.dwAllocationGranularity : 0x10000;
@@ -177,7 +178,7 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
         ++tries;
         for (DWORD prot : {DWORD(PAGE_EXECUTE_READWRITE), DWORD(PAGE_READWRITE)}) {
             if (!exec && prot == PAGE_EXECUTE_READWRITE) continue;
-            if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), 0x1000, MEM_RESERVE | MEM_COMMIT, prot)) {
+            if (void* p = VirtualAlloc(reinterpret_cast<void*>(a), size, MEM_RESERVE | MEM_COMMIT, prot)) {
                 writable = prot == PAGE_EXECUTE_READWRITE;
                 return static_cast<uint8_t*>(p);
             }
@@ -198,7 +199,7 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
             if (mbi.State == MEM_FREE) {
                 const uintptr_t to = std::min(e, hi);
                 uintptr_t x = (std::max(b, a) + gran - 1) & ~(gran - 1);
-                for (int i = 0; !found && i < kTriesPerRegion && x + 0x1000 <= to && !out(); ++i, x += gran) found = tryAt(x);
+                for (int i = 0; !found && i < kTriesPerRegion && x + size <= to && !out(); ++i, x += gran) found = tryAt(x);
             }
             if (e <= a) break;
             a = e;
@@ -209,8 +210,8 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
             const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
             if (mbi.State == MEM_FREE) {
                 const uintptr_t lowest = std::max(b, lo), to = std::min(e, a);
-                uintptr_t x = to >= 0x1000 ? (to - 0x1000) & ~(gran - 1) : 0; // the highest addresses, nearest the site
-                for (int i = 0; !found && i < kTriesPerRegion && x >= lowest && x + 0x1000 <= to && !out(); ++i, x -= gran) found = tryAt(x);
+                uintptr_t x = to >= size ? (to - size) & ~(gran - 1) : 0; // the highest addresses, nearest the site
+                for (int i = 0; !found && i < kTriesPerRegion && x >= lowest && x + size <= to && !out(); ++i, x -= gran) found = tryAt(x);
             }
             if (b >= a || b == 0) break;
             a = b;
@@ -234,6 +235,26 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable) {
     return found;
 }
 
+// Pages taken near the image when GridNode starts, before the game's heaps fill the 2 GB around it:
+// in one run (2026-11-04) no page within reach could be found later at all, so every detour and
+// call patch failed. 8 pages of code, then 8 of data (pointer slots); searched for only when used up.
+constexpr size_t kPoolPages = 16, kPoolCodePages = 8;
+uint8_t* g_pool = nullptr;
+bool g_poolWritable = false; // read-write-execute
+size_t g_poolCode = 0, g_poolData = 0; // pages handed out (code under g_thunkM, data under g_detM)
+
+uint8_t* poolPage(bool exec, bool& writable) {
+    if (!g_pool) return nullptr;
+    if (exec) {
+        if (g_poolCode >= kPoolCodePages) return nullptr;
+        writable = g_poolWritable;
+        return g_pool + 0x1000 * g_poolCode++;
+    }
+    if (g_poolData >= kPoolPages - kPoolCodePages) return nullptr;
+    writable = true;
+    return g_pool + 0x1000 * (kPoolCodePages + g_poolData++);
+}
+
 bool reaches(const uint8_t* p, uintptr_t site) { // a rel32 at site reaches the page p is in
     const intptr_t d = reinterpret_cast<intptr_t>(p) - static_cast<intptr_t>(site + 5);
     return d > INT32_MIN + 0x2000 && d < INT32_MAX - 0x2000;
@@ -244,7 +265,9 @@ uint8_t* codeRoom(uintptr_t site, size_t n) {
     n = (n + 15) & ~size_t(15);
     if (n > 0x1000) return nullptr;
     if (!g_thunkPage || g_thunkUsed + n > 0x1000 || !reaches(g_thunkPage, site)) {
-        g_thunkPage = allocNear(site, true, g_thunkWritable);
+        g_thunkPage = nullptr;
+        if (uint8_t* p = poolPage(true, g_thunkWritable); p && reaches(p, site)) g_thunkPage = p;
+        if (!g_thunkPage) g_thunkPage = allocNear(site, true, g_thunkWritable);
         g_thunkUsed = 0, g_thunkSealed = false;
         if (!g_thunkPage) return nullptr;
     }
@@ -451,7 +474,9 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
     uint8_t* stub = room + 0x70;
     if (!g_slotPage || g_slotUsed + 8 > 0x1000 || !reaches(g_slotPage, reinterpret_cast<uintptr_t>(stub))) {
         bool unused = false;
-        g_slotPage = allocNear(reinterpret_cast<uintptr_t>(stub), false, unused);
+        g_slotPage = nullptr;
+        if (uint8_t* p = poolPage(false, unused); p && reaches(p, reinterpret_cast<uintptr_t>(stub))) g_slotPage = p;
+        if (!g_slotPage) g_slotPage = allocNear(reinterpret_cast<uintptr_t>(stub), false, unused);
         g_slotUsed = 0;
         if (!g_slotPage) return GN_ERR_UNAVAILABLE;
     }
@@ -490,6 +515,14 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
     return GN_OK;
 }
 } // namespace
+
+void patchesReserve() {
+    std::lock_guard<std::mutex> lock(g_thunkM);
+    if (g_pool) return;
+    // Below the image first: the game's heaps grow up from above it.
+    g_pool = allocNear(mem::moduleBase() - 0x1000, true, g_poolWritable, kPoolPages * 0x1000);
+    if (g_pool) GN_LOG("patches: %llu KB kept near the game's code for detours and call patches", static_cast<unsigned long long>(kPoolPages * 4));
+}
 
 int hookFunction(const char* mod, uint64_t fnVa, void* detour, void** original) {
     if (!mod || !detour || !original || !fnVa) return GN_ERR_ARGUMENT;

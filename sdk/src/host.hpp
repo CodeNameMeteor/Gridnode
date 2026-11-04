@@ -130,6 +130,7 @@ int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void*
 // Function detours (patches.cpp): gn_api hook_function. The detours go in the hook table (by slot);
 // these tell the table's slot writer and the Hooks list about the slots.
 int hookFunction(const char* mod, uint64_t fnVa, void* detour, void** original);
+void patchesReserve(); // pages near the game's code, taken at startup (patches.cpp)
 bool isDetourSlot(uint64_t slot);
 uint64_t detourFunction(uint64_t slot); // the function a detour slot belongs to (va), or 0
 size_t forgetPatches(const CodeRange& r);
@@ -283,6 +284,12 @@ int eventName(uint32_t id, char* out, size_t size);
 
 // Recorder (recorder.cpp): messages, entity creations and markers with call stacks, exported as
 // JSON lines for research (M8).
+namespace tracer {
+bool add(const std::string& functionOrName); // render thread
+void draw(bool* open);                       // render thread
+void release();                              // a full unload: the stubs stop calling GridNode
+} // namespace tracer
+
 namespace recorder {
 void start(const std::wstring& gridnodeDir);
 void onLevel(const std::string& level);

@@ -704,15 +704,16 @@ typedef struct gn_api {
     /* ==== GN_API_VERSION 19 =================================================================== */
 
     /* ---- collision boxes -------------------------------------------------------------------------
-     * Static boxes in the client's physics world (what Faith collides with), the way the cinematic
+     * Static boxes in the client's physics world (what Faith collides with) and the server's (AI, the
+     * server's ray casts), the way the cinematic
      * tools make their street floors. Each box borrows a live static body's identity (so hits on it
      * report that body's material and owner); it is made, moved and destroyed at the client world's
      * next physics update, and made again in a new level's world. Nothing is made while the world
      * has fewer than 4,096 places left. Any thread.
      * box_add: half_extents in metres (0.01 .. 1000), at = its centre and rotation (rows unit length).
      * box_state: 1 in the world, 0 waiting (no level, or no static body to borrow from yet),
-     * -GN_ERR_FULL Havok did not make it, -GN_ERR_NOT_FOUND unknown. A mod's boxes go when it is
-     * unloaded. AI and the server's ray casts don't see them (the server world is separate). */
+     * -GN_ERR_FULL Havok did not make it, -GN_ERR_NOT_FOUND unknown (the client world's box: the
+     * server's follows at its own update). A mod's boxes go when it is unloaded. */
     int (*box_add)(const char* mod, const gn_transform* at, const float half_extents[3], uint32_t* out_box);
     int (*box_move)(uint32_t box, const gn_transform* at);
     int (*box_remove)(uint32_t box);

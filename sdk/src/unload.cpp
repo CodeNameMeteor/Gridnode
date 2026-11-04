@@ -60,6 +60,7 @@ bool unloadEverything() {
 
     // 2. GridNode's own changes, on the threads they belong to.
     recorder::release();
+    tracer::release();
     layouts::release();
     faithRelease();
     messagesRelease();

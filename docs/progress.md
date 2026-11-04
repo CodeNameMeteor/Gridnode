@@ -14,6 +14,13 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Tracer, boxes for AI, kill volumes off** (2026-11-04, untested in game). GridNode menu > Tracer
+  (tracer.cpp): any game function by address or annotated name, every call's arguments, xmm0..3 and
+  caller, "Log the last 50" to gridnode.log; a stub per function in its own page, on the detours.
+  Collision boxes are made in the server's world too (AI). Trainer: "Kill volumes off" skips
+  KillVolume_testCharacter; a fall below y -50 puts Faith back where she last stood.
+  Also: 64 KB near the game's code taken at startup for detours and call patches (in one run no page
+  within 2 GB could be found later, and every detour failed).
 - **API 19: collision boxes, sounds, despawning characters, ray hit layers** (2026-11-03, untested in
   game). `box_*` (bodies.cpp: static Havok boxes in the client world, made after the game's physics
   flush with a live static body's record, re-checked after each flush, as the cinematic tools do);

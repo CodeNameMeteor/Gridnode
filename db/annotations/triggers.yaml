@@ -2,6 +2,17 @@
 defaults: { confidence: inferred, sources: [ghidra] }
 
 functions:
+  - name: KillVolume_testCharacter
+    va: 0x143970d30
+    signature: "bool(void* killVolume, void* character)"
+    note: >-
+      A kill volume's test of one character: the character's box centre (its vtable +0xb8) into the
+      volume's shape test (0x14330d320 with the volume's shape cache +0x38 and its bus), whose answer
+      (al: inside) it passes on; the caller kills a character inside. Ghidra shows both as void: they
+      return al (a void stand-in killed Faith at once, 2026-11-04). Returning false spares it (the cinematic tools' Solid street,
+      Research_Ground_Level_2026-11-01 section 9). Checked in Ghidra 2026-11-04.
+    confidence: confirmed
+    sources: [research, ghidra]
   - name: areaTriggerGeometry_contains
     va: 0x14330d320
     signature: "bool(void* cache, void* dataAndField, void* busInterface, const float* position)"

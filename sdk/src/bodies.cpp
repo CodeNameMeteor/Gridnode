@@ -1,6 +1,7 @@
 // Collision boxes mods make (gn_api box_*), and what a ray hit's Havok body says (its layer).
 //
-// A box is a static Havok body in the client's physics world, the world Faith moves in. It is made,
+// A box is a static Havok body in the client's physics world (the world Faith moves in) and the
+// server's (AI, the server's ray casts), one in each. Each is made,
 // moved and destroyed only right after the game's own physics flush (PhysicsWorld_flush), on the
 // thread that runs it: the only place the game frees its body records. How, from the cinematic
 // tools' research (Research_Ground_Level_2026-11-01 sections 4, 9, 10, 13), proven there in game:
@@ -43,16 +44,16 @@ struct Box {
     uintptr_t owner = 0; // an address in the code that made it (its mod)
     alignas(16) gn_transform at{};
     float half[3] = {};
-    uint32_t body = kNoBody; // in g_world's hknpWorld
-    bool moved = false;      // a new place to put it at
+    uint32_t body[2] = {kNoBody, kNoBody}; // per realm (0 client, 1 server), in g_world[realm]'s hknpWorld
+    bool moved[2] = {};      // a new place to put it at
     bool removed = false;    // to destroy
-    bool failed = false;     // could not be made (logged)
+    bool failed[2] = {};     // could not be made (logged)
 };
 
 std::mutex g_m;
 std::vector<Box> g_boxes; // (g_m)
 uint32_t g_next = 1;      // (g_m)
-uintptr_t g_world = 0;    // (g_m) the client physics world (PhysicsWorld, 0xBB0) the bodies are in
+uintptr_t g_world[2] = {}; // (g_m) the client and server physics worlds (PhysicsWorld, 0xBB0) the bodies are in
 struct Donor {
     uint64_t userData = 0;
     uint32_t filter = 0;
@@ -61,7 +62,7 @@ struct Donor {
     uint32_t body = kNoBody; // the donor's own Havok body
     uint32_t record = 0;
     bool ok = false;
-} g_donor; // (g_m)
+} g_donor[2]; // (g_m) per realm
 
 using FlushFn = void (*)(uintptr_t world);
 FlushFn g_flush = nullptr;
@@ -74,10 +75,12 @@ uintptr_t havokBody(uintptr_t hk, uint32_t id) {
     return bodies ? bodies + uint64_t(id) * kBodySize : 0;
 }
 
-// The client's main world: realm 0 and not the effect world.
-bool isClientMainWorld(uintptr_t world) {
+// 0: the client's main world, 1: the server's, -1: another (the client's effect world).
+int realmOf(uintptr_t world) {
     const uintptr_t realm = mem::readOr<uintptr_t>(world + 8);
-    return realm && mem::readOr<int32_t>(realm + 0x10, -1) == 0 && mem::readOr<uint8_t>(world + c::PhysicsWorld_EffectFlag, 1) == 0;
+    const int32_t r = realm ? mem::readOr<int32_t>(realm + 0x10, -1) : -1;
+    if (r == 0) return mem::readOr<uint8_t>(world + c::PhysicsWorld_EffectFlag, 1) == 0 ? 0 : -1;
+    return r == 1 ? 1 : -1;
 }
 
 // A live static body record (RigidBody) of this world whose Havok body points back at it.
@@ -157,9 +160,9 @@ void toQuat(const gn_transform& t, float* quat) {
     reinterpret_cast<void (*)(float*, const gn_transform*)>(mem::rva(e::function::Quat_fromLinearTransform))(quat, &rows);
 }
 
-uint32_t makeBody(uintptr_t world, const Box& b) {
+uint32_t makeBody(uintptr_t world, const Donor& donor, const Box& b) {
     const uintptr_t hk = havokWorld(world);
-    if (!hk || !g_donor.ok || freePlaces(world, hk) < kMinFree) return kNoBody;
+    if (!hk || !donor.ok || freePlaces(world, hk) < kMinFree) return kNoBody;
     const uintptr_t shape = boxShape(b.half);
     if (!shape) return kNoBody;
     alignas(16) uint8_t cinfo[0x60] = {};
@@ -169,9 +172,9 @@ uint32_t makeBody(uintptr_t world, const Box& b) {
     memcpy(cinfo + 0x00, &shape, 8);
     const uint32_t motion = 0; // static
     memcpy(cinfo + 0x0c, &motion, 4);
-    cinfo[0x10] = g_donor.quality;
-    memcpy(cinfo + 0x12, &g_donor.material, 2);
-    memcpy(cinfo + 0x14, &g_donor.filter, 4);
+    cinfo[0x10] = donor.quality;
+    memcpy(cinfo + 0x12, &donor.material, 2);
+    memcpy(cinfo + 0x14, &donor.filter, 4);
     const float pos[4] = {b.at.trans[0], b.at.trans[1], b.at.trans[2], 0.f};
     memcpy(cinfo + 0x30, pos, 16);
     memcpy(cinfo + 0x40, quat, 16);
@@ -180,7 +183,7 @@ uint32_t makeBody(uintptr_t world, const Box& b) {
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, void*, uint8_t)>(mem::rva(e::function::hknpWorld_createBody))(hk, &id, cinfo, 1);
     const uintptr_t body = id < 0x10000 ? havokBody(hk, id) : 0;
     if (!body) return kNoBody;
-    mem::write(body + 0x88, &g_donor.userData, 8);
+    mem::write(body + 0x88, &donor.userData, 8);
     reinterpret_cast<void (*)(uintptr_t, const uint32_t*, int32_t, uint32_t)>(mem::rva(e::function::hknpWorld_addBodies))(hk, &id, 1, 0);
     return id;
 }
@@ -203,40 +206,49 @@ void destroyBodies(uintptr_t world, const std::vector<uint32_t>& ids) {
         hk, ids.data(), static_cast<int32_t>(ids.size()), 1);
 }
 
-// After the game's flush, on its thread (g_m held).
-void afterFlushLocked(uintptr_t world) {
-    if (world != g_world) {
-        // A new client world (a level load): the bodies died with the old one.
-        for (Box& b : g_boxes) b.body = kNoBody, b.failed = false;
-        g_world = world;
-        g_donor = Donor{};
+// After the game's flush of one realm's world, on its thread (g_m held).
+void afterFlushLocked(uintptr_t world, int r) {
+    Donor& donor = g_donor[r];
+    if (world != g_world[r]) {
+        // A new world (a level load): the bodies died with the old one.
+        for (Box& b : g_boxes) b.body[r] = kNoBody, b.failed[r] = false;
+        g_world[r] = world;
+        donor = Donor{};
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1) < 8) GN_LOG("bodies: the %s physics world is %llx", r ? "server" : "client", static_cast<unsigned long long>(world));
     }
-    const bool any = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return !b.removed || b.body != kNoBody; });
-    if (!any && g_boxes.empty()) return;
+    if (g_boxes.empty()) return;
     // The donor: its record may have died in this flush.
-    static ULONGLONG lastSearch = 0;
-    if (!donorAlive(world, g_donor)) {
-        const Donor was = g_donor;
+    static ULONGLONG lastSearch[2] = {};
+    if (!donorAlive(world, donor)) {
+        const Donor was = donor;
         // A search reads up to 65,536 records: at most twice a second while none is found.
-        if (!was.ok && GetTickCount64() - lastSearch < 500) return;
-        lastSearch = GetTickCount64();
-        findDonor(world, g_donor);
-        if (g_donor.ok) {
-            int rebound = 0;
-            const uintptr_t hk = havokWorld(world);
-            for (const Box& b : g_boxes)
-                if (b.body != kNoBody) {
-                    mem::write(havokBody(hk, b.body) + 0x88, &g_donor.userData, 8);
-                    ++rebound;
-                }
-            if (was.ok && rebound) GN_LOG("bodies: %d box(es) now carry static body %u's record (%u's is gone)", rebound, g_donor.body, was.body);
+        if (was.ok || GetTickCount64() - lastSearch[r] >= 500) {
+            lastSearch[r] = GetTickCount64();
+            findDonor(world, donor);
+            if (donor.ok) {
+                int rebound = 0;
+                const uintptr_t hk = havokWorld(world);
+                for (const Box& b : g_boxes)
+                    if (b.body[r] != kNoBody) {
+                        mem::write(havokBody(hk, b.body[r]) + 0x88, &donor.userData, 8);
+                        ++rebound;
+                    }
+                if (was.ok && rebound)
+                    GN_LOG("bodies: %d %s box(es) now carry static body %u's record (%u's is gone)", rebound, r ? "server" : "client", donor.body,
+                           was.body);
+            } else {
+                std::vector<uint32_t> ids;
+                for (Box& b : g_boxes)
+                    if (b.body[r] != kNoBody) ids.push_back(b.body[r]), b.body[r] = kNoBody;
+                destroyBodies(world, ids);
+                static std::atomic<int> said{0};
+                if (said.fetch_add(1) < 5)
+                    GN_LOG("bodies: no static body to lend its record in the %s world; %d box(es) waiting", r ? "server" : "client",
+                           static_cast<int>(g_boxes.size()));
+            }
         } else {
-            std::vector<uint32_t> ids;
-            for (Box& b : g_boxes)
-                if (b.body != kNoBody) ids.push_back(b.body), b.body = kNoBody;
-            destroyBodies(world, ids);
-            static std::atomic<int> said{0};
-            if (said.fetch_add(1) < 5) GN_LOG("bodies: no static body to lend its record here; %d box(es) waiting", static_cast<int>(g_boxes.size()));
+            donor = Donor{};
         }
     }
     std::vector<uint32_t> gone;
@@ -244,21 +256,24 @@ void afterFlushLocked(uintptr_t world) {
     for (auto it = g_boxes.begin(); it != g_boxes.end();) {
         Box& b = *it;
         if (b.removed) {
-            if (b.body != kNoBody) gone.push_back(b.body);
-            it = g_boxes.erase(it);
-            continue;
-        }
-        if (b.body == kNoBody && !b.failed && g_donor.ok && made < 32) {
-            b.body = makeBody(world, b);
-            b.moved = false;
-            if (b.body == kNoBody) {
-                b.failed = true;
-                GN_LOG("[%s] box %u: Havok did not make it (body buffer nearly full?)", b.mod.c_str(), b.handle);
+            if (b.body[r] != kNoBody) gone.push_back(b.body[r]), b.body[r] = kNoBody;
+            // Gone from both worlds (or never made in the other): forgotten.
+            if (b.body[0] == kNoBody && b.body[1] == kNoBody) {
+                it = g_boxes.erase(it);
+                continue;
+            }
+        } else if (b.body[r] == kNoBody && !b.failed[r] && donor.ok && made < 32) {
+            b.body[r] = makeBody(world, donor, b);
+            b.moved[r] = false;
+            if (b.body[r] == kNoBody) {
+                b.failed[r] = true;
+                GN_LOG("[%s] box %u: Havok did not make it in the %s world (body buffer nearly full?)", b.mod.c_str(), b.handle,
+                       r ? "server" : "client");
             }
             ++made;
-        } else if (b.body != kNoBody && b.moved) {
-            placeBody(world, b.body, b.at);
-            b.moved = false;
+        } else if (b.body[r] != kNoBody && b.moved[r]) {
+            placeBody(world, b.body[r], b.at);
+            b.moved[r] = false;
         }
         ++it;
     }
@@ -267,11 +282,12 @@ void afterFlushLocked(uintptr_t world) {
 
 void flushHook(uintptr_t world) {
     g_flush(world);
-    if (g_off.load() || !isClientMainWorld(world)) return;
+    const int r = realmOf(world);
+    if (g_off.load() || r < 0) return;
     g_flushes.fetch_add(1);
     std::lock_guard<std::mutex> lock(g_m);
-    if (g_boxes.empty() && world == g_world) return;
-    guardHook("bodies", [&] { afterFlushLocked(world); });
+    if (g_boxes.empty() && world == g_world[r]) return;
+    guardHook("bodies", [&] { afterFlushLocked(world, r); });
 }
 
 bool g_started = false;
@@ -329,7 +345,7 @@ int boxMove(uint32_t box, const gn_transform* at) {
     for (Box& b : g_boxes)
         if (b.handle == box && !b.removed) {
             b.at = *at;
-            b.moved = true;
+            b.moved[0] = b.moved[1] = true;
             return GN_OK;
         }
     return GN_ERR_NOT_FOUND;
@@ -348,7 +364,7 @@ int boxRemove(uint32_t box) {
 int boxState(uint32_t box) {
     std::lock_guard<std::mutex> lock(g_m);
     for (const Box& b : g_boxes)
-        if (b.handle == box && !b.removed) return b.failed ? -GN_ERR_FULL : b.body != kNoBody ? 1 : 0;
+        if (b.handle == box && !b.removed) return b.failed[0] ? -GN_ERR_FULL : b.body[0] != kNoBody ? 1 : 0; // what Faith collides with
     return -GN_ERR_NOT_FOUND;
 }
 
@@ -376,7 +392,7 @@ bool bodiesRelease(unsigned long ms) {
         Sleep(20);
     }
     std::lock_guard<std::mutex> lock(g_m);
-    const bool inWorld = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return b.body != kNoBody; });
+    const bool inWorld = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return b.body[0] != kNoBody || b.body[1] != kNoBody; });
     if (!inWorld) g_boxes.clear();
     return !inWorld;
 }

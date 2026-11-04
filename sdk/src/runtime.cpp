@@ -214,6 +214,7 @@ bool run(HMODULE self) {
         return false;
     }
     GN_LOG("startup: build check passed%s", b.warnings ? " (with warnings)" : "");
+    host::patchesReserve(); // before the game's heaps take the space near its code
 
     const Settings s = readSettings(moduleDir(self));
     logImageLayout();
