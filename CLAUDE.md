@@ -119,10 +119,10 @@ Record findings in `db/annotations/` and `docs/progress.md`.
 Reached through the device bridge (`mcp__remote-devices__*`): list, stage and commit files.
 The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\recordings`.
 
-- Deploy a test build: copy it to `/mnt/user-data/outputs/gridnode-<what>N.dll`, commit it over
-  `bin\gridnode.dll` with force, then check what landed (by checksum: builds can share a size). If
-  the game has the DLL open, write it next to it under a new name and ask the user to swap it.
-- `D:\Dev\GridNode` (the user's checkout) is up to date since 2026-10-29. The other agent's wrong
+- **After every build, deploy it** (user, 2026-11-04): copy `gridnode.dll` and each changed mod to
+  `/mnt/user-data/outputs/<name>-<what>N.dll`, commit over `bin\gridnode.dll` / `bin\mods\<mod>.dll`
+  with force, check by checksum. Game holds it open: write it beside it under a new name, ask to swap.
+- `D:\Dev\GridNode` (the user's checkout) can lag `main`: say `git pull --ff-only`. The other agent's wrong
   annotation edits are in its git stash and `D:\Dev\GridNode-local-backup-20261029`; never copy
   annotations from there without checking them in Ghidra.
 - Every upload (`device_commit_files`) needs a new staged file name: re-sending under the same name
