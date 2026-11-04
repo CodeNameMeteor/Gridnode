@@ -67,6 +67,7 @@ std::map<std::string, std::set<std::string>> g_importers; // (g_expM) exporter i
 // exports and imports are made from there (the trainer's godMode was "not offered", 2026-11-03).
 std::string g_startingId;
 CodeRange g_startingCode;
+std::wstring g_startingPath;
 
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
@@ -131,6 +132,8 @@ bool openMod(Mod& m) {
         CreateDirectoryW(dir.c_str(), nullptr);
         std::wstring stem = m.path.substr(g_folder.size());
         stem.resize(stem.size() - 4); // ".dll"
+        for (wchar_t& c : stem)
+            if (c == L'\\' || c == L'/') c = L'_'; // a mod in its own folder: mods\<name>\<name>.dll
         // A name still mapped (a copy kept in memory, maybe by an earlier GridNode) cannot be written: the next.
         bool copied = false;
         for (int tries = 0; tries < 50 && !copied; ++tries) {
@@ -144,7 +147,16 @@ bool openMod(Mod& m) {
             m.info.reloadable = false;
         }
     }
-    m.module = LoadLibraryW(from.c_str());
+    // A mod in its own folder may bring DLLs of its own there: found from that folder (the copy it
+    // runs from is in .loaded).
+    const std::wstring own = m.path.substr(0, m.path.find_last_of(L"\\/") + 1);
+    if (own != g_folder) {
+        DLL_DIRECTORY_COOKIE cookie = AddDllDirectory(own.c_str());
+        m.module = LoadLibraryExW(from.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+        if (cookie) RemoveDllDirectory(cookie);
+    } else {
+        m.module = LoadLibraryW(from.c_str());
+    }
     if (!m.module) {
         m.info.loaded = false, m.info.result = -1;
         GN_LOG("mods: %s could not be loaded (error %lu)", name.c_str(), static_cast<unsigned long>(GetLastError()));
@@ -207,12 +219,12 @@ void start(Mod& m) {
     }
     {
         std::lock_guard<std::mutex> lock(g_expM);
-        g_startingId = m.info.id, g_startingCode = m.code;
+        g_startingId = m.info.id, g_startingCode = m.code, g_startingPath = m.path;
     }
     const int r = entry(api());
     {
         std::lock_guard<std::mutex> lock(g_expM);
-        g_startingId.clear(), g_startingCode = CodeRange{};
+        g_startingId.clear(), g_startingCode = CodeRange{}, g_startingPath.clear();
     }
     m.info.loaded = r == GN_OK, m.info.result = r;
     const std::string who = m.info.version.empty() ? m.info.id : m.info.id + " " + m.info.version;
@@ -507,6 +519,25 @@ bool modAtAddress(const void* caller, std::string& id, CodeRange& code) {
 }
 } // namespace
 
+int modDir(const void* caller, char* out, size_t size) {
+    if (!out || !size) return GN_ERR_ARGUMENT;
+    std::wstring path;
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (!g_startingId.empty() && g_startingCode.has(caller)) path = g_startingPath;
+    }
+    if (path.empty()) {
+        std::lock_guard<std::mutex> lock(g_modsM);
+        for (const Mod& m : g_mods)
+            if (m.module && m.code.has(caller)) path = m.path;
+    }
+    if (path.empty()) return GN_ERR_NOT_FOUND;
+    const std::string dir = narrow(path.substr(0, path.find_last_of(L"\\/") + 1));
+    if (dir.size() >= size) return GN_ERR_FULL;
+    memcpy(out, dir.c_str(), dir.size() + 1);
+    return GN_OK;
+}
+
 int modExport(const void* caller, const char* name, void* fn) {
     if (!name || !*name || !fn) return GN_ERR_ARGUMENT;
     std::string id;
@@ -562,15 +593,28 @@ void loadMods(const std::wstring& folder) {
     }
     std::vector<std::wstring> files;
     h = FindFirstFileW((g_folder + L"*.dll").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) {
-        GN_LOG("mods: none (no DLLs in %s)", narrow(g_folder).c_str());
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) files.push_back(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    // A mod in its own folder (as a release zip unpacks): mods\<name>\<name>.dll, its files beside it.
+    h = FindFirstFileW((g_folder + L"*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring d = fd.cFileName;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || d.empty() || d[0] == L'.') continue;
+            const std::wstring dll = d + L"\\" + d + L".dll";
+            if (GetFileAttributesW((g_folder + dll).c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(dll);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    std::sort(files.begin(), files.end());
+    if (files.empty()) {
+        GN_LOG("mods: none (no DLLs in %s or its folders)", narrow(g_folder).c_str());
         return;
     }
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) files.push_back(fd.cFileName);
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-    std::sort(files.begin(), files.end());
 
     // Every DLL opened (manifests read), then started dependencies first.
     std::vector<Mod> opened;

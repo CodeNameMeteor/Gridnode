@@ -334,6 +334,13 @@ inline bool soundStop(uint32_t sound) { return api().sound_stop(sound) == GN_OK;
 // A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
 inline int characterDespawn(void* serverCharacter) { return api().character_despawn(serverCharacter); }
 
+// ---- the mod's folder (API 20) ------------------------------------------------------------------
+// Where its DLL is installed (mods\ or mods\<name>\, with the trailing backslash): its own files.
+inline std::string modDir() {
+    char b[1024] = {};
+    return api().mod_dir(b, sizeof(b)) == GN_OK ? std::string(b) : std::string();
+}
+
 // ---- messages ---------------------------------------------------------------------------------
 // fn(const void* message, const gn_message_info& info) for every message of a type
 // ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"), on the sender's thread.

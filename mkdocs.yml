@@ -40,6 +40,7 @@ nav:
   - Guides:
       - getting-started.md
       - modding.md
+      - packaging.md
       - shipping.md
       - layout-editor.md
       - custom-meshes.md

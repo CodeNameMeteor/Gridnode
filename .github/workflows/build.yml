@@ -66,6 +66,19 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DGRIDNODE_BUILD_TESTS=OFF
           cmake --build build
+      - name: Release zip, and a mod from its template built against it
+        run: |
+          python3 tools/gen/gridnode.py package --build build --out build/release --examples
+          SDK=$(ls -d build/release/GridNode-*/sdk)
+          python3 $SDK/templates/gridnode_mod.py new ci_mod --out build/modtest
+          cmake -S build/modtest/ci_mod -B build/modtest/b -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/modtest/b
+      - name: Upload the release zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: gridnode-release
+          path: build/release/*.zip
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:

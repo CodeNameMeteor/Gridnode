@@ -780,3 +780,67 @@ class Fingerprints(unittest.TestCase):
             self.assertIn("{0x4C, 0x89, 0xCB}, 3}", text)
             self.assertIn("{0x48, 0x89, 0xE0, 0x57}, 4}", text)
             self.assertTrue(all(r.ok for r in fingerprint_gen.check_mecmp(os.path.join(d, "mecmp"), img)))
+
+
+class Packaging(unittest.TestCase):
+    """gridnode_mod.py new / pack and gridnode package (2026-11-04)."""
+
+    def _gm(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gridnode_mod", os.path.join(ROOT, "templates", "gridnode_mod.py"))
+        gm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gm)
+        return gm
+
+    def test_new_and_pack(self):
+        import tempfile, zipfile
+        gm = self._gm()
+        self.assertEqual(gm._names("My-Mod"), ("my_mod", "my-mod", "My Mod"))
+        with self.assertRaises(SystemExit):
+            gm._names("1bad")
+        with tempfile.TemporaryDirectory() as d:
+            sdk = os.path.join(d, "sdk")
+            os.makedirs(os.path.join(sdk, "include", "gridnode"))
+            open(os.path.join(sdk, "include", "gridnode", "api.h"), "w").close()
+            self.assertEqual(gm.main(["new", "jump_boost", "--out", d, "--sdk", sdk, "--description", 'Say "hi"']), 0)
+            with open(os.path.join(d, "jump_boost", "src", "jump_boost.cpp"), encoding="utf-8") as f:
+                cpp = f.read()
+            self.assertIn('GN_MOD("jump-boost")', cpp)
+            self.assertIn("Say 'hi'", cpp)          # quotes can't break the string
+            self.assertNotIn("@", cpp.replace("@NAME", ""))  # every placeholder filled
+            with open(os.path.join(d, "jump_boost", "CMakeLists.txt"), encoding="utf-8") as f:
+                self.assertIn(sdk.replace("\\", "/"), f.read())
+            self.assertEqual(gm.main(["new", "rusty", "--rust", "--out", d, "--sdk", sdk]), 0)
+            with open(os.path.join(d, "rusty", "Cargo.toml"), encoding="utf-8") as f:
+                self.assertIn("rust/gridnode", f.read())
+            dll = os.path.join(d, "jump_boost.dll")
+            with open(dll, "wb") as f:
+                f.write(b"MZ")
+            data = os.path.join(d, "data.txt")
+            open(data, "w").close()
+            self.assertEqual(gm.main(["pack", dll, "--version", "1.2.0", "--file", data, "--out", d]), 0)
+            with zipfile.ZipFile(os.path.join(d, "jump-boost-1.2.0.zip")) as z:
+                self.assertEqual(sorted(z.namelist()), ["mods/jump_boost/data.txt", "mods/jump_boost/jump_boost.dll"])
+
+    def test_package(self):
+        import tempfile, zipfile
+        sys.path.insert(0, os.path.join(ROOT, "tools", "gen"))
+        from gridnode_gen import package
+        with tempfile.TemporaryDirectory() as d:
+            b = os.path.join(d, "build")
+            os.makedirs(os.path.join(b, "generated", "gridnode"))
+            os.makedirs(os.path.join(b, "mods"))
+            for f in ("gridnode.dll", "version.dll", "gridnode_inject.exe", os.path.join("mods", "hello.dll"), os.path.join("mods", "probe.dll"),
+                      os.path.join("generated", "gridnode", "engine.hpp")):
+                open(os.path.join(b, f), "w").close()
+            z = package.build(ROOT, b, os.path.join(d, "out"), True, "https://example.invalid")
+            with zipfile.ZipFile(z) as zf:
+                names = zf.namelist()
+            top = names[0].split("/")[0]
+            self.assertTrue(top.startswith("GridNode-"))
+            for want in ("gridnode.dll", "gridnode_inject.exe", "start-with-the-game/version.dll", "mods/hello/hello.dll", "sdk/include/gridnode/api.h",
+                         "sdk/include/gridnode/engine.hpp", "sdk/imgui/imgui.cpp", "sdk/rust/gridnode/src/sys.rs",
+                         "sdk/templates/gridnode_mod.py", "README.txt", "LICENSE"):
+                self.assertIn(f"{top}/{want}", names)
+            self.assertNotIn(f"{top}/mods/probe/probe.dll", names)  # research mods stay out
+            self.assertFalse(any("reflected" in n or n.endswith("types.hpp") for n in names))  # nothing from the game

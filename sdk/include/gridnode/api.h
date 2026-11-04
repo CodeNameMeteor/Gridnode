@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 19 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers */
+#define GN_API_VERSION 20 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -737,6 +737,13 @@ typedef struct gn_api {
      * the way its spawner's "Unspawn" and the AI's own despawn do; it goes at the game's next
      * removal pass. Not Faith (GN_ERR_ARGUMENT). Server thread. */
     int (*character_despawn)(void* server_character);
+
+    /* ==== GN_API_VERSION 20 =================================================================== */
+
+    /* mod_dir: the folder of the calling mod's DLL as installed (mods\ or mods\<name>\, ending
+     * with a backslash), for the files it brings: a mod runs from a copy (reloads), so its own
+     * module path is not that. GN_ERR_FULL: out too small. Any thread. */
+    int (*mod_dir)(char* out, size_t size);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

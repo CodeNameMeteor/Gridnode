@@ -28,6 +28,7 @@ static int api_transform(const void* e, gn_transform* out) { *out = *(const gn_t
 static int api_raycast(const float* f, const float* t, float r, gn_ray_hit* out) {
     (void)f; (void)r; memset(out, 0, sizeof(*out)); out->position[1] = t[1] + 50.f; return GN_OK;
 }
+static int api_mod_dir(char* out, size_t size) { snprintf(out, size, "mods\\"); return GN_OK; }
 static int api_on_message(const char* mod, const char* name, gn_message_fn fn, void* u) {
     (void)mod;
     if (strcmp(name, "ServerPlayer") != 0) return GN_ERR_NOT_FOUND;
@@ -54,6 +55,15 @@ int main(int argc, char** argv) {
     a.entity_transform = api_transform;
     a.raycast = api_raycast;
     a.on_message = api_on_message;
+    a.mod_dir = api_mod_dir;
+    // The manifest (gn_mod_info!), when the mod has one.
+    typedef const gn_mod_manifest* (*info_fn)(void);
+    info_fn manifest = (info_fn)dlsym(h, "gn_mod_info");
+    if (manifest) {
+        const gn_mod_manifest* m = manifest();
+        if (!m || m->size != sizeof(gn_mod_manifest) || !m->id || !m->version) { printf("bad manifest\n"); return 1; }
+        printf("manifest: %s %s\n", m->id, m->version);
+    }
     if (load(&a) != 0) { printf("gn_mod_load failed\n"); return 1; }
     if (!client_fn || !server_fn || !msg_fn) { printf("callbacks not registered\n"); return 1; }
     client_fn(2.5f, client_user);

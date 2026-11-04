@@ -1,0 +1,19 @@
+# @NAME@: a GridNode mod in Rust (made by `gridnode_mod.py new --rust`).
+#
+#   cargo build --release --target x86_64-pc-windows-msvc     (or x86_64-pc-windows-gnu)
+#   python <sdk>/templates/gridnode_mod.py pack target/x86_64-pc-windows-msvc/release/@NAME@.dll
+[package]
+name = "@NAME@"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+gridnode = { path = "@SDK_RUST@" }
+
+[profile.release]
+panic = "abort"

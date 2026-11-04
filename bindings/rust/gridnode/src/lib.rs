@@ -69,6 +69,44 @@ macro_rules! gn_mod_unload {
     };
 }
 
+/// Optional: who the mod is (its manifest, read before it is loaded): id, name, version, author,
+/// description, then dependencies ("id", "id>=1.2", "?id" optional), as GN_MOD_INFO does in C++.
+///
+///     gridnode::gn_mod_info!("my-mod", "My mod", "1.0.0", "me", "What it does");
+///     gridnode::gn_mod_info!("my-mod", "My mod", "1.0.0", "me", "What it does", "mec-trainer>=1.3");
+#[macro_export]
+macro_rules! gn_mod_info {
+    ($id:expr, $name:expr, $version:expr, $author:expr, $description:expr $(, $dep:expr)* $(,)?) => {
+        #[no_mangle]
+        pub extern "C" fn gn_mod_info() -> *const $crate::sys::gn_mod_manifest {
+            static DEPS: $crate::SyncPtrs<{ $crate::__gn_count!($($dep),*) + 1 }> = $crate::SyncPtrs(
+                [$(concat!($dep, "\0").as_ptr() as *const core::ffi::c_char,)* core::ptr::null()]);
+            static M: $crate::SyncManifest = $crate::SyncManifest($crate::sys::gn_mod_manifest {
+                size: core::mem::size_of::<$crate::sys::gn_mod_manifest>() as u32,
+                id: concat!($id, "\0").as_ptr() as *const core::ffi::c_char,
+                name: concat!($name, "\0").as_ptr() as *const core::ffi::c_char,
+                version: concat!($version, "\0").as_ptr() as *const core::ffi::c_char,
+                author: concat!($author, "\0").as_ptr() as *const core::ffi::c_char,
+                description: concat!($description, "\0").as_ptr() as *const core::ffi::c_char,
+                depends: &DEPS.0 as *const _ as *mut *const core::ffi::c_char,
+            });
+            &M.0
+        }
+    };
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __gn_count {
+    () => { 0usize };
+    ($head:expr $(, $tail:expr)*) => { 1usize + $crate::__gn_count!($($tail),*) };
+}
+#[doc(hidden)]
+pub struct SyncPtrs<const N: usize>(pub [*const c_char; N]);
+unsafe impl<const N: usize> Sync for SyncPtrs<N> {}
+#[doc(hidden)]
+pub struct SyncManifest(pub sys::gn_mod_manifest);
+unsafe impl Sync for SyncManifest {}
+
 /// The API table (panics if called before the mod was loaded).
 pub fn api() -> &'static sys::gn_api {
     API.get().expect("gridnode: the mod is not loaded yet").0
@@ -312,6 +350,14 @@ pub fn sound_playing(s: u32) -> bool { unsafe { (api().sound_playing.unwrap())(s
 pub fn sound_stop(s: u32) -> bool { unsafe { (api().sound_stop.unwrap())(s) == 0 } }
 /// A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
 pub fn character_despawn(server_character: *mut c_void) -> i32 { unsafe { (api().character_despawn.unwrap())(server_character) } }
+/// Where the mod's DLL is installed (`mods\\` or `mods\\<name>\\`): its own files.
+pub fn mod_dir() -> String {
+    let mut buf = [0 as c_char; 1024];
+    if unsafe { (api().mod_dir.unwrap())(buf.as_mut_ptr(), buf.len()) } != 0 {
+        return String::new();
+    }
+    unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
+}
 pub fn level_name() -> String {
     let mut buf = [0 as c_char; 256];
     unsafe {

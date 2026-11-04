@@ -1,7 +1,7 @@
 # Writing a mod
 
-A GridNode mod is a DLL in the `mods/` folder next to `gridnode.dll`. GridNode loads every DLL
-there once the game has started, the build check has passed and the engine's types are known, and
+A GridNode mod is a DLL in the `mods/` folder next to `gridnode.dll`, or in a folder of its own,
+`mods/<name>/<name>.dll`, with its files. GridNode loads every one once the game has started, the build check has passed and the engine's types are known, and
 calls its `gn_mod_load`: dependencies first (below), otherwise in file name order.
 
 ```cpp
@@ -19,7 +19,8 @@ See `examples/hello/hello.cpp` for a complete mod. Build it with the repository'
 in `build/mods/`), or in your own project: add `sdk/include` and the generated
 `build/generated` to the include path. No library to link: the API is a table of function
 pointers handed to `gn_mod_load` (`gridnode/api.h`), so a mod can be built with MSVC, MinGW or
-clang, independently of how `gridnode.dll` was built.
+clang, independently of how `gridnode.dll` was built. The quickest start is a release's template:
+`python sdk/templates/gridnode_mod.py new my_mod` ([packaging.md](packaging.md)).
 
 ## Manifest and other mods (API 16)
 

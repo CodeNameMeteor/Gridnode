@@ -91,6 +91,7 @@ void modLoad(const std::string& file);               // any thread: an unloaded 
 int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
 void pollMods();                                     // GridNode's thread: reloads asked for or due
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
+int modDir(const void* caller, char* out, size_t size);                 // gn_api mod_dir
 void* modImport(const void* caller, const char* modId, const char* name); // gn_api mod_import
 int modVersion(const char* modId, char* out, size_t size);               // gn_api mod_version
 // A callback queued for later may only run while its mod is loaded: false once fn's mod was unloaded.

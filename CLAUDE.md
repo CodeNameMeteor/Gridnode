@@ -38,7 +38,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
-| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw`, `detour-demo` |
+| `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw`, `detour-demo`; `templates/`: new mods (docs/packaging.md) |
 | `bindings/rust/gridnode` | Rust bindings, generated from `api.h` |
 | `tests/` | host-side tests (reflect walker, runtime core, x64 decoder, engine header, types, Rust harness) |
 | `docs/` | MkDocs site; `research/` holds engine findings |

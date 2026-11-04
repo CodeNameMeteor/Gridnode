@@ -14,6 +14,11 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **Packaging** (2026-11-04). `gridnode.py package`: the release zip (game files, SDK headers with
+  engine.hpp, ImGui, the Rust crate, templates; no game data); CI builds it and a mod from its
+  template. `templates/gridnode_mod.py` new (C++ / Rust) and pack (a mod's zip, mods/<name>/).
+  The loader also loads mods\<name>\<name>.dll (its own DLLs found there); API 20 `mod_dir`.
+  Rust `gn_mod_info!`. Loading a mod from its folder is untested in game.
 - **Tracer, boxes for AI, kill volumes off** (2026-11-04, untested in game). GridNode menu > Tracer
   (tracer.cpp): any game function by address or annotated name, every call's arguments, xmm0..3 and
   caller, "Log the last 50" to gridnode.log; a stub per function in its own page, on the detours.

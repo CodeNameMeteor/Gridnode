@@ -16,6 +16,9 @@
   gridnode annotations-diff OTHER [--base B]   compare two annotation sets (folders or git:REF)
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
+  gridnode package [--build DIR] [--examples] a release zip (game files, SDK, mod templates)
+  gridnode new-mod NAME [--rust] [--sdk DIR]  a mod from the template (templates/gridnode_mod.py new)
+  gridnode pack-mod DLL [--file F ...]        a mod's zip for others (templates/gridnode_mod.py pack)
 """
 
 from __future__ import annotations
@@ -167,7 +170,30 @@ def _main(argv=None) -> int:
     u.add_argument("--words", action="append", default=[], help="extra word list (one name per line)")
     u.add_argument("--unknown", action="store_true", help="print only the hashes that were not found")
 
+    pk = sub.add_parser("package", help="a release zip from a Windows build (docs/packaging.md)")
+    pk.add_argument("--build", default=os.path.join(ROOT, "build"), help="the Windows build folder (default: build)")
+    pk.add_argument("--out", default=os.path.join(ROOT, "build", "release"), help="where the zip goes (default: build/release)")
+    pk.add_argument("--examples", action="store_true", help="the example mods in game/mods too")
+    pk.add_argument("--repo", default="https://github.com/CodeNameMeteor/Gridnode", help="named in README.txt")
+    nm = sub.add_parser("new-mod", help="a new mod from the template (templates/gridnode_mod.py new)")
+    nm.add_argument("rest", nargs=argparse.REMAINDER)
+    pm = sub.add_parser("pack-mod", help="a mod's zip for others (templates/gridnode_mod.py pack)")
+    pm.add_argument("rest", nargs=argparse.REMAINDER)
+
     a = ap.parse_args(argv)
+
+    if a.cmd in ("new-mod", "pack-mod"):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gridnode_mod", os.path.join(ROOT, "templates", "gridnode_mod.py"))
+        gm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gm)
+        return gm.main(["new" if a.cmd == "new-mod" else "pack"] + a.rest)
+
+    if a.cmd == "package":
+        from . import package
+        z = package.build(ROOT, os.path.abspath(a.build), os.path.abspath(a.out), a.examples, a.repo)
+        print(f"release: {z}")
+        return 0
 
     if a.cmd == "rust":
         from . import emit_rust
