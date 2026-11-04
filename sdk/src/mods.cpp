@@ -641,7 +641,7 @@ int onlineAllow(const void* caller, const char* mod, const char* reason) {
         g_online[id] = why;
     }
     GN_LOG("!!! ONLINE: mod %s (%s) changes online services on purpose: %s", id.c_str(), mod ? mod : "?", why.c_str());
-    GN_LOG("!!! ONLINE: its online console commands and online progression flags are allowed from now on, and every one is logged.");
+    GN_LOG("!!! ONLINE: its online console commands are allowed from now on, and every one is logged.");
     GN_LOG("!!! ONLINE: this can affect your EA account, online stats and leaderboards, and services such as Beat Revival.");
     GN_LOG("!!! ONLINE: use it only if you trust this mod. Cheating on leaderboards is not what this is for.");
     return GN_OK;

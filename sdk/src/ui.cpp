@@ -469,7 +469,7 @@ void drawMain() {
                     ImGui::PopTextWrapPos();
                     ImGui::Unindent();
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Its online console commands and online progression flags are allowed and logged.\n"
+                        ImGui::SetTooltip("Its online console commands are allowed and logged.\n"
                                           "This can affect your EA account, online stats and leaderboards, and Beat Revival.");
                 }
                 if (m.reloadable && !m.inMemory) {

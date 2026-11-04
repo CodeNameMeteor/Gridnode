@@ -274,7 +274,7 @@ std::string level = gn::levelName();
 | `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |
 | `waypoint(out)` / `checkpoint(out)` | any | The map marker (false when none is set; its height is the street's, so under a building it is not where to stand) and where Faith comes back after a death. From a Cheat Engine table's paths, checked by type on the way (API 22). |
 | `progressFlags(fn)` / `progressFind(name, out)` | any | The save's progression: every flag `PamProgressionData` defines (flag groups, missions' flags, the system's generated ones) with its name, group, value now, max and clamp (API 22). |
-| `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. A flag that syncs to online stats is refused unless the mod called `allowOnline` (API 23). The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
+| `progressSet(flag, value, &now)` | server | Sets a flag through the game's own setter (it clamps, tells missions and the entities bound to the flag, sends `PamProgressionFlagUpdatedMessage`); the game saves it with the rest. Flags marked as synced to online stats are set too (many never reach a service; the log notes each). The console has it too: `progress [filter]` lists, `progress NAME VALUE` sets (API 22). |
 | `mission(index, &name)` | any | The active mission's index (0: none) and name (API 22). |
 | `characterDespawn(serverCharacter)` | server | An AI taken away as its spawner's Unspawn would; not Faith (API 19). |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
@@ -585,7 +585,6 @@ GN_MOD("my-online-mod") {
 Until a mod calls `gn::allowOnline(reason)` (Rust: `allow_online`, API 23):
 
 - `gn::console` refuses online commands (`GN_ERR_UNAVAILABLE`, and a line in gridnode.log saying why);
-- `gn::progressSet` refuses flags that go to online stats (`gn_progress_flag.online`);
 - `gn::settings(className)` of an online settings class still works (settings are raw memory, which GridNode
   cannot check), but logs a warning once per mod and class.
 
@@ -593,8 +592,9 @@ After it, those run, and each one is logged with `!!! ONLINE`. The call itself w
 to gridnode.log, and the menu's Mods list shows the mod in orange with its reason. It is taken back
 when the mod unloads.
 
-The console's own `progress NAME VALUE` never sets an online flag, and the menu's console asks the
-player before an online command. The MEC trainer never calls `allowOnline`; while it is loaded it
+Progression flags are not part of this: `gn::progressSet` and the console's `progress NAME VALUE`
+set any flag, also those the game's data marks as synced to online stats (most of them never reach
+a service); the log notes each one. The menu's console asks the player before an online command. The MEC trainer never calls `allowOnline`; while it is loaded it
 blocks Dash and time trial uploads.
 
 ## Messages

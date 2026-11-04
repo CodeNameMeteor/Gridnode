@@ -330,13 +330,6 @@ GN_NOINLINE int apiModDir(char* out, size_t size) { return modDir(GN_CALLER, out
 GN_NOINLINE int apiConsoleRun(const char* mod, const char* line, gn_console_fn fn, void* user) { return consoleRunFor(mod, line, fn, user, GN_CALLER); }
 GN_NOINLINE void* apiSettingsFind(const char* name) { return settingsFindFor(name, GN_CALLER); }
 GN_NOINLINE int apiOnlineAllow(const char* mod, const char* reason) { return onlineAllow(GN_CALLER, mod, reason); }
-GN_NOINLINE int apiProgressSet(void* flag, int32_t value, int32_t* now) {
-    const void* caller = GN_CALLER;
-    const std::string by = onlineAllowed(caller) ? modNameAt(caller) : std::string();
-    // GridNode's own code is "allowed" by onlineAllowed but is no mod: its flags stay refused here
-    // (the console's progress command refuses online flags for the player, the trainer's way to cheat).
-    return progressSet(flag, value, now, by.empty() ? nullptr : by.c_str());
-}
 GN_NOINLINE int apiViewGetEx(gn_view* out, uint32_t size) {
     // The caller's size says how much of gn_view it has: a later gn_view may grow at its end, and
     // a host fills only the fields both know (the rest stay as the caller set them).
@@ -482,7 +475,7 @@ const gn_api* api() {
         a.checkpoint = checkpoint;
         a.progress_flags = progressFlags;
         a.progress_find = progressFind;
-        a.progress_set = apiProgressSet;
+        a.progress_set = progressSet;
         a.mission = mission;
         a.online_allow = apiOnlineAllow;
         a.view_get_ex = apiViewGetEx;

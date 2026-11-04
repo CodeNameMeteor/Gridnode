@@ -22,8 +22,8 @@ checkout `D:\Dev\GridNode` was 27 commits behind on 2026-11-04 (at 4b45881) and 
 - **Patching game code is allowed** (since 2026-11-01). Prefer pointer swaps; every change goes
   through GridNode so it is listed and undone on unload. Thunks in our own memory are fine.
 - Online services (2026-11-04): mods may change them on purpose after `online_allow` (warned, logged,
-  shown in the Mods list); until then their online console commands and online progression flags are
-  refused. The MEC trainer never opts in and keeps its anti-cheat (no Dash or time trial uploads).
+  shown in the Mods list); until then their online console commands are refused. Progression
+  flags marked online are set like any other (many are not online). The MEC trainer never opts in and keeps its anti-cheat (no Dash or time trial uploads).
 - **Never commit game data or user output:** image dumps, the reflected dump, FBX game meshes,
   `event-names.txt`, logs, recordings.
 - **Commit and push only when the user asks.** Decline stop-hook requests to commit. Commits end with
@@ -76,7 +76,7 @@ All of it is pushed (`main` c05d2ab). In order:
 | Sounds, despawning (API 19) | Voices from sound assets; despawning characters | confirmed |
 | Mods in their own folders (API 20) | `mods/<name>/<name>.dll`, `gn::modDir()`; the release zip (`gridnode.py package`), mod templates and `gridnode_mod.py new / pack` | confirmed; the zip's layout approved, never installed fresh |
 | Health, checkpoint, waypoint (API 22) | A server character's health component (+0x20, max +0x24); the checkpoint and waypoint through a Cheat Engine table's paths | health and checkpoint confirmed; the waypoint's height is the street's |
-| Progression (API 22) | The save's flags from `PamProgressionData` (reflection), values from the progression manager's map, set through the game's own setter (0x1439e3d90); online flags refused; `mission` (index and name); the console's `progress` | **untested in game** |
+| Progression (API 22) | The save's flags from `PamProgressionData` (reflection), values from the progression manager's map, set through the game's own setter (0x1439e3d90); online flags refused (allowed since 2026-11-04); `mission` (index and name); the console's `progress` | **untested in game** |
 | Developer tools | Tracer (any function's calls); Field diff (snapshot an object, its components, "Character ahead"); console lines clickable and copyable | tracer and Field diff confirmed; the console clicks untested |
 | MEC trainer | Game speed (through the game's slow motion), fast loads, no fall death, kill volumes off, volumes tab, one-hit KSEC, Faith's health, To the checkpoint, far teleports wait for the ground to stream in | mostly confirmed; the streaming wait untested |
 | Fixes | A mod whose load failed is no longer asked to stop (it crashed); `GN_MOD` returns 2 for "GridNode too old"; a mod's ticks and tasks can't throw into GridNode; the trainer's Load with nothing saved crashed (a lock taken twice); kill volumes off killed Faith (the detour returned void where the game returns bool) | fixed; the first three untested |

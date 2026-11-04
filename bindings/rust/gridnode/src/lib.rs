@@ -501,7 +501,7 @@ pub struct ProgressFlag {
     pub value: Option<i32>,
     pub max_value: i32,
     pub clamp: bool,
-    /// Its value goes to online stats: `progress_set` refuses it unless the mod called `allow_online`.
+    /// The data marks it as synced to online stats (many never reach a service); `progress_set` still sets it.
     pub online: bool,
 }
 fn progress_flag(f: &sys::gn_progress_flag) -> ProgressFlag {
@@ -551,7 +551,7 @@ pub fn progress_set(flag: *mut c_void, value: i32) -> Result<i32, i32> {
 }
 /// Says this mod changes online services on purpose (restoring or replacing an online feature).
 /// `reason` is one line, shown in the menu's Mods list and logged with a warning. Until it is
-/// called, online console commands and online progression flags are refused (API 23). Not for
+/// called, online console commands are refused (API 23). Not for
 /// leaderboard cheats: players see which mods touch online play.
 pub fn allow_online(reason: &str) -> bool {
     let Ok(r) = std::ffi::CString::new(reason) else {

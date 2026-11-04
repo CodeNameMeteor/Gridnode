@@ -319,7 +319,7 @@ typedef struct gn_progress_flag {
     int32_t value;          /* now (0 when the game holds no value for it) */
     int32_t max_value;      /* MaxValue (with clamp, values stay in 0 .. max_value) */
     uint8_t clamp;
-    uint8_t online;         /* its value goes to online stats: progress_set refuses it until online_allow */
+    uint8_t online;         /* the data marks it as synced to online stats (many never reach a service); progress_set still sets it */
     uint8_t has_value;      /* the game holds a value for it */
     uint8_t reserved;
 } gn_progress_flag;
@@ -814,9 +814,8 @@ typedef struct gn_api {
      * many, negative on an error. progress_find: one flag by name (case sensitive).
      * progress_set sets one through the game's own setter (it clamps, sends
      * PamProgressionFlagUpdatedMessage, tells missions and the entities bound to the flag), and
-     * returns GN_OK with *now the value the game kept. A flag that syncs to online stats
-     * (gn_progress_flag.online) is refused (GN_ERR_UNAVAILABLE) unless the mod called
-     * online_allow (API 23). progress_set: server thread; the others any thread (they read).
+     * returns GN_OK with *now the value the game kept. Flags marked as synced to online stats
+     * (gn_progress_flag.online) are set too (since API 23; the log notes each one). progress_set: server thread; the others any thread (they read).
      * mission: the active mission's index (0: none) and, when name is given, its name. */
     int (*progress_flags)(gn_progress_flag_fn fn, void* user);
     int (*progress_find)(const char* name, gn_progress_flag* out);
@@ -829,8 +828,8 @@ typedef struct gn_api {
      * online_allow: the mod says it changes online services on purpose (restoring a feature EA
      * turned off, pointing the game at a community server, ...); reason: one line saying what, shown
      * in the menu's Mods list and written to the log with a warning. Until a mod calls it,
-     * console_run refuses online commands (GN_ERR_UNAVAILABLE; see online_warning) and progress_set
-     * refuses flags that go to online stats; afterwards both run, each one logged. Settings objects
+     * console_run refuses online commands (GN_ERR_UNAVAILABLE; see online_warning); afterwards
+     * they run, each one logged. Settings objects
      * are raw memory, so writes to them cannot be checked: settings_find warns (once) when a mod that
      * has not called this takes an online one. Taken back when the mod unloads. Any thread.
      * GN_ERR_ARGUMENT: no reason, or not called from a mod's code.

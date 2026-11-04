@@ -98,8 +98,7 @@ int modVersion(const char* modId, char* out, size_t size);               // gn_a
 // A callback queued for later may only run while its mod is loaded: false once fn's mod was unloaded.
 bool modCodeLive(const void* fn);
 // Online services (gn_api online_allow): a mod says it changes them on purpose (restoring or
-// replacing online features). Until it does, GridNode refuses its online console commands and its
-// online progression flags. Code that is not a mod's (GridNode's own menu, which asks the player)
+// replacing online features). Until it does, GridNode refuses its online console commands. Code that is not a mod's (GridNode's own menu, which asks the player)
 // counts as allowed. onlineAllow logs a warning; the reason is shown in the menu's Mods list.
 int onlineAllow(const void* caller, const char* mod, const char* reason);
 bool onlineAllowed(const void* caller);
@@ -218,9 +217,7 @@ int waypoint(float* out);
 int checkpoint(float* out);
 int progressFlags(gn_progress_flag_fn fn, void* user);
 int progressFind(const char* name, gn_progress_flag* out);
-// server thread; onlineBy: the mod that called online_allow (a flag that goes to online stats is
-// refused without one)
-int progressSet(void* flag, int32_t value, int32_t* now, const char* onlineBy);
+int progressSet(void* flag, int32_t value, int32_t* now); // server thread
 int mission(int32_t* index, char* name, size_t size);
 std::string progressCommand(const std::string& args); // the console's "progress [FILTER | NAME VALUE]"
 void forgetGravity(const CodeRange& r);

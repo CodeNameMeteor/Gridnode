@@ -285,7 +285,7 @@ int progressFind(const char* name, gn_progress_flag* out) {
     return GN_ERR_NOT_FOUND;
 }
 
-int progressSet(void* flag, int32_t value, int32_t* now, const char* onlineBy) {
+int progressSet(void* flag, int32_t value, int32_t* now) {
     if (!isServerThread()) return GN_ERR_THREAD;
     if (!build::codeMatches("ProgressionManager_setFlag")) return GN_ERR_UNAVAILABLE;
     Flag f;
@@ -296,12 +296,9 @@ int progressSet(void* flag, int32_t value, int32_t* now, const char* onlineBy) {
         if (it == g_flags.all.end()) return GN_ERR_ARGUMENT; // not one of the game's flags
         f = *it;
     }
-    if (f.online && !onlineBy) {
-        GN_LOG("progression: %s not set: its value goes to online stats (a mod that changes online services on purpose calls "
-               "online_allow first)", f.name.c_str());
-        return GN_ERR_UNAVAILABLE;
-    }
-    if (f.online) GN_LOG("!!! ONLINE: %s sets %s, which goes to online stats", onlineBy, f.name.c_str());
+    // Flags the data marks as synced to online stats are set like any other (user, 2026-11-04: many
+    // of them never reach an online service). The log says which ones were.
+    if (f.online) GN_LOG("progression: %s is marked as synced to online stats; set anyway", f.name.c_str());
     const uintptr_t m = ptr(mem::rva(e::global::ProgressionManager));
     if (!m) return GN_ERR_UNAVAILABLE;
     using SetFn = int32_t (*)(uintptr_t, uintptr_t, int32_t, bool, bool, bool);
@@ -325,12 +322,11 @@ std::string progressCommand(const std::string& args) {
     if (!b.empty() && end && *end == 0) {
         gn_progress_flag f;
         if (progressFind(a.c_str(), &f) != GN_OK) return "No progression flag named \"" + a + "\" (progress " + a + " lists the ones matching)";
-        if (f.online) return a + " is not set: its value goes to online stats";
         void* flag = f.flag;
         const std::string name = a;
         server().post([flag, name, value] {
             int32_t now = 0;
-            if (progressSet(flag, static_cast<int32_t>(value), &now, nullptr) != GN_OK) GN_LOG("progress %s %ld: refused", name.c_str(), value);
+            if (progressSet(flag, static_cast<int32_t>(value), &now) != GN_OK) GN_LOG("progress %s %ld: refused", name.c_str(), value);
         });
         return "Setting " + a + " to " + b + " (was " + std::to_string(f.value) + "); the result goes to the log";
     }

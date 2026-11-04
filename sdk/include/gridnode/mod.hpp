@@ -414,8 +414,8 @@ template <class F> int progressFlags(F fn) {
 // One flag by name (case sensitive). Any thread.
 inline bool progressFind(const char* name, gn_progress_flag& out) { return api().progress_find(name, &out) == GN_OK; }
 // Sets a flag through the game's setter (it clamps, tells missions, sends the flag update message);
-// *now: the value the game kept. Flags that sync to online stats are refused unless the mod called
-// allowOnline (API 23). Server thread.
+// *now: the value the game kept. Flags marked as synced to online stats are set too (the log notes
+// them). Server thread.
 inline int progressSet(void* flag, int32_t value, int32_t* now = nullptr) { return api().progress_set(flag, value, now); }
 // The active mission's index (0: none) and its name. Any thread.
 inline bool mission(int32_t& index, std::string* name = nullptr) {
@@ -428,7 +428,7 @@ inline bool mission(int32_t& index, std::string* name = nullptr) {
 // ---- online services, on purpose (API 23) ---------------------------------------------------------
 // Says this mod changes online services on purpose (restoring or replacing an online feature):
 // reason is one line, shown in the menu's Mods list and logged with a warning. Until it is called,
-// online console commands and online progression flags are refused. Not for leaderboard cheats:
+// online console commands are refused. Not for leaderboard cheats:
 // players see which mods touch online play. Call it in gn_mod_load (or before the first such call).
 inline bool allowOnline(const char* reason) { return api().online_allow(modName(), reason) == GN_OK; }
 

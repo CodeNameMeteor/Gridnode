@@ -18,8 +18,8 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 2. **Online safety audit.** One list of everything that could reach EA's services or Beat Revival,
    checked in code: the console's online commands (confirmation; mods: refused without
    `online_allow`, enforced in `consoleRunFor` since 2026-11-04), settings marked online (mods
-   warned), the trainer's upload block, progression flags that sync to online (refused without
-   `online_allow`), nothing else sending. A short docs page "GridNode and online play" (modding.md
+   warned), the trainer's upload block, progression flags marked online (set, logged: user's call,
+   many are not online), nothing else sending. A short docs page "GridNode and online play" (modding.md
    has the rule now: "Online services").
 3. **What the release is (decide).** Proposed: two zips. *GridNode* for players: the player build
    (no inspector, console, editor, recorder), `gridnode_inject.exe`, `version.dll`, `mods/`. *GridNode
@@ -49,6 +49,9 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **Progression flags marked online are set by default** (user, 2026-11-04: many never reach an
+  online service). `progress_set` and the console's `progress` set them; the log notes each one.
+  `online_allow` now covers online console commands only.
 - **Review fixes and API 23** (2026-11-04, from the code review; untested in game). Crash notes: each
   fault address logged once (handled faults no longer use up a cap of 3), buffers static (a stack
   overflow writes its address and registers only), mods found by gridnode.ini's folder, any case.
@@ -65,9 +68,9 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   jcc prefixes comment, 66-prefixed branches refused, `write()` into code logged (not recorded).
   **Online rule changed (user, 2026-11-04):** mods may change online services on purpose if they
   say so (`online_allow(mod, reason)`, API 23): until then their online console commands and online
-  progression flags are refused; afterwards each is logged with `!!! ONLINE` and the Mods list shows
+  progression flags were refused (no longer, see above); afterwards each is logged with `!!! ONLINE` and the Mods list shows
   the mod in orange with its reason. The aim is stopping the trainer being used to cheat: the
-  console's `progress` never sets online flags and the trainer never opts in. `view_get_ex` (sized
+  trainer never opts in. `view_get_ex` (sized
   gn_view); `gn_ray_hit` is fixed. CI: read-only permissions, actions pinned by SHA, one run per
   branch, sanitizers on the runtime core and x64 tests, ruff, rustfmt and clippy.
 - **API 22: health, the waypoint, the checkpoint, the mission** (2026-11-04, untested in game). From
