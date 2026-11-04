@@ -34,8 +34,9 @@ and screen-space reflections, the KrugerSec types and their AI, and how the game
 
 - 1: GridNode's `physicsStart` (world.cpp) hooks `PhysicsWorld_create`.
 - 4 and 5: the trainer's game speed slider and "No fall death".
-- 3 is waiting on one Ghidra trace: our ray hit gives the game's body id, and the filter info is on
-  Havok's body (hknpBody +0x5c), which the hit doesn't lead to yet.
+- API 19 (untested in game): 2 as raw Havok boxes (`sdk/src/bodies.cpp`), 3 (a RigidBody record's
+  Havok body: `[[record +0x30] +0xe0] +0x20` + index (+0x58) x 0x90), 6 as `character_despawn`,
+  7 as `sound_*`.
 
 ## Build order (proposed)
 

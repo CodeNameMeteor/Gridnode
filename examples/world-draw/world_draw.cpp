@@ -7,11 +7,17 @@
 //   - gn::config: its options are kept in mods/world-draw.ini
 //   - gn::raycastObject, entityBodies, bodyTransform / bodySetTransform (API 18): what the camera
 //     looks at, its collision bodies, and lifting them (read on the server tick, four times a second)
+//   - API 19: the hit's collision layer, a collision box where the camera looks (gn::boxAdd), the
+//     sound of the nearest SoundEntity played by Faith (gn::soundPlay), the AI looked at despawned
+//     (gn::characterDespawn)
 //
 // Options are in its window (INSERT). Threads: the client tick reads the game, the draw callback only
 // draws what it last read.
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -40,9 +46,20 @@ struct Looked {
     bool hit = false;
     gn::Vec3 at;
     std::string what;               // its type, or "level geometry"
-    uint32_t body = 0, part = 0;
+    uint32_t body = 0, part = 0, layer = 0;
     std::vector<gn::Vec3> bodies;   // where its collision bodies are
 };
+// API 19 tests (server tick for boxes and despawns, client tick for sounds).
+std::atomic<bool> g_boxWanted{false}, g_boxesClear{false}, g_despawnWanted{false}, g_soundWanted{false}, g_soundStopWanted{false};
+std::vector<uint32_t> g_boxes;      // (g_m)
+std::string g_apiNote;              // (g_m)
+uint32_t g_sound = 0;               // (client thread)
+
+void apiNote(const std::string& n) {
+    gn::log("%s", n.c_str());
+    std::lock_guard<std::mutex> lock(g_m);
+    g_apiNote = n;
+}
 Looked g_looked;                    // (g_m)
 struct Lifted {
     void* entity;
@@ -110,6 +127,58 @@ void serverTick(float dt) {
         std::lock_guard<std::mutex> lock(g_m);
         g_liftNote = note;
     }
+    // A 1 m box sitting where the camera looks, and the AI nearest that point despawned.
+    if (g_boxWanted.exchange(false) || g_despawnWanted.load()) {
+        gn::ui::View v;
+        gn::ObjectHit h{};
+        bool hit = false;
+        if (gn::ui::view(v)) {
+            const gn::Vec3 from{v.position[0], v.position[1], v.position[2]};
+            const gn::Vec3 to{from.x + v.forward[0] * 200.f, from.y + v.forward[1] * 200.f, from.z + v.forward[2] * 200.f};
+            hit = gn::raycastObject(from, to, h);
+        }
+        const gn::Vec3 at{h.hit.position[0], h.hit.position[1], h.hit.position[2]};
+        if (g_despawnWanted.exchange(false)) {
+            // Characters keep their place in their components (entitiesNear reads spatial entities'
+            // transforms): each server character's position, nearest to the hit.
+            void* best = nullptr;
+            float bestD = 4.f;
+            void* faith = gn::localServerCharacter();
+            if (hit)
+                gn::entitiesOfClass("ServerCharacterEntity", [&](void* e, gn::Type) {
+                    gn::Vec3 p{};
+                    if (e == faith || !gn::positionOf(e, p)) return;
+                    // From her feet up to her head: the nearest point of a 1.8 m segment.
+                    const float y = std::max(p.y, std::min(at.y, p.y + 1.8f));
+                    const float d = std::sqrt((p.x - at.x) * (p.x - at.x) + (y - at.y) * (y - at.y) + (p.z - at.z) * (p.z - at.z));
+                    if (d < bestD) best = e, bestD = d;
+                });
+            if (!best) apiNote("despawn: no AI within 4 m of where the camera looks");
+            else {
+                const int r = gn::characterDespawn(best);
+                apiNote(std::string("despawn: ") + gn::Type::of(best).name() + (r == GN_OK ? ": asked" : ": error " + std::to_string(r)));
+            }
+        } else if (!hit) {
+            apiNote("box: nothing where the camera looks");
+        } else {
+            gn::Transform t{};
+            t.right[0] = t.up[1] = t.forward[2] = 1.f;
+            t.trans[0] = at.x, t.trans[1] = at.y + 0.5f, t.trans[2] = at.z;
+            const uint32_t b = gn::boxAdd(t, {0.5f, 0.5f, 0.5f});
+            if (b) {
+                std::lock_guard<std::mutex> lock(g_m);
+                g_boxes.push_back(b);
+            }
+            apiNote(b ? "box " + std::to_string(b) + " asked for at (" + std::to_string(int(at.x)) + ", " + std::to_string(int(at.y)) + ", " +
+                            std::to_string(int(at.z)) + ")"
+                      : "box: refused");
+        }
+    }
+    if (g_boxesClear.exchange(false)) {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (uint32_t b : g_boxes) gn::boxRemove(b);
+        g_boxes.clear();
+    }
     Looked l;
     gn::ui::View v;
     gn::ObjectHit h{};
@@ -119,7 +188,7 @@ void serverTick(float dt) {
         if (gn::raycastObject(from, to, h)) {
             l.hit = true;
             l.at = {h.hit.position[0], h.hit.position[1], h.hit.position[2]};
-            l.body = h.body, l.part = h.part;
+            l.body = h.body, l.part = h.part, l.layer = h.layer;
             const gn::Type type = h.entity ? gn::Type::of(h.entity) : gn::Type();
             l.what = type ? type.name() : "level geometry (no entity)";
             if (h.entity)
@@ -131,6 +200,53 @@ void serverTick(float dt) {
     }
     std::lock_guard<std::mutex> lock(g_m);
     g_looked = std::move(l);
+}
+
+// The sound of the nearest SoundEntity (its data's Sound, by the asset's name), played at Faith.
+void soundTest(const gn::Vec3& faithAt) {
+    if (g_soundStopWanted.exchange(false) && g_sound) {
+        gn::soundStop(g_sound);
+        g_sound = 0;
+        apiNote("sound: stopped");
+    }
+    if (!g_soundWanted.exchange(false)) return;
+    // Sound entities aren't spatial (entitiesNear leaves them out): every SoundEntity, nearest by its
+    // data's Transform (+0x20, translation +0x50); one with no place counts as far.
+    std::string name;
+    float best = 1e9f;
+    int seen = 0, withSound = 0;
+    gn::entitiesOfClass("SoundEntity", [&](void* e, gn::Type) {
+        ++seen;
+        void* data = nullptr;
+        void* asset = nullptr;
+        if (gn::api().read(static_cast<char*>(e) + 0x28, &data, 8) != GN_OK || !data) return;
+        if (gn::api().read(static_cast<char*>(data) + 0x18, &asset, 8) != GN_OK || !asset) return;
+        ++withSound;
+        float place[3] = {};
+        float d = 1e8f;
+        if (gn::api().read(static_cast<char*>(data) + 0x50, place, sizeof(place)) == GN_OK && std::isfinite(place[0]))
+            d = std::sqrt((place[0] - faithAt.x) * (place[0] - faithAt.x) + (place[1] - faithAt.y) * (place[1] - faithAt.y) +
+                          (place[2] - faithAt.z) * (place[2] - faithAt.z));
+        if (d >= best) return;
+        gn_field f;
+        void* str = nullptr;
+        const gn::Type at = gn::Type::of(asset);
+        if (!at || !at.field("Name", f) || gn::api().read(static_cast<char*>(asset) + f.offset, &str, 8) != GN_OK || !str) return;
+        std::string n;
+        for (int i = 0; i < 256; ++i) { // a byte at a time: the name may end near the end of a page
+            char ch = 0;
+            if (gn::api().read(static_cast<char*>(str) + i, &ch, 1) != GN_OK || !ch) break;
+            n += ch;
+        }
+        if (!n.empty()) name = n, best = d;
+    });
+    if (name.empty())
+        return apiNote("sound: " + std::to_string(seen) + " SoundEntities, " + std::to_string(withSound) + " with a sound, none with a name");
+    gn::log("sound: the nearest SoundEntity's sound is %s, %.0f m away (%d SoundEntities)", name.c_str(), best, seen);
+    if (g_sound) gn::soundStop(g_sound);
+    const gn::Vec3 at{faithAt.x, faithAt.y + 1.5f, faithAt.z};
+    g_sound = gn::soundPlay(name.c_str(), &at);
+    apiNote("sound: " + name + (g_sound ? " playing" : " refused (see the log)"));
 }
 
 void clientTick(float dt) {
@@ -152,6 +268,7 @@ void clientTick(float dt) {
     void* faith = gn::localClientCharacter();
     gn::Vec3 p{};
     const bool have = faith && gn::positionOf(faith, p);
+    if (have) soundTest(p);
     std::vector<Seen> seen;
     if (have && g_near) {
         gn::entitiesNear(p, g_radius, [&](void* e, gn::Type type, const gn::Transform& at, float d) {
@@ -184,7 +301,8 @@ void draw(bool menuOpen) {
             const Looked& l = g_looked;
             gn::ui::marker(v, l.at, IM_COL32(255, 80, 200, 255), 5.f);
             char label[200];
-            snprintf(label, sizeof(label), "%s (body %08x, part %08x, %d bodies)", l.what.c_str(), l.body, l.part, int(l.bodies.size()));
+            snprintf(label, sizeof(label), "%s (body %08x, part %08x, layer %u, %d bodies)", l.what.c_str(), l.body, l.part, l.layer,
+                     int(l.bodies.size()));
             gn::ui::text3d(v, {l.at.x, l.at.y + 0.3f, l.at.z}, label, IM_COL32(255, 160, 230, 255));
             for (const gn::Vec3& b : l.bodies) {
                 gn::ui::box3d(v, {b.x - 0.15f, b.y - 0.15f, b.z - 0.15f}, {b.x + 0.15f, b.y + 0.15f, b.z + 0.15f}, IM_COL32(255, 80, 200, 220));
@@ -212,6 +330,21 @@ void draw(bool menuOpen) {
             std::lock_guard<std::mutex> lock(g_m);
             if (!g_liftNote.empty()) ImGui::TextDisabled("%s", g_liftNote.c_str());
             if (!g_clientNote.empty()) ImGui::TextDisabled("%s", g_clientNote.c_str());
+        }
+        ImGui::SeparatorText("API 19");
+        if (ImGui::Button("Box where the camera looks")) g_boxWanted = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Remove the boxes")) g_boxesClear = true;
+        if (ImGui::Button("Play the nearest sound")) g_soundWanted = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Stop it")) g_soundStopWanted = true;
+        if (ImGui::Button("Despawn the AI the camera looks at")) g_despawnWanted = true;
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            int in = 0, waiting = 0;
+            for (uint32_t b : g_boxes) (gn::boxState(b) == 1 ? in : waiting) += 1;
+            if (!g_boxes.empty()) ImGui::TextDisabled("boxes: %d in the world, %d waiting", in, waiting);
+            if (!g_apiNote.empty()) ImGui::TextDisabled("%s", g_apiNote.c_str());
         }
         size_t n;
         {

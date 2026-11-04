@@ -284,6 +284,10 @@ GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, vo
 GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
 GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
+GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
+GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out) {
+    return soundPlay(mod, path, event, pos, out, GN_CALLER);
+}
 } // namespace
 
 const gn_api* api() {
@@ -392,6 +396,16 @@ const gn_api* api() {
         a.body_transform = apiBodyTransform;
         a.body_set_transform = apiBodySetTransform;
         a.entity_other_half = apiEntityOtherHalf;
+        a.box_add = apiBoxAdd;
+        a.box_move = boxMove;
+        a.box_remove = boxRemove;
+        a.box_state = boxState;
+        a.sound_play = apiSoundPlay;
+        a.sound_event = soundEvent;
+        a.sound_move = soundMove;
+        a.sound_playing = soundPlaying;
+        a.sound_stop = soundStop;
+        a.character_despawn = characterDespawn;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

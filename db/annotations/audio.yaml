@@ -3,6 +3,12 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 globals:
+  - name: g_soundSystem
+    va: 0x1423dd580
+    type: "void*"
+    note: "The sound system (vtable 0x141abd460, 36 slots). Slot 8 (+0x40, SoundSystem_createVoice) makes a voice from a sound asset. Research_Sound_System_2026-10-24; read in SoundEntity_onEvent 2026-11-03."
+    confidence: confirmed
+    sources: [research, ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: g_voiceOverSystem
     va: 0x1423e3150
@@ -12,6 +18,7 @@ globals:
     sources: [ghidra]
 
 functions:
+  - { name: SoundSystem_createVoice, va: 0x142fe2ee0, signature: "void*(void* system, void* soundAsset)", note: "Slot 8 of the sound system: mov rcx,[0x1423e29b8]; jmp 0x143019860. A voice (vtable 0x141acfad0): slot 0 sends it an event (u32 name hash), +0x48 lets it go, +0x58 playing, +0x68 sets its transform (into its 3D state at +0x28, none for a sound heard everywhere).", confidence: confirmed, sources: [research, ghidra] }
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: fb_SoundEntity_SoundEntity_onEvent
     va: 0x14301a170
@@ -67,3 +74,10 @@ functions:
     note: "Named in Ghidra as initDecodeTablesNoChannels; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
+
+constants:
+  - { name: SoundSystem_vf_createVoice, value: 0x40, confidence: confirmed, sources: [ghidra], note: "SoundEntity_onEvent calls it with the SoundEntityData's Sound (+0x18)." }
+  - { name: Voice_vf_event, value: 0x0, confidence: confirmed, sources: [ghidra], note: "void(voice, u32 event hash)." }
+  - { name: Voice_vf_release, value: 0x48, confidence: confirmed, sources: [ghidra], note: "Stops and lets it go (SoundEntity's stop event)." }
+  - { name: Voice_vf_isPlaying, value: 0x58, confidence: confirmed, sources: [ghidra], note: "bool(voice)." }
+  - { name: Voice_vf_setTransform, value: 0x68, confidence: confirmed, sources: [research, ghidra], note: "void(voice, const LinearTransform*): copied into its 3D state (+0x28) when it has one (0x14301dc30)." }

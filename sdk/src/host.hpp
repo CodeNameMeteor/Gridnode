@@ -177,6 +177,23 @@ int apiEntityBodies(void* entity, uint32_t* ids, int max);
 int apiBodyTransform(void* entity, uint32_t body, gn_transform* out);
 int apiBodySetTransform(void* entity, uint32_t body, const gn_transform* to);
 void* apiEntityOtherHalf(void* entity);
+// Collision boxes (bodies.cpp) and what a Havok body says.
+void bodiesStart();
+int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out, const void* caller);
+int boxMove(uint32_t box, const gn_transform* at);
+int boxRemove(uint32_t box);
+int boxState(uint32_t box);
+void forgetBoxes(const CodeRange& r); // a mod's boxes (made from its code)
+bool bodiesRelease(unsigned long ms);
+bool bodyFilter(uintptr_t object, uint32_t& filter, uint32_t& material);
+// Sounds (sounds.cpp).
+int soundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out, const void* caller);
+int soundEvent(uint32_t sound, const char* event);
+int soundMove(uint32_t sound, const float* pos);
+int soundPlaying(uint32_t sound);
+int soundStop(uint32_t sound);
+void forgetSounds(const CodeRange& r); // a mod's sounds; an empty range: every one
+int characterDespawn(void* entity);
 bool cameraTransform(gn_transform& out); // the local player's camera
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s

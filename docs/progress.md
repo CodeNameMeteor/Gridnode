@@ -14,6 +14,12 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 19: collision boxes, sounds, despawning characters, ray hit layers** (2026-11-03, untested in
+  game). `box_*` (bodies.cpp: static Havok boxes in the client world, made after the game's physics
+  flush with a live static body's record, re-checked after each flush, as the cinematic tools do);
+  `sound_*` (sounds.cpp: the sound system's voices); `character_despawn` (Entity_requestDestroy, as
+  a spawner's Unspawn); `raycast_object` hits give the Havok body's filter, layer and material.
+  world-draw has a test button for each.
 - **From the cinematic tools' research, first part** (2026-11-03, untested in game). GridNode makes
   every physics world with room for 65,536 bodies (PhysicsWorld_create; the game's 16,384 and empty
   "buffer full" handlers crash Havok). Trainer: the game speed slider multiplies the game's own slow

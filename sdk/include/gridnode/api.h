@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 18 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies */
+#define GN_API_VERSION 19 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -155,6 +155,12 @@ typedef struct gn_ray_hit_ex {
     void* entity;         /* the server entity that owns the body, or null (level geometry, or not found) */
     void* physics_object; /* the game's object for the body (a RigidBody, or a group's body) */
     gn_ray_hit hit;
+    /* API 19 (filled when size covers them): */
+    uint32_t filter_info; /* the Havok body's collision filter info; 0 when not known (a group's body) */
+    uint32_t layer;       /* its collision layer (filter_info & 31, RigidBodyCollisionLayer: 1 Static,
+                           * 2 Dynamic, 3 Player, 4 AI, 14 Character, 21 CameraCollision, ...); 0: not known */
+    uint32_t material;    /* the Havok body's material id */
+    uint32_t reserved2;
 } gn_ray_hit_ex;
 
 /* The engine's LinearTransform: rotation rows and translation, each a float4 (w unused).
@@ -694,6 +700,42 @@ typedef struct gn_api {
     int (*body_transform)(void* entity, uint32_t body, gn_transform* out);
     int (*body_set_transform)(void* entity, uint32_t body, const gn_transform* to);
     void* (*entity_other_half)(void* entity);
+
+    /* ==== GN_API_VERSION 19 =================================================================== */
+
+    /* ---- collision boxes -------------------------------------------------------------------------
+     * Static boxes in the client's physics world (what Faith collides with), the way the cinematic
+     * tools make their street floors. Each box borrows a live static body's identity (so hits on it
+     * report that body's material and owner); it is made, moved and destroyed at the client world's
+     * next physics update, and made again in a new level's world. Nothing is made while the world
+     * has fewer than 4,096 places left. Any thread.
+     * box_add: half_extents in metres (0.01 .. 1000), at = its centre and rotation (rows unit length).
+     * box_state: 1 in the world, 0 waiting (no level, or no static body to borrow from yet),
+     * -GN_ERR_FULL Havok did not make it, -GN_ERR_NOT_FOUND unknown. A mod's boxes go when it is
+     * unloaded. AI and the server's ray casts don't see them (the server world is separate). */
+    int (*box_add)(const char* mod, const gn_transform* at, const float half_extents[3], uint32_t* out_box);
+    int (*box_move)(uint32_t box, const gn_transform* at);
+    int (*box_remove)(uint32_t box);
+    int (*box_state)(uint32_t box);
+
+    /* ---- sounds ------------------------------------------------------------------------------------
+     * sound_play: a voice of the game's sound system for a loaded sound asset (asset_find's path,
+     * e.g. a SoundPatchAsset), placed at pos (null: wherever the asset puts it), sent event (null:
+     * the asset's DefaultStartEvent). sound_event sends another event (a name: "Start", "Stop", ...
+     * as the asset's graph names them); sound_move places it again; sound_playing: 1 / 0;
+     * sound_stop lets it go. A mod's sounds go when it is unloaded. Client thread (GN_ERR_THREAD
+     * elsewhere; sound_playing: any). */
+    int (*sound_play)(const char* mod, const char* asset_path, const char* event, const float pos[3], uint32_t* out_sound);
+    int (*sound_event)(uint32_t sound, const char* event);
+    int (*sound_move)(uint32_t sound, const float pos[3]);
+    int (*sound_playing)(uint32_t sound);
+    int (*sound_stop)(uint32_t sound);
+
+    /* ---- despawning characters ----------------------------------------------------------------------
+     * character_despawn: asks the game to take a server character away (an AI: a guard, a runner),
+     * the way its spawner's "Unspawn" and the AI's own despawn do; it goes at the game's next
+     * removal pass. Not Faith (GN_ERR_ARGUMENT). Server thread. */
+    int (*character_despawn)(void* server_character);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

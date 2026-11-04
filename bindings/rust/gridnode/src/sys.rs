@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 18;
+pub const GN_API_VERSION: u32 = 19;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -132,6 +132,10 @@ pub struct gn_ray_hit_ex {
     pub entity: *mut c_void,
     pub physics_object: *mut c_void,
     pub hit: gn_ray_hit,
+    pub filter_info: u32,
+    pub layer: u32,
+    pub material: u32,
+    pub reserved2: u32,
 }
 
 #[repr(C, align(16))]
@@ -341,6 +345,16 @@ pub struct gn_api {
     pub body_transform: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, out: *mut gn_transform) -> c_int>,
     pub body_set_transform: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, to: *const gn_transform) -> c_int>,
     pub entity_other_half: Option<unsafe extern "C" fn(entity: *mut c_void) -> *mut c_void>,
+    pub box_add: Option<unsafe extern "C" fn(mod_: *const c_char, at: *const gn_transform, half_extents: *const f32, out_box: *mut u32) -> c_int>,
+    pub box_move: Option<unsafe extern "C" fn(box_: u32, at: *const gn_transform) -> c_int>,
+    pub box_remove: Option<unsafe extern "C" fn(box_: u32) -> c_int>,
+    pub box_state: Option<unsafe extern "C" fn(box_: u32) -> c_int>,
+    pub sound_play: Option<unsafe extern "C" fn(mod_: *const c_char, asset_path: *const c_char, event: *const c_char, pos: *const f32, out_sound: *mut u32) -> c_int>,
+    pub sound_event: Option<unsafe extern "C" fn(sound: u32, event: *const c_char) -> c_int>,
+    pub sound_move: Option<unsafe extern "C" fn(sound: u32, pos: *const f32) -> c_int>,
+    pub sound_playing: Option<unsafe extern "C" fn(sound: u32) -> c_int>,
+    pub sound_stop: Option<unsafe extern "C" fn(sound: u32) -> c_int>,
+    pub character_despawn: Option<unsafe extern "C" fn(server_character: *mut c_void) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -352,7 +366,7 @@ const _: () = assert!(core::mem::size_of::<gn_setting>() == 96);
 const _: () = assert!(core::mem::size_of::<gn_command>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_message_info>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ray_hit>() == 32);
-const _: () = assert!(core::mem::size_of::<gn_ray_hit_ex>() == 64);
+const _: () = assert!(core::mem::size_of::<gn_ray_hit_ex>() == 80);
 const _: () = assert!(core::mem::size_of::<gn_transform>() == 64);
 const _: () = assert!(core::mem::size_of::<gn_field>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
@@ -363,4 +377,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 808);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 888);

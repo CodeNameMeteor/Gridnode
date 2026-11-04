@@ -302,6 +302,37 @@ inline int bodySetTransform(void* entity, uint32_t body, const gn_transform& to)
 // collides with the client half's bodies: move both. Any thread.
 inline void* entityOtherHalf(void* entity) { return api().entity_other_half(entity); }
 
+// ---- collision boxes (API 19) ------------------------------------------------------------------
+// A static box in the client's physics world (what Faith collides with), made at its next physics
+// update. 0 if it could not be asked for. Any thread; the mod's boxes go when it is unloaded.
+inline uint32_t boxAdd(const gn_transform& at, const Vec3& halfExtents) {
+    const float h[3] = {halfExtents.x, halfExtents.y, halfExtents.z};
+    uint32_t box = 0;
+    return api().box_add(modName(), &at, h, &box) == GN_OK ? box : 0;
+}
+inline bool boxMove(uint32_t box, const gn_transform& at) { return api().box_move(box, &at) == GN_OK; }
+inline bool boxRemove(uint32_t box) { return api().box_remove(box) == GN_OK; }
+inline int boxState(uint32_t box) { return api().box_state(box); } // 1 in the world, 0 waiting, < 0 gone / failed
+
+// ---- sounds (API 19) ----------------------------------------------------------------------------
+// A loaded sound asset played at pos (event null: its default start). 0 on failure. Client thread.
+inline uint32_t soundPlay(const char* assetPath, const Vec3* pos = nullptr, const char* event = nullptr) {
+    const float p[3] = {pos ? pos->x : 0.f, pos ? pos->y : 0.f, pos ? pos->z : 0.f};
+    uint32_t s = 0;
+    return api().sound_play(modName(), assetPath, event, pos ? p : nullptr, &s) == GN_OK ? s : 0;
+}
+inline bool soundEvent(uint32_t sound, const char* event) { return api().sound_event(sound, event) == GN_OK; }
+inline bool soundMove(uint32_t sound, const Vec3& pos) {
+    const float p[3] = {pos.x, pos.y, pos.z};
+    return api().sound_move(sound, p) == GN_OK;
+}
+inline bool soundPlaying(uint32_t sound) { return api().sound_playing(sound) == 1; }
+inline bool soundStop(uint32_t sound) { return api().sound_stop(sound) == GN_OK; }
+
+// ---- despawning characters (API 19) -------------------------------------------------------------
+// A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
+inline int characterDespawn(void* serverCharacter) { return api().character_despawn(serverCharacter); }
+
 // ---- messages ---------------------------------------------------------------------------------
 // fn(const void* message, const gn_message_info& info) for every message of a type
 // ("ClientPlayerLocalSetMessage") or a whole category ("ClientPlayer"), on the sender's thread.

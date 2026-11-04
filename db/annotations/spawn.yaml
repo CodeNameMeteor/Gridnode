@@ -94,6 +94,17 @@ hooks:
     note: Sees every character spawner as it is created; ci->data is the spawner's data (Blueprint at +0x18).
 
 functions:
+  - name: Entity_requestDestroy
+    va: 0x143167700
+    signature: "void(void* entity, void* ownerRef)"
+    note: >-
+      Asks the entity's owner to destroy it: returns if entity +0x18 bit 10 is set (already going),
+      else jumps to [ownerRef]'s vtable +0x10 with the entity (the owner queues it). How the game
+      removes characters: a spawner's Unspawn (0x143383f48) and the AI coordinator's despawn
+      (0x143933580), both with ownerRef = [character +0x28]. Research_Spawn_System_2026-10-23;
+      checked in Ghidra 2026-11-03.
+    confidence: confirmed
+    sources: [research, ghidra]
   - name: ServerCharacterSpawnEntity_createCharacter
     va: 0x143390a30
     signature: "void*(ServerCharacterSpawnEntity* spawner, SpawnInfo* info)"

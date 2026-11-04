@@ -281,6 +281,37 @@ pub fn body_set_transform(entity: *mut c_void, body: u32, to: &Transform) -> Res
 pub fn entity_other_half(entity: *mut c_void) -> *mut c_void {
     unsafe { (api().entity_other_half.unwrap())(entity) }
 }
+/// A static collision box in the client's physics world (what Faith collides with), made at its next
+/// physics update. Any thread; the mod's boxes go when it is unloaded.
+pub fn box_add(at: &Transform, half_extents: [f32; 3]) -> Option<u32> {
+    let mut b = 0u32;
+    (unsafe { (api().box_add.unwrap())(name(), at, half_extents.as_ptr(), &mut b) } == 0).then_some(b)
+}
+pub fn box_move(b: u32, at: &Transform) -> bool { unsafe { (api().box_move.unwrap())(b, at) == 0 } }
+pub fn box_remove(b: u32) -> bool { unsafe { (api().box_remove.unwrap())(b) == 0 } }
+/// 1 in the world, 0 waiting, negative: gone or failed.
+pub fn box_state(b: u32) -> i32 { unsafe { (api().box_state.unwrap())(b) } }
+/// A loaded sound asset played at `pos` (`event` None: its default start). Client thread.
+pub fn sound_play(asset_path: &str, pos: Option<[f32; 3]>, event: Option<&str>) -> Option<u32> {
+    let path = std::ffi::CString::new(asset_path).ok()?;
+    let ev = event.and_then(|e| std::ffi::CString::new(e).ok());
+    let p = pos.unwrap_or([0.0; 3]);
+    let mut s = 0u32;
+    let r = unsafe {
+        (api().sound_play.unwrap())(name(), path.as_ptr(), ev.as_ref().map_or(core::ptr::null(), |e| e.as_ptr()),
+                                    if pos.is_some() { p.as_ptr() } else { core::ptr::null() }, &mut s)
+    };
+    (r == 0).then_some(s)
+}
+pub fn sound_event(s: u32, event: &str) -> bool {
+    let Ok(e) = std::ffi::CString::new(event) else { return false };
+    unsafe { (api().sound_event.unwrap())(s, e.as_ptr()) == 0 }
+}
+pub fn sound_move(s: u32, pos: [f32; 3]) -> bool { unsafe { (api().sound_move.unwrap())(s, pos.as_ptr()) == 0 } }
+pub fn sound_playing(s: u32) -> bool { unsafe { (api().sound_playing.unwrap())(s) == 1 } }
+pub fn sound_stop(s: u32) -> bool { unsafe { (api().sound_stop.unwrap())(s) == 0 } }
+/// A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
+pub fn character_despawn(server_character: *mut c_void) -> i32 { unsafe { (api().character_despawn.unwrap())(server_character) } }
 pub fn level_name() -> String {
     let mut buf = [0 as c_char; 256];
     unsafe {

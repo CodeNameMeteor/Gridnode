@@ -202,6 +202,25 @@ void physicsStart() {
 void worldStart() {
     onCreated("gridnode", "ServerCharacterEntity", &onServerCharacter, nullptr);
     physicsStart();
+    bodiesStart();
+}
+
+int characterDespawn(void* entity) {
+    const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
+    if (!p || !kindOf(entity, "ServerCharacterEntity")) return GN_ERR_ARGUMENT;
+    if (!isServerThread()) return GN_ERR_THREAD;
+    if (entity == localServerCharacter()) return GN_ERR_ARGUMENT; // not Faith
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), p);
+    if (!inspector::alive(p, t)) return GN_ERR_ARGUMENT;
+    if (!build::codeMatches("Entity_requestDestroy")) return GN_ERR_UNAVAILABLE;
+    // As the spawner's Unspawn passes it: [character +0x28], whose first field is the owner that
+    // queues the destruction (its vtable +0x10, in the game's code).
+    const uintptr_t ref = mem::readOr<uintptr_t>(p + 0x28);
+    const uintptr_t owner = ref ? mem::readOr<uintptr_t>(ref) : 0;
+    const uintptr_t vt = owner ? mem::readOr<uintptr_t>(owner) : 0;
+    if (!vt || !mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) return GN_ERR_UNAVAILABLE;
+    reinterpret_cast<void (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::Entity_requestDestroy))(p, ref);
+    return GN_OK;
 }
 
 namespace {
@@ -580,7 +599,8 @@ Fn bodyVirtual(uintptr_t body, uint32_t slot) {
 } // namespace
 
 int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out) {
-    if (!out || out->size < sizeof(gn_ray_hit_ex)) return GN_ERR_ARGUMENT;
+    // API 18's struct ended at hit; API 19 added the body's filter, layer and material.
+    if (!out || out->size < offsetof(gn_ray_hit_ex, filter_info)) return GN_ERR_ARGUMENT;
     gn_ray_hit hit{};
     uintptr_t object = 0;
     uint32_t body = 0xffffffffu, part = 0xffffffffu;
@@ -592,6 +612,14 @@ int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out)
     out->reserved = 0;
     out->physics_object = reinterpret_cast<void*>(object);
     out->entity = reinterpret_cast<void*>(entityOfBody(body).first);
+    if (out->size >= sizeof(gn_ray_hit_ex)) {
+        uint32_t filter = 0, material = 0;
+        const bool known = bodyFilter(object, filter, material);
+        out->filter_info = known ? filter : 0;
+        out->layer = known ? (filter & 31u) : 0;
+        out->material = known ? material : 0;
+        out->reserved2 = 0;
+    }
     return GN_OK;
 }
 

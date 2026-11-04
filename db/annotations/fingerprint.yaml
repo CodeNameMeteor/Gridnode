@@ -65,3 +65,15 @@ fingerprint:
     - { at: ServerEntityCreationInfo_ctor, bytes: "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
     - { at: ServerEntityInitInfo_ctor, bytes: "48 8D 05 51 AC 7E FE 48 89 51 08 4C 89 41 10 48", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
     - { at: entityCreator_spawnIntoBus, bytes: "48 89 E0 57 48 83 EC 70 48 C7 40 B8 FE FF FF FF", required: false, note: "From the game image (gridnode.py fingerprint --add)." }
+    - { at: PhysicsWorld_flush, bytes: "48 89 E0 55 48 83 EC 70 48 8B A9 D0 01 00 00 48", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpWorld_createBody, bytes: "44 88 4C 24 20 4C 89 44 24 18 55 41 54 41 55 48", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpWorld_addBodies, bytes: "45 85 C0 0F 8E B1 05 00 00 48 89 E0 44 88 48 20", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpWorld_destroyBodies, bytes: "48 89 54 24 10 53 55 57 41 55 41 56 48 83 EC 40", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpWorld_setBodyTransform, bytes: "89 54 24 10 55 53 56 57 41 57 48 89 E5 48 83 EC", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpConvexShape_createFromHalfExtents, bytes: "48 83 EC 48 0F 28 19 0F 57 C0 B8 0F A2 4F C3 8D", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpConvexShape_BuildConfig_ctor, bytes: "48 83 EC 18 F3 0F 10 05 E8 39 AD FD F3 0F 10 0D", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hknpBodyCinfo_ctor, bytes: "48 89 5C 24 08 57 48 83 EC 20 48 89 CB 48 83 C1", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: Quat_fromLinearTransform, bytes: "53 48 83 EC 10 F3 0F 10 1A F3 0F 10 52 14 F3 0F", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: hkTransform_fromQuat, bytes: "48 83 EC 18 0F 28 15 65 3E 04 FE 0F 29 34 24 0F", required: false, note: "Optional: only collision boxes depend on it." }
+    - { at: SoundSystem_createVoice, bytes: "48 8B 0D D1 FA 3F FF E9 74 69 03 00", required: false, note: "Optional: only mods' sounds depend on it." }
+    - { at: Entity_requestDestroy, bytes: "8B 41 18 49 89 D0 48 89 CA C1 E8 0A A8 01", required: false, note: "Optional: only character_despawn depends on it." }

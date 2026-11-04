@@ -158,6 +158,8 @@ add_library(gridnode SHARED
   sdk/src/quiet.cpp
   sdk/src/modsettings.cpp
   sdk/src/world.cpp
+  sdk/src/bodies.cpp
+  sdk/src/sounds.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
   sdk/src/settings.cpp

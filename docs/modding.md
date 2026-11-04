@@ -243,10 +243,13 @@ std::string level = gn::levelName();
 | `teleport` | server | `GN_ERR_THREAD` elsewhere. Clears velocity and replicates to the client like the game's teleport triggers. |
 | `component` | the entity's realm | Characters only (client or server). |
 | `raycast(from, to, hit[, radius])` | server | The game's ray caster (what its ray cast entities use); a radius sweeps a sphere. The first hit can be the character the ray starts in. |
-| `raycastObject(from, to, hit)` | server | A thin ray that says what it hit: `hit.entity` (the server entity owning the body; null for level geometry), `hit.body`, `hit.part` (a prop inside a static model group). Looks through the physics entities: per click, not per tick (API 18). |
+| `raycastObject(from, to, hit)` | server | A thin ray that says what it hit: `hit.entity` (the server entity owning the body; null for level geometry), `hit.body`, `hit.part` (a prop inside a static model group). API 19 adds `hit.layer` (the collision layer: 1 Static, 2 Dynamic, 3 Player, 4 AI, 14 Character, ...), `filter_info` and `material`. Looks through the physics entities: per click, not per tick (API 18). |
 | `entityBodies(entity)` | any | A physics entity's collision body ids (API 18). |
 | `bodyTransform` / `bodySetTransform(entity, body, t)` | the entity's realm | Where a body's collision is, and moving it as the game teleports a body. Moving an entity does not move its bodies; a group's shared body gives `GN_ERR_UNAVAILABLE`. Each realm has its own physics: Faith walks into the client half's bodies, so move both (API 18). |
 | `entityOtherHalf(entity)` | any | The same object in the other realm (server to client and back), or null (API 18). |
+| `boxAdd(at, halfExtents)` / `boxMove` / `boxRemove` / `boxState` | any | A static collision box in the client's physics world (what Faith collides with), made at its next physics update; it borrows a nearby static body's identity, so hits on it report that body's material. AI don't see it. Gone when the mod unloads (API 19). |
+| `soundPlay(assetPath[, pos, event])` / `soundEvent` / `soundMove` / `soundPlaying` / `soundStop` | client | A voice of the game's sound system for a loaded sound asset; event null plays its default start. Stopped when the mod unloads (API 19). |
+| `characterDespawn(serverCharacter)` | server | An AI taken away as its spawner's Unspawn would; not Faith (API 19). |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
 
 Entity pointers are only good while the entity lives (most until their level ends). Keep them

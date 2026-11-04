@@ -88,6 +88,26 @@ functions:
       From the cinematic tools' research (Research_Havok_2026-10-25); checked in Ghidra 2026-11-03.
     confidence: confirmed
     sources: [research, ghidra]
+  - name: PhysicsWorld_flush
+    va: 0x1434f4c80
+    signature: "void(void* world)"
+    note: >-
+      The game's deferred physics work for one PhysicsWorld: each record put off is released, its slot
+      at +0x130 cleared and pushed on the free list (+0x150 head, +0x152 live count), then its Havok
+      bodies destroyed (destroyBodies 0x143f423e0 at 0x1434f4e91). The only place records die. Realm
+      at [world +8] +0x10 (0 client); +0xb84 1 for the client's effect world. Research_Ground_Level
+      2026-11-01 section 10.1; checked in Ghidra 2026-11-03.
+    confidence: confirmed
+    sources: [research, ghidra]
+  - { name: hknpConvexShape_BuildConfig_ctor, va: 0x143f2e490, signature: "void*(void* config)", note: "Havok's convex BuildConfig (0x30 bytes on the game's stack in 0x143516450).", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpConvexShape_createFromHalfExtents, va: 0x143f2f140, signature: "void*(const hkVector4* halfExtents, float convexRadius, const void* config)", note: "A box; the game uses radius 0.01 (0x143516450, kind 1) and sets the shape's user data (+0x18).", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpBodyCinfo_ctor, va: 0x143f38a70, signature: "void(void* cinfo)", note: "0x60 bytes: +0 shape, +8 reserved id, +0xc motion id (0 static), +0x10 quality, +0x12 material, +0x14 collision filter info, +0x18 flags, +0x30 position, +0x40 orientation (quaternion).", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpWorld_createBody, va: 0x143f41880, signature: "void(void* hknpWorld, u32* outId, const void* cinfo, u8 flags)", note: "Flags bit 0: don't add it yet (the game's factory 0x143516450 passes 1 and sets the body's user data +0x88 first); otherwise addBodies(world, id, 1, flags) at 0x143f41a38.", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpWorld_addBodies, va: 0x143f41a80, signature: "void(void* hknpWorld, const u32* ids, i32 count, u32 flags)", confidence: inferred, sources: [research, ghidra] }
+  - { name: hknpWorld_destroyBodies, va: 0x143f423e0, signature: "void(void* hknpWorld, const u32* ids, i32 count, i32 a4)", note: "The game passes 1 (PhysicsWorld_flush).", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpWorld_setBodyTransform, va: 0x143f3a6b0, signature: "void(void* hknpWorld, u32 id, const hkTransform* t, i32 activation)", note: "RigidBody's setTransform (0x1434f21e0) passes 1, with t from hkTransform_fromQuat.", confidence: confirmed, sources: [research, ghidra] }
+  - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(float* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
+  - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(float* hkTransform, const float* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
@@ -165,6 +185,14 @@ constants:
   - { name: HavokWorld_FilterOwner, value: 0x150 }
   - { name: FilterOwner_Filter, value: 0x4d0 }
   - { name: Physics_Owner, value: 0x8, confidence: inferred, sources: [research], note: "The object Physics_castRay's hits are resolved against." }
+  - { name: PhysicsWorld_HavokWorld, value: 0xe0, confidence: confirmed, sources: [ghidra], note: "The PhysicsWorld's hknpWorld (PhysicsWorld_create, RigidBody's getTransform 0x1434f13f0)." }
+  - { name: PhysicsWorld_Records, value: 0x130, confidence: confirmed, sources: [research, ghidra], note: "Body records (RigidBody...), indexed by the low 16 bits of a body's user data; a free slot holds a free-list link." }
+  - { name: PhysicsWorld_RecordCount, value: 0xb80, confidence: confirmed, sources: [ghidra], note: "u32: the description's body count (PhysicsWorld_create)." }
+  - { name: PhysicsWorld_EffectFlag, value: 0xb84, confidence: confirmed, sources: [ghidra], note: "u8: 1 for the client's effect world." }
+  - { name: HavokWorld_Bodies, value: 0x20, confidence: confirmed, sources: [research, ghidra], note: "hknpBody array, 0x90 each: +0x58 flags, +0x5c collision filter info (layer in the low 5 bits), +0x60 id, +0x68 motion id (0 static), +0x6c material, +0x6e quality, +0x88 user data (low 32: the game's record id)." }
+  - { name: RigidBody_vtable, value: 0x141bac160, confidence: confirmed, sources: [research, gridnode], note: "The game's body record for a Havok body (seen on picks)." }
+  - { name: RigidBody_World, value: 0x30, confidence: confirmed, sources: [ghidra], note: "Its PhysicsWorld (0x1434f13f0)." }
+  - { name: RigidBody_HavokBody, value: 0x58, confidence: confirmed, sources: [ghidra], note: "i32: its Havok body's index (0x1434f13f0)." }
   - { name: PhysicsWorldDesc_BodyCapacity, value: 0x64, confidence: confirmed, sources: [research, ghidra], note: "u32; the game's settings give 16384 (Havok adds 1). PhysicsWorld_create reads it at 0x1434e51f2." }
   - { name: PhysicsWorldDesc_MotionCapacity, value: 0x68, confidence: confirmed, sources: [research, ghidra], note: "u32; 8192 from the game's settings." }
   - { name: PhysicsOwner_Objects, value: 0x130, confidence: inferred, sources: [research], note: "Table of physics objects, indexed by the low 16 bits of a hit's body (0x1434ee750)." }
