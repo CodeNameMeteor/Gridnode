@@ -113,7 +113,7 @@ functions:
   - name: ComponentEntity_destroyComponents
     va: 0x1431634a0
     signature: "void(void* entity)"
-    note: "For each component in the collection at +0x38 (count at +8, 0x20-byte entries from +0x10): vtable +0x30 (destroy), then +0x38 with 1 (delete); clears the count."
+    note: "For each component in the collection at +0x38 (u8 slot count at +8, 0x20-byte slots from +0x10; a slot's component at +0x10, and slot byte +3 + 1 is how many slots it takes): vtable +0x30 (destroy), then +0x38 with 1 (delete); clears the count. Checked in the decompiler (2026-11-04); the Field diff window walks it."
     confidence: inferred
     sources: [ghidra]
   - name: Entity_dtor

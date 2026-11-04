@@ -45,6 +45,15 @@ classes:
     properties:
       - { name: Visible, hash: 0x35bc69ab, type: bool, note: "Handled by vf2 (0x143919960), which calls setVisible." }
 
+  - name: PamServerMoveTrackerComponent
+    realm: server
+    confidence: inferred
+    sources: [gridnode]
+    note: "Tracks a character's movement (seen on Faith with the Field diff window, 2026-11-04): non-zero while she moves, back to 0 when she stops."
+    members:
+      - { offset: 0x6c, name: movedAmount, type: f32, note: "0 standing; 7.78 and 3.63 while moving (a speed or a distance since the last stop: not checked in Ghidra)." }
+      - { offset: 0x70, name: movedAmount2, type: f32, note: "Changes with +0x6c (0.198 with 7.78, 0.089 with 3.63); not checked in Ghidra." }
+
 structs:
   - name: CustomizeRequest
     size: 0x20

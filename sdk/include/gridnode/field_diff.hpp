@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gn::fielddiff {
@@ -23,8 +24,16 @@ struct Change {
     uint32_t size = 0;
 };
 
-// Every field whose bytes differ, then the changed 4-byte words no field covers (in offset order).
-// before and after are the same length.
+// A 64-bit value that looks like a pointer to an object: user space above 4 GB (where the game's heap
+// and image are), 8-aligned, low half not zero (an integer 1 in the high word is not one).
+inline bool pointerLike(const uint8_t* p) {
+    uint64_t v;
+    std::memcpy(&v, p, 8);
+    return v >= 0x100000000ull && v < 0x800000000000ull && (v & 7) == 0 && (v & 0xffffffffull) != 0;
+}
+
+// Every field whose bytes differ, then the changed bytes no field covers (in offset order): an
+// 8-aligned pointer-looking qword as one change, else 4-byte words. before and after are the same length.
 inline std::vector<Change> diff(const std::vector<uint8_t>& before, const std::vector<uint8_t>& after, const std::vector<FieldSpan>& fields) {
     std::vector<Change> out;
     const size_t n = std::min(before.size(), after.size());
@@ -36,8 +45,9 @@ inline std::vector<Change> diff(const std::vector<uint8_t>& before, const std::v
         if (std::memcmp(before.data() + f.offset, after.data() + f.offset, end - f.offset) != 0)
             out.push_back({f.name, f.offset, static_cast<uint32_t>(end - f.offset)});
     }
-    for (size_t at = 0; at < n; at += 4) {
-        const size_t end = std::min(n, at + 4);
+    for (size_t at = 0, step = 4; at < n; at += step) {
+        step = (at % 8 == 0 && at + 8 <= n && (pointerLike(before.data() + at) || pointerLike(after.data() + at))) ? 8 : 4;
+        const size_t end = std::min(n, at + step);
         bool changed = false, uncovered = false;
         for (size_t i = at; i < end; ++i) {
             if (before[i] != after[i]) changed = true;
@@ -51,6 +61,9 @@ inline std::vector<Change> diff(const std::vector<uint8_t>& before, const std::v
     std::stable_sort(out.begin(), out.end(), [](const Change& a, const Change& b) { return a.offset < b.offset; });
     return out;
 }
+
+// Both sides of a change the same way (a word that is a float on one side reads as one on the other).
+inline std::pair<std::string, std::string> formatBoth(const uint8_t* before, const uint8_t* after, uint32_t size);
 
 // Bytes as a reader would want them: 1 byte as a number, 4 as a float when it looks like one (else
 // an integer), 8 as hex, 12 / 16 as floats, anything else as hex bytes.
@@ -94,6 +107,31 @@ inline std::string format(const uint8_t* p, uint32_t size) {
         return size > 32 ? s + "..." : s;
     }
     return b;
+}
+
+inline std::pair<std::string, std::string> formatBoth(const uint8_t* before, const uint8_t* after, uint32_t size) {
+    if (size != 4) return {format(before, size), format(after, size)};
+    auto floaty = [](const uint8_t* q) {
+        int32_t i;
+        float f;
+        std::memcpy(&i, q, 4), std::memcpy(&f, q, 4);
+        const bool plausible = f == 0.f || (f == f && f > -1e7f && f < 1e7f && (f > 1e-6f || f < -1e-6f));
+        return std::pair<bool, bool>{plausible, i < -0x10000 || i > 0x10000}; // could be one, looks like one
+    };
+    const auto [pa, la] = floaty(before);
+    const auto [pb, lb] = floaty(after);
+    char x[48], y[48];
+    if (pa && pb && (la || lb)) {
+        float f, g;
+        std::memcpy(&f, before, 4), std::memcpy(&g, after, 4);
+        std::snprintf(x, sizeof(x), "%.6g", f), std::snprintf(y, sizeof(y), "%.6g", g);
+    } else {
+        int32_t i, j;
+        std::memcpy(&i, before, 4), std::memcpy(&j, after, 4);
+        if ((la && !pa) || (lb && !pb)) std::snprintf(x, sizeof(x), "0x%x", uint32_t(i)), std::snprintf(y, sizeof(y), "0x%x", uint32_t(j));
+        else std::snprintf(x, sizeof(x), "%d", i), std::snprintf(y, sizeof(y), "%d", j);
+    }
+    return {x, y};
 }
 
 } // namespace gn::fielddiff

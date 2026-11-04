@@ -26,6 +26,13 @@ back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is th
   ~500 keyframed bodies appear there (the game moves them) and ~120 dynamic ones in the client's
   effect world (layer 9), whose position and velocity were the same 2 s apart (not simulated?).
   Pushes found only static bodies. Next: spawnable dynamic bodies, or why the effect world's don't move.
+  Field diff confirmed in game: snapshots, live compare, logging. Added: annotated members as names,
+  pointers as one 8-byte value, a "Character ahead" button, and an entity's component list (its
+  collection at +0x38, as ComponentEntity_destroyComponents walks it). A KSEC's
+  PamServerAIHealthComponent: +0x20 and +0x40 went 3 -> 2 on a hit, 3 -> 0 or -1 on a kill (not
+  annotated yet). PamServerMoveTrackerComponent: +0x6c 0 -> 7.8 and 3.6 while moving,
+  +0x70 with it; the user: it tracks Faith while she moves and resets when she stops (annotated as
+  inferred). The component list is confirmed in game (2026-11-04).
 - **Packaging** (2026-11-04). `gridnode.py package`: the release zip (game files, SDK headers with
   engine.hpp, ImGui, the Rust crate, templates; no game data); CI builds it and a mod from its
   template. `templates/gridnode_mod.py` new (C++ / Rust) and pack (a mod's zip, mods/<name>/).

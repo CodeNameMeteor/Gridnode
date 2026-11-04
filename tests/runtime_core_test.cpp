@@ -424,6 +424,22 @@ void testFieldDiff() {
     CHECK(gn::fielddiff::format(b.data() + 0x1c, 4) == "1");      // a small integer, not a float
     CHECK(gn::fielddiff::format(b.data() + 0x10, 2) == "1792");
     CHECK(gn::fielddiff::diff(a, a, fields).empty());
+    // A pointer no field covers is one 8-byte change; a word that is a float on one side reads as a float on both.
+    std::vector<uint8_t> c(0x20, 0), e(0x20, 0);
+    const uint64_t p1 = 0x1be7b3060ull, p2 = 0x1a5906420ull;
+    std::memcpy(c.data() + 0x18, &p1, 8), std::memcpy(e.data() + 0x18, &p2, 8);
+    const float neg = -0.25f;
+    std::memcpy(c.data(), &neg, 4);
+    e[0] = 0x50, e[1] = 0xa2, e[2] = 0x0b, e[3] = 0x15; // 0x150ba250: an integer, or a float near 2.8e-26
+    const auto d2 = gn::fielddiff::diff(c, e, {});
+    CHECK(d2.size() == 2 && d2[0].offset == 0 && d2[0].size == 4 && d2[1].offset == 0x18 && d2[1].size == 8);
+    CHECK(gn::fielddiff::format(e.data() + 0x18, 8) == "0x1a5906420");
+    const auto both = gn::fielddiff::formatBoth(c.data(), e.data(), 4);
+    CHECK(both.first == "0xbe800000" && both.second == "0x150ba250"); // not a float on one side: hex on both
+    const float f1 = 1.5f, f2 = -471.033f;
+    std::memcpy(c.data() + 8, &f1, 4), std::memcpy(e.data() + 8, &f2, 4);
+    const auto floats = gn::fielddiff::formatBoth(c.data() + 8, e.data() + 8, 4);
+    CHECK(floats.first == "1.5" && floats.second == "-471.033");
 }
 
 } // namespace
