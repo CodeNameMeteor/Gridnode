@@ -64,6 +64,102 @@ struct Donor {
     bool ok = false;
 } g_donor[2]; // (g_m) per realm
 
+// Gravity a mod set, per realm: written into each of the realm's Havok worlds (the main one and the
+// client's effect world: debris and ragdolls may be there) after the game's flush, again into each new
+// world, and the game's value put back when the mod lets go.
+struct Gravity {
+    bool want = false;
+    float g[3] = {};
+    uintptr_t owner = 0; // an address in the mod's code
+    uint32_t changes = 0;
+} g_gravity[2]; // (g_m)
+
+struct WorldGravity {
+    uintptr_t world = 0;  // the world `game` was read from
+    float game[3] = {};   // its gravity as the game made it
+    bool applied = false; // ours is in it
+    uint32_t seen = 0;    // the change last applied
+    ULONGLONG census = 0; // when its bodies were last counted
+} g_worldGravity[2][2]; // (g_m) [realm][0 main, 1 effect world]
+
+const char* worldName(int r, int kind) { return kind ? (r ? "server's other" : "client's effect") : (r ? "server" : "client"); }
+
+// How many of a Havok world's bodies can move (gravity moves only those), from its body array.
+void censusLocked(uintptr_t hk, int r, int kind) {
+    const uintptr_t bodies = mem::readOr<uintptr_t>(hk + c::HavokWorld_Bodies);
+    if (!bodies) return;
+    constexpr uint32_t kChunk = 256;
+    std::vector<uint8_t> buf(kChunk * kBodySize);
+    int live = 0, dynamic = 0, active = 0, keyframed = 0, unowned = 0, shown = 0;
+    for (uint32_t first = 0; first < 0x10000; first += kChunk) {
+        if (!mem::read(bodies + uint64_t(first) * kBodySize, buf.data(), buf.size())) break; // past the array
+        for (uint32_t k = 0; k < kChunk; ++k) {
+            const uint8_t* b = buf.data() + size_t(k) * kBodySize;
+            uint32_t id, flags, filter, motion;
+            uint64_t user;
+            memcpy(&id, b + 0x60, 4), memcpy(&flags, b + 0x58, 4), memcpy(&filter, b + 0x5c, 4), memcpy(&motion, b + 0x68, 4), memcpy(&user, b + 0x88, 8);
+            if (id != first + k || !flags) continue; // a free entry
+            ++live;
+            if (!motion) continue;
+            if (!(flags & 2)) {
+                ++keyframed;
+                continue;
+            }
+            ++dynamic;
+            if (flags & 8) ++active; // hknp's IS_ACTIVE (simulated this step), if the flags are hknp's usual ones
+            if (!user) ++unowned;
+            if (shown++ < 8) {
+                float at[3], v[4] = {};
+                memcpy(at, b + 0x30, 12);
+                if (const uintptr_t motions = mem::readOr<uintptr_t>(hk + c::HavokWorld_Motions)) mem::read(motions + uint64_t(motion) * 0x80 + 0x40, v, 16);
+                GN_LOG("gravity:   moving body %u (flags %x, layer %u, user data %llx) at %.1f %.1f %.1f, velocity %.2f %.2f %.2f", id, flags,
+                       filter & 31u, static_cast<unsigned long long>(user), at[0], at[1], at[2], v[0], v[1], v[2]);
+            }
+        }
+    }
+    GN_LOG("gravity: the %s world has %d bodies: %d dynamic (gravity and pushes move these; %d with flag 8, %d with no user data), %d keyframed (the game moves these)",
+           worldName(r, kind), live, dynamic, active, unowned, keyframed);
+}
+
+void gravityLocked(uintptr_t world, int r, int kind) {
+    Gravity& gr = g_gravity[r];
+    WorldGravity& w = g_worldGravity[r][kind];
+    if (!gr.want && !(w.applied && w.world == world)) return;
+    const uintptr_t hk = mem::readOr<uintptr_t>(world + c::PhysicsWorld_HavokWorld);
+    if (!hk) return;
+    if (w.world != world) {
+        w = WorldGravity{};
+        w.world = world;
+        if (!mem::read(hk + c::HavokWorld_Gravity, w.game, sizeof(w.game))) return;
+    }
+    float now[3] = {};
+    mem::read(hk + c::HavokWorld_Gravity, now, sizeof(now));
+    if (gr.want) {
+        if (memcmp(now, gr.g, sizeof(now)) != 0) mem::write(hk + c::HavokWorld_Gravity, gr.g, sizeof(gr.g));
+        const bool first = !w.applied;
+        w.applied = true;
+        if (w.seen == gr.changes) return;
+        // A count after each change (at most every 2 s), so one after killing someone sees ragdolls.
+        if (first) GN_LOG("gravity: the %s world's is now %.2f %.2f %.2f (the game's %.2f %.2f %.2f)", worldName(r, kind), gr.g[0], gr.g[1], gr.g[2],
+                          w.game[0], w.game[1], w.game[2]);
+        if (GetTickCount64() - w.census < 2000) return;
+        w.seen = gr.changes, w.census = GetTickCount64();
+        if (!first) GN_LOG("gravity: the %s world's is now %.2f %.2f %.2f", worldName(r, kind), gr.g[0], gr.g[1], gr.g[2]);
+        guardHook("gravity census", [&] { censusLocked(hk, r, kind); });
+    } else {
+        mem::write(hk + c::HavokWorld_Gravity, w.game, sizeof(w.game));
+        GN_LOG("gravity: the %s world's is the game's again", worldName(r, kind));
+        w.applied = false;
+    }
+}
+
+bool gravityAppliedLocked() {
+    for (auto& realm : g_worldGravity)
+        for (const WorldGravity& w : realm)
+            if (w.applied) return true;
+    return false;
+}
+
 using FlushFn = void (*)(uintptr_t world);
 FlushFn g_flush = nullptr;
 std::atomic<bool> g_off{false}; // boxes switched off (not used yet: a fault reaches the crash handler)
@@ -81,6 +177,13 @@ int realmOf(uintptr_t world) {
     const int32_t r = realm ? mem::readOr<int32_t>(realm + 0x10, -1) : -1;
     if (r == 0) return mem::readOr<uint8_t>(world + c::PhysicsWorld_EffectFlag, 1) == 0 ? 0 : -1;
     return r == 1 ? 1 : -1;
+}
+
+// The world's realm (0 client, 1 server) whatever kind it is; -1 if unknown.
+int anyRealmOf(uintptr_t world) {
+    const uintptr_t realm = mem::readOr<uintptr_t>(world + 8);
+    const int32_t r = realm ? mem::readOr<int32_t>(realm + 0x10, -1) : -1;
+    return r == 0 || r == 1 ? r : -1;
 }
 
 // A live static body record (RigidBody) of this world whose Havok body points back at it.
@@ -283,9 +386,17 @@ void afterFlushLocked(uintptr_t world, int r) {
 void flushHook(uintptr_t world) {
     g_flush(world);
     const int r = realmOf(world);
-    if (g_off.load() || r < 0) return;
+    if (r < 0) {
+        if (const int any = anyRealmOf(world); any >= 0) {
+            std::lock_guard<std::mutex> lock(g_m);
+            gravityLocked(world, any, 1);
+        }
+        return;
+    }
+    if (g_off.load()) return;
     g_flushes.fetch_add(1);
     std::lock_guard<std::mutex> lock(g_m);
+    gravityLocked(world, r, 0);
     if (g_boxes.empty() && world == g_world[r]) return;
     guardHook("bodies", [&] { afterFlushLocked(world, r); });
 }
@@ -380,14 +491,15 @@ void forgetBoxes(const CodeRange& r) {
 bool bodiesRelease(unsigned long ms) {
     {
         std::lock_guard<std::mutex> lock(g_m);
-        if (g_boxes.empty()) return true;
+        g_gravity[0].want = g_gravity[1].want = false; // the game's gravity back at the next update
+        if (g_boxes.empty() && !gravityAppliedLocked()) return true;
         for (Box& b : g_boxes) b.removed = true;
     }
     const ULONGLONG start = GetTickCount64();
     while (GetTickCount64() - start < ms) {
         {
             std::lock_guard<std::mutex> lock(g_m);
-            if (g_boxes.empty()) return true;
+            if (g_boxes.empty() && !gravityAppliedLocked()) return true;
         }
         Sleep(20);
     }
@@ -395,6 +507,38 @@ bool bodiesRelease(unsigned long ms) {
     const bool inWorld = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return b.body[0] != kNoBody || b.body[1] != kNoBody; });
     if (!inWorld) g_boxes.clear();
     return !inWorld;
+}
+
+int physicsGravity(int realm, float* out) {
+    if (!out || (realm != 0 && realm != 1)) return GN_ERR_ARGUMENT;
+    uintptr_t world;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        world = g_world[realm];
+    }
+    const uintptr_t hk = world ? havokWorld(world) : 0;
+    return hk && mem::read(hk + c::HavokWorld_Gravity, out, 12) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+int physicsSetGravity(int realm, const float* g, const void* caller) {
+    if (realm != 0 && realm != 1) return GN_ERR_ARGUMENT;
+    if (g)
+        for (int k = 0; k < 3; ++k)
+            if (!std::isfinite(g[k]) || std::fabs(g[k]) > 1000.f) return GN_ERR_ARGUMENT;
+    if (!g_ready) return GN_ERR_UNAVAILABLE; // applied from the flush hook
+    std::lock_guard<std::mutex> lock(g_m);
+    Gravity& gr = g_gravity[realm];
+    if (g && gr.want && memcmp(gr.g, g, sizeof(gr.g)) == 0) return GN_OK;
+    gr.want = g != nullptr;
+    ++gr.changes;
+    if (g) memcpy(gr.g, g, sizeof(gr.g)), gr.owner = reinterpret_cast<uintptr_t>(caller);
+    return GN_OK;
+}
+
+void forgetGravity(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (Gravity& gr : g_gravity)
+        if (gr.want && r.has(reinterpret_cast<void*>(gr.owner))) gr.want = false;
 }
 
 // What a game physics object (a RigidBody record, as a ray hit gives it) has on its Havok body: the

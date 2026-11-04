@@ -161,6 +161,7 @@ add_library(gridnode SHARED
   sdk/src/bodies.cpp
   sdk/src/sounds.cpp
   sdk/src/tracer.cpp
+  sdk/src/fielddiff.cpp
   sdk/src/ui.cpp
   sdk/src/inspector.cpp
   sdk/src/settings.cpp

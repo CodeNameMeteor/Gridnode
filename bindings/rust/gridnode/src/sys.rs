@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 20;
+pub const GN_API_VERSION: u32 = 21;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -356,6 +356,11 @@ pub struct gn_api {
     pub sound_stop: Option<unsafe extern "C" fn(sound: u32) -> c_int>,
     pub character_despawn: Option<unsafe extern "C" fn(server_character: *mut c_void) -> c_int>,
     pub mod_dir: Option<unsafe extern "C" fn(out: *mut c_char, size: usize) -> c_int>,
+    pub body_velocity: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, linear: *mut f32, angular: *mut f32) -> c_int>,
+    pub body_set_velocity: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, linear: *const f32, angular: *const f32) -> c_int>,
+    pub body_push: Option<unsafe extern "C" fn(entity: *mut c_void, body: u32, change: *const f32) -> c_int>,
+    pub physics_gravity: Option<unsafe extern "C" fn(realm: c_int, out: *mut f32) -> c_int>,
+    pub physics_set_gravity: Option<unsafe extern "C" fn(realm: c_int, g: *const f32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -378,4 +383,4 @@ const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 896);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 936);

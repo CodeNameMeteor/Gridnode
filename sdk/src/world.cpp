@@ -661,6 +661,79 @@ int apiBodySetTransform(void* entity, uint32_t id, const gn_transform* to) {
     return GN_OK;
 }
 
+namespace {
+// q v q^-1 (q = x, y, z, w); conj: the inverse rotation.
+void rotate(const float* q, const float* v, float* out, bool conj) {
+    const float x = conj ? -q[0] : q[0], y = conj ? -q[1] : q[1], z = conj ? -q[2] : q[2], w = q[3];
+    const float tx = 2.f * (y * v[2] - z * v[1]), ty = 2.f * (z * v[0] - x * v[2]), tz = 2.f * (x * v[1] - y * v[0]);
+    out[0] = v[0] + w * tx + (y * tz - z * ty);
+    out[1] = v[1] + w * ty + (z * tx - x * tz);
+    out[2] = v[2] + w * tz + (x * ty - y * tx);
+}
+
+// The body's Havok world and its motion (0 for a static body), on the entity's realm thread.
+int motionOf(void* entity, uint32_t id, uintptr_t& hk, uint32_t& index, uintptr_t& motion) {
+    uintptr_t body = 0;
+    if (const int r = bodyOf(entity, id, body); r != GN_OK) return r;
+    namespace c = e::constant;
+    const uintptr_t world = mem::readOr<uintptr_t>(body + c::RigidBody_World);
+    hk = world ? mem::readOr<uintptr_t>(world + c::PhysicsWorld_HavokWorld) : 0;
+    index = mem::readOr<uint32_t>(body + c::RigidBody_HavokBody, 0xffffffffu);
+    const uintptr_t bodies = hk ? mem::readOr<uintptr_t>(hk + c::HavokWorld_Bodies) : 0;
+    if (!bodies || index >= 0x10000) return GN_ERR_UNAVAILABLE;
+    const uintptr_t b = bodies + uint64_t(index) * 0x90;
+    const uint32_t flags = mem::readOr<uint32_t>(b + 0x58);
+    const int32_t m = mem::readOr<int32_t>(b + 0x68, 0);
+    const uintptr_t motions = mem::readOr<uintptr_t>(hk + c::HavokWorld_Motions);
+    motion = (flags & 2) && m > 0 && motions ? motions + uint64_t(m) * 0x80 : 0; // dynamic only (setBodyVelocity's test)
+    return GN_OK;
+}
+
+bool finite3(const float* v) { return v && std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]) && std::fabs(v[0]) < 1e4f &&
+                                      std::fabs(v[1]) < 1e4f && std::fabs(v[2]) < 1e4f; }
+} // namespace
+
+int apiBodyVelocity(void* entity, uint32_t id, float* linear, float* angular) {
+    if (!linear && !angular) return GN_ERR_ARGUMENT;
+    uintptr_t hk = 0, motion = 0;
+    uint32_t index = 0;
+    if (const int r = motionOf(entity, id, hk, index, motion); r != GN_OK) return r;
+    float lin[4] = {}, ang[4] = {}, q[4] = {0, 0, 0, 1};
+    if (motion && (!mem::read(motion + 0x40, lin, 16) || !mem::read(motion + 0x50, ang, 16) || !mem::read(motion + 0x10, q, 16)))
+        return GN_ERR_UNAVAILABLE;
+    if (linear) memcpy(linear, lin, 12);
+    if (angular) rotate(q, ang, angular, false); // to the world's frame
+    return GN_OK; // a static body: zeros
+}
+
+int apiBodySetVelocity(void* entity, uint32_t id, const float* linear, const float* angular) {
+    if ((linear && !finite3(linear)) || (angular && !finite3(angular)) || (!linear && !angular)) return GN_ERR_ARGUMENT;
+    if (!build::codeMatches("hknpWorld_setBodyVelocity")) return GN_ERR_UNAVAILABLE;
+    uintptr_t hk = 0, motion = 0;
+    uint32_t index = 0;
+    if (const int r = motionOf(entity, id, hk, index, motion); r != GN_OK) return r;
+    if (!motion) return GN_ERR_UNAVAILABLE; // static or keyframed: nothing moves it
+    alignas(16) float lin[4] = {}, ang[4] = {};
+    if (linear) memcpy(lin, linear, 12);
+    else if (!mem::read(motion + 0x40, lin, 12)) return GN_ERR_UNAVAILABLE;
+    if (angular) memcpy(ang, angular, 12);
+    else {
+        float local[4] = {}, q[4] = {0, 0, 0, 1};
+        if (!mem::read(motion + 0x50, local, 16) || !mem::read(motion + 0x10, q, 16)) return GN_ERR_UNAVAILABLE;
+        rotate(q, local, ang, false);
+    }
+    reinterpret_cast<void (*)(uintptr_t, uint32_t, const float*, const float*)>(mem::rva(e::function::hknpWorld_setBodyVelocity))(hk, index, lin, ang);
+    return GN_OK;
+}
+
+int apiBodyPush(void* entity, uint32_t id, const float* change) {
+    if (!finite3(change)) return GN_ERR_ARGUMENT;
+    float lin[3] = {};
+    if (const int r = apiBodyVelocity(entity, id, lin, nullptr); r != GN_OK) return r;
+    const float to[3] = {lin[0] + change[0], lin[1] + change[1], lin[2] + change[2]};
+    return apiBodySetVelocity(entity, id, to, nullptr);
+}
+
 void* apiEntityOtherHalf(void* entity) {
     const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
     const reflect::Type* t = p ? registry().typeOf(mem::ProcessMemory(), p) : nullptr;

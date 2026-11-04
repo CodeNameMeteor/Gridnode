@@ -14,6 +14,18 @@ comments, 606 bookmarks on the call instructions); a second import changes nothi
 back with `ghidra-import`. The user's `~/ghidra_scripts/GridNodeSync.java` is the new one (old as `.bak`).
 
 ## Done recently
+- **API 21: body velocities and gravity; Field diff** (2026-11-04, untested in game).
+  `body_velocity`, `body_set_velocity`, `body_push` (dynamic bodies, world space, through
+  hknpWorld_setBodyVelocity); `physics_gravity` / `physics_set_gravity` per realm (hknpWorld +0x4c0,
+  written after each physics flush, kept for later worlds, undone on unload; Faith's own movement is
+  not Havok's). GridNode menu > Field diff (fielddiff.cpp, gridnode/field_diff.hpp): snapshot an
+  object, see which reflected fields (or bare offsets) change, once or live; "Log the changes".
+  world-draw: a push button and a gravity slider.
+  In game (2026-11-04): the gravity value is written (logged before and after), but nothing visibly
+  moves. The city's main client and server worlds hold no dynamic bodies (0 of ~2,600); after a kill,
+  ~500 keyframed bodies appear there (the game moves them) and ~120 dynamic ones in the client's
+  effect world (layer 9), whose position and velocity were the same 2 s apart (not simulated?).
+  Pushes found only static bodies. Next: spawnable dynamic bodies, or why the effect world's don't move.
 - **Packaging** (2026-11-04). `gridnode.py package`: the release zip (game files, SDK headers with
   engine.hpp, ImGui, the Rust crate, templates; no game data); CI builds it and a mod from its
   template. `templates/gridnode_mod.py` new (C++ / Rust) and pack (a mod's zip, mods/<name>/).

@@ -213,8 +213,12 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable, size_t size = 0x10
                 uintptr_t x = to >= size ? (to - size) & ~(gran - 1) : 0; // the highest addresses, nearest the site
                 for (int i = 0; !found && i < kTriesPerRegion && x >= lowest && x + size <= to && !out(); ++i, x -= gran) found = tryAt(x);
             }
-            if (b >= a || b == 0) break;
-            a = b;
+            // A taken region: on to its whole allocation's start. One reservation made of many small
+            // regions (pages of different states) took the whole second page by page, at startup
+            // (2026-11-04: no try at all, and a page there was free 0.3 s later).
+            const uintptr_t base = mbi.State == MEM_FREE ? b : std::min(b, reinterpret_cast<uintptr_t>(mbi.AllocationBase));
+            if (base >= a || base == 0) break;
+            a = base;
         }
     };
     const ULONGLONG half = start + kMaxSearchMs / 2, all = start + kMaxSearchMs;
@@ -521,6 +525,9 @@ void patchesReserve() {
     if (g_pool) return;
     // Below the image first: the game's heaps grow up from above it.
     g_pool = allocNear(mem::moduleBase() - 0x1000, true, g_poolWritable, kPoolPages * 0x1000);
+    // Then above it: in one run (2026-11-04) the space below was all small regions (1 s, no free one)
+    // while a page above the image was found at once.
+    if (!g_pool) g_pool = allocNear(mem::moduleBase() + mem::imageSize(), true, g_poolWritable, kPoolPages * 0x1000);
     if (g_pool) GN_LOG("patches: %llu KB kept near the game's code for detours and call patches", static_cast<unsigned long long>(kPoolPages * 4));
 }
 

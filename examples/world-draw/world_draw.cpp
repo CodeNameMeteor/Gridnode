@@ -51,6 +51,23 @@ struct Looked {
 };
 // API 19 tests (server tick for boxes and despawns, client tick for sounds).
 std::atomic<bool> g_boxWanted{false}, g_boxesClear{false}, g_despawnWanted{false}, g_soundWanted{false}, g_soundStopWanted{false};
+// API 21: push what the camera looks at (server half here, the client half on the client tick).
+// 1: what the camera looks at, 2: every physics entity within 30 m of Faith.
+std::atomic<int> g_pushWanted{0};
+std::atomic<bool> g_clientPush{false};
+std::vector<void*> g_clientPushList; // (g_m) the client halves
+gn::Vec3 g_pushBy{};                 // (g_m)
+
+// Every moving body of an entity pushed by `by`: "pushed N of M bodies" (static ones can't move).
+std::string pushAll(void* e, const gn::Vec3& by) {
+    int ok = 0, n = 0, last = 0;
+    for (uint32_t b : gn::entityBodies(e)) {
+        ++n;
+        last = gn::bodyPush(e, b, by);
+        ok += last == GN_OK;
+    }
+    return "pushed " + std::to_string(ok) + " of " + std::to_string(n) + " bodies" + (ok < n ? " (error " + std::to_string(last) + ": static?)" : "");
+}
 std::vector<uint32_t> g_boxes;      // (g_m)
 std::string g_apiNote;              // (g_m)
 uint32_t g_sound = 0;               // (client thread)
@@ -128,6 +145,57 @@ void serverTick(float dt) {
         g_liftNote = note;
     }
     // A 1 m box sitting where the camera looks, and the AI nearest that point despawned.
+    if (const int want = g_pushWanted.exchange(0); want == 2) {
+        void* faith = gn::localServerCharacter();
+        gn::Vec3 at;
+        if (faith && gn::positionOf(faith, at)) {
+            const gn::Vec3 by{0.f, 6.f, 0.f};
+            int entities = 0, bodies = 0, moved = 0;
+            std::vector<void*> halves;
+            std::string kinds;
+            gn::entitiesNear(at, 30.f, [&](void* e, gn::Type type, const gn::Transform&, float) {
+                const std::string name = type.name();
+                if (name.find("Server") == std::string::npos) return; // the client halves are pushed on the client tick
+                const auto ids = gn::entityBodies(e);
+                if (ids.empty()) return;
+                ++entities;
+                int here = 0;
+                for (uint32_t b : ids) ++bodies, here += gn::bodyPush(e, b, by) == GN_OK;
+                moved += here;
+                if (here && kinds.size() < 300) kinds += std::string(kinds.empty() ? "" : ", ") + type.name();
+                if (void* o = gn::entityOtherHalf(e)) halves.push_back(o);
+            });
+            apiNote("push near Faith: " + std::to_string(entities) + " physics entities within 30 m, " + std::to_string(moved) + " of " +
+                    std::to_string(bodies) + " bodies pushed up (server)" + (kinds.empty() ? "" : ": " + kinds));
+            {
+                std::lock_guard<std::mutex> lock(g_m);
+                g_pushBy = by;
+                g_clientPushList = std::move(halves);
+            }
+            g_clientPush = true;
+        }
+    } else if (want == 1) {
+        gn::ui::View v;
+        gn::ObjectHit h{};
+        if (gn::ui::view(v)) {
+            const gn::Vec3 from{v.position[0], v.position[1], v.position[2]};
+            const gn::Vec3 to{from.x + v.forward[0] * 200.f, from.y + v.forward[1] * 200.f, from.z + v.forward[2] * 200.f};
+            if (gn::raycastObject(from, to, h) && h.entity) {
+                const gn::Vec3 by{v.forward[0] * 8.f, v.forward[1] * 8.f + 4.f, v.forward[2] * 8.f};
+                apiNote(std::string("push ") + gn::Type::of(h.entity).name() + ": server " + pushAll(h.entity, by));
+                if (void* other = gn::entityOtherHalf(h.entity)) {
+                    {
+                        std::lock_guard<std::mutex> lock(g_m);
+                        g_pushBy = by;
+                        g_clientPushList = {other};
+                    }
+                    g_clientPush = true;
+                }
+            } else {
+                apiNote("push: nothing with a body where the camera looks");
+            }
+        }
+    }
     if (g_boxWanted.exchange(false) || g_despawnWanted.load()) {
         gn::ui::View v;
         gn::ObjectHit h{};
@@ -250,6 +318,19 @@ void soundTest(const gn::Vec3& faithAt) {
 }
 
 void clientTick(float dt) {
+    if (g_clientPush.exchange(false)) {
+        gn::Vec3 by;
+        std::vector<void*> list;
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            by = g_pushBy;
+            list.swap(g_clientPushList);
+        }
+        int bodies = 0, moved = 0;
+        for (void* e : list)
+            for (uint32_t b : gn::entityBodies(e)) ++bodies, moved += gn::bodyPush(e, b, by) == GN_OK;
+        apiNote("push: client pushed " + std::to_string(moved) + " of " + std::to_string(bodies) + " bodies");
+    }
     if (void* e = g_clientLift.exchange(nullptr)) {
         const std::string note = "client: " + lift(e, g_liftedClient);
         gn::log("lift: %s %p: %s", gn::Type::of(e).name(), e, note.c_str());
@@ -339,6 +420,19 @@ void draw(bool menuOpen) {
         ImGui::SameLine();
         if (ImGui::Button("Stop it")) g_soundStopWanted = true;
         if (ImGui::Button("Despawn the AI the camera looks at")) g_despawnWanted = true;
+        ImGui::SeparatorText("API 21");
+        if (ImGui::Button("Push what the camera looks at")) g_pushWanted = 1;
+        ImGui::SameLine();
+        if (ImGui::Button("Push everything within 30 m up")) g_pushWanted = 2;
+        static float gy = -9.81f;
+        if (ImGui::SliderFloat("Gravity (y)", &gy, -30.f, 5.f, "%.2f m/s2")) {
+            const gn::Vec3 g{0.f, gy, 0.f};
+            gn::setGravity(0, &g), gn::setGravity(1, &g);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Game's")) gn::setGravity(0, nullptr), gn::setGravity(1, nullptr), gy = -9.81f;
+        gn::Vec3 gnow{};
+        if (gn::gravity(0, gnow)) ImGui::TextDisabled("client world's gravity now (%.2f, %.2f, %.2f)", gnow.x, gnow.y, gnow.z);
         {
             std::lock_guard<std::mutex> lock(g_m);
             int in = 0, waiting = 0;

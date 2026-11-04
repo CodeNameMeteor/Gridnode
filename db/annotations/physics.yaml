@@ -106,6 +106,16 @@ functions:
   - { name: hknpWorld_addBodies, va: 0x143f41a80, signature: "void(void* hknpWorld, const u32* ids, i32 count, u32 flags)", confidence: inferred, sources: [research, ghidra] }
   - { name: hknpWorld_destroyBodies, va: 0x143f423e0, signature: "void(void* hknpWorld, const u32* ids, i32 count, i32 a4)", note: "The game passes 1 (PhysicsWorld_flush).", confidence: confirmed, sources: [research, ghidra] }
   - { name: hknpWorld_setBodyTransform, va: 0x143f3a6b0, signature: "void(void* hknpWorld, u32 id, const hkTransform* t, i32 activation)", note: "RigidBody's setTransform (0x1434f21e0) passes 1, with t from hkTransform_fromQuat.", confidence: confirmed, sources: [research, ghidra] }
+  - name: hknpWorld_setBodyVelocity
+    va: 0x143f3af60
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* linear, const hkVector4* angular)"
+    note: >-
+      Dynamic bodies only (flags & 2): writes the motion's linear velocity (+0x40, world) and its
+      angular velocity (+0x50, in the motion's own frame: the world value rotated by the inverse of
+      its orientation +0x10), wakes it (0x143f43fa0) and tells the listeners. RigidBody's setTransform
+      calls it with zeros for a dynamic body. Checked in Ghidra 2026-11-04.
+    confidence: confirmed
+    sources: [ghidra]
   - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(float* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(float* hkTransform, const float* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
@@ -190,6 +200,8 @@ constants:
   - { name: PhysicsWorld_RecordCount, value: 0xb80, confidence: confirmed, sources: [ghidra], note: "u32: the description's body count (PhysicsWorld_create)." }
   - { name: PhysicsWorld_EffectFlag, value: 0xb84, confidence: confirmed, sources: [ghidra], note: "u8: 1 for the client's effect world." }
   - { name: HavokWorld_Bodies, value: 0x20, confidence: confirmed, sources: [research, ghidra], note: "hknpBody array, 0x90 each: +0x58 flags, +0x5c collision filter info (layer in the low 5 bits), +0x60 id, +0x68 motion id (0 static), +0x6c material, +0x6e quality, +0x88 user data (low 32: the game's record id)." }
+  - { name: HavokWorld_Motions, value: 0xe0, confidence: confirmed, sources: [ghidra], note: "hknpMotion array, 0x80 each, by the body's motion id (+0x68): +0x10 orientation (quaternion), +0x40 linear velocity (world), +0x50 angular velocity (the motion's frame)." }
+  - { name: HavokWorld_Gravity, value: 0x4c0, confidence: confirmed, sources: [ghidra], note: "hkVector4, from the world description's +0x50 (PhysicsWorld_create); read by every step (0x143f474f0 hands it to the solver info, 0x143f75c80), so a new value acts from the next step." }
   - { name: RigidBody_vtable, value: 0x141bac160, confidence: confirmed, sources: [research, gridnode], note: "The game's body record for a Havok body (seen on picks)." }
   - { name: RigidBody_World, value: 0x30, confidence: confirmed, sources: [ghidra], note: "Its PhysicsWorld (0x1434f13f0)." }
   - { name: RigidBody_HavokBody, value: 0x58, confidence: confirmed, sources: [ghidra], note: "i32: its Havok body's index (0x1434f13f0)." }

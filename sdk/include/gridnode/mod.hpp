@@ -334,6 +334,37 @@ inline bool soundStop(uint32_t sound) { return api().sound_stop(sound) == GN_OK;
 // A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
 inline int characterDespawn(void* serverCharacter) { return api().character_despawn(serverCharacter); }
 
+// ---- body velocities and gravity (API 21) -------------------------------------------------------
+// A moving body's velocity (world space; zeros for a static one), set (null: keep), or pushed (added
+// to its linear velocity). The entity's realm thread.
+inline bool bodyVelocity(void* entity, uint32_t body, Vec3& linear, Vec3* angular = nullptr) {
+    float l[3] = {}, a[3] = {};
+    if (api().body_velocity(entity, body, l, a) != GN_OK) return false;
+    linear = {l[0], l[1], l[2]};
+    if (angular) *angular = {a[0], a[1], a[2]};
+    return true;
+}
+inline int bodySetVelocity(void* entity, uint32_t body, const Vec3* linear, const Vec3* angular = nullptr) {
+    const float l[3] = {linear ? linear->x : 0.f, linear ? linear->y : 0.f, linear ? linear->z : 0.f};
+    const float a[3] = {angular ? angular->x : 0.f, angular ? angular->y : 0.f, angular ? angular->z : 0.f};
+    return api().body_set_velocity(entity, body, linear ? l : nullptr, angular ? a : nullptr);
+}
+inline int bodyPush(void* entity, uint32_t body, const Vec3& change) {
+    const float c[3] = {change.x, change.y, change.z};
+    return api().body_push(entity, body, c);
+}
+// A realm's gravity (0 client, 1 server), m/s^2; setGravity(realm, nullptr) puts the game's back.
+inline bool gravity(int realm, Vec3& out) {
+    float g[3] = {};
+    if (api().physics_gravity(realm, g) != GN_OK) return false;
+    out = {g[0], g[1], g[2]};
+    return true;
+}
+inline int setGravity(int realm, const Vec3* g) {
+    const float v[3] = {g ? g->x : 0.f, g ? g->y : 0.f, g ? g->z : 0.f};
+    return api().physics_set_gravity(realm, g ? v : nullptr);
+}
+
 // ---- the mod's folder (API 20) ------------------------------------------------------------------
 // Where its DLL is installed (mods\ or mods\<name>\, with the trailing backslash): its own files.
 inline std::string modDir() {

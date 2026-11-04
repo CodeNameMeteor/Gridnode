@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 20 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder */
+#define GN_API_VERSION 21 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -744,6 +744,28 @@ typedef struct gn_api {
      * with a backslash), for the files it brings: a mod runs from a copy (reloads), so its own
      * module path is not that. GN_ERR_FULL: out too small. Any thread. */
     int (*mod_dir)(char* out, size_t size);
+
+    /* ==== GN_API_VERSION 21 =================================================================== */
+
+    /* ---- body velocities -------------------------------------------------------------------------
+     * A moving (dynamic) collision body's velocity, in m/s and rad/s, both in world space: props
+     * that fall and roll, dropped weapons, ragdoll parts. body_set_velocity sets it (linear or
+     * angular null: kept) and wakes the body; body_push adds to its linear velocity (an impulse
+     * divided by its mass). A static body reads zeros and gives GN_ERR_UNAVAILABLE when set. Each
+     * realm has its own physics (entity_other_half). The entity's realm thread. */
+    int (*body_velocity)(void* entity, uint32_t body, float linear[3], float angular[3]);
+    int (*body_set_velocity)(void* entity, uint32_t body, const float linear[3], const float angular[3]);
+    int (*body_push)(void* entity, uint32_t body, const float change[3]);
+
+    /* ---- gravity -----------------------------------------------------------------------------------
+     * A physics world's gravity (realm 0: the client's, what Faith's world falls by; 1: the server's),
+     * m/s^2, (0, -9.81, 0) as the game makes it. It moves dynamic bodies (props, ragdolls, dropped
+     * weapons); Faith's own movement is the game's character code, not this. physics_set_gravity
+     * takes effect at the world's next physics update and is kept for later worlds (a level load);
+     * g null puts the game's value back. One value per realm (the last call wins); undone when the
+     * mod that set it unloads. Any thread. GN_ERR_UNAVAILABLE: no world yet (gravity: no level). */
+    int (*physics_gravity)(int realm, float out[3]);
+    int (*physics_set_gravity)(int realm, const float g[3]);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "gridnode/config.hpp"
+#include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
@@ -407,9 +408,28 @@ void testModOrder() {
     CHECK(p.problem[3].find("already taken") != std::string::npos);
 }
 
+// Field diff: changed fields named, changed bytes no field covers by offset, values formatted.
+void testFieldDiff() {
+    std::vector<uint8_t> a(0x20, 0), b(0x20, 0);
+    const float one = 1.f, two = 2.5f;
+    std::memcpy(a.data() + 0x4, &one, 4);
+    std::memcpy(b.data() + 0x4, &two, 4); // the field "speed"
+    b[0x11] = 7;                          // a byte of "flags" (2 bytes at 0x10)
+    b[0x1c] = 1;                          // no field there
+    const std::vector<gn::fielddiff::FieldSpan> fields = {{"speed", 0x4, 4}, {"unchanged", 0x8, 8}, {"flags", 0x10, 2}};
+    const auto d = gn::fielddiff::diff(a, b, fields);
+    CHECK(d.size() == 3);
+    CHECK(d.size() == 3 && d[0].name == "speed" && d[1].name == "flags" && d[2].name == "+0x1c");
+    CHECK(gn::fielddiff::format(b.data() + 0x4, 4) == "2.5");
+    CHECK(gn::fielddiff::format(b.data() + 0x1c, 4) == "1");      // a small integer, not a float
+    CHECK(gn::fielddiff::format(b.data() + 0x10, 2) == "1792");
+    CHECK(gn::fielddiff::diff(a, a, fields).empty());
+}
+
 } // namespace
 
 int main() {
+    testFieldDiff();
     testModOrder();
     testDeclaredSettings();
     testRegistry();

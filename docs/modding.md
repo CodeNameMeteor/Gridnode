@@ -250,6 +250,8 @@ std::string level = gn::levelName();
 | `entityOtherHalf(entity)` | any | The same object in the other realm (server to client and back), or null (API 18). |
 | `boxAdd(at, halfExtents)` / `boxMove` / `boxRemove` / `boxState` | any | A static collision box in the client's physics world (what Faith collides with), made at its next physics update; it borrows a nearby static body's identity, so hits on it report that body's material. One in the server's world too, for AI (API 19; the server half since 2026-11-04). Gone when the mod unloads (API 19). |
 | `soundPlay(assetPath[, pos, event])` / `soundEvent` / `soundMove` / `soundPlaying` / `soundStop` | client | A voice of the game's sound system for a loaded sound asset; event null plays its default start. Stopped when the mod unloads (API 19). |
+| `bodyVelocity` / `bodySetVelocity` / `bodyPush(entity, body, change)` | the entity's realm | A moving (dynamic) body's velocity, world space; a static body reads zeros and can't be set (API 21). The city's worlds hold almost no dynamic bodies: in game, every prop near Faith was static. |
+| `gravity(realm, out)` / `setGravity(realm, g)` | any | A physics world's gravity (0 client, 1 server; the client's effect world too). It moves dynamic bodies only, not Faith's own movement or the bodies the game moves with animations, so in the city it has almost nothing to act on. Kept for later worlds, undone when the mod unloads; `nullptr` puts the game's back (API 21). |
 | `characterDespawn(serverCharacter)` | server | An AI taken away as its spawner's Unspawn would; not Faith (API 19). |
 | `onLevel` | GridNode's thread | Within ~0.1 s of the server world changing; called at once for a running level. |
 

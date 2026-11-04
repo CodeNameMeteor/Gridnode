@@ -423,6 +423,7 @@ bool g_showMetrics = false;
 bool g_showLayouts = false;
 bool g_showRecorder = false;
 bool g_showTracer = false;
+bool g_showFieldDiff = false;
 
 void drawMain() {
     ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
@@ -439,6 +440,7 @@ void drawMain() {
         if (g_settings.editor) ImGui::Checkbox("Layout editor", &g_showLayouts);
         if (g_settings.recorder) ImGui::Checkbox("Recorder", &g_showRecorder);
         if (g_settings.inspector) ImGui::Checkbox("Tracer", &g_showTracer);
+        if (g_settings.inspector) ImGui::Checkbox("Field diff", &g_showFieldDiff);
         if (g_settings.devInfo) ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
         if (g_settings.inspector || g_settings.console || g_settings.editor || g_settings.recorder || g_settings.devInfo) ImGui::Separator();
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -575,6 +577,7 @@ void drawMain() {
     if (g_showLayouts && g_settings.editor) layouts::draw(&g_showLayouts);
     if (g_showRecorder && g_settings.recorder) recorder::draw(&g_showRecorder);
     if (g_showTracer && g_settings.inspector) tracer::draw(&g_showTracer);
+    if (g_showFieldDiff && g_settings.inspector) fielddiff::draw(&g_showFieldDiff);
 }
 
 void callMods(bool open) {

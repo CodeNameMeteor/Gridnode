@@ -284,6 +284,7 @@ GN_NOINLINE int apiPatchCall(const char* mod, uint64_t site, uint64_t target, vo
 GN_NOINLINE int apiModExport(const char* name, void* fn) { return modExport(GN_CALLER, name, fn); }
 GN_NOINLINE void* apiModImport(const char* modId, const char* name) { return modImport(GN_CALLER, modId, name); }
 GN_NOINLINE int apiModDir(char* out, size_t size) { return modDir(GN_CALLER, out, size); }
+GN_NOINLINE int apiSetGravity(int realm, const float* g) { return physicsSetGravity(realm, g, GN_CALLER); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
 GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out) {
@@ -408,6 +409,11 @@ const gn_api* api() {
         a.sound_stop = soundStop;
         a.character_despawn = characterDespawn;
         a.mod_dir = apiModDir;
+        a.body_velocity = apiBodyVelocity;
+        a.body_set_velocity = apiBodySetVelocity;
+        a.body_push = apiBodyPush;
+        a.physics_gravity = physicsGravity;
+        a.physics_set_gravity = apiSetGravity;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

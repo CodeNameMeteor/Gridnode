@@ -350,6 +350,29 @@ pub fn sound_playing(s: u32) -> bool { unsafe { (api().sound_playing.unwrap())(s
 pub fn sound_stop(s: u32) -> bool { unsafe { (api().sound_stop.unwrap())(s) == 0 } }
 /// A server character (an AI) taken away as its spawner would. Not Faith. Server thread.
 pub fn character_despawn(server_character: *mut c_void) -> i32 { unsafe { (api().character_despawn.unwrap())(server_character) } }
+/// A moving body's velocity (linear, angular; world space; zeros for a static one). Realm thread.
+pub fn body_velocity(entity: *mut c_void, body: u32) -> Option<([f32; 3], [f32; 3])> {
+    let (mut l, mut a) = ([0.0f32; 3], [0.0f32; 3]);
+    (unsafe { (api().body_velocity.unwrap())(entity, body, l.as_mut_ptr(), a.as_mut_ptr()) } == 0).then_some((l, a))
+}
+/// Sets a moving body's velocity (None: kept). Realm thread.
+pub fn body_set_velocity(entity: *mut c_void, body: u32, linear: Option<[f32; 3]>, angular: Option<[f32; 3]>) -> i32 {
+    let p = |v: &Option<[f32; 3]>| v.as_ref().map_or(core::ptr::null(), |x| x.as_ptr());
+    unsafe { (api().body_set_velocity.unwrap())(entity, body, p(&linear), p(&angular)) }
+}
+/// Adds to a moving body's linear velocity. Realm thread.
+pub fn body_push(entity: *mut c_void, body: u32, change: [f32; 3]) -> i32 {
+    unsafe { (api().body_push.unwrap())(entity, body, change.as_ptr()) }
+}
+/// A realm's gravity (0 client, 1 server), m/s^2.
+pub fn gravity(realm: i32) -> Option<[f32; 3]> {
+    let mut g = [0.0f32; 3];
+    (unsafe { (api().physics_gravity.unwrap())(realm, g.as_mut_ptr()) } == 0).then_some(g)
+}
+/// Sets a realm's gravity (None: the game's back). Kept for later worlds; undone when the mod unloads.
+pub fn set_gravity(realm: i32, g: Option<[f32; 3]>) -> i32 {
+    unsafe { (api().physics_set_gravity.unwrap())(realm, g.as_ref().map_or(core::ptr::null(), |x| x.as_ptr())) }
+}
 /// Where the mod's DLL is installed (`mods\\` or `mods\\<name>\\`): its own files.
 pub fn mod_dir() -> String {
     let mut buf = [0 as c_char; 1024];

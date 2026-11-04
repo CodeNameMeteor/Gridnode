@@ -196,6 +196,12 @@ int soundPlaying(uint32_t sound);
 int soundStop(uint32_t sound);
 void forgetSounds(const CodeRange& r); // a mod's sounds; an empty range: every one
 int characterDespawn(void* entity);
+int apiBodyVelocity(void* entity, uint32_t body, float* linear, float* angular);
+int apiBodySetVelocity(void* entity, uint32_t body, const float* linear, const float* angular);
+int apiBodyPush(void* entity, uint32_t body, const float* change);
+int physicsGravity(int realm, float* out);
+int physicsSetGravity(int realm, const float* g, const void* caller);
+void forgetGravity(const CodeRange& r);
 bool cameraTransform(gn_transform& out); // the local player's camera
 int onLevel(const std::string& mod, gn_level_fn fn, void* user);
 void pollLevel(); // GridNode's thread, about every 0.1 s
@@ -285,6 +291,10 @@ int eventName(uint32_t id, char* out, size_t size);
 
 // Recorder (recorder.cpp): messages, entity creations and markers with call stacks, exported as
 // JSON lines for research (M8).
+namespace fielddiff {
+void draw(bool* open); // render thread
+} // namespace fielddiff
+
 namespace tracer {
 bool add(const std::string& functionOrName); // render thread
 void draw(bool* open);                       // render thread

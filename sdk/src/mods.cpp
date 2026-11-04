@@ -203,6 +203,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetExports(code, id);
     forgetBoxes(code);
     forgetSounds(code);
+    forgetGravity(code);
     return hooksOut;
 }
 
