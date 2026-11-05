@@ -253,6 +253,8 @@ int antObjects(const char* type, void** out, uint32_t max);                     
 int replayRecent(gn_replay_info* info, float* times, gn_replay_bone* bones, uint32_t maxFrames); // API 27 (replay.cpp)
 std::string replayCommand(); // the console's "replay"
 std::string sampleCommand(const std::string& args); // the console's "sample [seconds]" (sampler.cpp)
+std::string perfCommand(const std::string& args);   // the console's "perf [on|off]": the "ui: perf" log lines (off by default)
+bool perfLogging();
 void sampleRelease();                               // unload: stop and join the sampler thread
 std::string antCommand(const std::string& args); // the console's "ant [FILTER | TYPE]"
 void faithClientTick(); // client thread: applies and releases held keys

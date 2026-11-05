@@ -11,7 +11,9 @@ every page of the image is executable. Now `vtableSlots` counts pointers into PE
 refused vtable is not scanned again. User confirmed the free camera is much better (165 fps); the
 third-person body install and `camera behind` fps after the fix are untested. New: console `sample [seconds]`
 (sampler.cpp: samples the three busiest threads, logs top functions and the innermost game function on
-the stack; compare two runs by address in Ghidra) and a `ui: perf` log line every 5 s per camera mode.
+the stack; compare two runs by address in Ghidra) and console `perf on|off` (a `ui: perf` log line every 5 s per camera mode; off by default). The body hook
+no longer measures the vtable (Frostbite vtables run back to back with no RTTI pointer, so a run of
+code pointers never ends): it copies 512 slots; `vtableSlots` (camera only) is `countVtableSlots`, host-tested.
 
 ## Current task: getting GridNode ready for its first release (plan, 2026-11-04)
 Everything up to API 22 is committed (d96c362). The plan below is in order: the "must" items before

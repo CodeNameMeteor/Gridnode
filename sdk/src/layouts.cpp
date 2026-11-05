@@ -34,6 +34,7 @@
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "host.hpp"
+#include "vtable_count.hpp"
 #include "imgui.h"
 
 namespace gn::host::layouts {
@@ -3571,26 +3572,19 @@ void unhookCamera() {
 // vtable, and a VirtualQuery per slot made each scan cost milliseconds (the free camera repeats it
 // every 60 frames: that was the 20 fps; found with the sampler, 2026-11-05).
 size_t vtableSlots(uintptr_t vt, size_t cap) {
-    size_t n = 0;
-    for (; n <= cap; ++n) {
-        const uintptr_t fn = mem::readOr<uintptr_t>(vt + 8 * n);
-        if (!fn) break;
-        if (mem::inImage(fn)) {
-            bool code = false;
-            for (const mem::Section& sec : mem::imageSections())
-                if (sec.region.code && fn >= sec.region.begin && fn < sec.region.end) {
-                    code = true;
-                    break;
-                }
-            if (!code) break;
-            continue;
-        }
-        MEMORY_BASIC_INFORMATION mbi{};
-        if (!VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
-            !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
-            break;
-    }
-    return n;
+    return countVtableSlots(
+        [vt](size_t n) { return mem::readOr<uintptr_t>(vt + 8 * n); },
+        [](uintptr_t fn) {
+            if (mem::inImage(fn)) {
+                for (const mem::Section& sec : mem::imageSections())
+                    if (sec.region.code && fn >= sec.region.begin && fn < sec.region.end) return true;
+                return false;
+            }
+            MEMORY_BASIC_INFORMATION mbi{};
+            return VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT &&
+                   (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+        },
+        cap);
 }
 
 void hookCamera() {
@@ -3634,7 +3628,7 @@ void hookCamera() {
 // While the free camera is on, Faith shows the third-person body (with her head) instead of the
 // first-person one: the same per-object vtable copy, on the character's view-mode interface, whose
 // getViewMode answers 1 (MECMP found the slot and the meaning). Its other entries are the originals.
-constexpr size_t kBodySlots = 256;
+constexpr size_t kBodySlots = 512;
 uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
 uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
 // Off: the free camera leaves Faith's first-person body alone. A way to tell what the game's own drawing
@@ -3669,13 +3663,14 @@ void hookBody() {
         return;
     }
     const size_t slot = (slotAt - vt) / 8;
-    static uintptr_t refused = 0; // the vtable already found too long: do not scan it again every re-hook
-    if (vt == refused) return;
-    if (vtableSlots(vt, kBodySlots) > kBodySlots) {
-        refused = vt;
+    // The vtable's length cannot be read from the image: Frostbite vtables sit back to back with no RTTI
+    // pointer between them, so a run of code pointers (checked in Ghidra, 2026-11-05: 399 slots back and
+    // 600+ forward from this slot) never ends. The copy takes kBodySlots entries, which reads past a short
+    // vtable harmlessly (rdata); an interface with this slot near the copy's end would not fit, so refuse that.
+    if (slot + 64 > kBodySlots) {
         static bool said = false;
-        if (!said) GN_LOG("layouts: free camera: Faith's view-mode vtable has more than %llu entries; keeping her first-person body",
-                          static_cast<unsigned long long>(kBodySlots));
+        if (!said) GN_LOG("layouts: free camera: Faith's view-mode slot is %u, too far into the vtable; keeping her first-person body",
+                          static_cast<unsigned>(slot));
         said = true;
         return;
     }

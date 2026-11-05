@@ -33,7 +33,7 @@ struct Sample {
 };
 
 HANDLE g_thread = nullptr;
-std::atomic<bool> g_running{false}, g_stop{false};
+std::atomic<bool> g_running{false}, g_stop{false}, g_perfOn{false};
 
 struct Th {
     DWORD id = 0;
@@ -171,6 +171,15 @@ DWORD WINAPI run(LPVOID param) {
     return 0;
 }
 } // namespace
+
+std::string perfCommand(const std::string& args) {
+    if (_stricmp(args.c_str(), "on") == 0) g_perfOn = true;
+    else if (_stricmp(args.c_str(), "off") == 0) g_perfOn = false;
+    else if (!args.empty()) return "perf on | perf off";
+    return std::string("perf: ") + (g_perfOn ? "on" : "off") + " (a ui: perf line in the log every 5 s: fps and GridNode's cost per frame, by camera mode)";
+}
+
+bool perfLogging() { return g_perfOn.load(std::memory_order_relaxed); }
 
 std::string sampleCommand(const std::string& args) {
     int seconds = 5;

@@ -220,6 +220,7 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "ant") == 0) return antCommand(rest);           // GridNode's own (ant.cpp)
     if (_stricmp(word.c_str(), "camera") == 0) return layouts::cameraCommand(rest); // GridNode's own (layouts.cpp)
     if (_stricmp(word.c_str(), "replay") == 0) return replayCommand();          // GridNode's own (replay.cpp)
+    if (_stricmp(word.c_str(), "perf") == 0) return perfCommand(rest);            // GridNode's own (sampler.cpp)
     if (_stricmp(word.c_str(), "sample") == 0) return sampleCommand(rest);      // GridNode's own (sampler.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";
     EngineString s{};

@@ -842,7 +842,8 @@ typedef struct gn_api {
 
     /* ==== GN_API_VERSION 21 =================================================================== */
 
-    /* ---- body velocities -------------------------------------------------------------------------
+    /* ---- body velocities (EXPERIMENTAL) ----------------------------------------------------------
+     * Experimental: almost no body in the city is dynamic, so there is rarely anything to act on; may change.
      * A moving (dynamic) collision body's velocity, in m/s and rad/s, both in world space: props
      * that fall and roll, dropped weapons, ragdoll parts. body_set_velocity sets it (linear or
      * angular null: kept) and wakes the body; body_push adds to its linear velocity (an impulse
@@ -852,7 +853,8 @@ typedef struct gn_api {
     int (*body_set_velocity)(void* entity, uint32_t body, const float linear[3], const float angular[3]);
     int (*body_push)(void* entity, uint32_t body, const float change[3]);
 
-    /* ---- gravity -----------------------------------------------------------------------------------
+    /* ---- gravity (EXPERIMENTAL) --------------------------------------------------------------------
+     * Experimental: it moves dynamic bodies only, and there are few; may change.
      * A physics world's gravity (realm 0: the client's, what Faith's world falls by; 1: the server's),
      * m/s^2, (0, -9.81, 0) as the game makes it. It moves dynamic bodies (props, ragdolls, dropped
      * weapons); Faith's own movement is the game's character code, not this. physics_set_gravity
@@ -873,7 +875,7 @@ typedef struct gn_api {
     int (*character_health)(void* server_character, float* health, float* max_health);
     int (*character_set_health)(void* server_character, float health);
 
-    /* ---- where to go -------------------------------------------------------------------------------
+    /* ---- where to go (EXPERIMENTAL: waypoint height, checkpoint source) ----------------------------
      * waypoint: the map marker the player set (world space; its height is the street's, so under a
      * building it is not where to stand); GN_ERR_NOT_FOUND when none is set.
      * checkpoint: where Faith comes back after a death. Any thread (they read).
@@ -970,7 +972,8 @@ typedef struct gn_api {
     int (*level_ready)(void);
     int (*ground_below)(const float pos[3], float depth, float* ground_y);
 
-    /* ---- ANT fields in live objects (research) ---------------------------------------------------
+    /* ---- ANT fields in live objects (research, EXPERIMENTAL) -----------------------------------------
+     * Experimental: a research tool; may change.
      * ant_live_field: where field_name (the type's own fields, not its bases') is in type_name's live
      * objects (see gn_ant_live_field). The first call for a type runs its create and load on test data
      * (logged; a few ms). ant_objects: the type's live objects, found by its vtable in the game's
@@ -996,7 +999,8 @@ typedef struct gn_api {
 
     /* ---- Faith's last 15 seconds --------------------------------------------------------------------
      * The game keeps a ring of her pose (450 keyframes, one a client tick) to make time trial
-     * ghosts. replay_recent fills *info and copies the newest min(max_frames, info->frames)
+     * ghosts. Experimental: the bones past the root and the trajectory are not mapped; may change.
+     * replay_recent fills *info and copies the newest min(max_frames, info->frames)
      * keyframes, oldest first: times[i] (seconds) and bones[i * info->bones + b]. times and bones may be
      * null (max_frames 0: info only). Returns how many it copied, negative on an error. Bone 0 is the
      * root and bone 1 her trajectory (where she is); the bones are as ANT's pose has them (research:

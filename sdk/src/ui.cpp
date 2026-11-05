@@ -720,6 +720,10 @@ PerfBucket g_perfLastOff;        // the last window with the game's camera
 double g_perfLast = 0, g_perfWindow = 0;
 
 void perfFrame(int bucket, double all, double layoutsUs, double hold, double mods) {
+    if (!perfLogging()) {
+        g_perfLast = g_perfWindow = 0; // a window starts fresh when it is switched on
+        return;
+    }
     const double now = qpcUs();
     PerfBucket& b = g_perf[bucket];
     if (g_perfLast > 0 && now - g_perfLast < 1e6) b.interval += now - g_perfLast, b.frames++; // not across a load screen
