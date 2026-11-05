@@ -265,7 +265,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     if (keyUp && g_ready) queueImGui(hwnd, msg, w, l);
     const bool keyDown = msg == WM_KEYDOWN || (msg == WM_SYSKEYDOWN && w == VK_F10);
     // The menu key (not when it would type into a text box of the menu).
-    if (keyDown && static_cast<int>(w) == g_settings.menuKey && !(l & (1 << 30)) && g_ready &&
+    if (keyDown && g_settings.menuKey && static_cast<int>(w) == g_settings.menuKey && !(l & (1 << 30)) && g_ready &&
         !(g_open.load() && g_typing.load() && typesCharacter(static_cast<int>(w)))) {
         toggleMenu();
         return 0;
@@ -411,8 +411,9 @@ bool init(IDXGISwapChain* sc) {
     g_imgui = ctx;
     RECT rc{};
     GetClientRect(g_window, &rc);
-    GN_LOG("ui: overlay ready (%ldx%ld, Dear ImGui %s). Press %s in game for the GridNode menu.", rc.right - rc.left,
-           rc.bottom - rc.top, IMGUI_VERSION, keyName(g_settings.menuKey).c_str());
+    GN_LOG("ui: overlay ready (%ldx%ld, Dear ImGui %s). %s", rc.right - rc.left, rc.bottom - rc.top, IMGUI_VERSION,
+           g_settings.menuKey ? ("Press " + keyName(g_settings.menuKey) + " in game for the GridNode menu.").c_str()
+                              : "No menu key (menu_key=NONE): mods open the menu.");
     return true;
 }
 
@@ -430,7 +431,7 @@ void drawMain() {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 22, 0), ImGuiCond_FirstUseEver);
     if (g_justOpened.exchange(false)) ImGui::SetNextWindowFocus();
     if (ImGui::Begin("GridNode " GRIDNODE_VERSION_STRING "###gridnode")) {
-        ImGui::TextDisabled("%s closes this menu", keyName(g_settings.menuKey).c_str());
+        if (g_settings.menuKey) ImGui::TextDisabled("%s closes this menu", keyName(g_settings.menuKey).c_str());
         const std::string level = levelName();
         ImGui::Text("Level: %s", level.empty() ? "(none)" : level.c_str());
         ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
@@ -719,7 +720,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
                 refreshMouseScale();
             }
         }
-        if (open) {
+        if (open && g_settings.gridnodeWindow) { // off: only the mods' windows (a mod shipped on its own)
             ImGuiErrorRecoveryState state;
             ImGui::ErrorRecoveryStoreState(&state);
             try {
@@ -785,7 +786,8 @@ std::string keyName(int vk) {
 }
 
 std::vector<std::pair<int, std::string>> reservedKeys() {
-    std::vector<std::pair<int, std::string>> r{{g_settings.menuKey, "the menu"}};
+    std::vector<std::pair<int, std::string>> r;
+    if (g_settings.menuKey) r.push_back({g_settings.menuKey, "the menu"});
     if (g_settings.recorder)
         r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"}),
             r.push_back({VK_END, "Recorder: save the last seconds"});
@@ -820,6 +822,11 @@ void toggleMenu() {
 }
 
 bool menuOpen() { return g_open.load(); }
+bool setMenu(bool open) { // a mod's own key (gn_api ui_menu_set, API 27)
+    if (!g_ready) return false;
+    if (open != g_open.load()) toggleMenu();
+    return true;
+}
 bool gameFocused() { return g_window && GetForegroundWindow() == g_window; }
 void setLookCapture(bool on) {
     if (on != g_lookCapture.exchange(on)) g_lookX = 0.f, g_lookY = 0.f;

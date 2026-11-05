@@ -4,7 +4,7 @@ An open-source SDK for modding **Mirror's Edge Catalyst** (PC, EA app build). Gr
 find, read, write, call and hook the game's engine classes (Frostbite 3) by name, without reversing
 them first, and documents everything it knows about the engine.
 
-> **Status:** getting ready for the first release (API 26). The plan is in
+> **Status:** getting ready for the first release (API 27). The plan is in
 > [docs/progress.md](docs/progress.md); the full design in [docs/PLAN.md](docs/PLAN.md). The docs site
 > builds with `python tools/gen/gridnode.py docs --build` ([docs/building.md](docs/building.md#these-docs));
 > CI publishes it as the `docs-site` artifact.
@@ -40,6 +40,18 @@ window, the Layout editor (paused), a game image dump, and Ghidra sync (`tools/g
 [docs/getting-started.md](docs/getting-started.md) has the details; [docs/modding.md](docs/modding.md)
 is the API; [docs/shipping.md](docs/shipping.md) is what players of your mod need.
 
+## Making a mod (in your own repository)
+
+A mod needs only the SDK from a release zip, not this repository:
+
+```text
+python <GridNode release>/sdk/templates/gridnode_mod.py new my_mod     (--rust for Rust)
+```
+
+makes `my_mod/` with the mod, a copy of the SDK (`gridnode-sdk/`), a GitHub Actions workflow and a
+README: commit it and it builds anywhere. [docs/mod-repository.md](docs/mod-repository.md) covers
+building, testing in game, showing only your mod's window and shipping it.
+
 ## What's here
 
 | Path | What |
@@ -53,7 +65,7 @@ is the API; [docs/shipping.md](docs/shipping.md) is what players of your mod nee
 | `tools/recording/` | `summarize.py`: reads the Recorder's files |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, the walker run on a memory dump |
 | `examples/` | Example mods: `hello`, `hello-rust`, `trainer`, `mec-trainer` (the MEC trainer), `world-draw`, `detour-demo`, `probe` |
-| `templates/` | Mod templates (C++, Rust) and `gridnode_mod.py` (new / pack) |
+| `templates/` | Mod templates (C++, Rust) and `gridnode_mod.py` (new / pack / update-sdk) |
 | `bindings/rust/gridnode` | Rust bindings (generated from `api.h`) and a safe layer |
 | `third_party/imgui` | Dear ImGui 1.91.9 (MIT, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) |
 | `tests/` | Host-side tests |

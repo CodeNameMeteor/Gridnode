@@ -1,0 +1,19 @@
+# Builds @NAME@ on every push and keeps the mod's zip as an artifact (Actions, the run, Artifacts).
+# Made by gridnode_mod.py new --rust: the GridNode crate is in gridnode-sdk/, so nothing else is needed.
+name: build
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cargo build --release
+      - name: Pack
+        run: python gridnode-sdk/templates/gridnode_mod.py pack target/release/@NAME@.dll --id @ID@ --version 0.1.0 --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: @ID@
+          path: dist/*.zip

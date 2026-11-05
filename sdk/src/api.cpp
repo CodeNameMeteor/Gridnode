@@ -236,6 +236,9 @@ int apiUiCheck(const char* mod, const char* v, size_t io, size_t style, size_t v
     return ui::check(mod, v, io, style, vec2, vec4, vert, idx);
 }
 int apiUiMenuOpen() { return ui::menuOpen() ? 1 : 0; }
+int apiUiMenuSet(int open) {
+    return ui::setMenu(open != 0) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
 
 uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsList().size()); }
 int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
@@ -305,6 +308,20 @@ int apiOnMessage(const char* mod, const char* name, gn_message_fn fn, void* user
 
 int apiRaycast(const float* from, const float* to, float radius, gn_ray_hit* out) { return raycast(from, to, radius, out); }
 
+} // namespace
+
+namespace {
+// The mod is the one whose code called: the return address is in its image (a direct call through
+// the table, so never inlined into the mod's caller).
+#if defined(_MSC_VER)
+#define GN_CALLER _ReturnAddress()
+#define GN_NOINLINE __declspec(noinline)
+#else
+#define GN_CALLER __builtin_return_address(0)
+#define GN_NOINLINE __attribute__((noinline))
+#endif
+GN_NOINLINE int apiCameraSet(const gn_transform* t, uint32_t flags) { return layouts::cameraSet(GN_CALLER, t, flags); }
+GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
 } // namespace
 
 namespace {
@@ -497,6 +514,10 @@ const gn_api* api() {
         a.ground_below = groundBelow;
         a.ant_live_field = antLiveField;
         a.ant_objects = antObjects;
+        a.camera_set = apiCameraSet;
+        a.camera_fov_set = apiCameraFovSet;
+        a.replay_recent = replayRecent;
+        a.ui_menu_set = apiUiMenuSet;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

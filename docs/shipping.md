@@ -7,6 +7,8 @@ Recorder or the type dump.
 
 ## Get the player build
 
+- From a release: the players' zip, `GridNode-player-<version>.zip` (it has the injector and the MEC
+  trainer too).
 - From CI: the `gridnode-player-x64-mingw` artifact (`gridnode.dll`, `version.dll`).
 - Or build it: add `-DGRIDNODE_PLAYER_BUILD=ON` when configuring ([Building](building.md)):
 
@@ -61,7 +63,8 @@ Everything has a default; ship one only to change something:
 ```ini
 [ui]
 enabled=1        ; the overlay (needed for your mod's windows)
-menu_key=INSERT  ; or another key, if your mod uses INSERT
+menu_key=INSERT  ; or another key, if your mod uses INSERT; NONE: only your mod's own key opens it
+gridnode_window=1 ; 0: the menu shows only the mods' windows (your mod alone)
 [mods]
 enabled=1
 folder=mods

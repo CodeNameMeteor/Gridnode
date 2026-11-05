@@ -3470,11 +3470,41 @@ uintptr_t firstViewManager() {
 
 std::atomic<unsigned> g_camCalls{0}, g_camOutputs{0}; // diagnostics: how often the game ran the camera's update / output
 
+// A mod's camera (gn_api camera_set / camera_fov_set, API 27): the same per-object vtable copy as the
+// free camera, which comes first when both are on.
+gn_transform g_modCamT{};     // (g_camM)
+bool g_modCamOn = false;      // (g_camM)
+bool g_modCamBody = false;    // (g_camM) GN_CAMERA_BODY
+float g_modFov = 0.f;         // (g_camM) 0: the game's
+uintptr_t g_modCamOwner = 0;  // (g_camM) an address in the mod that set it (given back when it unloads)
+uintptr_t g_modFovOwner = 0;  // (g_camM)
+uintptr_t g_fovCam = 0;       // client thread: the camera object whose FOV GridNode changed
+float g_fovOrig = 0.f;        // client thread: what it had
+std::atomic<bool> g_modCamRehook{false}; // the free camera went off while a mod's camera is on
+
 bool takeCamT(gn_transform& t) {
     std::lock_guard<std::mutex> lock(g_camM);
-    if (!g_camApply) return false;
-    t = g_camT;
+    if (g_camApply) t = g_camT;
+    else if (g_modCamOn) t = g_modCamT;
+    else return false;
     return true;
+}
+
+// Client thread (the camera's frame update, or a posted task): the FOV a mod asked for, or back.
+void applyFov(uintptr_t cam) {
+    float fov;
+    {
+        std::lock_guard<std::mutex> lock(g_camM);
+        fov = g_modFov;
+    }
+    namespace c = e::st::CameraObject::off;
+    if (g_fovCam && (fov <= 0.f || g_fovCam != cam)) { // given back, or another camera now
+        if (mem::readOr<uintptr_t>(g_fovCam) != 0) mem::write<float>(g_fovCam + c::baseFovYDegrees, g_fovOrig);
+        g_fovCam = 0;
+    }
+    if (fov <= 0.f || !cam) return;
+    if (g_fovCam != cam) g_fovCam = cam, g_fovOrig = mem::readOr<float>(cam + c::baseFovYDegrees, 55.f);
+    mem::write<float>(cam + c::baseFovYDegrees, fov);
 }
 
 // The camera's transform output: everything that asks the camera where it is (its own update, and
@@ -3491,14 +3521,12 @@ void camOutput(void* self, void* info, void* out) {
 
 void camFrameUpdate(void* self, void* info) {
     g_camCalls.fetch_add(1, std::memory_order_relaxed);
-    if (g_camOrigFrame) g_camOrigFrame(self, info);
-    alignas(16) gn_transform t{};
-    {
-        std::lock_guard<std::mutex> lock(g_camM);
-        if (!g_camApply) return;
-        t = g_camT;
-    }
     const uintptr_t cam = reinterpret_cast<uintptr_t>(self);
+    applyFov(cam); // before the update, which reads it (and again after, in case it set its own)
+    if (g_camOrigFrame) g_camOrigFrame(self, info);
+    applyFov(cam);
+    alignas(16) gn_transform t{};
+    if (!takeCamT(t)) return;
     namespace c = e::st::CameraObject::off;
     mem::write(cam + c::transform, &t, sizeof(t));
     mem::write(cam + c::viewTransform, &t, sizeof(t));
@@ -3662,8 +3690,44 @@ bool startFreeCam() {
     return true;
 }
 
+// Render thread, every frame, before the free camera: a mod's camera needs the camera hooked (and
+// Faith's body, when asked) while it is on, and both given back after.
+void modCamFrame() {
+    bool on, body, fov;
+    {
+        std::lock_guard<std::mutex> lock(g_camM);
+        on = g_modCamOn, body = g_modCamBody, fov = g_modFov > 0.f;
+    }
+    const bool want = (on || fov) && localClientCharacter() != nullptr && !g_released.load();
+    static bool was = false, bodyWas = false;
+    if (g_cam.active) { // the free camera holds both hooks
+        was = want, bodyWas = false;
+        return;
+    }
+    const bool rehook = g_modCamRehook.exchange(false);
+    if (want && (!was || rehook || ImGui::GetFrameCount() % 60 == 0)) {
+        const bool b = on && body;
+        client().post([b] {
+            hookCamera();
+            if (b) hookBody();
+            else unhookBody();
+        });
+        bodyWas = on && body;
+    } else if (!want && was) {
+        client().post([] {
+            applyFov(0); // gives the FOV back
+            unhookCamera();
+            unhookBody();
+        });
+        bodyWas = false;
+    }
+    was = want;
+    (void)bodyWas;
+}
+
 // Render thread, every frame.
 void freeCamFrame(bool menuOpen) {
+    modCamFrame();
     {
         std::lock_guard<std::mutex> lock(g_viewM);
         g_viewCamOn = g_cam.active;
@@ -3688,6 +3752,7 @@ void freeCamFrame(bool menuOpen) {
             g_camApply = false;
         }
         client().post([] { unhookCamera(); unhookBody(); });
+        g_modCamRehook = true; // a mod's camera, if one is on, takes the camera back at the next frame
         GN_LOG("layouts: free camera off");
     }
     if (!g_cam.active) return;
@@ -6109,6 +6174,81 @@ bool view(gn_view& out) {
     return g_viewSnapOk;
 }
 
+int cameraSet(const void* caller, const gn_transform* t, uint32_t flags) {
+    if (t && (!std::isfinite(t->trans[0]) || !std::isfinite(t->trans[1]) || !std::isfinite(t->trans[2]))) return GN_ERR_ARGUMENT;
+    if (t && !localClientCharacter()) return GN_ERR_UNAVAILABLE;
+    std::lock_guard<std::mutex> lock(g_camM);
+    if (t) {
+        g_modCamT = *t;
+        g_modCamT.trans[3] = 1.f;
+        g_modCamOwner = reinterpret_cast<uintptr_t>(caller);
+    }
+    g_modCamOn = t != nullptr;
+    g_modCamBody = (flags & GN_CAMERA_BODY) != 0;
+    return GN_OK;
+}
+
+int cameraFovSet(const void* caller, float degrees) {
+    if (!std::isfinite(degrees) || degrees < 0.f || degrees > 170.f) return GN_ERR_ARGUMENT;
+    if (degrees > 0.f && !localClientCharacter()) return GN_ERR_UNAVAILABLE;
+    std::lock_guard<std::mutex> lock(g_camM);
+    g_modFov = degrees > 0.f && degrees < 1.f ? 1.f : degrees;
+    g_modFovOwner = reinterpret_cast<uintptr_t>(caller);
+    return GN_OK;
+}
+
+void forgetCamera(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_camM);
+    if (g_modCamOn && r.has(reinterpret_cast<void*>(g_modCamOwner))) g_modCamOn = false;
+    if (g_modFov > 0.f && r.has(reinterpret_cast<void*>(g_modFovOwner))) g_modFov = 0.f;
+}
+
+// The console's "camera": try the mod camera without a mod. "camera behind" puts it 4 m behind and
+// 2 m above Faith (fixed there, her whole body shown), "camera fov N" sets the FOV, "camera off" gives
+// both back.
+std::string cameraCommand(const std::string& args) {
+    std::string a = args;
+    while (!a.empty() && a.back() == ' ') a.pop_back();
+    if (_stricmp(a.c_str(), "off") == 0) {
+        cameraSet(reinterpret_cast<void*>(&cameraCommand), nullptr, 0);
+        cameraFovSet(reinterpret_cast<void*>(&cameraCommand), 0.f);
+        return "camera: given back to the game";
+    }
+    if (_strnicmp(a.c_str(), "fov ", 4) == 0) {
+        const float f = static_cast<float>(atof(a.c_str() + 4));
+        const int r = cameraFovSet(reinterpret_cast<void*>(&cameraCommand), f);
+        return r == GN_OK ? "camera: FOV " + std::to_string(f) + " (0 gives it back)" : "camera: FOV refused (" + std::to_string(r) + ")";
+    }
+    if (_stricmp(a.c_str(), "behind") == 0) {
+        gn_transform v{};
+        void* faith = localClientCharacter();
+        gn_transform f{};
+        if (!faith || !entityTransform(faith, f) || !cameraTransform(v)) return "camera: no Faith or no camera now";
+        // Her facing from the game's camera (its look is -forward), flattened.
+        float d[3] = {-v.forward[0], 0.f, -v.forward[2]};
+        const float l = std::sqrt(d[0] * d[0] + d[2] * d[2]);
+        if (l < 1e-3f) return "camera: the camera looks straight up or down; turn and try again";
+        d[0] /= l, d[2] /= l;
+        float pos[3] = {f.trans[0] - d[0] * 4.f, f.trans[1] + 2.f, f.trans[2] - d[2] * 4.f};
+        float look[3] = {f.trans[0] + d[0] - pos[0], f.trans[1] + 1.2f - pos[1], f.trans[2] + d[2] - pos[2]};
+        const float ll = std::sqrt(look[0] * look[0] + look[1] * look[1] + look[2] * look[2]);
+        for (float& c : look) c /= ll;
+        // The same handedness as the game's camera: right = handed * normalize(cross(Y, look)).
+        const float handed = (v.right[0] * (-v.forward[2]) - v.right[2] * (-v.forward[0])) >= 0.f ? 1.f : -1.f; // as camBasis
+        float r[3] = {look[2], 0.f, -look[0]};
+        const float rl = std::sqrt(r[0] * r[0] + r[2] * r[2]);
+        for (float& c : r) c = c / rl * handed;
+        float u[3] = {look[1] * r[2] - look[2] * r[1], look[2] * r[0] - look[0] * r[2], look[0] * r[1] - look[1] * r[0]};
+        if (u[1] < 0.f) for (float& c : u) c = -c;
+        gn_transform t{};
+        for (int k = 0; k < 3; ++k) t.right[k] = r[k], t.up[k] = u[k], t.forward[k] = -look[k], t.trans[k] = pos[k];
+        t.trans[3] = 1.f;
+        const int res = cameraSet(reinterpret_cast<void*>(&cameraCommand), &t, GN_CAMERA_BODY);
+        return res == GN_OK ? "camera: behind Faith (fixed; camera off gives it back)" : "camera: refused (" + std::to_string(res) + ")";
+    }
+    return "camera behind | camera fov N | camera off";
+}
+
 int freecamSet(bool on) {
     if (on && !localClientCharacter()) return GN_ERR_UNAVAILABLE;
     g_camWant = on ? 1 : 0;
@@ -6140,6 +6280,11 @@ void release() {
     // The camera and Faith's view-mode interface wear vtable copies in gridnode.dll: back now, from
     // this thread (one pointer each; the copies hold the same functions but ours), in case the client
     // is not ticking. hookCamera / hookBody do nothing once released.
+    {
+        std::lock_guard<std::mutex> lock(g_camM);
+        g_modCamOn = false, g_modFov = 0.f;
+    }
+    applyFov(0); // the FOV back (gridnode.dll is going)
     unhookCamera();
     unhookBody();
     // Copies made from saved layouts go; moved magropes read their own transforms again (ours are

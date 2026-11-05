@@ -745,6 +745,40 @@ pub fn ant_objects(type_name: &str, max: u32) -> Vec<*mut c_void> {
     });
     out
 }
+/// Opens or closes the overlay's menu (API 27), as its key does: for a mod with its own key.
+pub fn ui_menu_set(open: bool) -> bool {
+    unsafe { (api().ui_menu_set.unwrap())(open as c_int) == 0 }
+}
+/// Puts the game's camera at `t` from the next frame on (API 27); `None` gives it back.
+/// `sys::GN_CAMERA_BODY` in `flags` shows Faith's whole body.
+pub fn camera_set(t: Option<&sys::gn_transform>, flags: u32) -> bool {
+    let p = t.map_or(core::ptr::null(), |t| t as *const _);
+    unsafe { (api().camera_set.unwrap())(p, flags) == 0 }
+}
+/// The camera's vertical FOV in degrees (the game's is 55); 0 gives it back (API 27).
+pub fn camera_fov_set(degrees: f32) -> bool {
+    unsafe { (api().camera_fov_set.unwrap())(degrees) == 0 }
+}
+/// Faith's last keyframes (API 27; client thread): (bones per keyframe, times, poses), oldest first.
+pub fn replay_recent(max_frames: u32) -> Option<(u32, Vec<f32>, Vec<sys::gn_replay_bone>)> {
+    let mut info: sys::gn_replay_info = unsafe { core::mem::zeroed() };
+    info.size = core::mem::size_of::<sys::gn_replay_info>() as u32;
+    let f = api().replay_recent.unwrap();
+    if unsafe { f(&mut info, core::ptr::null_mut(), core::ptr::null_mut(), 0) } < 0 {
+        return None;
+    }
+    let n = max_frames.min(info.frames);
+    let mut times = vec![0f32; n as usize];
+    let mut pose: Vec<sys::gn_replay_bone> =
+        vec![unsafe { core::mem::zeroed() }; n as usize * info.bones as usize];
+    let got = unsafe { f(&mut info, times.as_mut_ptr(), pose.as_mut_ptr(), n) };
+    if got < 0 {
+        return None;
+    }
+    times.truncate(got as usize);
+    pose.truncate(got as usize * info.bones as usize);
+    Some((info.bones, times, pose))
+}
 /// Makes Faith jump: the jump action, whatever key is bound (the game decides what it becomes).
 pub fn jump() -> bool {
     unsafe { (api().jump.unwrap())() == 0 }

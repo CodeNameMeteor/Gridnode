@@ -22,9 +22,21 @@ with the game every time do `version.dll`, `gridnode.dll` and `mods/` go in the 
 | `sdk/imgui/` | Dear ImGui, the copy GridNode draws with: a mod that draws builds it in |
 | `sdk/rust/gridnode/` | The Rust crate |
 | `sdk/templates/` | `gridnode_mod.py` and the C++ and Rust mod templates |
+| `sdk/VERSION` | The release, copied with the SDK into a mod's `gridnode-sdk/` |
 | `README.txt`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, `VERSION` | |
 
 Nothing of the game's goes in: no reflected dump, no `types.hpp` (made from it), no game files.
+
+### The players' zip
+
+```
+python tools/gen/gridnode.py package --player --build build-player --mods build/mods
+```
+
+makes `GridNode-player-<version>.zip` from a player build (`-DGRIDNODE_PLAYER_BUILD=ON`; a developer
+build is refused): `gridnode.dll`, `gridnode_inject.exe`, `start-with-the-game/version.dll`, the MEC
+trainer in `mods/mec_trainer/` (from `--mods`, default the build's own `mods/`) and a README for
+players. No SDK.
 
 ## Starting a mod
 
@@ -33,13 +45,16 @@ python sdk/templates/gridnode_mod.py new my_mod              C++ (CMake)
 python sdk/templates/gridnode_mod.py new my_mod --rust       Rust (Cargo)
 ```
 
-makes a folder `my_mod` with a mod that builds against that SDK (`--sdk` for another one): a window
-in GridNode's menu, a setting and a client tick in C++; a client tick in Rust. In the repository the
-same command is `gridnode.py new-mod my_mod --sdk <a release's sdk>`.
+makes a folder `my_mod` with a mod and a copy of that SDK in `my_mod/gridnode-sdk/` (`--sdk` for
+another SDK, `--no-vendor` to use it where it is): a window opened with its own key, a setting and a
+client tick in C++; a client tick in Rust. The folder is a repository of its own, with a GitHub
+Actions workflow and a README: [Your mod in its own repository](mod-repository.md). In this
+repository the same command is `gridnode.py new-mod my_mod --sdk <a release's sdk>`.
 
 ```
 cmake -S my_mod -B my_mod/build -A x64 && cmake --build my_mod/build --config Release
-cargo build --release --target x86_64-pc-windows-msvc       (in the Rust mod's folder)
+cargo build --release                                        (in the Rust mod's folder, on Windows)
+python my_mod/gridnode-sdk/templates/gridnode_mod.py update-sdk --sdk <a newer release's sdk> --mod my_mod
 ```
 
 ## Shipping a mod

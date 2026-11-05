@@ -46,7 +46,8 @@ std::string narrow(const std::wstring& w) {
 //   folder=mods   ; relative to gridnode.dll, or absolute
 //   [ui]
 //   enabled=1     ; the Dear ImGui overlay (mods' windows need it)
-//   menu_key=INSERT
+//   menu_key=INSERT  ; NONE: no key, mods open the menu (ui_menu_set)
+//   gridnode_window=1 ; 0: the menu shows only the mods' windows
 //   scale=1.0
 //   inspector=1   ; the inspector window
 //   [tools]       ; developer tools (a player build has none of them)
@@ -95,10 +96,15 @@ Settings readSettings(const std::wstring& dir) {
     s.ui.recorder = tool(L"tools", L"recorder");
     s.ui.console = tool(L"tools", L"console");
     s.ui.devInfo = tool(L"tools", L"dev_info");
+    s.ui.gridnodeWindow = GetPrivateProfileIntW(L"ui", L"gridnode_window", 1, ini.c_str()) != 0;
     GetPrivateProfileStringW(L"ui", L"menu_key", L"INSERT", buf, MAX_PATH, ini.c_str());
-    const int key = host::ui::keyFromName(narrow(buf));
-    if (!key) GN_LOG("gridnode.ini: menu_key '%s' is not a key; INSERT opens the menu", narrow(buf).c_str());
-    s.ui.menuKey = key ? key : VK_INSERT;
+    if (_wcsicmp(buf, L"NONE") == 0) { // only mods open the menu (gn_api ui_menu_set), with their own keys
+        s.ui.menuKey = 0;
+    } else {
+        const int key = host::ui::keyFromName(narrow(buf));
+        if (!key) GN_LOG("gridnode.ini: menu_key '%s' is not a key; INSERT opens the menu", narrow(buf).c_str());
+        s.ui.menuKey = key ? key : VK_INSERT;
+    }
     GetPrivateProfileStringW(L"ui", L"scale", L"1.0", buf, MAX_PATH, ini.c_str());
     s.ui.scale = static_cast<float>(_wtof(buf));
     if (!(s.ui.scale > 0.f)) s.ui.scale = 1.f;

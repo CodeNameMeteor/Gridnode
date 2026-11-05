@@ -1,10 +1,11 @@
 # @NAME@: a GridNode mod (made by `gridnode_mod.py new`).
 #
-#   cmake -S . -B build -A x64 -DGRIDNODE_SDK=<the SDK's sdk folder>
+#   cmake -S . -B build -A x64
 #   cmake --build build --config Release
-#   python <sdk>/templates/gridnode_mod.py pack build/Release/@NAME@.dll   (or copy it into <game>\mods\@NAME@\)
+#   python gridnode-sdk/templates/gridnode_mod.py pack build/Release/@NAME@.dll   (or copy it into GridNode's mods\@NAME@\)
 #
-# GRIDNODE_SDK is the `sdk` folder of a GridNode release (include\, imgui\, rust\).
+# GRIDNODE_SDK is the GridNode SDK: by default the copy in this folder (gridnode-sdk/, committed with
+# the mod so it builds anywhere); -DGRIDNODE_SDK=<a release's sdk folder> for another.
 cmake_minimum_required(VERSION 3.20)
 project(@NAME@ LANGUAGES CXX)
 

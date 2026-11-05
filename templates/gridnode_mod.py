@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """GridNode mods: start one from a template, and pack one for others to install.
 
-  python gridnode_mod.py new NAME [--rust] [--out DIR] [--sdk DIR] [--author A] [--description D]
+  python gridnode_mod.py new NAME [--rust] [--out DIR] [--sdk DIR] [--no-vendor] [--author A] [--description D]
   python gridnode_mod.py pack DLL [--id ID] [--version V] [--file F ...] [--out DIR]
+  python gridnode_mod.py update-sdk [--sdk DIR] [--mod DIR]
 
 new: a folder NAME with a mod that builds (CMake for C++, Cargo for Rust) against the SDK: by
-default the `sdk` folder this script is in (a GridNode release), else --sdk.
+default the `sdk` folder this script is in (a GridNode release), else --sdk. The SDK is copied into
+the mod as gridnode-sdk/ (headers, Dear ImGui or the Rust crate, this script), so the folder is a
+repository of its own that builds anywhere, CI included (.github/workflows/build.yml); --no-vendor
+points at the SDK where it is instead.
+update-sdk: replaces a mod's gridnode-sdk/ with a newer release's sdk folder.
 pack: NAME-VERSION.zip holding mods/NAME/NAME.dll and the files given; unzipped next to
 gridnode.dll (GridNode's folder), GridNode loads it from mods/NAME/ (the mod finds its files with
 gn::modDir()).
@@ -39,6 +44,27 @@ def _names(name: str):
     return file, ident, title
 
 
+VENDORED = "gridnode-sdk"
+
+
+def _vendor(sdk: str, dest: str, rust: bool) -> None:
+    """The parts of the SDK a mod builds with, copied into dest (replacing what was there)."""
+    import shutil
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    parts = ["include", "rust"] if rust else ["include", "imgui"]
+    for p in parts:
+        if os.path.isdir(os.path.join(sdk, p)):
+            shutil.copytree(os.path.join(sdk, p), os.path.join(dest, p), ignore=shutil.ignore_patterns("target", "__pycache__"))
+    os.makedirs(os.path.join(dest, "templates"), exist_ok=True)
+    shutil.copy2(os.path.join(HERE, "gridnode_mod.py"), os.path.join(dest, "templates", "gridnode_mod.py"))
+    for f in ("VERSION",):
+        for at in (os.path.join(sdk, f), os.path.join(os.path.dirname(sdk), f)):  # in sdk/, or the release's folder
+            if os.path.isfile(at):
+                shutil.copy2(at, os.path.join(dest, f))
+                break
+
+
 def new(args) -> int:
     file, ident, title = _names(args.name)
     sdk = os.path.abspath(args.sdk) if args.sdk else _sdk_default()
@@ -48,14 +74,16 @@ def new(args) -> int:
     out = os.path.abspath(os.path.join(args.out, file))
     if os.path.exists(out):
         raise SystemExit(f"error: {out} exists")
+    vendor = not args.no_vendor
     subst = {
         "@NAME@": file,
         "@ID@": ident,
         "@TITLE@": title,
         "@AUTHOR@": args.author,
         "@DESCRIPTION@": args.description.replace('"', "'"),
-        "@SDK@": sdk.replace("\\", "/"),
-        "@SDK_RUST@": os.path.join(sdk, "rust", "gridnode").replace("\\", "/"),
+        "@OPEN_KEY@": "F6",
+        "@SDK@": "${CMAKE_CURRENT_SOURCE_DIR}/" + VENDORED if vendor else sdk.replace("\\", "/"),
+        "@SDK_RUST@": VENDORED + "/rust/gridnode" if vendor else os.path.join(sdk, "rust", "gridnode").replace("\\", "/"),
     }
     for root, _dirs, files in os.walk(src):
         rel = os.path.relpath(root, src)
@@ -68,7 +96,9 @@ def new(args) -> int:
                 text = text.replace(k, v)
             with open(target, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(text)
-    print(f"{'Rust' if args.rust else 'C++'} mod {ident} in {out}")
+    if vendor:
+        _vendor(sdk, os.path.join(out, VENDORED), args.rust)
+    print(f"{'Rust' if args.rust else 'C++'} mod {ident} in {out}" + (f" (the SDK copied into {VENDORED}/: commit it)" if vendor else ""))
     if args.rust:
         print("  build: cargo build --release --target x86_64-pc-windows-msvc")
     else:
@@ -101,6 +131,22 @@ def pack(args) -> int:
     return 0
 
 
+def update_sdk(args) -> int:
+    mod = os.path.abspath(args.mod)
+    dest = os.path.join(mod, VENDORED)
+    if not os.path.isdir(dest):
+        raise SystemExit(f"error: {mod} has no {VENDORED}/ (made with --no-vendor?)")
+    sdk = os.path.abspath(args.sdk) if args.sdk else _sdk_default()
+    if not sdk or not os.path.isfile(os.path.join(sdk, "include", "gridnode", "api.h")):
+        raise SystemExit("error: pass --sdk <the new release's sdk folder>")
+    if os.path.abspath(sdk) == dest:
+        raise SystemExit("error: that is the mod's own copy: pass --sdk <the new release's sdk folder>")
+    rust = os.path.isfile(os.path.join(mod, "Cargo.toml"))
+    _vendor(sdk, dest, rust)
+    print(f"{dest}: now the SDK from {sdk}. Rebuild; a mod built with it needs that GridNode or newer.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="gridnode_mod", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -109,6 +155,7 @@ def main(argv=None) -> int:
     n.add_argument("--rust", action="store_true", help="a Rust mod (Cargo) instead of C++ (CMake)")
     n.add_argument("--out", default=".", help="where its folder goes (default: here)")
     n.add_argument("--sdk", help="the SDK folder (default: the one this script is in)")
+    n.add_argument("--no-vendor", action="store_true", help=f"use the SDK where it is instead of copying it into {VENDORED}/")
     n.add_argument("--author", default="me")
     n.add_argument("--description", default="A GridNode mod.")
     p = sub.add_parser("pack", help="a zip others unzip next to gridnode.dll")
@@ -117,8 +164,11 @@ def main(argv=None) -> int:
     p.add_argument("--version", default="0.1.0")
     p.add_argument("--file", action="append", default=[], help="a file or folder the mod brings (repeat)")
     p.add_argument("--out", default=".", help="where the zip goes (default: here)")
+    u = sub.add_parser("update-sdk", help=f"replace a mod's {VENDORED}/ with a newer release's SDK")
+    u.add_argument("--sdk", help="the new SDK folder (default: the one this script is in)")
+    u.add_argument("--mod", default=".", help="the mod's folder (default: here)")
     a = ap.parse_args(argv)
-    return new(a) if a.cmd == "new" else pack(a)
+    return {"new": new, "pack": pack, "update-sdk": update_sdk}[a.cmd](a)
 
 
 if __name__ == "__main__":

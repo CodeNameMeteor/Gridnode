@@ -64,6 +64,8 @@ template <class F> bool onDraw(F f) {
 }
 
 inline bool menuOpen() { return api().ui_menu_open() != 0; }
+// Opens or closes the menu (API 27): give your mod its own key with gn::hotkey and open it from there.
+inline bool setMenuOpen(bool open) { return api().ui_menu_set(open ? 1 : 0) == GN_OK; }
 
 namespace detail {
 // The free camera's key list window, to add to (false: it is not shown now).

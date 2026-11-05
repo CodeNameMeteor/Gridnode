@@ -808,11 +808,27 @@ class Packaging(unittest.TestCase):
             self.assertIn('GN_MOD("jump-boost")', cpp)
             self.assertIn("Say 'hi'", cpp)          # quotes can't break the string
             self.assertNotIn("@", cpp.replace("@NAME", ""))  # every placeholder filled
+            # Its own repository: the SDK copied in, the build pointing there, CI and a README.
             with open(os.path.join(d, "jump_boost", "CMakeLists.txt"), encoding="utf-8") as f:
+                self.assertIn("${CMAKE_CURRENT_SOURCE_DIR}/gridnode-sdk", f.read())
+            self.assertTrue(os.path.isfile(os.path.join(d, "jump_boost", "gridnode-sdk", "include", "gridnode", "api.h")))
+            self.assertTrue(os.path.isfile(os.path.join(d, "jump_boost", "gridnode-sdk", "templates", "gridnode_mod.py")))
+            for f in (".github/workflows/build.yml", "README.md", ".gitignore"):
+                with open(os.path.join(d, "jump_boost", f), encoding="utf-8") as fh:
+                    self.assertNotIn("@", fh.read().replace("@v4", ""), f)  # every placeholder filled
+            # --no-vendor: the SDK where it is.
+            self.assertEqual(gm.main(["new", "linked", "--no-vendor", "--out", d, "--sdk", sdk]), 0)
+            with open(os.path.join(d, "linked", "CMakeLists.txt"), encoding="utf-8") as f:
                 self.assertIn(sdk.replace("\\", "/"), f.read())
+            self.assertFalse(os.path.exists(os.path.join(d, "linked", "gridnode-sdk")))
             self.assertEqual(gm.main(["new", "rusty", "--rust", "--out", d, "--sdk", sdk]), 0)
             with open(os.path.join(d, "rusty", "Cargo.toml"), encoding="utf-8") as f:
-                self.assertIn("rust/gridnode", f.read())
+                self.assertIn('path = "gridnode-sdk/rust/gridnode"', f.read())
+            # update-sdk: a newer SDK replaces the copy.
+            with open(os.path.join(sdk, "include", "gridnode", "mod.hpp"), "w") as f:
+                f.write("new")
+            self.assertEqual(gm.main(["update-sdk", "--sdk", sdk, "--mod", os.path.join(d, "jump_boost")]), 0)
+            self.assertTrue(os.path.isfile(os.path.join(d, "jump_boost", "gridnode-sdk", "include", "gridnode", "mod.hpp")))
             dll = os.path.join(d, "jump_boost.dll")
             with open(dll, "wb") as f:
                 f.write(b"MZ")
@@ -844,3 +860,28 @@ class Packaging(unittest.TestCase):
                 self.assertIn(f"{top}/{want}", names)
             self.assertNotIn(f"{top}/mods/probe/probe.dll", names)  # research mods stay out
             self.assertFalse(any("reflected" in n or n.endswith("types.hpp") for n in names))  # nothing from the game
+            self.assertIn(f"{top}/sdk/VERSION", names)  # goes with a mod's copy of the SDK
+
+    def test_package_player(self):
+        import tempfile, zipfile
+        sys.path.insert(0, os.path.join(ROOT, "tools", "gen"))
+        from gridnode_gen import package
+        with tempfile.TemporaryDirectory() as d:
+            b = os.path.join(d, "build")
+            os.makedirs(os.path.join(b, "mods"))
+            for f in ("version.dll", "gridnode_inject.exe", os.path.join("mods", "mec_trainer.dll")):
+                open(os.path.join(b, f), "w").close()
+            with open(os.path.join(b, "gridnode.dll"), "wb") as f:
+                f.write(b"MZ" + package.DEV_MARKER)
+            with self.assertRaises(ValueError):  # a developer build is refused
+                package.build_player(ROOT, b, os.path.join(d, "out"), "https://example.invalid")
+            with open(os.path.join(b, "gridnode.dll"), "wb") as f:
+                f.write(b"MZ player")
+            z = package.build_player(ROOT, b, os.path.join(d, "out"), "https://example.invalid")
+            with zipfile.ZipFile(z) as zf:
+                names = zf.namelist()
+            top = names[0].split("/")[0]
+            self.assertTrue(top.startswith("GridNode-player-"))
+            for want in ("gridnode.dll", "gridnode_inject.exe", "start-with-the-game/version.dll", "mods/mec_trainer/mec_trainer.dll", "README.txt"):
+                self.assertIn(f"{top}/{want}", names)
+            self.assertFalse(any("/sdk/" in n for n in names))

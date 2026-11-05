@@ -17,6 +17,7 @@
   gridnode hash NAME...                       Frostbite name hash of each name
   gridnode unhash HASH... [--image EXE]       names for hashes (or a file of hashes, one per line)
   gridnode package [--build DIR] [--examples] a release zip (game files, SDK, mod templates)
+gridnode package --player --build DIR       the players' zip (player build, injector, MEC trainer)
   gridnode new-mod NAME [--rust] [--sdk DIR]  a mod from the template (templates/gridnode_mod.py new)
   gridnode pack-mod DLL [--file F ...]        a mod's zip for others (templates/gridnode_mod.py pack)
 """
@@ -175,6 +176,8 @@ def _main(argv=None) -> int:
     pk.add_argument("--out", default=os.path.join(ROOT, "build", "release"), help="where the zip goes (default: build/release)")
     pk.add_argument("--examples", action="store_true", help="the example mods in game/mods too")
     pk.add_argument("--repo", default="https://github.com/CodeNameMeteor/Gridnode", help="named in README.txt")
+    pk.add_argument("--player", action="store_true", help="the players' zip: --build is a player build; no SDK")
+    pk.add_argument("--mods", help="with --player: the folder with mec_trainer.dll (default: the build's mods)")
     nm = sub.add_parser("new-mod", help="a new mod from the template (templates/gridnode_mod.py new)")
     nm.add_argument("rest", nargs=argparse.REMAINDER)
     pm = sub.add_parser("pack-mod", help="a mod's zip for others (templates/gridnode_mod.py pack)")
@@ -191,7 +194,10 @@ def _main(argv=None) -> int:
 
     if a.cmd == "package":
         from . import package
-        z = package.build(ROOT, os.path.abspath(a.build), os.path.abspath(a.out), a.examples, a.repo)
+        if a.player:
+            z = package.build_player(ROOT, os.path.abspath(a.build), os.path.abspath(a.out), a.repo, os.path.abspath(a.mods) if a.mods else None)
+        else:
+            z = package.build(ROOT, os.path.abspath(a.build), os.path.abspath(a.out), a.examples, a.repo)
         print(f"release: {z}")
         return 0
 

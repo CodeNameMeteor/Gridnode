@@ -46,10 +46,9 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 **Do not read or grep:** `db/reflected/`, `third_party/`, `build*/`, generated `engine.hpp`, dumps,
 recordings (`*.jsonl`, see below), `reviews/`. `docs/research/` only when the task is engine research.
 
-**Docs on demand:** writing a mod `docs/modding.md`; building `docs/building.md`; type knowledge
-`docs/annotations.md`, `docs/dump-format.md`; Ghidra and fingerprints `docs/contributing.md`;
-recordings `docs/recording.md`; custom maps `docs/custom-meshes.md`, `docs/layout-editor.md`,
-`docs/assets-assessment.md`.
+**Docs on demand:** writing a mod `docs/modding.md` (in its own repository: `mod-repository.md`);
+release `troubleshooting.md`, `online.md`, `known-issues.md`, `release-notes.md`; building `building.md`; types
+`annotations.md`, `dump-format.md`; Ghidra `contributing.md`; recordings `recording.md`; maps `layout-editor.md`.
 
 ## Build and test
 

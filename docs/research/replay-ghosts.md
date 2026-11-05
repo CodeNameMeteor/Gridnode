@@ -119,3 +119,27 @@ Still to find:
   StartReplay and StopReplay.) In game: the Recorder's **Send an event** can send StopReplay
   (`0xd6a2182e`) to a live `PamServerReplayEntity` during the mission to watch the unspawn.
 - Whether a replay entity can run without a `PamReplayResource` (MECMP supplies the poses itself).
+
+## The recorder's ring and puppet placement (2026-11-05)
+
+From the user's camera and replay handbook (2026-11-05), the ring read again in Ghidra:
+
+- **The ring** (`ReplayRecorder`, from `PamClientReplayRecordingComponent` +0x48): 450 keyframes of
+  `0x10 + bones * 0x20` bytes. `ReplayRecorder_SampleAndStream` (0x143974390) moves `head` (+0x88) on
+  each client tick, wrapping at the capacity, and writes the keyframe there: `+0x00` time (the
+  recorder's clock, +0x9c), `+0x04` 1 on a stream's first keyframe, the bones from `+0x10` (each
+  `{translation x y z 1, rotation quaternion}`, taken from the animatable's pose by the indices at
+  +0xe8). The reset (0x14394f1c0) sets `head` and `tail` (+0x8c) to 0 and `notWrapped` (+0x90) to 1;
+  until `head` first reaches `tail`, keyframes 1..head are the written ones; after that all 450,
+  oldest at `tail`. `gn_api replay_recent` (API 27) reads it.
+- **The recording format** (version 5): a header of the version, a setup hash (djb2 of the bone ids,
+  seed 0x1505, then `(h * 33 ^ 10) * 33 ^ 11`), the bone count, bone ids, parent ids, and the bones
+  that carry translations; then keyframes: a time, 2 flag bits (1: a full keyframe, every 30 or after
+  a jump over 5 m; 0: a delta), translations (full floats, or 10-bit deltas in -5..5 m) and 11-bit
+  quantised rotations. **Not checked:** how the floats are packed and which quaternion parts the
+  11-bit values are (`ReplayPlayback_DecodeKeyframe` 0x14394e390): needed before a decoder.
+- **Puppet height drift** (`PamClientReplayPlayerComponent_update` 0x1439501a0): unless `skipRoot`
+  (+0x2e6) is set, the character is placed at `bone0.t + rotate(bone0.q, bone1.t)`, so a small tilt
+  in bone 0's rotation moves a far trajectory (bone 1) by about the tilt times its distance: a ghost
+  drifts up or down. Either set `skipRoot` and write the character's world transform (+0x158)
+  yourself, or fill bone 1 as `rotate(conj(bone0.q), target - bone0.t)`.

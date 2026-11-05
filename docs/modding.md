@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 26 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 27 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -506,12 +506,24 @@ GN_MOD("my-mod") {
 ```ini
 [ui]
 enabled=1        ; 0: no overlay (mods' onDraw returns false)
-menu_key=INSERT  ; INSERT, HOME, END, DELETE, PAGEUP, PAGEDOWN, PAUSE, F1..F12, NUM0..NUM9, a letter, or VK_xx
+menu_key=INSERT  ; INSERT, HOME, END, DELETE, PAGEUP, PAGEDOWN, PAUSE, F1..F12, NUM0..NUM9, a letter, VK_xx, or NONE (mods open it)
 scale=1.0        ; text size
+gridnode_window=1 ; 0: the menu shows only the mods' windows
 inspector=1      ; the inspector (tracks every entity the game creates)
 ```
 
 MECMP also opens its menu with INSERT: if you run both, give GridNode another `menu_key`.
+
+**A mod's own key and only its window (API 27).** `gn::ui::setMenuOpen(open)` (Rust `ui_menu_set`)
+opens or closes the overlay as the menu key does, so a mod can open its window with its own hotkey:
+
+```cpp
+gn::hotkey("open", "Open My mod", VK_F6, [] { gn::ui::setMenuOpen(!gn::ui::menuOpen()); });
+```
+
+With `[ui] gridnode_window=0` in `gridnode.ini` the menu shows the mods' windows and not the GridNode
+window, and `menu_key=NONE` leaves opening it to the mods: for a mod shipped with GridNode on its own
+([Your mod in its own repository](mod-repository.md#only-your-window)).
 
 ### The free camera (API 13)
 
@@ -528,6 +540,36 @@ Its key list sits top right while it flies with the menu closed. A mod adds its 
 its `onDraw`: `gn::ui::freecamSeparator("My mod")`, then `gn::ui::freecamRow(key, "what it does")` per
 key (GridNode draws the list first in the frame, so these go at its end; nothing happens while it is
 not shown).
+
+### A mod's own camera (API 27)
+
+For a photo mode, a third-person view or a cinematic shot, a mod places the camera itself:
+
+```cpp
+gn::Transform t{};                               // right, up, forward, position (the view looks along -forward)
+// ... fill t each frame (from any thread) ...
+gn::cameraSet(t, GN_CAMERA_BODY);                // from the next frame; GN_CAMERA_BODY: Faith's whole body
+gn::cameraFov(70.f);                             // degrees, before the player's FOV setting (the game's is 55)
+gn::cameraRelease(); gn::cameraFov(0.f);         // back to the game's
+```
+
+GridNode puts it in the camera's own transform output (FPSCamera's +0x70 and its frame update), so
+the culling, the audio listener and the view the renderer gets all follow it with no jitter. The
+camera stays where it was last set until the next call, so move it every frame for motion. GridNode's
+free camera, when it flies, comes first. Faith keeps playing: block input yourself if she should
+not move. Both are given back when the mod unloads. Rust: `camera_set`, `camera_fov_set`. To try it
+without a mod, the console has `camera behind` (fixed 4 m behind and 2 m above her), `camera fov N`
+and `camera off`.
+
+### Faith's last 15 seconds (API 27)
+
+The game records Faith's pose every client tick into a ring of 450 keyframes, to make time trial
+ghosts. `gn::replayRecent(r)` (client thread) copies it, oldest first: `r.times[i]` in seconds and
+`r.frame(i)[b]` for each of `r.bones` bones (a translation and a rotation quaternion). For a "what
+went wrong" replay after a failed jump, a trail of her path, or rewinding a practice attempt. Bone 0
+is the root and bone 1 her trajectory (where she is); the rest are as ANT's pose has them
+(research, `docs/research/replay-ghosts.md`). Rust: `replay_recent`. The console's `replay` prints
+what the ring holds and where the root and trajectory bones are in its newest keyframe.
 
 ### Entities of a class (API 14)
 

@@ -85,6 +85,8 @@ dev_info=1      ; the menu's World, Game image and Hooks sections, Dear ImGui me
 
 ## When something goes wrong
 
+[Troubleshooting](troubleshooting.md) has the full list. In short:
+
 - **Nothing happens:** look at `gridnode.log`. No log at all means GridNode was not loaded (run the
   injector after the game has started, or check `version.dll` is next to the game's exe).
 - **"not the game build GridNode supports":** the game is another build (not the EA app's, or
@@ -98,8 +100,8 @@ dev_info=1      ; the menu's World, Game image and Hooks sections, Dear ImGui me
 
 ## Next
 
-[Writing a mod](modding.md) covers the API; [Releases and mod templates](packaging.md) covers starting
-and packing a mod; [Shipping a mod](shipping.md) covers what players need. `examples/` has complete
+[Writing a mod](modding.md) covers the API; [Your mod in its own repository](mod-repository.md) covers
+starting, building and shipping a mod outside this repository; [Releases and mod templates](packaging.md) covers the zips; [Shipping a mod](shipping.md) covers what players need. `examples/` has complete
 mods: `hello` (reflection, ticks, creation, messages), `hello-rust`, `trainer` (save / load position,
 a window), `mec-trainer` (the MEC trainer: movement, tuning, noclip, god mode, game speed, volumes),
 `world-draw` (drawing in the world, and test buttons for the physics, sound and despawn API),

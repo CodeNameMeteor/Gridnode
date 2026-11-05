@@ -15,6 +15,10 @@
     README.txt, LICENSE, THIRD_PARTY_NOTICES.md
 
 Nothing of the game's goes in: no dump, no types.hpp (made from the reflected dump), no game files.
+
+With --player (build_player): GridNode-player-<version>.zip for players: the player build of
+gridnode.dll (the loader, the API and mods' windows; no developer tools), the injector, version.dll,
+the MEC trainer, and a README for players. No SDK.
 """
 
 from __future__ import annotations
@@ -30,6 +34,8 @@ PUBLIC_HEADERS = ["api.h", "mod.hpp", "ui.hpp", "projection.hpp", "version.hpp",
 IMGUI = ["imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "imgui.h", "imgui_internal.h", "imconfig.h",
          "imstb_rectpack.h", "imstb_textedit.h", "imstb_truetype.h", "LICENSE.txt"]
 EXAMPLES = ["hello", "mec_trainer", "world_draw", "detour_demo"]  # the research ones (probe, the old trainer) stay out
+PLAYER_MODS = ["mec_trainer"]
+DEV_MARKER = b"recorder: armed: recording starts"  # a string only the developer build's gridnode.dll has
 
 
 def version(root: str) -> str:
@@ -61,8 +67,10 @@ Mods
   zip (mods\\name\\name.dll and its files). Mods made for a newer GridNode refuse to load.
 
 Making a mod
-  python sdk\\templates\\gridnode_mod.py new my_mod            a C++ mod (CMake) built against sdk\\
+  python sdk\\templates\\gridnode_mod.py new my_mod            a C++ mod (CMake), in a folder of its own
   python sdk\\templates\\gridnode_mod.py new my_mod --rust     a Rust mod (Cargo)
+    The SDK is copied into the mod (gridnode-sdk\\), so the folder is a repository that builds anywhere,
+    with a GitHub Actions workflow: docs/mod-repository.md in the repository.
   python sdk\\templates\\gridnode_mod.py pack my_mod.dll       a zip others unzip next to gridnode.dll
   The API: sdk\\include\\gridnode\\mod.hpp (C++), sdk\\rust\\gridnode (Rust); the guide is docs/modding.md
   in the repository: {repo}
@@ -125,9 +133,79 @@ def build(root: str, build_dir: str, out_dir: str, examples: bool, repo_url: str
         _copy(os.path.join(root, f), os.path.join(stage, f))
     with open(os.path.join(stage, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(README.format(version=v, repo=repo_url))
+    for at in (os.path.join(stage, "VERSION"), os.path.join(sdk, "VERSION")):  # sdk/VERSION goes with a mod's copy
+        with open(at, "w", encoding="utf-8") as f:
+            f.write(v + "\n")
+
+    zpath = os.path.join(out_dir, name + ".zip")
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        for base, _dirs, files in os.walk(stage):
+            for f in sorted(files):
+                p = os.path.join(base, f)
+                z.write(p, os.path.relpath(p, out_dir).replace("\\", "/"))
+    return zpath
+
+PLAYER_README = """GridNode {version} (player build): mods for Mirror's Edge Catalyst (PC, the EA app build)
+
+Install
+  Unzip this folder anywhere (not in the game's folder). Start the game, then run
+  gridnode_inject.exe: it loads GridNode from this folder. INSERT opens the menu with the mods'
+  windows. GridNode writes gridnode.log here. It stays passive on another build of the game.
+
+  To have it load with the game every time instead: copy start-with-the-game\\version.dll,
+  gridnode.dll and mods\\ into the game's folder (where MirrorsEdgeCatalyst.exe is).
+
+Mods
+  mods\\mec_trainer is the MEC trainer (practice tools). Add other mods next to it: a mod's zip is
+  unzipped here (it makes mods\\<name>\\). Mods made for a newer GridNode refuse to load.
+
+Online
+  The trainer never changes online play: with it loaded, Dash and time trial times are not uploaded.
+  A mod that changes online services says so in gridnode.log and in the menu's Mods list.
+
+Problems
+  gridnode.log, next to gridnode.dll, says what loaded and what went wrong. Report a problem with it:
+  {repo}/issues
+
+GridNode is MIT licensed (LICENSE); Dear ImGui's notice is in THIRD_PARTY_NOTICES.md.
+"""
+
+
+def build_player(root: str, build_dir: str, out_dir: str, repo_url: str, mods_dir: str | None = None) -> str:
+    """The players' zip: build_dir holds the player build (-DGRIDNODE_PLAYER_BUILD=ON); the trainer
+    comes from mods_dir (default build_dir/mods)."""
+    v = version(root)
+    name = f"GridNode-player-{v}"
+    stage = os.path.join(out_dir, name)
+    if os.path.exists(stage):
+        shutil.rmtree(stage)
+    need = {"gridnode.dll": "gridnode.dll", "version.dll": os.path.join("start-with-the-game", "version.dll"),
+            "gridnode_inject.exe": "gridnode_inject.exe"}
+    for f, to in need.items():
+        p = os.path.join(build_dir, f)
+        if not os.path.isfile(p):
+            for cfg in ("Release", "RelWithDebInfo"):
+                if os.path.isfile(os.path.join(build_dir, cfg, f)):
+                    p = os.path.join(build_dir, cfg, f)
+        if not os.path.isfile(p):
+            raise ValueError(f"{f} not found in {build_dir}: build the player build first (-DGRIDNODE_PLAYER_BUILD=ON)")
+        if f == "gridnode.dll":
+            with open(p, "rb") as fh:
+                if DEV_MARKER in fh.read():
+                    raise ValueError(f"{p} is a developer build: configure with -DGRIDNODE_PLAYER_BUILD=ON")
+        _copy(p, os.path.join(stage, to))
+    mods = mods_dir or os.path.join(build_dir, "mods")
+    for m in PLAYER_MODS:
+        p = os.path.join(mods, m + ".dll")
+        if not os.path.isfile(p):
+            raise ValueError(f"{m}.dll not found in {mods}: build the examples, or pass --mods <a build's mods folder>")
+        _copy(p, os.path.join(stage, "mods", m, m + ".dll"))
+    for f in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+        _copy(os.path.join(root, f), os.path.join(stage, f))
+    with open(os.path.join(stage, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(PLAYER_README.format(version=v, repo=repo_url))
     with open(os.path.join(stage, "VERSION"), "w", encoding="utf-8") as f:
         f.write(v + "\n")
-
     zpath = os.path.join(out_dir, name + ".zip")
     with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
         for base, _dirs, files in os.walk(stage):

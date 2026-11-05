@@ -49,6 +49,16 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **API 27 and the release docs** (user, 2026-11-05; untested in game). `camera_set` / `camera_fov_set`
+  (a mod's camera through the free camera's vtable copy; the free camera comes first; given back on
+  unload), `replay_recent` (the recorder's 450-keyframe ring, read in Ghidra: head +0x88, tail +0x8c,
+  notWrapped +0x90; `sdk/src/replay.cpp`), `ui_menu_set` with `[ui] menu_key=NONE` and
+  `gridnode_window=0` (a mod's own key, only mods' windows). `gridnode_mod.py new` copies the SDK
+  into the mod (`gridnode-sdk/`) with a GitHub Actions workflow, a README and `update-sdk` (checked:
+  a mod made from a release zip builds on its own with MinGW, and its Rust crate checks).
+  `gridnode.py package --player` (refuses a developer build). New pages: mod-repository,
+  troubleshooting, online, known-issues, release-notes. Release plan items 2-4 drafted; the
+  version (item 6) and the clean-setup pass (item 1) are still the user's.
 - **API 26 and trainer 1.5.1** (user, 2026-11-05; untested in game). `on_destroyed` (mods' listeners
   in GridNode's entity destructor wrapper, called while the entity is whole; it hooks the
   destructors itself, so the player build has it too). `on_level_ready` / `level_ready` /

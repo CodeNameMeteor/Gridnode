@@ -218,6 +218,8 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "list") == 0 || _stricmp(word.c_str(), "help") == 0) return listing(rest);
     if (_stricmp(word.c_str(), "progress") == 0) return progressCommand(rest); // GridNode's own (gamestate.cpp)
     if (_stricmp(word.c_str(), "ant") == 0) return antCommand(rest);           // GridNode's own (ant.cpp)
+    if (_stricmp(word.c_str(), "camera") == 0) return layouts::cameraCommand(rest); // GridNode's own (layouts.cpp)
+    if (_stricmp(word.c_str(), "replay") == 0) return replayCommand();          // GridNode's own (replay.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";
     EngineString s{};
     reinterpret_cast<void (*)(EngineString*, const char*, uint8_t)>(mem::rva(e::function::Console_executeCommand))(&s, line.c_str(), 1);

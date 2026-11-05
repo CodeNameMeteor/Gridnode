@@ -50,14 +50,19 @@ classes:
 
 structs:
   - name: ReplayRecorder
-    size: 0x90
+    size: 0xf0
     opaque: true
-    note: Keyframe ring of the local replay recorder. Keyframe = {f32 time; ...; ReplayBone bones[] at +0x10}.
+    note: "Keyframe ring of the local replay recorder (read in Ghidra 2026-11-05, ReplayRecorder_SampleAndStream). Keyframe = {f32 time; u32 1 on a stream's first keyframe; ...; ReplayBone bones[boneCount] at +0x10}. The time is made relative to a stream's start while one is written."
     members:
       - { offset: 0x68, name: stride, type: u64, note: "Bytes per keyframe: 0x10 + bones * 0x20." }
       - { offset: 0x70, name: capacity, type: u32 }
       - { offset: 0x78, name: base, type: "u8*" }
-      - { offset: 0x88, name: head, type: u32 }
+      - { offset: 0x88, name: head, type: u32, note: "The newest keyframe: SampleAndStream moves it on (wrapping at capacity), then writes there.", sources: [ghidra] }
+      - { offset: 0x8c, name: tail, type: u32, note: "The oldest once the ring is full (it moves on when head reaches it). The ring reset (0x14394f1c0) sets head and tail to 0.", sources: [ghidra] }
+      - { offset: 0x90, name: notWrapped, type: u32, note: "1 from the reset until head first reaches tail (then 0): until then keyframes 1..head are the ones written.", sources: [ghidra] }
+      - { offset: 0x9c, name: time, type: f32, note: "Seconds recorded: each sample writes it as the keyframe's time (+0x00), then adds the tick's dt.", sources: [ghidra] }
+      - { offset: 0xd8, name: boneCount, type: u32, note: "The setup (ReplaySetup_Build): bones per keyframe.", sources: [ghidra] }
+      - { offset: 0xe8, name: boneIndices, type: "u32*", note: "Per recorded bone, its index in the animatable's pose (also written as the header's bone ids).", sources: [ghidra] }
   - name: ReplayBone
     size: 0x20
     align: 16

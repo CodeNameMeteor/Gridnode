@@ -250,6 +250,8 @@ int antFieldFind(const char* type, const char* name, gn_ant_field* out);
 int moveTracker(gn_move_tracker* out);
 int antLiveField(const char* type, const char* field, gn_ant_live_field* out); // API 26, client thread
 int antObjects(const char* type, void** out, uint32_t max);                     // API 26, client thread
+int replayRecent(gn_replay_info* info, float* times, gn_replay_bone* bones, uint32_t maxFrames); // API 27 (replay.cpp)
+std::string replayCommand(); // the console's "replay"
 std::string antCommand(const std::string& args); // the console's "ant [FILTER | TYPE]"
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
@@ -305,6 +307,10 @@ void frame(bool menuOpen, bool editor); // render thread, every frame: the free 
 int freecamSet(bool on);                  // mods: the free camera on / off (next frame)
 int freecamGet(gn_freecam* out);
 int teleportRequest(int to, bool keepFlying); // 1 the crosshair, 2 the free camera's position (next frame)
+int cameraSet(const void* caller, const gn_transform* t, uint32_t flags); // API 27: a mod's camera (null: given back)
+int cameraFovSet(const void* caller, float degrees);                     // API 27: 0 gives the FOV back
+void forgetCamera(const CodeRange& r);                                    // a mod unloading: its camera and FOV given back
+std::string cameraCommand(const std::string& args);                      // the console's "camera"
 bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
 void release(); // a full unload: the free camera off, copies removed, moved magropes given their own transforms back
 } // namespace layouts
@@ -405,6 +411,7 @@ struct Settings {
     bool recorder = true; // the Recorder
     bool console = true;  // the console window
     bool devInfo = true;  // the World / Hooks sections and Dear ImGui metrics
+    bool gridnodeWindow = true; // the GridNode window in the menu ([ui] gridnode_window=0: only mods' windows)
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);
@@ -415,6 +422,7 @@ void* context();
 void allocators(void** alloc, void** free, void** user);
 int check(const char* mod, const char* version, size_t io, size_t style, size_t vec2, size_t vec4, size_t vert, size_t idx);
 bool menuOpen();
+bool setMenu(bool open); // API 27 (false: no overlay): a mod opens or closes the menu (its own key)
 bool gameFocused(); // the game's window is the foreground window (for keys read with GetAsyncKeyState)
 void toggleMenu();
 void setLookCapture(bool on);            // raw mouse movement goes to takeLook, not the cursor

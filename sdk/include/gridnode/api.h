@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 26 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects */
+#define GN_API_VERSION 27 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -317,6 +317,23 @@ typedef struct gn_ant_live_field {
     uint32_t reserved;
     void* vtable;            /* the type's objects start with this (ant_objects finds them by it) */
 } gn_ant_live_field;
+
+/* A camera a mod places (API 27, camera_set). */
+#define GN_CAMERA_BODY 1 /* show Faith's whole body (as the free camera does), not the first-person arms */
+
+/* Faith's recent movement as the game records it for time trials (API 27, replay_recent). */
+typedef struct gn_replay_bone {
+    float translation[4]; /* x, y, z, then a scale (1) */
+    float rotation[4];    /* a quaternion x, y, z, w */
+} gn_replay_bone;
+typedef struct gn_replay_info {
+    uint32_t size;        /* sizeof(gn_replay_info) */
+    uint32_t frames;      /* keyframes held now (up to capacity) */
+    uint32_t capacity;    /* the ring's length (450: 15 s at 30 a second) */
+    uint32_t bones;       /* bones per keyframe */
+    float newest_time;    /* the newest keyframe's time, seconds */
+    uint32_t reserved;
+} gn_replay_info;
 
 /* An entity about to be destroyed (API 26, on_destroyed): still whole, on the thread destroying it.
  * Forget it here; do not keep it or call into the game with it. */
@@ -964,6 +981,35 @@ typedef struct gn_api {
      * values with write(); a driver may only read a value when its move starts. */
     int (*ant_live_field)(const char* type_name, const char* field_name, gn_ant_live_field* out);
     int (*ant_objects)(const char* type_name, void** out, uint32_t max);
+
+    /* ==== GN_API_VERSION 27 =================================================================== */
+
+    /* ---- the camera -------------------------------------------------------------------------------
+     * camera_set: the game's camera is at *t (right, up, forward, position; the view looks along
+     * MINUS forward, as gn_view and the game have it) from the next frame on, until camera_set(null)
+     * gives it back. Call it again each frame to move it. GN_CAMERA_BODY shows Faith's whole body.
+     * GridNode's free camera, when on, comes first. camera_fov_set: the camera's vertical field of
+     * view in degrees before the player's FOV setting (the game's is 55); 0 gives it back. Both: any
+     * thread; given back when the mod unloads. GN_ERR_UNAVAILABLE: no Faith (menus, loading). */
+    int (*camera_set)(const gn_transform* t, uint32_t flags);
+    int (*camera_fov_set)(float degrees);
+
+    /* ---- Faith's last 15 seconds --------------------------------------------------------------------
+     * The game keeps a ring of her pose (450 keyframes, one a client tick) to make time trial
+     * ghosts. replay_recent fills *info and copies the newest min(max_frames, info->frames)
+     * keyframes, oldest first: times[i] (seconds) and bones[i * info->bones + b]. times and bones may be
+     * null (max_frames 0: info only). Returns how many it copied, negative on an error. Bone 0 is the
+     * root and bone 1 her trajectory (where she is); the bones are as ANT's pose has them (research:
+     * docs/research/replay-ghosts.md). Client thread (GN_ERR_THREAD); GN_ERR_UNAVAILABLE: no Faith,
+     * or her recorder has not started. */
+    int (*replay_recent)(gn_replay_info* info, float* times, gn_replay_bone* bones, uint32_t max_frames);
+
+    /* ---- the menu -----------------------------------------------------------------------------------
+     * ui_menu_set: opens (1) or closes (0) the overlay's menu, as its key does: a mod with its own key
+     * (a hotkey) shows its window that way. With [ui] menu_key=NONE in gridnode.ini only mods open it,
+     * and gridnode_window=0 leaves the GridNode window out (a mod shipped with GridNode on its own).
+     * Any thread. GN_ERR_UNAVAILABLE: no overlay. */
+    int (*ui_menu_set)(int open);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 26;
+pub const GN_API_VERSION: u32 = 27;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -29,6 +29,7 @@ pub const GN_MOVE_SPEED: u32 = 0x20;
 pub const GN_MOVE_EVENT_STATE: u32 = 1;
 pub const GN_MOVE_EVENT_LANDED: u32 = 2;
 pub const GN_MOVE_EVENT_AIRBORNE: u32 = 3;
+pub const GN_CAMERA_BODY: u32 = 1;
 pub const GN_ACTION_JUMP: u32 = 0xb5a0a981;
 
 pub const GN_CATEGORY_UNKNOWN: c_int = 0;
@@ -261,6 +262,24 @@ pub struct gn_ant_live_field {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_replay_bone {
+    pub translation: [f32; 4],
+    pub rotation: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_replay_info {
+    pub size: u32,
+    pub frames: u32,
+    pub capacity: u32,
+    pub bones: u32,
+    pub newest_time: f32,
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_freecam {
     pub on: i32,
     pub position: [f32; 3],
@@ -456,6 +475,10 @@ pub struct gn_api {
     pub ground_below: Option<unsafe extern "C" fn(pos: *const f32, depth: f32, ground_y: *mut f32) -> c_int>,
     pub ant_live_field: Option<unsafe extern "C" fn(type_name: *const c_char, field_name: *const c_char, out: *mut gn_ant_live_field) -> c_int>,
     pub ant_objects: Option<unsafe extern "C" fn(type_name: *const c_char, out: *mut *mut c_void, max: u32) -> c_int>,
+    pub camera_set: Option<unsafe extern "C" fn(t: *const gn_transform, flags: u32) -> c_int>,
+    pub camera_fov_set: Option<unsafe extern "C" fn(degrees: f32) -> c_int>,
+    pub replay_recent: Option<unsafe extern "C" fn(info: *mut gn_replay_info, times: *mut f32, bones: *mut gn_replay_bone, max_frames: u32) -> c_int>,
+    pub ui_menu_set: Option<unsafe extern "C" fn(open: c_int) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -478,9 +501,11 @@ const _: () = assert!(core::mem::size_of::<gn_ant_type>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ant_field>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_move_tracker>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_ant_live_field>() == 32);
+const _: () = assert!(core::mem::size_of::<gn_replay_bone>() == 32);
+const _: () = assert!(core::mem::size_of::<gn_replay_info>() == 24);
 const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1120);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1152);

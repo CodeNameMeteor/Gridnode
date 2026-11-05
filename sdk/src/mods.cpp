@@ -204,6 +204,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetTicks(code);
     forgetCreated(code);
     forgetDestroyed(code);
+    layouts::forgetCamera(code);
     forgetLevel(code);
     forgetLevelReady(code);
     forgetMessages(code);

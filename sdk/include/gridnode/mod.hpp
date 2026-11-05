@@ -483,6 +483,36 @@ inline bool moveTracker(MoveTracker& out) {
     return api().move_tracker(&out) == GN_OK;
 }
 
+// The camera for mods (API 27): placed at t each frame until cameraRelease(); GN_CAMERA_BODY shows
+// Faith's whole body. cameraFov(degrees): the camera's FOV (the game's is 55), 0 gives it back.
+inline bool cameraSet(const Transform& t, uint32_t flags = 0) { return api().camera_set(&t, flags) == GN_OK; }
+inline void cameraRelease() { api().camera_set(nullptr, 0); }
+inline bool cameraFov(float degrees) { return api().camera_fov_set(degrees) == GN_OK; }
+
+// Faith's last 15 seconds (API 27; client thread): the newest maxFrames keyframes, oldest first.
+using ReplayBone = gn_replay_bone;
+struct ReplayRecent {
+    uint32_t bones = 0;              // per keyframe
+    std::vector<float> times;        // seconds
+    std::vector<ReplayBone> pose;    // times.size() * bones
+    const ReplayBone* frame(size_t i) const { return pose.data() + i * bones; }
+};
+inline bool replayRecent(ReplayRecent& out, uint32_t maxFrames = 450) {
+    gn_replay_info info{};
+    info.size = sizeof(info);
+    out = ReplayRecent{};
+    if (api().replay_recent(&info, nullptr, nullptr, 0) < 0) return false;
+    const uint32_t n = std::min(maxFrames, info.frames);
+    out.bones = info.bones;
+    out.times.resize(n);
+    out.pose.resize(static_cast<size_t>(n) * info.bones);
+    const int got = api().replay_recent(&info, out.times.data(), out.pose.data(), n);
+    if (got < 0) return false;
+    out.times.resize(static_cast<size_t>(got));
+    out.pose.resize(static_cast<size_t>(got) * out.bones);
+    return true;
+}
+
 // Where an ANT field is in the type's live objects, and those objects (API 26; client thread; research:
 // docs/research/ant.md). antObjects can take seconds when it has to scan: keep what it gives.
 using AntLiveField = gn_ant_live_field;

@@ -39,9 +39,14 @@ nav:
   - Home: index.md
   - Guides:
       - getting-started.md
+      - troubleshooting.md
       - modding.md
+      - mod-repository.md
       - packaging.md
       - shipping.md
+      - online.md
+      - known-issues.md
+      - release-notes.md
       - layout-editor.md
       - custom-meshes.md
       - recording.md

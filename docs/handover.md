@@ -101,9 +101,10 @@ Pushed: 1f06664, 9608164, 31afe2d, 1add893, 59efbcb, and the KSEC commit after t
 | No KSEC (free roam) | KSEC are spawners whose template is `Characters/SpawnTemplates/Enemy/...` (from the trainer's character log: team is 2 for everyone). A slot hook on the spawner's spawn (vtable +0xd0) returns null for them while no mission runs, and the ones out are despawned; Faith's own spawner is never touched (`research/ksec-spawning.md`) | **untested in game** |
 | ANT (API 25) | ANT's type registry by name (936 types, 4,511 fields, read in game), `ant_type_*` / `ant_field_*`, Faith's move tracker (`move_tracker`, trainer's Player tab); console `ant [filter | TYPE | TYPE FIELD [VALUE]]`: a field's live place from the type's own create and load run on test data, objects by vtable (`research/ant.md`) | registry and listing confirmed; the probe untested |
 | API 26 | `on_destroyed` (in GridNode's destructor wrapper); `on_level_ready`, `level_ready`, `ground_below`; `ant_live_field`, `ant_objects`; mods on one hook or function named in the log and the Mods list, a clashing code patch names its owner | untested |
+| API 27 | `camera_set` / `camera_fov_set` (a mod's camera, through the free camera's vtable copy), `replay_recent` (Faith's last 450 keyframes), `ui_menu_set` with `menu_key=NONE` / `gridnode_window=0`; mod template copies the SDK into the mod with CI (`update-sdk`); `package --player`; pages mod-repository, troubleshooting, online, known-issues, release-notes | untested in game; the template build checked with MinGW |
 | MEC trainer 1.5.1 | Noclip: Faith floats where she was (the safe spawn teleport killed her in the air). No KSEC: also drops the city alert's drone call (`Entity_fireOutputEvent` detour; the drone is a `PamServerDroneActorEntity`, not a character) | untested |
 
-Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 26) and `mods\mec_trainer.dll`
+Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 27) and `mods\mec_trainer.dll`
 (1.5.1); `gridnode_inject.exe` from 2026-11-04 (the 3 s settle back).
 
 ## 5. What is planned: the first release
