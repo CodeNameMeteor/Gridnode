@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -216,10 +217,48 @@ struct DtorSlot {
 std::array<DtorSlot, kDtorPool> g_dtors;
 std::atomic<uint64_t> g_destroyedCount{0};
 
+// Mods' on_destroyed listeners (API 26). Few, so a plain list; the count lets the destructor skip the
+// type lookup when nobody listens (every entity of a level load goes through here).
+struct DestroyedListener {
+    std::string owner, className;
+    const reflect::Type* type;
+    gn_destroyed_fn fn;
+    void* user;
+};
+std::shared_mutex g_destroyedLock;
+std::vector<DestroyedListener> g_destroyedListeners; // (g_destroyedLock)
+std::atomic<size_t> g_destroyedListening{0};
+
+void callDestroyed(void* self) {
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uint64_t>(self));
+    if (!t) return;
+    struct Call {
+        gn_destroyed_fn fn;
+        void* user;
+        const char* owner;
+    };
+    std::array<Call, 32> calls; // on the stack: no allocation on the game's thread
+    size_t n = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_destroyedLock);
+        for (const DestroyedListener& l : g_destroyedListeners)
+            if (n < calls.size() && registry().isKindOf(t, l.type)) calls[n++] = {l.fn, l.user, l.owner.c_str()};
+    }
+    for (size_t i = 0; i < n; ++i) {
+        try {
+            calls[i].fn(self, calls[i].user);
+        } catch (...) { // never into the engine's frames
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 10) GN_LOG("%s: an on_destroyed listener threw; ignored", calls[i].owner);
+        }
+    }
+}
+
 template <size_t I> void* dtorDetour(void* self, uint64_t a2, uint64_t a3, uint64_t a4) {
     guardHook("the entity destructor hook", [self] {               // both allocate: bad_alloc stays here
         recorder::onDestroyed(self);                            // while it can still say what it was
         inspector::markDead(reinterpret_cast<uintptr_t>(self)); // before the object goes
+        if (g_destroyedListening.load(std::memory_order_relaxed)) callDestroyed(self); // still whole: mods can read it
     });
     g_destroyedCount.fetch_add(1, std::memory_order_relaxed);
     return reinterpret_cast<DtorFn>(g_dtors[I].original)(self, a2, a3, a4);
@@ -260,6 +299,27 @@ void hookDestructors() {
 }
 
 uint64_t destroyedCount() { return g_destroyedCount.load(std::memory_order_relaxed); }
+
+int onDestroyed(const std::string& owner, const std::string& className, gn_destroyed_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    const reflect::Type* type = registry().find(className);
+    if (!type || type->category != reflect::Category::Class) return GN_ERR_NOT_FOUND;
+    hookDestructors(); // once (the player build has no inspector to do it at startup)
+    std::unique_lock<std::shared_mutex> lock(g_destroyedLock);
+    if (g_destroyedListeners.size() >= 256) return GN_ERR_FULL;
+    g_destroyedListeners.push_back({owner, className, type, fn, user});
+    g_destroyedListening = g_destroyedListeners.size();
+    GN_LOG("%s: on_destroyed(%s)", owner.c_str(), className.c_str());
+    return GN_OK;
+}
+
+void forgetDestroyed(const CodeRange& r) {
+    std::unique_lock<std::shared_mutex> lock(g_destroyedLock);
+    g_destroyedListeners.erase(std::remove_if(g_destroyedListeners.begin(), g_destroyedListeners.end(),
+                                              [&](const DestroyedListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                               g_destroyedListeners.end());
+    g_destroyedListening = g_destroyedListeners.size();
+}
 
 size_t boundCreatorCount() {
     size_t n = 0;

@@ -52,6 +52,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("server messages", [] { messagesServerTick(); });
     guarded("layouts (server)", [] { layouts::serverTick(); });
+    guarded("level ready", [] { levelReadyServerTick(); });
     guarded("server dispatch", [&] { server().dispatch(dtOf(updateInfo)); });
 }
 

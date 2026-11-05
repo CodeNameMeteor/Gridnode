@@ -94,6 +94,15 @@ hooks:
     note: Sees every character spawner as it is created; ci->data is the spawner's data (Blueprint at +0x18).
 
 functions:
+  - name: Entity_fireOutputEvent
+    va: 0x14314e8e0
+    signature: "u64(void* entity, void* bus, void* data, u32 eventHash)"
+    note: >-
+      Fires one of an entity's output events: a 17-byte thunk to 0x14314a9c0(bus, data, hash). The
+      city alert manager's update fires its drone (0xcef736cc) and helicopter (0xc3c0bae9) with it,
+      and the drone needs the manager's DroneAvailable input (+0xe8) in all three places
+      (docs/research/city-alert.md). The trainer's No KSEC drops the drone event in free roam.
+      Read in Ghidra 2026-11-05.
   - name: Entity_requestDestroy
     va: 0x143167700
     signature: "void(void* entity, void* ownerRef)"

@@ -52,6 +52,16 @@ public:
     size_t remove(const std::function<bool(const Entry&)>& which, std::vector<std::string>* refused = nullptr);
 
     std::vector<std::pair<uint64_t, std::vector<Entry>>> snapshot() const;
+
+    // Slots that more than one owner `counts` has hooked (mods, not GridNode's own parts), each owner
+    // once, in hook order: where two mods may get in each other's way.
+    struct Shared {
+        uint64_t slot = 0;
+        std::vector<std::string> owners;
+    };
+    std::vector<Shared> shared(const std::function<bool(const std::string& owner)>& counts) const;
+    // The owners `counts` accepts on one slot, other than `except`.
+    std::vector<std::string> othersAt(uint64_t slot, const std::string& except, const std::function<bool(const std::string& owner)>& counts) const;
     size_t count() const;
 
 private:

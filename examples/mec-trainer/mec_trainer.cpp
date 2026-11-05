@@ -8,8 +8,8 @@
 //   - time scale, sim rate, post-processing, god mode: settings by name (GameTimeSettings, ...)
 //   - time of day: gn::setTimeOfDay, the level's own clock (checked by type)
 //   - save / load position: the game's own teleport on the server thread
-//   - noclip: GridNode's free camera flies (no collision, nothing to grab, no falling); Faith is
-//     teleported to it when noclip goes off, with no fall damage until she lands
+//   - noclip: GridNode's free camera flies (no collision, nothing to grab, no falling); Faith floats
+//     where she was, and is teleported to the camera when noclip goes off, with no fall damage until she lands
 //   - bunny hop: the game's landing prediction (gn::landingPrediction); jump pressed the tick before the landing
 //   - trigger volumes: the level's area triggers drawn by category (volumes.cpp)
 //   - World: kill volumes off, movement blockers (invisible barriers) off, no city alerts in free roam
@@ -381,6 +381,34 @@ void ksecTick(float dt) {
     });
 }
 
+// The hunter drone is not a character: it is a PamServerDroneActorEntity (a ServerActorEntity) that the
+// city alert manager calls in with its output event 0xcef736cc (the drone), fired through
+// Entity_fireOutputEvent from its update, also before an alert when the AI senses Faith (read in Ghidra
+// 2026-11-05, docs/research/city-alert.md). Left alone it came with No KSEC on and its alert never
+// ended (user, 2026-11-05). So that one event from that one manager is dropped in free roam.
+constexpr uint32_t kDroneEvent = 0xcef736cc;
+using FireOutputFn = uint64_t (*)(void* entity, void* bus, void* data, uint32_t hash);
+FireOutputFn g_fireOrig = nullptr;
+std::atomic<int> g_dronesStopped{0}, g_dronesSeen{0};
+
+uint64_t fireOutputDetour(void* entity, void* bus, void* data, uint32_t hash) {
+    if (hash == kDroneEvent && g_noKsec && g_freeRoam && std::strcmp(gn::Type::of(entity).name(), "PamServerCityAlertManager") == 0) {
+        if (g_dronesStopped.fetch_add(1) < 10) gn::log("no free-roam KSEC: the city alert's drone call stopped");
+        return 0;
+    }
+    return g_fireOrig(entity, bus, data, hash);
+}
+
+void hookDrone() {
+    namespace f = gn::engine::function;
+    if (!gn::hookFunction(f::Entity_fireOutputEvent, &fireOutputDetour, &g_fireOrig))
+        gn::log("no free-roam KSEC: the output event could not be hooked; the drone still comes");
+    // A drone that arrives anyway (another way in) is logged, to find that way.
+    gn::onCreated("PamServerDroneActorEntity", [](void*, void*) {
+        if (g_noKsec && g_freeRoam && g_dronesSeen.fetch_add(1) < 10) gn::log("no free-roam KSEC: a drone was made anyway");
+    });
+}
+
 // ---- save / load ---------------------------------------------------------------------------------------
 std::mutex g_m;
 bool g_saved = false;
@@ -521,6 +549,7 @@ void loadPosition() {
 std::atomic<bool> g_noclipActive{false};
 bool g_noclipFlew = false; // the free camera was seen flying since noclip went on (it starts at the next frame; client thread)
 constexpr float kNoFallGround = -300.f;
+float g_noclipHold[3] = {}; // where Faith floats while noclip flies (client thread)
 
 void noclipOn() {
     if (!gn::freecamOn() && !gn::freecam(true)) {
@@ -529,25 +558,24 @@ void noclipOn() {
     }
     g_noclipActive = true;
     g_noclipFlew = false;
-    // Faith waits at her safe spawn (where she comes back after a death) while the camera flies: left in
-    // the air she fell and could die there (user, 2026-11-04). Held there until its ground has streamed in.
-    gn::runOnServer([] {
-        gn::Vec3 at;
-        void* faith = gn::localServerCharacter();
-        if (!faith || !gn::checkpoint(at)) return gn::log("noclip: no safe spawn found; Faith stays where she was");
-        gn::Transform t{};
-        t.right[0] = t.up[1] = t.forward[2] = 1.f;
-        t.trans[0] = at.x, t.trans[1] = at.y + 0.5f, t.trans[2] = at.z;
-        if (gn::teleport(faith, t) != GN_OK) return gn::log("noclip: the teleport to the safe spawn was refused");
-        arriveAt("safe spawn", t.trans);
-    });
+    // Faith floats where she was while the camera flies (user, 2026-11-05): held there each client tick.
+    // Sending her to her safe spawn instead killed her when noclip went on in the air.
+    g_noclipHold[0] = g_px.load(), g_noclipHold[1] = g_py.load(), g_noclipHold[2] = g_pz.load();
+}
+
+// Client tick while noclip flies: Faith stays put, no speed, no fall counted.
+void noclipHoldFaith() {
+    gn::setPosition({g_noclipHold[0], g_noclipHold[1], g_noclipHold[2]});
+    gn::Movement w{};
+    w.last_ground_y = -2000.f;
+    gn::setMovement(w, GN_MOVE_LAST_GROUND_Y | GN_MOVE_SPEED);
 }
 
 // Faith to the camera, facing the way it looks; held there while the ground streams in when far.
 void noclipOff() {
     g_noclipActive = false;
     {
-        std::lock_guard<std::mutex> lock(g_m); // a wait at the safe spawn still running would hold her there
+        std::lock_guard<std::mutex> lock(g_m); // an arrival still running would hold her elsewhere
         g_arrival.on = false;
     }
     gn::Freecam c{};
@@ -958,7 +986,7 @@ void clientTick(float dt) {
         gn::setMovement(w, GN_MOVE_LAST_GROUND_Y);
     }
     if (g_noclipActive) {
-        arrivalClient(); // her wait at the safe spawn
+        noclipHoldFaith();
         g_havePrevY = false;
         return;
     }
@@ -1150,11 +1178,11 @@ void worldTab() {
         v = g_noKsec;
         if (ImGui::Checkbox("No KSEC (free roam)", &v)) g_noKsec = v;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("KSEC are not spawned in the city, and the ones out there are taken away. Runners and the\n"
+            ImGui::SetTooltip("KSEC and the hunter drone are not spawned in the city, and KSEC out there are taken away. Runners and the\n"
                               "story's people stay. Not during missions: a mission's KSEC are left alone.");
         if (g_noKsec) {
             ImGui::SameLine();
-            ImGui::TextDisabled("(%d stopped, %d taken away)", g_ksecBlocked.load(), g_ksecRemoved.load());
+            ImGui::TextDisabled("(%d stopped, %d taken away, %d drone calls stopped)", g_ksecBlocked.load(), g_ksecRemoved.load(), g_dronesStopped.load());
         }
     }
     v = g_noAlerts;
@@ -1481,7 +1509,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.1", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))
@@ -1501,6 +1529,7 @@ GN_MOD("mec-trainer") {
     blockUploads();
     hookKillVolumes();
     hookSpawns();
+    hookDrone();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.
     gn::hotkey("god", "God mode on / off", '1', [] { g_god = !g_god; setGodMode(g_god); });

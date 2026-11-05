@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 25 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker */
+#define GN_API_VERSION 26 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -305,6 +305,24 @@ typedef struct gn_move_tracker {
     float move_position[3];   /* ANT's MovePosition */
     float move_normal[3];     /* ANT's MoveNormal */
 } gn_move_tracker;
+
+/* Where an ANT type's field is in its live objects (API 26, ant_live_field), found by running the
+ * type's own create and load on test data. size: set it to sizeof(gn_ant_live_field). */
+typedef struct gn_ant_live_field {
+    uint32_t size;
+    int32_t offset;          /* in the live object; -1: not found (8-byte fields, or the loader does not copy it) */
+    uint32_t bytes;          /* what the loader writes there (1 a bool, 4 a float or int; 8 a reference) */
+    int32_t is_reference;    /* 1: a pointer to another asset at offset, not a value */
+    uint32_t reference_type; /* a reference's type hash (as the loader passes it) */
+    uint32_t reserved;
+    void* vtable;            /* the type's objects start with this (ant_objects finds them by it) */
+} gn_ant_live_field;
+
+/* An entity about to be destroyed (API 26, on_destroyed): still whole, on the thread destroying it.
+ * Forget it here; do not keep it or call into the game with it. */
+typedef void (*gn_destroyed_fn)(void* entity, void* user);
+/* The level is ready (API 26, on_level_ready): Faith is over loaded ground. Server thread. */
+typedef void (*gn_level_ready_fn)(const char* level, void* user);
 
 /* An event an entity received (on_event), before it handles it: the entity, its type (null if unknown)
  * and the event's id (the djb2-xor hash of its name; gn::eventHash in mod.hpp). On the thread that
@@ -913,6 +931,39 @@ typedef struct gn_api {
      * gn_move_tracker). Client thread (GN_ERR_THREAD otherwise). GN_ERR_UNAVAILABLE: no Faith, or
      * her tracker is not bound to ANT yet. */
     int (*move_tracker)(gn_move_tracker* out);
+
+    /* ==== GN_API_VERSION 26 =================================================================== */
+
+    /* ---- destroyed entities ----------------------------------------------------------------------
+     * on_destroyed: fn(entity, user) for every entity of class_name (or a subclass) just before the
+     * game destroys it, on the thread destroying it (any game thread; keep it short). A mod that keeps
+     * entities (from on_created, entities_of_class, ...) drops them here instead of finding them dead.
+     * GN_ERR_NOT_FOUND: no such class; GN_ERR_FULL: 256 listeners. Taken out when the mod unloads. */
+    int (*on_destroyed)(const char* mod, const char* class_name, gn_destroyed_fn fn, void* user);
+
+    /* ---- the level is ready -----------------------------------------------------------------------
+     * on_level's "loaded" comes when the level's name is there, before its ground has streamed in.
+     * on_level_ready: fn(level, user) once per level, on the server thread, when Faith has been over
+     * loaded ground for about a second (a mod registered later is told at the next server tick).
+     * level_ready: 1 when the current level is ready, else 0. Any thread.
+     * ground_below: a ray from pos down `depth` metres (0: 100): GN_OK and *ground_y when something
+     * is there (the place has streamed in), GN_ERR_NOT_FOUND when nothing is. Server thread
+     * (GN_ERR_THREAD otherwise). */
+    int (*on_level_ready)(const char* mod, gn_level_ready_fn fn, void* user);
+    int (*level_ready)(void);
+    int (*ground_below)(const float pos[3], float depth, float* ground_y);
+
+    /* ---- ANT fields in live objects (research) ---------------------------------------------------
+     * ant_live_field: where field_name (the type's own fields, not its bases') is in type_name's live
+     * objects (see gn_ant_live_field). The first call for a type runs its create and load on test data
+     * (logged; a few ms). ant_objects: the type's live objects, found by its vtable in the game's
+     * memory: up to max into out, returns how many there are (negative: an error). It scans when the
+     * last scan's objects are gone, which can take seconds: call it once, keep them, drop them in
+     * on_level. Objects of other types that share the vtable can be among them. Both: client thread
+     * (GN_ERR_THREAD); GN_ERR_UNAVAILABLE: ANT not read yet, or the type cannot be mapped. Write
+     * values with write(); a driver may only read a value when its move starts. */
+    int (*ant_live_field)(const char* type_name, const char* field_name, gn_ant_live_field* out);
+    int (*ant_objects)(const char* type_name, void** out, uint32_t max);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -1,6 +1,6 @@
 # Handover (for the next agent)
 
-Written 2026-11-04, brought up to date the same evening (replaces the 2026-10-27 handover). Short status and the release plan:
+Written 2026-11-04, brought up to date on 2026-11-05 (replaces the 2026-10-27 handover). Short status and the release plan:
 [progress.md](progress.md). The full design: [PLAN.md](PLAN.md). Rules for working in the repository:
 `CLAUDE.md`.
 
@@ -99,19 +99,21 @@ Pushed: 1f06664, 9608164, 31afe2d, 1add893, 59efbcb, and the KSEC commit after t
 | Injector | The 3 s settle after the game's window is back (a review change had cut it to 0.5 s; the game hung when its window was not opened) | untested |
 | MEC trainer 1.4.0 | Noclip flies the free camera, Faith waits at her safe spawn and lands at the camera, last ground -300; tabs Trainer / Player (Faith's health and position, movement tuning) / World / Volumes / Settings (keys, HUD, unload); World: kill volumes off, movement blockers off (each barrier's own disable / enable, both realms), no city alerts (the manager's deactivate event, outside missions), no KSEC (below); bhop practice in the middle of the screen for wall run jumps (state 8; ON TIME / EARLY / LATE / MISSED from the player's own jump); key 3 shows trigger volumes; the banner only says "MEC Trainer Loaded". Removed: no fall death, one-hit KSEC, no stumble, To the checkpoint | noclip, safe spawn, bhop and the volume key seen working in the user's log; the rest untested |
 | No KSEC (free roam) | KSEC are spawners whose template is `Characters/SpawnTemplates/Enemy/...` (from the trainer's character log: team is 2 for everyone). A slot hook on the spawner's spawn (vtable +0xd0) returns null for them while no mission runs, and the ones out are despawned; Faith's own spawner is never touched (`research/ksec-spawning.md`) | **untested in game** |
+| ANT (API 25) | ANT's type registry by name (936 types, 4,511 fields, read in game), `ant_type_*` / `ant_field_*`, Faith's move tracker (`move_tracker`, trainer's Player tab); console `ant [filter | TYPE | TYPE FIELD [VALUE]]`: a field's live place from the type's own create and load run on test data, objects by vtable (`research/ant.md`) | registry and listing confirmed; the probe untested |
+| API 26 | `on_destroyed` (in GridNode's destructor wrapper); `on_level_ready`, `level_ready`, `ground_below`; `ant_live_field`, `ant_objects`; mods on one hook or function named in the log and the Mods list, a clashing code patch names its owner | untested |
+| MEC trainer 1.5.1 | Noclip: Faith floats where she was (the safe spawn teleport killed her in the air). No KSEC: also drops the city alert's drone call (`Entity_fireOutputEvent` detour; the drone is a `PamServerDroneActorEntity`, not a character) | untested |
 
-Deployed to the user's `bin` (2026-11-04, evening): `gridnode.dll` (API 24), `gridnode_inject.exe`
-(the 3 s settle back) and `mods\mec_trainer.dll` with No KSEC. `bin\gridnode-polish1.dll` is a
-leftover the user can delete.
+Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 26) and `mods\mec_trainer.dll`
+(1.5.1); `gridnode_inject.exe` from 2026-11-04 (the 3 s settle back).
 
 ## 5. What is planned: the first release
 
 In order (details in [progress.md](progress.md), "Current task"):
 
 1. **Stability on a clean setup:** a fresh unzip, both install ways, every example mod, the city, a
-   mission, a Dash, a time trial, level changes, quitting, reloads. Includes the open crash: quitting
-   during a Dash crashed twice with GridNode injected (`0x143164d50`, a null world in
-   `FUN_1439e08f0`'s mission clean-up).
+   mission, a Dash, a time trial, level changes, quitting, reloads. (Quitting during a Dash crashed
+   twice with GridNode injected, `0x143164d50`; the user believes it is fixed, 2026-11-05: check
+   it in that pass.)
 2. **Online safety audit** and a docs page on it. The rule is now enforced in code (`online_allow`,
    API 23) and described in modding.md ("Online services"); what is left is the list and the page.
 3. **The release's zips** (decide with the user): a player zip (the player build, injector,

@@ -539,6 +539,46 @@ std::string antCommand(const std::string& args) {
 }
 
 // ---- Faith's move tracker ---------------------------------------------------------------------------
+// API 26: the probe for mods. Client thread (the type's own create and load run there, as for the
+// console). The first call for a type maps it (and logs what it found); objects are scanned for when
+// the last scan's are gone.
+int antLiveField(const char* type, const char* field, gn_ant_live_field* out) {
+    if (!type || !field || !out || out->size < sizeof(gn_ant_live_field)) return GN_ERR_ARGUMENT;
+    if (!isClientThread()) return GN_ERR_THREAD;
+    if (!ready()) return GN_ERR_UNAVAILABLE;
+    const auto it = g_cache.byName.find(type);
+    if (it == g_cache.byName.end()) return GN_ERR_NOT_FOUND;
+    const LiveType& lt = mapType(it->second);
+    if (!lt.ok) return GN_ERR_UNAVAILABLE;
+    for (const LiveField& f : lt.fields) {
+        if (f.name != field) continue;
+        const uint32_t size = out->size;
+        *out = gn_ant_live_field{};
+        out->size = size;
+        out->offset = f.at;
+        out->bytes = f.size;
+        out->is_reference = f.reference ? 1 : 0;
+        out->reference_type = f.refType;
+        out->vtable = reinterpret_cast<void*>(static_cast<uintptr_t>(lt.vtable));
+        return GN_OK;
+    }
+    return GN_ERR_NOT_FOUND;
+}
+
+int antObjects(const char* type, void** out, uint32_t max) {
+    if (!type || (!out && max)) return -GN_ERR_ARGUMENT;
+    if (!isClientThread()) return -GN_ERR_THREAD;
+    if (!ready()) return -GN_ERR_UNAVAILABLE;
+    const auto it = g_cache.byName.find(type);
+    if (it == g_cache.byName.end()) return -GN_ERR_NOT_FOUND;
+    LiveType& lt = mapType(it->second);
+    if (!lt.ok) return -GN_ERR_UNAVAILABLE;
+    if (lt.objects.empty() || std::any_of(lt.objects.begin(), lt.objects.end(), [&](uintptr_t o) { return mem::readOr<uint64_t>(o) != lt.vtable; }))
+        findObjects(lt);
+    for (uint32_t i = 0; i < max && i < lt.objects.size(); ++i) out[i] = reinterpret_cast<void*>(lt.objects[i]);
+    return static_cast<int>(lt.objects.size());
+}
+
 int moveTracker(gn_move_tracker* out) {
     if (!sized(out)) return GN_ERR_ARGUMENT;
     if (!isClientThread()) return GN_ERR_THREAD;

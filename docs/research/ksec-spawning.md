@@ -57,5 +57,20 @@ Built from this: the trainer's World tab → **No KSEC (free roam)**.
 ## Still to find
 
 1. Whether a mission's KSEC spawn before the mission index is set (they would be stopped then).
-2. The helicopter and drones (`ServerVehicleSpawnEntity`, `PamServerAIAirSpawnPointProvider`) only
-   come with an alert; the alert option ends alerts already.
+2. The helicopter (`ServerVehicleSpawnEntity`, `PamServerAIAirSpawnPointProvider`) only comes with an
+   alert; the alert option ends alerts already.
+
+## The hunter drone (2026-11-05, read in Ghidra; untested in game)
+
+With No KSEC on, the hunter drone still came and its alert never ended (user, 2026-11-05). It is not
+a character: `PamServerDroneActorEntity` (size 0x150) is a `ServerActorEntity` (then
+ServerPhysicsEntity, ServerGameComponentEntity, ... Entity), so the spawner hook never sees it. The
+city alert manager calls it in with its output event `0xcef736cc`, fired through
+`Entity_fireOutputEvent` (0x14314e8e0, a thunk to 0x14314a9c0(bus, data, hash)) from its update
+(0x14395e400) in three places: at level 1 after a camera has seen Faith for
+`TimeNoticedByCameraInLevel1UntilDroneIsSpawned` (data +0x50), at level 1 when the AI has sensed her
+for `SpawnDroneWhenInactiveAndSensedByAITime` (+0x54), and at any level at or above
+`DroneAllowedToSpawnAtLevel` (+0x68). All three need the manager's `DroneAvailable` input (+0xe8,
+a property slot read through `TypedValue_getValuePtr`). No KSEC now detours `Entity_fireOutputEvent`
+and drops that event from a `PamServerCityAlertManager` in free roam; a drone made anyway is logged
+("a drone was made anyway"), to find another way in.

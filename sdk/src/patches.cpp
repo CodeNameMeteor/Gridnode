@@ -401,11 +401,12 @@ uint8_t* thunkTo(void* detour, uintptr_t site) {
     return codeWrite(t, code, sizeof(code)) && codeDone(t, 16) ? t : nullptr;
 }
 
-bool overlaps(uintptr_t at, size_t n) { // g_m held
+const Patch* overlapping(uintptr_t at, size_t n) { // g_m held
     for (const Patch& p : g_patches)
-        if (at < p.at + p.original.size() && p.at < at + n) return true;
-    return false;
+        if (at < p.at + p.original.size() && p.at < at + n) return &p;
+    return nullptr;
 }
+bool overlaps(uintptr_t at, size_t n) { return overlapping(at, n) != nullptr; } // g_m held
 
 // written: the bytes are already there (a detour's entry, written with the other threads stopped);
 // `original` then holds what was there before.
@@ -413,8 +414,10 @@ bool overlaps(uintptr_t at, size_t n) { // g_m held
 int addLocked(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what,
               const uint8_t* written = nullptr) {
     if (unloading()) return GN_ERR_UNAVAILABLE;
-    if (overlaps(at, n)) {
-        GN_LOG("[%s] patch at %llx: another patch is there", mod, static_cast<unsigned long long>(mem::va(at)));
+    if (const Patch* other = overlapping(at, n)) {
+        // Name the other one: two mods patching the same code is a conflict to report with both.
+        GN_LOG("[%s] patch at %llx refused: %s's patch is there (%s)", mod, static_cast<unsigned long long>(mem::va(at)), other->mod.c_str(),
+               other->what.c_str());
         return GN_ERR_SLOT;
     }
     Patch p{mod, at, std::vector<uint8_t>(n), std::vector<uint8_t>(bytes, bytes + n), owner, what};
@@ -662,6 +665,7 @@ int hookFunction(const char* mod, uint64_t fnVa, void* detour, void** original) 
         return GN_ERR_SLOT;
     }
     GN_LOG("[%s] hooked function %llx", mod, static_cast<unsigned long long>(fnVa));
+    noteSharedHook(mod, reinterpret_cast<uint64_t>(d.slot));
     return GN_OK;
 }
 

@@ -66,6 +66,7 @@ size_t boundCreatorCount();
 // dead at once (inspector::alive is false from then on). Once, at startup.
 void hookDestructors();
 uint64_t destroyedCount(); // entities destroyed since then
+int onDestroyed(const std::string& owner, const std::string& className, gn_destroyed_fn fn, void* user); // API 26
 
 // The API table handed to mods (api.cpp).
 const gn_api* api();
@@ -83,8 +84,10 @@ struct ModInfo {
     // From its manifest (gn_mod_info); id defaults to the file name without .dll.
     std::string id, name, version, author, description, depends;
     std::string online;       // the reason it gave online_allow: it changes online services on purpose ("" if not)
+    std::vector<std::string> shares; // hooks it shares with other mods: "function 0x... with other-mod"
 };
 std::vector<ModInfo> modList();
+void noteSharedHook(const std::string& mod, uint64_t slot); // logs when another mod hooks that slot too
 void modReload(const std::string& file);             // any thread: done on GridNode's thread
 void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
@@ -128,6 +131,8 @@ size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_cl
 bool taskLive(const thread::Dispatcher::Task& t); // false for a task into a mod being unloaded
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
 void forgetCreated(const CodeRange& r);
+void forgetDestroyed(const CodeRange& r);
+void forgetLevelReady(const CodeRange& r);
 void forgetLevel(const CodeRange& r);
 void forgetMessages(const CodeRange& r);
 void forgetMovement(const CodeRange& r);
@@ -178,6 +183,10 @@ int teleport(void* serverCharacter, const gn_transform* to);
 void* getComponent(void* character, const gn_type* type);
 std::string levelName();
 int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out); // server thread
+int onLevelReady(const std::string& mod, gn_level_ready_fn fn, void* user); // API 26
+int levelReady();                                                      // 1: the current level is ready
+int groundBelow(const float pos[3], float depth, float* groundY);      // server thread: a ray down
+void levelReadyServerTick();
 // Server thread: a ray's closest hit and the physics object it hit (0 when unknown).
 int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part);
 // A physics entity's collision bodies: (id, its RigidBody or 0 when it is another kind), at most 64.
@@ -239,6 +248,8 @@ int antTypeFind(const char* name, gn_ant_type* out);
 int antFieldAt(const char* type, uint32_t i, gn_ant_field* out);
 int antFieldFind(const char* type, const char* name, gn_ant_field* out);
 int moveTracker(gn_move_tracker* out);
+int antLiveField(const char* type, const char* field, gn_ant_live_field* out); // API 26, client thread
+int antObjects(const char* type, void** out, uint32_t max);                     // API 26, client thread
 std::string antCommand(const std::string& args); // the console's "ant [FILTER | TYPE]"
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);

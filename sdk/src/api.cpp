@@ -145,6 +145,7 @@ int apiHookSlot(const char* mod, uint64_t slotVa, uint64_t expectedVa, void* det
                                    reinterpret_cast<uint64_t>(detour), reinterpret_cast<uint64_t*>(original), &why);
     if (r == hook::Result::Ok) {
         GN_LOG("[%s] hooked slot 0x%llx", mod ? mod : "?", static_cast<unsigned long long>(slotVa));
+        noteSharedHook(mod ? mod : "?", mem::rva(slotVa));
         return GN_OK;
     }
     GN_LOG("[%s] hook refused: %s", mod ? mod : "?", why.c_str());
@@ -219,6 +220,10 @@ size_t apiLevelName(char* out, size_t size) {
     return n.size();
 }
 int apiOnLevel(const char* mod, gn_level_fn fn, void* user) { return onLevel(mod ? mod : "?", fn, user); }
+int apiOnLevelReady(const char* mod, gn_level_ready_fn fn, void* user) { return onLevelReady(mod ? mod : "?", fn, user); }
+int apiOnDestroyed(const char* mod, const char* cls, gn_destroyed_fn fn, void* user) {
+    return cls ? onDestroyed(mod ? mod : "?", cls, fn, user) : GN_ERR_ARGUMENT;
+}
 int apiOnEvent(const char* mod, const char* event, const char* cls, gn_event_fn fn, void* user) {
     return onEvent(mod ? mod : "?", event, cls, fn, user);
 }
@@ -486,6 +491,12 @@ const gn_api* api() {
         a.ant_field_at = antFieldAt;
         a.ant_field_find = antFieldFind;
         a.move_tracker = moveTracker;
+        a.on_destroyed = apiOnDestroyed;
+        a.on_level_ready = apiOnLevelReady;
+        a.level_ready = levelReady;
+        a.ground_below = groundBelow;
+        a.ant_live_field = antLiveField;
+        a.ant_objects = antObjects;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

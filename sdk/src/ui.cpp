@@ -472,6 +472,16 @@ void drawMain() {
                         ImGui::SetTooltip("Its online console commands are allowed and logged.\n"
                                           "This can affect your EA account, online stats and leaderboards, and Beat Revival.");
                 }
+                if (!m.shares.empty()) {
+                    // Another mod hooks the same place: both run, but they can get in each other's way.
+                    ImGui::TextColored(ImVec4(1.f, 0.85f, 0.4f, 1.f), "    shares %llu hook%s with other mods", static_cast<unsigned long long>(m.shares.size()),
+                                       m.shares.size() == 1 ? "" : "s");
+                    if (ImGui::IsItemHovered()) {
+                        std::string tip = "Both mods run there (the last hooked first). If something breaks, try without one:";
+                        for (const std::string& sh : m.shares) tip += "\n" + sh;
+                        ImGui::SetTooltip("%s", tip.c_str());
+                    }
+                }
                 if (m.reloadable && !m.inMemory) {
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Load")) modLoad(m.file);

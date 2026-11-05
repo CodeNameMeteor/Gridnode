@@ -883,6 +883,90 @@ int entitySetTransform(void* entity, const gn_transform* to) {
     return GN_OK;
 }
 
+// ---- the level is ready (API 26) ---------------------------------------------------------------------
+// "level: started" comes as soon as the level's name is there, well before its ground streams in (a
+// teleport then fell through it; the trainer waits with a ray down). Ready: Faith stands over loaded
+// ground for a second of server ticks. Each listener is told once per level, on the server thread.
+namespace {
+struct ReadyListener {
+    std::string mod;
+    gn_level_ready_fn fn;
+    void* user;
+    std::string told; // the level it was last told about
+};
+std::vector<ReadyListener> g_readyListeners; // (g_levelM)
+std::string g_readyLevel;                    // (g_levelM) the level found ready, "" until then
+constexpr int kReadyTicks = 30;              // about a second of server ticks with ground under her
+} // namespace
+
+int onLevelReady(const std::string& mod, gn_level_ready_fn fn, void* user) {
+    if (!fn) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_levelM);
+    g_readyListeners.push_back({mod, fn, user, {}}); // told at the next server tick if the level is ready now
+    return GN_OK;
+}
+
+int levelReady() {
+    std::lock_guard<std::mutex> lock(g_levelM);
+    return !g_readyLevel.empty() && g_readyLevel == g_level ? 1 : 0;
+}
+
+int groundBelow(const float pos[3], float depth, float* groundY) {
+    if (!pos || !finite(pos, 3)) return GN_ERR_ARGUMENT;
+    if (!(depth > 0.f) || depth > 1000.f) depth = 100.f;
+    const float from[3] = {pos[0], pos[1] + 0.5f, pos[2]}, to[3] = {pos[0], pos[1] - depth, pos[2]};
+    gn_ray_hit hit{};
+    const int r = raycast(from, to, 0.f, &hit);
+    if (r == GN_OK && groundY) *groundY = hit.position[1];
+    return r;
+}
+
+void levelReadyServerTick() {
+    static std::string checking;
+    static int ticks = 0;
+    std::string level;
+    bool ready;
+    {
+        std::lock_guard<std::mutex> lock(g_levelM);
+        level = g_level;
+        if (level.empty()) g_readyLevel.clear();
+        ready = !level.empty() && g_readyLevel == level;
+    }
+    if (level.empty()) return;
+    if (level != checking) checking = level, ticks = 0;
+    if (!ready) {
+        void* faith = localServerCharacter();
+        gn_transform t{};
+        float y = 0.f;
+        if (faith && entityTransform(faith, t) && groundBelow(t.trans, 10.f, &y) == GN_OK) ++ticks;
+        else ticks = 0;
+        if (ticks < kReadyTicks) return;
+        std::lock_guard<std::mutex> lock(g_levelM);
+        g_readyLevel = level;
+        GN_LOG("level: ready %s (Faith over loaded ground)", level.c_str());
+    }
+    std::vector<ReadyListener> tell;
+    {
+        std::lock_guard<std::mutex> lock(g_levelM);
+        for (ReadyListener& l : g_readyListeners)
+            if (l.told != level) l.told = level, tell.push_back(l);
+    }
+    for (const ReadyListener& l : tell) {
+        try {
+            l.fn(level.c_str(), l.user);
+        } catch (...) {
+            GN_LOG("level: %s's level-ready listener threw; ignored", l.mod.c_str());
+        }
+    }
+}
+
+void forgetLevelReady(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_levelM);
+    g_readyListeners.erase(std::remove_if(g_readyListeners.begin(), g_readyListeners.end(),
+                                          [&](const ReadyListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }),
+                           g_readyListeners.end());
+}
+
 void forgetLevel(const CodeRange& r) {
     std::lock_guard<std::mutex> lock(g_levelM);
     g_levelListeners.erase(std::remove_if(g_levelListeners.begin(), g_levelListeners.end(),

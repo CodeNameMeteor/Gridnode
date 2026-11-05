@@ -1,5 +1,6 @@
 #include "gridnode/hook_table.hpp"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstddef>
 #include <iterator>
@@ -84,6 +85,28 @@ size_t HookTable::remove(const std::function<bool(const Entry&)>& which, std::ve
 std::vector<std::pair<uint64_t, std::vector<Entry>>> HookTable::snapshot() const {
     std::lock_guard<std::mutex> lock(m_);
     return {slots_.begin(), slots_.end()};
+}
+
+std::vector<HookTable::Shared> HookTable::shared(const std::function<bool(const std::string&)>& counts) const {
+    std::lock_guard<std::mutex> lock(m_);
+    std::vector<Shared> out;
+    for (const auto& [slot, chain] : slots_) {
+        Shared s{slot, {}};
+        for (const Entry& e : chain)
+            if (counts(e.owner) && std::find(s.owners.begin(), s.owners.end(), e.owner) == s.owners.end()) s.owners.push_back(e.owner);
+        if (s.owners.size() > 1) out.push_back(std::move(s));
+    }
+    return out;
+}
+
+std::vector<std::string> HookTable::othersAt(uint64_t slot, const std::string& except, const std::function<bool(const std::string&)>& counts) const {
+    std::lock_guard<std::mutex> lock(m_);
+    std::vector<std::string> out;
+    const auto it = slots_.find(slot);
+    if (it == slots_.end()) return out;
+    for (const Entry& e : it->second)
+        if (e.owner != except && counts(e.owner) && std::find(out.begin(), out.end(), e.owner) == out.end()) out.push_back(e.owner);
+    return out;
 }
 
 size_t HookTable::count() const {

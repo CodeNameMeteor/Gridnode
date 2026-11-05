@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 25;
+pub const GN_API_VERSION: u32 = 26;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -58,6 +58,8 @@ pub type gn_message_fn = Option<unsafe extern "C" fn(message: *const c_void, inf
 pub type gn_entity_each_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, user: *mut c_void)>;
 pub type gn_entity_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, at: *const gn_transform, distance: f32, user: *mut c_void)>;
 pub type gn_movement_fn = Option<unsafe extern "C" fn(e: *const gn_movement_event, now: *const gn_movement, user: *mut c_void)>;
+pub type gn_destroyed_fn = Option<unsafe extern "C" fn(entity: *mut c_void, user: *mut c_void)>;
+pub type gn_level_ready_fn = Option<unsafe extern "C" fn(level: *const c_char, user: *mut c_void)>;
 pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, event_id: u32, user: *mut c_void)>;
 pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_progress_flag_fn = Option<unsafe extern "C" fn(flag: *const gn_progress_flag, user: *mut c_void)>;
@@ -243,6 +245,18 @@ pub struct gn_move_tracker {
     pub moved_this_tick: f32,
     pub move_position: [f32; 3],
     pub move_normal: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_ant_live_field {
+    pub size: u32,
+    pub offset: i32,
+    pub bytes: u32,
+    pub is_reference: i32,
+    pub reference_type: u32,
+    pub reserved: u32,
+    pub vtable: *mut c_void,
 }
 
 #[repr(C)]
@@ -436,6 +450,12 @@ pub struct gn_api {
     pub ant_field_at: Option<unsafe extern "C" fn(type_name: *const c_char, index: u32, out: *mut gn_ant_field) -> c_int>,
     pub ant_field_find: Option<unsafe extern "C" fn(type_name: *const c_char, field_name: *const c_char, out: *mut gn_ant_field) -> c_int>,
     pub move_tracker: Option<unsafe extern "C" fn(out: *mut gn_move_tracker) -> c_int>,
+    pub on_destroyed: Option<unsafe extern "C" fn(mod_: *const c_char, class_name: *const c_char, fn_: gn_destroyed_fn, user: *mut c_void) -> c_int>,
+    pub on_level_ready: Option<unsafe extern "C" fn(mod_: *const c_char, fn_: gn_level_ready_fn, user: *mut c_void) -> c_int>,
+    pub level_ready: Option<unsafe extern "C" fn() -> c_int>,
+    pub ground_below: Option<unsafe extern "C" fn(pos: *const f32, depth: f32, ground_y: *mut f32) -> c_int>,
+    pub ant_live_field: Option<unsafe extern "C" fn(type_name: *const c_char, field_name: *const c_char, out: *mut gn_ant_live_field) -> c_int>,
+    pub ant_objects: Option<unsafe extern "C" fn(type_name: *const c_char, out: *mut *mut c_void, max: u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -457,9 +477,10 @@ const _: () = assert!(core::mem::size_of::<gn_view>() == 60);
 const _: () = assert!(core::mem::size_of::<gn_ant_type>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_ant_field>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_move_tracker>() == 48);
+const _: () = assert!(core::mem::size_of::<gn_ant_live_field>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1072);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1120);

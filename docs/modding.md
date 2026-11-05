@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 25 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 26 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -188,6 +188,23 @@ its constructor, on the thread that created it (server entities on the server th
 entities on the client thread). It works for every class the engine has an entity creator for
 (1,103 of them); GridNode hooks the creators' factory slots.
 
+`gn::onDestroyed(className, [](void* entity) { ... })` (API 26) is the other end: called just before
+the game destroys an entity of that class or a subclass, on the thread destroying it, while the
+entity is still whole. A mod that keeps entities (from `onCreated`, `entitiesOfClass`, a hook) drops
+them there instead of finding them dead later (a pointer kept over a level change points at freed
+memory). Keep it short: every entity of a level load goes through GridNode's destructor wrapper.
+Rust: `on_destroyed`.
+
+## The level is ready (API 26)
+
+`onLevel`'s "loaded" comes as soon as the level has a name, before its ground has streamed in: a
+teleport or a spawn then falls through the world. `gn::onLevelReady([](const char* level) { ... })`
+is called once per level, on the server thread, when Faith has been over loaded ground for about a
+second. `gn::levelReady()` says whether the current level is. For any other place,
+`gn::groundBelow(at, y)` (server thread) casts a ray down: true, with the ground's height, once that
+place has streamed in (the trainer waits for this after a far teleport). Rust: `on_level_ready`,
+`level_ready`, `ground_below`.
+
 ## Hooks
 
 ```cpp
@@ -238,6 +255,13 @@ warning, and GridNode's hook calls it as its `original`.
 
 A vtable hook affects every object of that class (and of subclasses that inherit the slot):
 filter inside the detour if you only care about some objects.
+
+**Two mods on one place.** Hooks chain, so both run, but one may skip the other (by not calling
+`original`) or both may change the same thing. When a mod hooks a slot or detours a function another
+mod already hooks, gridnode.log says so (`[mod] shares function 0x... with other-mod`) and the Mods
+list shows "shares N hooks with other mods" (the tooltip names them). A code patch over another's is
+refused, and the log names whose patch is there. Players: if two mods misbehave together, try each
+alone and send both names.
 
 ## World
 
@@ -576,7 +600,7 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
 In game: GridNode menu → **Console** (every command, with search; Up / Down recall earlier lines,
 Tab completes a command name; online ones in orange ask for confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
 
-## ANT types and the move tracker (API 25)
+## ANT types and the move tracker (API 25, live objects API 26)
 
 ANT, the animation and movement system Faith's parkour runs on, has its own types: every asset,
 driver, processor and value by name, with its fields (`docs/research/ant.md`). GridNode reads them
@@ -590,10 +614,27 @@ gn::antFields("FallingDriverAsset", [](const gn::AntField& f) { gn::log("%s +0x%
 
 `offset` is the place in ANT's data for the type, which is not the place in the live C++ object
 (checked in game: they differ by a different amount for each type), so `instance_offset` is -1 for
-now and a field cannot yet be written by name. A field with `flags & 1` is a
+now: use the live API below. A field with `flags & 1` is a
 reference to another asset (most driver tuning is: the value lives in that asset). In the console:
 `ant [filter]` lists the types, `ant TypeName` a type's fields, `ant TypeName Field` the field in
 every live object and `ant TypeName Field Value` sets it (research; `docs/research/ant.md`). Rust: `ant_type`, `ant_field`.
+
+Live objects (API 26; client thread; research):
+
+```cpp
+gn::AntLiveField lf;
+if (gn::antLiveField("FallingDriverAsset", "JumpHeight", lf) && lf.offset >= 0 && !lf.is_reference)
+    for (void* o : gn::antObjects("FallingDriverAsset"))
+        gn::write(static_cast<char*>(o) + lf.offset, 5.0f);
+```
+
+`antLiveField` finds the field's place by running the type's own create and load on test data (the
+first call for a type; logged). `offset` -1: not found (8-byte fields, and fields the loader does not
+copy); `is_reference`: a pointer to another asset there, not a value. `antObjects` finds the objects
+by the type's vtable in the game's memory: up to 256, and a scan can take seconds, so call it once
+(after `onLevelReady`) and keep them. Objects of a base type that shares the vtable can be among them.
+Only the type's own fields are covered, not its bases'. A driver may copy a value when its move
+starts, so a change shows at the next one. Rust: `ant_live_field`, `ant_objects`.
 
 `gn::moveTracker(m)` (client thread; Rust `move_tracker`) gives Faith's move as ANT tracks it:
 `current_move`, `in_jump_state`, `moving_speed_xz`, `moved_this_tick`, `move_position`,

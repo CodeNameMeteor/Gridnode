@@ -285,6 +285,18 @@ pub fn get<T: Copy>(object: *const c_void, ty: Type, field: &str) -> Option<T> {
 }
 
 // ---- entities -----------------------------------------------------------------------------------
+unsafe extern "C" fn destroyed_tramp<F: FnMut(*mut c_void)>(e: *mut c_void, user: *mut c_void) {
+    guard("an on_destroyed callback", (), || (*(user as *mut F))(e))
+}
+/// `f(entity)` for every entity of `class` (or a subclass) just before it is destroyed (API 26), on
+/// the thread destroying it.
+pub fn on_destroyed<F: FnMut(*mut c_void) + Send + 'static>(class: &str, f: F) -> bool {
+    let c = cstr(class);
+    unsafe {
+        (api().on_destroyed.unwrap())(name(), c.as_ptr(), Some(destroyed_tramp::<F>), keep(f)) == 0
+    }
+}
+
 unsafe extern "C" fn created_tramp<F: FnMut(*mut c_void)>(
     e: *mut c_void,
     _ci: *mut c_void,
@@ -603,6 +615,25 @@ pub fn on_level<F: FnMut(&str, bool) + Send + 'static>(f: F) -> bool {
     unsafe { (api().on_level.unwrap())(name(), Some(level_tramp::<F>), keep(f)) == 0 }
 }
 
+unsafe extern "C" fn level_ready_tramp<F: FnMut(&str)>(level: *const c_char, user: *mut c_void) {
+    guard("a level-ready callback", (), || {
+        (*(user as *mut F))(&string(level))
+    })
+}
+/// `f(level)` once per level when Faith is over loaded ground (API 26; the server thread).
+pub fn on_level_ready<F: FnMut(&str) + Send + 'static>(f: F) -> bool {
+    unsafe { (api().on_level_ready.unwrap())(name(), Some(level_ready_tramp::<F>), keep(f)) == 0 }
+}
+/// Whether the current level is ready (API 26).
+pub fn level_ready() -> bool {
+    unsafe { (api().level_ready.unwrap())() != 0 }
+}
+/// The ground's height below `at` when it has streamed in (API 26; the server thread). `depth` 0: 100 m.
+pub fn ground_below(at: [f32; 3], depth: f32) -> Option<f32> {
+    let mut y = 0f32;
+    (unsafe { (api().ground_below.unwrap())(at.as_ptr(), depth, &mut y) } == 0).then_some(y)
+}
+
 // ---- keys, movement, tuning, game state -----------------------------------------------------------
 /// A key as the game reads it (`"Space"` or `"IDK_Space"`); None if unknown.
 pub fn key_find(name: &str) -> Option<i32> {
@@ -690,6 +721,29 @@ pub fn move_tracker() -> Option<sys::gn_move_tracker> {
     let mut m: sys::gn_move_tracker = unsafe { core::mem::zeroed() };
     m.size = core::mem::size_of::<sys::gn_move_tracker>() as u32;
     (unsafe { (api().move_tracker.unwrap())(&mut m) } == 0).then_some(m)
+}
+/// Where an ANT field is in the type's live objects (API 26; client thread).
+pub fn ant_live_field(type_name: &str, field: &str) -> Option<sys::gn_ant_live_field> {
+    let t = std::ffi::CString::new(type_name).ok()?;
+    let f = std::ffi::CString::new(field).ok()?;
+    let mut out: sys::gn_ant_live_field = unsafe { core::mem::zeroed() };
+    out.size = core::mem::size_of::<sys::gn_ant_live_field>() as u32;
+    (unsafe { (api().ant_live_field.unwrap())(t.as_ptr(), f.as_ptr(), &mut out) } == 0)
+        .then_some(out)
+}
+/// The ANT type's live objects (API 26; client thread; can take seconds when it scans).
+pub fn ant_objects(type_name: &str, max: u32) -> Vec<*mut c_void> {
+    let Ok(t) = std::ffi::CString::new(type_name) else {
+        return Vec::new();
+    };
+    let mut out = vec![core::ptr::null_mut(); max as usize];
+    let n = unsafe { (api().ant_objects.unwrap())(t.as_ptr(), out.as_mut_ptr(), max) };
+    out.truncate(if n > 0 {
+        (n as u32).min(max) as usize
+    } else {
+        0
+    });
+    out
 }
 /// Makes Faith jump: the jump action, whatever key is bound (the game decides what it becomes).
 pub fn jump() -> bool {

@@ -164,6 +164,15 @@ void testHookTable() {
     CHECK(t.install("e", 0x1004, 0, 0xD6, &orig3, &why) == hook::Result::Argument); // misaligned
     CHECK(t.install("e", 0x2000, 0, 0xD6, &orig3, &why) == hook::Result::Slot);     // unreadable
     CHECK(t.count() == 3);
+    // Two mods on one slot are reported; one mod (or GridNode's own parts) alone is not.
+    {
+        const auto isMod = [](const std::string& o) { return o != "gridnode"; };
+        const auto sh = t.shared(isMod);
+        CHECK(sh.size() == 1 && sh[0].slot == 0x1000 && sh[0].owners.size() == 2 && sh[0].owners[0] == "a" && sh[0].owners[1] == "b");
+        CHECK(t.othersAt(0x1000, "b", isMod) == std::vector<std::string>{"a"});
+        CHECK(t.othersAt(0x1008, "c", isMod).empty());
+        CHECK(t.shared([](const std::string& o) { return o != "a"; }).empty());
+    }
 
     // Taking hooks out (a mod unloaded). Top of the chain: the slot gets back what it held.
     std::map<uint64_t, uint64_t> m2{{0x3000, 0xA0}};

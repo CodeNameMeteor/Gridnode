@@ -23,6 +23,7 @@
 #include <set>
 
 #include "gridnode/log.hpp"
+#include "gridnode/mem.hpp"
 #include "gridnode/mod_order.hpp"
 #include "gridnode/pe_file.hpp"
 #include "host.hpp"
@@ -202,7 +203,9 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetPatches(code);
     forgetTicks(code);
     forgetCreated(code);
+    forgetDestroyed(code);
     forgetLevel(code);
+    forgetLevelReady(code);
     forgetMessages(code);
     forgetMovement(code);
     forgetEvents(code);
@@ -400,6 +403,33 @@ void reload(Mod& m) {
 
 } // namespace
 
+// ---- mods that hook the same place -----------------------------------------------------------------
+// Hooks on one slot chain (each calls the one below), so two mods there both run; but one may skip
+// the other (returning early) or both change the same thing. Said in the log when it happens and in
+// the Mods list, so a report names both mods.
+namespace {
+bool modOwner(const std::string& owner) { // GridNode's own parts hook under these names
+    static const std::set<std::string> ours{"gridnode", "GridNode", "events", "layouts", "recorder", "recorder-trace"};
+    return !ours.count(owner);
+}
+
+std::string placeName(uint64_t slot) {
+    char b[48];
+    if (const uint64_t fn = detourFunction(slot)) snprintf(b, sizeof(b), "function 0x%llx", static_cast<unsigned long long>(fn));
+    else snprintf(b, sizeof(b), "slot 0x%llx", static_cast<unsigned long long>(mem::va(slot)));
+    return b;
+}
+} // namespace
+
+void noteSharedHook(const std::string& mod, uint64_t slot) {
+    const std::vector<std::string> others = hooks().othersAt(slot, mod, modOwner);
+    if (others.empty()) return;
+    std::string with;
+    for (const std::string& o : others) with += (with.empty() ? "" : ", ") + o;
+    GN_LOG("[%s] shares %s with %s: both run (the last hooked first); if one of them misbehaves, try without the other",
+           mod.c_str(), placeName(slot).c_str(), with.c_str());
+}
+
 std::vector<ModInfo> modList() {
     std::vector<ModInfo> out;
     {
@@ -412,6 +442,15 @@ std::vector<ModInfo> modList() {
     std::lock_guard<std::mutex> lock(g_expM); // not nested in g_modsM
     for (ModInfo& i : out)
         if (const auto it = g_online.find(i.id); it != g_online.end() && i.loaded) i.online = it->second;
+    // Hook owners are the names mods give GN_MOD, usually their id.
+    for (const hook::HookTable::Shared& sh : hooks().shared(modOwner))
+        for (ModInfo& i : out) {
+            if (!i.loaded || std::find(sh.owners.begin(), sh.owners.end(), i.id) == sh.owners.end()) continue;
+            std::string with;
+            for (const std::string& o : sh.owners)
+                if (o != i.id) with += (with.empty() ? "" : ", ") + o;
+            i.shares.push_back(placeName(sh.slot) + " with " + with);
+        }
     return out;
 }
 

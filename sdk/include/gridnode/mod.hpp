@@ -11,6 +11,7 @@
 //
 // Callbacks are std::function-like lambdas; GridNode keeps them for the life of the process.
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -264,6 +265,23 @@ template <class F> bool onLevel(F f) {
                           p) == GN_OK;
 }
 
+// fn(const char* level) once per level when Faith is over loaded ground (API 26), on the server
+// thread. levelReady(): is the current level ready. groundBelow: a ray down from at (server
+// thread): true and y when the ground there has streamed in.
+template <class F> bool onLevelReady(F f) {
+    auto* p = detail::keep(std::function<void(const char*)>(std::move(f)));
+    return api().on_level_ready(modName(), [](const char* l, void* u) { (*static_cast<std::function<void(const char*)>*>(u))(l); }, p) == GN_OK;
+}
+inline bool levelReady() { return api().level_ready() != 0; }
+inline bool groundBelow(const float at[3], float& y, float depth = 100.f) { return api().ground_below(at, depth, &y) == GN_OK; }
+
+// fn(void* entity) for every entity of className (or a subclass) just before it is destroyed (API 26),
+// on the thread destroying it: drop it from what the mod keeps.
+template <class F> bool onDestroyed(const char* className, F f) {
+    auto* p = detail::keep(std::function<void(void*)>(std::move(f)));
+    return api().on_destroyed(modName(), className, [](void* e, void* u) { (*static_cast<std::function<void(void*)>*>(u))(e); }, p) == GN_OK;
+}
+
 // ---- settings and console --------------------------------------------------------------------
 // A settings object by class name, e.g. gn::settings("GameTimeSettings").set("TimeScale", 0.5f).
 // Look it up each time: the console can replace it with a changed copy.
@@ -463,6 +481,21 @@ inline bool moveTracker(MoveTracker& out) {
     out = MoveTracker{};
     out.size = sizeof(out);
     return api().move_tracker(&out) == GN_OK;
+}
+
+// Where an ANT field is in the type's live objects, and those objects (API 26; client thread; research:
+// docs/research/ant.md). antObjects can take seconds when it has to scan: keep what it gives.
+using AntLiveField = gn_ant_live_field;
+inline bool antLiveField(const char* type, const char* field, AntLiveField& out) {
+    out = AntLiveField{};
+    out.size = sizeof(out);
+    return api().ant_live_field(type, field, &out) == GN_OK;
+}
+inline std::vector<void*> antObjects(const char* type, uint32_t max = 256) {
+    std::vector<void*> out(max);
+    const int n = api().ant_objects(type, out.data(), max);
+    out.resize(n > 0 ? std::min<uint32_t>(static_cast<uint32_t>(n), max) : 0);
+    return out;
 }
 
 // ---- the mod's folder (API 20) ------------------------------------------------------------------

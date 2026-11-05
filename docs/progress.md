@@ -12,9 +12,9 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 1. **Stability on a clean setup.** Unzip the release zip somewhere new (not `D:\Dev\GridNode\bin`),
    inject with `gridnode_inject.exe`, then once more with `version.dll`; with no mods, then each
    example mod. Load the city, the map, a mission, a Dash, a time trial, the menus, a level change,
-   quit. Reload and unload each mod a few times. Fix every crash. Known: quitting during a Dash
+   quit. Reload and unload each mod a few times. Fix every crash. Quitting during a Dash
    crashed twice with GridNode injected (`0x143164d50`, a null world in `FUN_1439e08f0`'s mission
-   clean-up): find out whose fault it is and fix or guard it.
+   clean-up); the user believes it is fixed (2026-11-05): check it in this pass.
 2. **Online safety audit.** One list of everything that could reach EA's services or Beat Revival,
    checked in code: the console's online commands (confirmation; mods: refused without
    `online_allow`, enforced in `consoleRunFor` since 2026-11-04), settings marked online (mods
@@ -49,6 +49,15 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **API 26 and trainer 1.5.1** (user, 2026-11-05; untested in game). `on_destroyed` (mods' listeners
+  in GridNode's entity destructor wrapper, called while the entity is whole; it hooks the
+  destructors itself, so the player build has it too). `on_level_ready` / `level_ready` /
+  `ground_below` (ready: Faith over loaded ground for 30 server ticks; `level: ready` in the log).
+  `ant_live_field` / `ant_objects` (the console's probe for mods). Mods on one place: the log says
+  `[mod] shares function 0x... with other-mod`, the Mods list "shares N hooks", a refused code patch
+  names whose patch is there (`HookTable::shared` / `othersAt`, host-tested). Trainer: noclip leaves
+  Faith floating where she was (the safe spawn teleport killed her in the air); No KSEC also drops
+  the city alert's drone call (`Entity_fireOutputEvent` detour, `research/ksec-spawning.md`).
 - **MEC trainer 1.4.0, polish** (user, 2026-11-04; untested in game). Noclip flies GridNode's free
   camera (no grabbing, no falling) and puts Faith there when it goes off, last ground -300 until she
   lands, no god mode with it. Tabs: Trainer, Player (Movement tuning as its section), World (kill
