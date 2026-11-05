@@ -354,8 +354,15 @@ bool faithSpawner(void* spawner) { // her own safe spawn is one of these spawner
     return faith && gn::read(static_cast<char*>(faith) + 0x138, hers) && hers == spawner;
 }
 
+// g_freeRoam is the server tick's view; a mission's KSEC can spawn in the very tick its mission starts
+// (the mission's flag is set before its spawners fire), so the mission is asked again before blocking.
+bool stillFreeRoam() {
+    int32_t mission = 0;
+    return gn::mission(mission) && mission == 0;
+}
+
 void* spawnDetour(void* spawner, void* info) {
-    if (g_noKsec && g_freeRoam && !faithSpawner(spawner) && ksecSpawner(spawner)) {
+    if (g_noKsec && g_freeRoam && !faithSpawner(spawner) && ksecSpawner(spawner) && stillFreeRoam()) {
         if (g_ksecBlocked.fetch_add(1) < 10) gn::log("no free-roam KSEC: a spawn of %s stopped", spawnerTemplate(spawner).c_str());
         return nullptr; // as the game does when it refuses a spawn
     }
@@ -373,6 +380,7 @@ void ksecTick(float dt) {
     static float t = 0.f;
     if (!g_noKsec || !g_freeRoam || (t += dt) < 1.f) return;
     t = 0.f;
+    if (!stillFreeRoam()) return;
     void* faith = gn::localServerCharacter();
     gn::entitiesOfClass("ServerCharacterEntity", [&](void* c, gn::Type) {
         void* spawner = nullptr;
@@ -392,7 +400,8 @@ FireOutputFn g_fireOrig = nullptr;
 std::atomic<int> g_dronesStopped{0}, g_dronesSeen{0};
 
 uint64_t fireOutputDetour(void* entity, void* bus, void* data, uint32_t hash) {
-    if (hash == kDroneEvent && g_noKsec && g_freeRoam && std::strcmp(gn::Type::of(entity).name(), "PamServerCityAlertManager") == 0) {
+    if (hash == kDroneEvent && g_noKsec && g_freeRoam && std::strcmp(gn::Type::of(entity).name(), "PamServerCityAlertManager") == 0 &&
+        stillFreeRoam()) {
         if (g_dronesStopped.fetch_add(1) < 10) gn::log("no free-roam KSEC: the city alert's drone call stopped");
         return 0;
     }
@@ -1509,7 +1518,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.1", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.2", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

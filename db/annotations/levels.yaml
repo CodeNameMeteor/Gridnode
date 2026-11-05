@@ -3,6 +3,12 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 functions:
+  - name: ClassInfo_firstInWorld
+    va: 0x143164d50
+    signature: "void*(const ClassInfo* type, const GameWorld* world)"
+    note: "The first entity node of a class in a world: type + (world +0x28 + 6) * 0x10 (GameWorld_ClassListIndex). No null check of world."
+    confidence: inferred
+    sources: [ghidra]
   - name: ZoneStreamerFocus_add
     va: 0x143c7e7c0
     signature: "void(void* focusManager, u64 a2, void* focus)"
@@ -354,3 +360,15 @@ constants:
   - { name: ServerSubLevelEntity_Bus, value: 0x88, confidence: inferred, sources: [ghidra], note: "The sublevel's content bus (events other than streaming are passed to it)." }
   - { name: Event_StreamIn, value: 0xd27bc17e, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamIn." }
   - { name: Event_StreamOut, value: 0x21f3f677, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamOut." }
+
+code:
+  - name: MissionCleanup_findMissionCall
+    va: 0x1439e0938
+    note: >-
+      call 0x143164d50 (ClassInfo_firstInWorld) in FUN_1439e08f0 with rdx = [ServerGameWorld]
+      (0x1439e092a), and no null check: quitting during a Dash reached it after the server world was
+      gone (crash at 0x143164d50, twice, 2026-11-04). The caller tests the result for 0 (0x1439e093d).
+      GridNode patches the call to return 0 when the world is null (world.cpp). Checked in Ghidra
+      2026-11-05.
+    confidence: inferred
+    sources: [ghidra]

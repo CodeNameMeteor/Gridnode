@@ -14,7 +14,7 @@ a release, "should" before if there is time, the rest after. Open decisions for 
    example mod. Load the city, the map, a mission, a Dash, a time trial, the menus, a level change,
    quit. Reload and unload each mod a few times. Fix every crash. Quitting during a Dash
    crashed twice with GridNode injected (`0x143164d50`, a null world in `FUN_1439e08f0`'s mission
-   clean-up); the user believes it is fixed (2026-11-05): check it in this pass.
+   clean-up: the game's own code, guarded by GridNode since 2026-11-05): check it in this pass.
 2. **Online safety audit.** One list of everything that could reach EA's services or Beat Revival,
    checked in code: the console's online commands (confirmation; mods: refused without
    `online_allow`, enforced in `consoleRunFor` since 2026-11-04), settings marked online (mods
@@ -49,6 +49,12 @@ a release, "should" before if there is time, the rest after. Open decisions for 
 mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` functions.
 
 ## Done recently
+- **Annotations checked, mission clean-up guard, trainer 1.5.2** (2026-11-05; untested in game). The
+  user's Ghidra report and annotations checked in Ghidra: the right ones are in (ANT creates and
+  constructors, camera update, StaticCommand 0x28, replay components); the wrong ones out (city alert
+  offsets, the FloatAsset hash, the checkpoint as a float): `handover.md` section 4 lists both.
+  GridNode patches the call at 0x1439e0938 (the quit-during-Dash crash) to answer "none" when the
+  server world is gone. No KSEC asks for the mission again before blocking.
 - **API 27 and the release docs** (user, 2026-11-05; untested in game). `camera_set` / `camera_fov_set`
   (a mod's camera through the free camera's vtable copy; the free camera comes first; given back on
   unload), `replay_recent` (the recorder's 450-keyframe ring, read in Ghidra: head +0x88, tail +0x8c,

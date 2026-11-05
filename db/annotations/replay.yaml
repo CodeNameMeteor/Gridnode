@@ -4,19 +4,22 @@ defaults: { confidence: confirmed, sources: [mecmp, research] }
 classes:
   - name: PamServerReplayPlayerComponent
     realm: server
+    vtable: 0x141c500a8
+    size: 0x1c8
     members:
-      - { offset: 0x30, name: playback, type: "void*", note: "Playback object (inline); its state is at +0x38." }
+      - { offset: 0x30, name: playback, type: "void*", note: "Playback object (inline, vtable 0x141c50228 set by the create); its state is at +0x38." }
       - { offset: 0x38, name: playbackState, type: u32, note: "1 = playing." }
       - { offset: 0xb0, name: setup, type: "void*", note: "Bone setup." }
       - { offset: 0x178, name: pose, type: "ReplayBone*", note: "Output pose buffer (begin/end/capacity, then its arena)." }
       - { offset: 0x180, name: poseEnd, type: "ReplayBone*" }
       - { offset: 0x188, name: poseCapacity, type: "ReplayBone*" }
       - { offset: 0x190, name: poseArena, type: "void*" }
-      - { offset: 0x1a0, name: netState, type: "void*", note: "Inline net state: NetState_setDirty(this+0x1a0, 4) after writing the pose." }
+      - { offset: 0x1a0, name: netState, type: "void*", note: "Inline net state (vtable 0x141c50248 set by the create): NetState_setDirty(this+0x1a0, 4) after writing the pose." }
 
   - name: PamClientReplayPlayerComponent
     realm: client
     vtable: 0x141c48a28
+    size: 0x310
     members:
       - { offset: 0x38, name: playback, type: "void*", note: "The client's own playback (inline); state at +0x40." }
       - { offset: 0x40, name: playbackState, type: u32, note: "1 = playing. 0 stops the client's own playback." }
@@ -24,7 +27,13 @@ classes:
       - { offset: 0xb8, name: setup, type: "void*" }
       - { offset: 0x180, name: receivedPose, type: "ReplayBone*", note: "Pose received from the server (or decoded by the client's own playback)." }
       - { offset: 0x200, name: expectedBones, type: u32 }
-      - { offset: 0x2e6, name: skipRoot, type: u8 }
+      - { offset: 0x1c8, name: character, type: "void*", note: "The character it moves: its +0x158 is what the update places (FUN_142fd8f20) when skipRoot is 0.", confidence: inferred, sources: [ghidra] }
+      - { offset: 0x1d8, name: interpolatedPose, type: "ReplayBone*", note: "The update copies the pose here.", confidence: inferred, sources: [ghidra] }
+      - { offset: 0x2e0, name: playbackSpeed, type: f32, note: "Passed to ReplayPlayback_Tick.", confidence: inferred, sources: [ghidra] }
+      - { offset: 0x2e4, name: poseValid, type: u8, note: "With hasPose: the pose is copied.", confidence: inferred, sources: [ghidra] }
+      - { offset: 0x2e5, name: hasPose, type: u8, confidence: inferred, sources: [ghidra] }
+      - { offset: 0x2e6, name: skipRoot, type: u8, note: "0: the update places the character from bone 0 and bone 1 (the height drift in research/replay-ghosts.md)." }
+      - { offset: 0x2f8, name: progressOutput, type: "void*", note: "An output property: written with the progress (+0x60 / +0x5c) each update.", confidence: inferred, sources: [ghidra] }
 
   - name: PamServerProjectionSpawnerEntity
     realm: server
@@ -47,6 +56,7 @@ classes:
     realm: client
     members:
       - { offset: 0x48, name: recorder, type: "ReplayRecorder*", note: "Always records the last ~15 s (for creating time trials)." }
+      - { offset: 0x50, name: animatable, type: "void*", note: "Its ClientAntAnimatableEntity (PamClientReplayRecordingComponent_init).", confidence: inferred, sources: [ghidra] }
 
 structs:
   - name: ReplayRecorder
@@ -57,6 +67,7 @@ structs:
       - { offset: 0x68, name: stride, type: u64, note: "Bytes per keyframe: 0x10 + bones * 0x20." }
       - { offset: 0x70, name: capacity, type: u32 }
       - { offset: 0x78, name: base, type: "u8*" }
+      - { offset: 0x80, name: arena, type: "void*", note: "The ring's arena (ReplayKeyframeRing_Alloc's +0x18).", sources: [ghidra] }
       - { offset: 0x88, name: head, type: u32, note: "The newest keyframe: SampleAndStream moves it on (wrapping at capacity), then writes there.", sources: [ghidra] }
       - { offset: 0x8c, name: tail, type: u32, note: "The oldest once the ring is full (it moves on when head reaches it). The ring reset (0x14394f1c0) sets head and tail to 0.", sources: [ghidra] }
       - { offset: 0x90, name: notWrapped, type: u32, note: "1 from the reset until head first reaches tail (then 0): until then keyframes 1..head are the ones written.", sources: [ghidra] }
@@ -71,6 +82,14 @@ structs:
       - { offset: 0x10, name: rotation, type: "f32[4]", note: "Quaternion." }
 
 hooks:
+  - name: PamServerReplayPlayerComponent_factory
+    kind: creator-slot
+    slot: 0x141c50508
+    original: 0x14396d130
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    note: "Its create allocates 0x1c8 bytes (checked 2026-11-05)."
+    confidence: inferred
+    sources: [ghidra]
   - name: PamClientReplayPlayerComponent_factory
     kind: creator-slot
     slot: 0x141c49158
@@ -263,5 +282,18 @@ functions:
     va: 0x143a8f0b0
     signature: "void(PamServerProjectionSpawnerEntity* self, const u8** replayName)"
     note: "Loads the cached recording if it has one for that name; else frees it, stores the name (+0x48), sets +0x52 (waiting) and sends a message through the server MessageManager to download it, then sets +0x51."
+    confidence: inferred
+    sources: [ghidra]
+  # From the user's Ghidra project (2026-11-05), checked the same day.
+  - name: PamServerReplayPlayerComponent_dtor
+    va: 0x14396bf60
+    signature: "void(void* self)"
+    note: "Its destructor body, called from the deleting destructor 0x14396c630 (vtable +0x38)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PamServerReplayPlayerComponent_update
+    va: 0x143971ac0
+    signature: "void(void* self, void* updateInfo)"
+    note: "Vtable +0x140: advances the playback at +0x30."
     confidence: inferred
     sources: [ghidra]

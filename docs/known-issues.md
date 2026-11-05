@@ -12,8 +12,9 @@ something goes wrong; report anything not listed here with `gridnode.log`.
 
 ## GridNode
 
-- **Quitting during a Dash** crashed twice with GridNode injected (`0x143164d50`, a null world in
-  the mission clean-up). Believed fixed; not yet confirmed in the clean-setup pass.
+- **Quitting during a Dash** crashed twice (`0x143164d50`): the game's own mission clean-up looks
+  in the server world after it is gone. GridNode guards that call since 2026-11-05 (it answers
+  "none" then); not yet confirmed in game.
 - **Teleporting far** lands before the area has streamed in. Wait for `gn::onLevelReady` after a
   level loads, and for `gn::groundBelow` after a far teleport (the trainer does).
 - **Physics in the city is static:** almost no body is dynamic, so `body_set_velocity`, `body_push`

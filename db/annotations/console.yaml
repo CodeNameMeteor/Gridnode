@@ -11,8 +11,14 @@ globals:
   - name: g_consoleEnabledForPlatform
     va: 0x1420f2b30
     type: "u8"
-    note: "Labelled in Ghidra as g_consoleEnabledForPlatform."
-    confidence: hypothesis
+    note: "Only Console_executeCommand writes it (1, 0, or a value, at 0x142a8a91b / 0x142a8ab15 / 0x142a8ac56 / 0x142a8ac66) and reads it (0x142a8acef) before running a command typed in the game's own console; the user's report: 'enable Win32' sets it. 1 in our dump of a running game (checked 2026-11-05)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Screenshot_commands
+    va: 0x142110090
+    type: "StaticCommand[3]"
+    note: "The game's own static commands: Screenshot.Render (0x143555be0), Screenshot.Format (0x143555c30), Screenshot.LayerMode (0x143555d60), 0x28 bytes apart (checked 2026-11-05)."
+    confidence: inferred
     sources: [ghidra]
   - name: GameTimeSettings_cached
     va: 0x142142a68
@@ -59,16 +65,18 @@ structs:
       - { offset: 0x10, name: capacity, type: "i8*" }
       - { offset: 0x18, name: allocator, type: "void*" }
   - name: StaticCommand
-    size: 0x20
+    size: 0x28
     note: >-
       Entries of ConsoleRegistry_getStaticCommands (a vector of pointers to these). Full name
       group.name. Settings fields bound to the console are added here too, by
       ConsoleRegistry_addCommands, with fn = ConsoleFieldBinding_getOrSet (96 commands in game).
+      0x28 bytes: ConsoleRegistry_addCommands steps 0x28 per entry (checked 2026-11-05).
     members:
       - { offset: 0x00, name: fn, type: "void*" }
       - { offset: 0x08, name: name, type: "const i8*" }
       - { offset: 0x10, name: group, type: "const i8*" }
       - { offset: 0x18, name: arguments, type: "const i8*", note: "Help text for the arguments; may be null." }
+      - { offset: 0x20, name: unknown, type: u64, note: "0 in the game's three." }
   - name: BoundCommand
     size: 0x28
     note: Entries of ConsoleRegistry_getBoundCommands (a vector of these, inline). Settings fields with flag 0x2000.
@@ -99,7 +107,10 @@ functions:
   - name: ConsoleBinding_registerFieldsRecursive
     va: 0x142a7e840
     signature: "void(const i8* group, void* type, void* binding, const i8* prefix)"
-    note: Binds only fields with flag 0x2000 (141 of the 3,431 settings fields).
+    note: >-
+      Binds only fields with flag 0x2000 (141 of the 3,431 settings fields): the test is the jz at
+      0x142a7e901 (0F 84 09 04 00 00, checked in the dump 2026-11-05); without it every field of the
+      settings class would be bound (the user's report; not done, user 2026-11-05).
   - name: ConsoleRegistry_addCommands
     va: 0x142a90e20
     signature: "void(const i8* group, void* entries, u32 count)"

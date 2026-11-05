@@ -199,8 +199,25 @@ void physicsStart() {
 }
 } // namespace
 
+// Quitting during a Dash crashed the game in its own mission clean-up: FUN_1439e08f0 looks the mission
+// entity up in [ServerGameWorld] with ClassInfo_firstInWorld, which reads world +0x28 without a null
+// check, after the world was gone (db/annotations/levels.yaml, MissionCleanup_findMissionCall). The
+// call is patched to answer "none" then, which the caller already handles.
+using FirstInWorldFn = void* (*)(const void* type, const void* world);
+FirstInWorldFn g_firstInWorld = nullptr;
+void* firstInWorldGuard(const void* type, const void* world) { return world ? g_firstInWorld(type, world) : nullptr; }
+
+void guardMissionCleanup() {
+    // The original goes straight into g_firstInWorld: patchCall publishes it before the call moves.
+    if (patchCall("GridNode", e::code::MissionCleanup_findMissionCall, e::function::ClassInfo_firstInWorld,
+                  reinterpret_cast<void*>(&firstInWorldGuard), reinterpret_cast<void**>(&g_firstInWorld),
+                  reinterpret_cast<void*>(&firstInWorldGuard)) != GN_OK)
+        GN_LOG("world: the mission clean-up guard (quitting during a Dash) could not be put in");
+}
+
 void worldStart() {
     onCreated("gridnode", "ServerCharacterEntity", &onServerCharacter, nullptr);
+    guardMissionCleanup();
     physicsStart();
     bodiesStart();
 }

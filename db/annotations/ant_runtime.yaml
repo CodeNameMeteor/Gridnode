@@ -344,3 +344,321 @@ functions:
     signature: "void()"
     note: "Its shutdown."
     confidence: inferred
+
+  # From the user's Ghidra project (2026-11-05), checked: each create allocates with its own type's name
+  # string and calls its constructor; each constructor's callers are its create (or subclasses').
+  - name: ant_DriverAsset_ctor
+    va: 0x142ee12b0
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (FallingDriverAsset_create, SpringboardDriverAsset_create, SwingJumpDriverAsset_create)."
+    sources: [ghidra]
+  - name: ant_ProcessorAsset_ctor
+    va: 0x142cc1440
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (SpringboardProcessorAsset_ctor, MovementSplineProcessorAsset_ctor)."
+    sources: [ghidra]
+  - name: ant_TagAsset_ctor
+    va: 0x142c0a070
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (SpineAimTag_create and others)."
+    sources: [ghidra]
+  - name: ant_ResultBusAsset_ctor
+    va: 0x142cc1420
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (FloorResultBusAsset_create, LedgeResultBusAsset_create, PositionPredictionResultBusAsset_create)."
+    sources: [ghidra]
+  - name: ant_SceneOpAsset_ctor
+    va: 0x142c0bab0
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (PamplonaHandplantSceneOpAsset_ctor, PamplonaFenceSceneOp_create)."
+    sources: [ghidra]
+  - name: ant_QueryFilterAsset_ctor
+    va: 0x142cc0720
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (several query filter creates)."
+    sources: [ghidra]
+  - name: ant_EventDriverAsset_ctor
+    va: 0x142cc19a0
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (SplineDriverAsset_ctor, SmoothAlignmentDriverAsset_ctor)."
+    sources: [ghidra]
+  - name: ant_ValueAsset_ctor
+    va: 0x142c0a7b0
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (PamRandomValueAsset_create)."
+    sources: [ghidra]
+  - name: ant_ControllerAsset_ctor
+    va: 0x142c08ea0
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (several controller creates)."
+    sources: [ghidra]
+  - name: ant_DistanceQueryFilterAsset_ctor
+    va: 0x142cc0f20
+    signature: "void*(void* self)"
+    note: "Base constructor, called from its subclasses' (VariableDistanceQueryFilterAsset_create)."
+    sources: [ghidra]
+  - name: SpringboardProcessorAsset_create
+    va: 0x142f00020
+    signature: "void*()"
+    note: "Makes a SpringboardProcessorAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: SpringboardProcessorAsset_ctor
+    va: 0x142ee4550
+    signature: "void*(void* self)"
+    note: "Its constructor, called from SpringboardProcessorAsset_create."
+    sources: [ghidra]
+  - name: DashDriverAsset_create
+    va: 0x142efd770
+    signature: "void*()"
+    note: "Makes a DashDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: DashDriverAsset_ctor
+    va: 0x142ee0d20
+    signature: "void*(void* self)"
+    note: "Its constructor, called from DashDriverAsset_create."
+    sources: [ghidra]
+  - name: DashCombatDriverAsset_create
+    va: 0x142efd680
+    signature: "void*()"
+    note: "Makes a DashCombatDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: DashCombatDriverAsset_ctor
+    va: 0x142ee0650
+    signature: "void*(void* self)"
+    note: "Its constructor, called from DashCombatDriverAsset_create."
+    sources: [ghidra]
+  - name: DashCompensationDriverAsset_create
+    va: 0x142efd6f0
+    signature: "void*()"
+    note: "Makes a DashCompensationDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: DashCompensationDriverAsset_ctor
+    va: 0x142ee0a10
+    signature: "void*(void* self)"
+    note: "Its constructor, called from DashCompensationDriverAsset_create."
+    sources: [ghidra]
+  - name: SplineDriverAsset_ctor
+    va: 0x142ee4360
+    signature: "void*(void* self)"
+    note: "Constructor shared by SplineDriverAsset_create, FollowSplineDriverAsset_create and IntoSplineDriverAsset_ctor."
+    sources: [ghidra]
+  - name: IntoLedgeAlignDriverAsset_create
+    va: 0x142efe320
+    signature: "void*()"
+    note: "Makes a IntoLedgeAlignDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: LedgeAlignDriverAsset_ctor
+    va: 0x142ee2750
+    signature: "void*(void* self)"
+    note: "Constructor, called from LedgeAlignDriverAsset_create and IntoLedgeAlignDriverAsset_create."
+    sources: [ghidra]
+  - name: MagropePullUpDriverAsset_create
+    va: 0x142efe6f0
+    signature: "void*()"
+    note: "Makes a MagropePullUpDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: MagropePullUpDriverAsset_ctor
+    va: 0x142ee2f40
+    signature: "void*(void* self)"
+    note: "Its constructor, called from MagropePullUpDriverAsset_create."
+    sources: [ghidra]
+  - name: MagropeSwingDriverAsset_create
+    va: 0x142efe770
+    signature: "void*()"
+    note: "Makes a MagropeSwingDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: MagropeSwingDriverAsset_ctor
+    va: 0x142ee31a0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from MagropeSwingDriverAsset_create."
+    sources: [ghidra]
+  - name: UncontrolledSlideDriveAsset_ctor
+    va: 0x142ee45d0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from UncontrolledSlideDriveAsset_create."
+    sources: [ghidra]
+  - name: SwingJumpDriverAsset_create
+    va: 0x142f00130
+    signature: "void*()"
+    note: "Makes a SwingJumpDriverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: AnalyzeClimbingProcessorAsset_create
+    va: 0x142efcb00
+    signature: "void*()"
+    note: "Makes a AnalyzeClimbingProcessorAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: AnalyzeClimbingProcessorAsset_ctor
+    va: 0x142edfad0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from AnalyzeClimbingProcessorAsset_create."
+    sources: [ghidra]
+  - name: AnalyzeClimbingQueryFilterAsset_create
+    va: 0x142efcb70
+    signature: "void*()"
+    note: "Makes a AnalyzeClimbingQueryFilterAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: AnalyzeClimbingQueryFilterAsset_ctor
+    va: 0x142edfb60
+    signature: "void*(void* self)"
+    note: "Its constructor, called from AnalyzeClimbingQueryFilterAsset_create."
+    sources: [ghidra]
+  - name: AnalyzeObstacleProcessorAsset_ctor
+    va: 0x142edfbe0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from AnalyzeObstacleProcessorAsset_create."
+    sources: [ghidra]
+  - name: AnalyzeObstacleQueryFilterAsset_create
+    va: 0x142efcc60
+    signature: "void*()"
+    note: "Makes a AnalyzeObstacleQueryFilterAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: AnalyzeObstacleQueryFilterAsset_ctor
+    va: 0x142edfcd0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from AnalyzeObstacleQueryFilterAsset_create."
+    sources: [ghidra]
+  - name: FindFloorProcessorAsset_ctor
+    va: 0x142ee1390
+    signature: "void*(void* self)"
+    note: "Its constructor, called from FindFloorProcessorAsset_create."
+    sources: [ghidra]
+  - name: PamplonaPhysicsAsset_create
+    va: 0x142eff790
+    signature: "void*()"
+    note: "Makes a PamplonaPhysicsAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaPhysicsAsset_ctor
+    va: 0x142ee3f40
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaPhysicsAsset_create."
+    sources: [ghidra]
+  - name: PamplonaFootplantSceneOpAsset_create
+    va: 0x142eff590
+    signature: "void*()"
+    note: "Makes a PamplonaFootplantSceneOpAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaFootplantSceneOpAsset_ctor
+    va: 0x142ee3c50
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaFootplantSceneOpAsset_create."
+    sources: [ghidra]
+  - name: PamplonaHandplantSceneOpAsset_create
+    va: 0x142eff690
+    signature: "void*()"
+    note: "Makes a PamplonaHandplantSceneOpAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaHandplantSceneOpAsset_ctor
+    va: 0x142ee3e60
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaHandplantSceneOpAsset_create."
+    sources: [ghidra]
+  - name: PamplonaMoverAsset_create
+    va: 0x142eff700
+    signature: "void*()"
+    note: "Makes a PamplonaMoverAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaSteeringAsset_create
+    va: 0x142eff810
+    signature: "void*()"
+    note: "Makes a PamplonaSteeringAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaSteeringTag_create
+    va: 0x142eff890
+    signature: "void*()"
+    note: "Makes a PamplonaSteeringTag: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaSteeringTag_ctor
+    va: 0x142ee3fc0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaSteeringTag_create."
+    sources: [ghidra]
+  - name: PamplonaWalkMetricsGameStateAsset_create
+    va: 0x142eff910
+    signature: "void*()"
+    note: "Makes a PamplonaWalkMetricsGameStateAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaWalkMetricsGameStateAsset_ctor
+    va: 0x142edf070
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaWalkMetricsGameStateAsset_create."
+    sources: [ghidra]
+  - name: PamplonaFallMetricsGameStateAsset_create
+    va: 0x142eff400
+    signature: "void*()"
+    note: "Makes a PamplonaFallMetricsGameStateAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamplonaFallMetricsGameStateAsset_ctor
+    va: 0x142edeff0
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamplonaFallMetricsGameStateAsset_create."
+    sources: [ghidra]
+  - name: PamDamageGameStateAsset_create
+    va: 0x142efebe0
+    signature: "void*()"
+    note: "Makes a PamDamageGameStateAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamDamageGameStateAsset_ctor
+    va: 0x142ee3410
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamDamageGameStateAsset_create."
+    sources: [ghidra]
+  - name: PamEnumTrackerGameStateAsset_create
+    va: 0x142efedc0
+    signature: "void*()"
+    note: "Makes a PamEnumTrackerGameStateAsset: allocates it under its type's name and constructs it (the type's function table +0x00)."
+    sources: [ghidra]
+  - name: PamEnumTrackerGameStateAsset_ctor
+    va: 0x142edee70
+    signature: "void*(void* self)"
+    note: "Its constructor, called from PamEnumTrackerGameStateAsset_create."
+    sources: [ghidra]
+  - name: ant_registerCoreSchemas
+    va: 0x142c36ce0
+    signature: "void()"
+    note: "Registers the core schemas (PointerAsset, DeltaTrajLayoutAsset, AnimatableFeatureAsset, ...); called from ant_initCoreSubsystem."
+    sources: [ghidra]
+  - name: ant_initMirrorStateAsset
+    va: 0x142c2ef30
+    signature: "void()"
+    note: "Makes the global mirror state asset ('IMirrorable::sMirrorStateAsset'); called from ant_initCoreSubsystem."
+    sources: [ghidra]
+  - name: ant_unregisterCoreSchemas
+    va: 0x142c36ef0
+    signature: "void()"
+    note: "Takes the core schemas out of the registry; called from ant_shutdownCoreSubsystem."
+    sources: [ghidra]
+  - name: ant_shutdownExpressionAndMirrorSubsystems
+    va: 0x142c39c20
+    signature: "void()"
+    note: "Frees the mirror state asset and the expression registry; called from ant_shutdownCoreSubsystem."
+    sources: [ghidra]
+  - name: ant_ExpressionRegistry_ctor
+    va: 0x142fa6130
+    signature: "void*(void* mem, void* allocator)"
+    note: "Its constructor, called from its create."
+    sources: [ghidra]
+  - name: ant_ExpressionRegistry_dtor
+    va: 0x142fa6af0
+    signature: "void(void* registry)"
+    note: "Its destructor; called from ant_shutdownExpressionAndMirrorSubsystems."
+    sources: [ghidra]
+  - name: ant_TypeRegistry_unregisterType
+    va: 0x142c3d380
+    signature: "void(void* registry, const char* name)"
+    note: "Takes a type out of the registry (its name map and its id map)."
+    sources: [ghidra]
+  - name: ant_freeClassLayout
+    va: 0x142fb1010
+    signature: "void(void* allocator, void* layout)"
+    note: "Frees a layout made by ant_createClassLayout; called from ant_TypeRegistry_unregisterType."
+    sources: [ghidra]
+  - name: ant_TypeRegistry_removeFromTypeMap
+    va: 0x142c3f270
+    signature: "void(void* map, void* entry)"
+    note: "Erases an entry from the registry's sorted id map; called from ant_TypeRegistry_unregisterType."
+    sources: [ghidra]
+  - name: ant_StringTable_addString
+    va: 0x142c13fe0
+    signature: "u32(void* stringTable, const char* str)"
+    note: "Adds a string to an ANT string table and returns its offset; called from ant_SkeletonHierarchy_buildTree."
+    sources: [ghidra]

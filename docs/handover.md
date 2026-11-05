@@ -1,6 +1,6 @@
 # Handover (for the next agent)
 
-Written 2026-11-04, brought up to date on 2026-11-05 (replaces the 2026-10-27 handover). Short status and the release plan:
+Written 2026-11-04, brought up to date on 2026-11-05 (midday) (replaces the 2026-10-27 handover). Short status and the release plan:
 [progress.md](progress.md). The full design: [PLAN.md](PLAN.md). Rules for working in the repository:
 `CLAUDE.md`.
 
@@ -86,64 +86,70 @@ All of it is pushed (`main` c05d2ab). In order:
 | Fixes | A mod whose load failed is no longer asked to stop (it crashed); `GN_MOD` returns 2 for "GridNode too old"; a mod's ticks and tasks can't throw into GridNode; the trainer's Load with nothing saved crashed (a lock taken twice); kill volumes off killed Faith (the detour returned void where the game returns bool) | fixed; the first three untested |
 | Docs | README, home, getting started (with troubleshooting), shipping, writing a mod (API versions), building, engine notes, PLAN status; research from a friend's cinematic tools (`research/ct-research.md`) and a Cheat Engine table (`research/cheat-table.md`) | current as of c05d2ab |
 
-### The afternoon of 2026-11-04 (API 23, 24; trainer 1.4.0)
+### 2026-11-04 afternoon to 2026-11-05 (API 23 to 27; trainer 1.4.0 to 1.5.2)
 
-Pushed: 1f06664, 9608164, 31afe2d, 1add893, 59efbcb, and the KSEC commit after them.
+All pushed to `main` (1f06664 ... 1f513ba, and the commit with this handover).
 
 | Area | What | State in game |
 |---|---|---|
-| Review fixes | From a code review (`reviews/`): crash notes log each fault address once (handled faults used up a cap of 3); static handler buffers; mods found by gridnode.ini's folder; a mod's queued tasks run during its unload's wait and only leftovers are dropped before the free; Reload / Unload asked for during one are kept; detour entry written and recorded under one lock; `pauseOthers` second snapshot; patch_bytes waits for return addresses too; mod exports read from the file (`pe_file.cpp`); settings file names; hex event ids; CI hardened (SHA-pinned actions, sanitizers, ruff, rustfmt, clippy) | reloads and keys confirmed after the task fix; the rest untested |
-| Online rule (API 23) | `online_allow(mod, reason)`: a mod's online console commands are refused until it calls it, then logged with `!!! ONLINE` and shown in orange in the Mods list; `settings_find` warns. Progression flags marked online are set by default (user: many are not online). The trainer never opts in. `view_get_ex` (sized `gn_view`); `gn_ray_hit` is fixed | untested |
-| Player input (API 24) | `action_held`: the player's own input by action (the live EntryInputState) | untested |
-| Free camera keys | Top right; mods add rows (`gn::ui::freecamRow`, `freecamSeparator`) | untested |
-| Injector | The 3 s settle after the game's window is back (a review change had cut it to 0.5 s; the game hung when its window was not opened) | untested |
-| MEC trainer 1.4.0 | Noclip flies the free camera, Faith waits at her safe spawn and lands at the camera, last ground -300; tabs Trainer / Player (Faith's health and position, movement tuning) / World / Volumes / Settings (keys, HUD, unload); World: kill volumes off, movement blockers off (each barrier's own disable / enable, both realms), no city alerts (the manager's deactivate event, outside missions), no KSEC (below); bhop practice in the middle of the screen for wall run jumps (state 8; ON TIME / EARLY / LATE / MISSED from the player's own jump); key 3 shows trigger volumes; the banner only says "MEC Trainer Loaded". Removed: no fall death, one-hit KSEC, no stumble, To the checkpoint | noclip, safe spawn, bhop and the volume key seen working in the user's log; the rest untested |
-| No KSEC (free roam) | KSEC are spawners whose template is `Characters/SpawnTemplates/Enemy/...` (from the trainer's character log: team is 2 for everyone). A slot hook on the spawner's spawn (vtable +0xd0) returns null for them while no mission runs, and the ones out are despawned; Faith's own spawner is never touched (`research/ksec-spawning.md`) | **untested in game** |
-| ANT (API 25) | ANT's type registry by name (936 types, 4,511 fields, read in game), `ant_type_*` / `ant_field_*`, Faith's move tracker (`move_tracker`, trainer's Player tab); console `ant [filter | TYPE | TYPE FIELD [VALUE]]`: a field's live place from the type's own create and load run on test data, objects by vtable (`research/ant.md`) | registry and listing confirmed; the probe untested |
-| API 26 | `on_destroyed` (in GridNode's destructor wrapper); `on_level_ready`, `level_ready`, `ground_below`; `ant_live_field`, `ant_objects`; mods on one hook or function named in the log and the Mods list, a clashing code patch names its owner | untested |
-| API 27 | `camera_set` / `camera_fov_set` (a mod's camera, through the free camera's vtable copy), `replay_recent` (Faith's last 450 keyframes), `ui_menu_set` with `menu_key=NONE` / `gridnode_window=0`; mod template copies the SDK into the mod with CI (`update-sdk`); `package --player`; pages mod-repository, troubleshooting, online, known-issues, release-notes | untested in game; the template build checked with MinGW |
-| MEC trainer 1.5.1 | Noclip: Faith floats where she was (the safe spawn teleport killed her in the air). No KSEC: also drops the city alert's drone call (`Entity_fireOutputEvent` detour; the drone is a `PamServerDroneActorEntity`, not a character) | untested |
+| Review fixes | From a code review (`reviews/`): crash notes log each fault address once; static handler buffers; mods found by gridnode.ini's folder; a mod's queued tasks run during its unload's wait; Reload / Unload asked for during one are kept; detour entry written and recorded under one lock; `pauseOthers` second snapshot; patch_bytes waits for return addresses too; mod exports read from the file; settings file names; hex event ids; CI hardened (SHA-pinned actions, sanitizers, ruff, rustfmt, clippy) | reloads and keys confirmed; the rest untested |
+| Online rule (API 23) | `online_allow(mod, reason)`: a mod's online console commands are refused until it calls it, then logged with `!!! ONLINE` and shown in orange in the Mods list; `settings_find` warns; progression flags marked online are set (user: many are not online); `view_get_ex` | untested |
+| Player input (API 24) | `action_held`: the player's own input by action | untested |
+| ANT (API 25) | ANT's type registry by name (`ant_type_*`, `ant_field_*`), Faith's move tracker (`move_tracker`); console `ant [filter / TYPE / TYPE FIELD [VALUE]]`: a field's live place from the type's own create and load run on test data, objects by vtable (`research/ant.md`) | registry and listing confirmed (936 types, 4,511 fields); the live probe untested |
+| API 26 | `on_destroyed`; `on_level_ready`, `level_ready`, `ground_below`; `ant_live_field`, `ant_objects`; two mods on one hook or function named in the log and the Mods list, a clashing code patch names its owner | untested |
+| API 27 | `camera_set` / `camera_fov_set` (through the free camera's vtable copy; console `camera behind / fov N / off`), `replay_recent` (the recorder's 450-keyframe ring; console `replay`), `ui_menu_set` with `[ui] menu_key=NONE` / `gridnode_window=0` | untested |
+| Mods in their own repos | `gridnode_mod.py new` copies the SDK into the mod (`gridnode-sdk/`) with a GitHub Actions workflow, a README, `.gitignore`; `update-sdk`; `--no-vendor`. `docs/mod-repository.md` | a mod made from a release zip built on its own with MinGW; the Rust one checks; the workflow never ran |
+| Release | `gridnode.py package --player` (refuses a developer build); pages troubleshooting, online, known-issues, release-notes (draft) | the zips made here, never installed fresh |
+| Mission clean-up guard | Quitting during a Dash crashed in the game's own clean-up (FUN_1439e08f0 calls ClassInfo_firstInWorld with a null `ServerGameWorld`, checked in Ghidra 2026-11-05). GridNode patches that call (0x1439e0938) to answer "none" when the world is null (`world.cpp`) | untested |
+| MEC trainer 1.4.0 to 1.5.2 | Noclip flies the free camera while Faith floats where she was (1.5.1; the safe spawn teleport killed her in the air); tabs Trainer / Player / World / Volumes / Settings; World: kill volumes off, movement blockers off, no city alerts, No KSEC (spawner hook on the KSEC templates, despawns, and the city alert's drone call dropped through an `Entity_fireOutputEvent` detour; 1.5.2 asks for the mission again before blocking, so a mission's KSEC spawned in the tick it starts are kept); bhop practice in wall-run state 8; the banner says "MEC Trainer Loaded" | noclip, bhop and the volume key seen working; the rest untested |
+| Annotations from the user's Ghidra work (2026-11-05) | Checked in Ghidra before they came in: 63 ANT creates and constructors (each create allocates under its own type's name and calls its constructor), the core schema and expression registry functions; FPSCamera_update (vtable +0x68), Camera_setTransforms, ClientCameraViewManagers_frameUpdateAll; StaticCommand is 0x28 bytes, Screenshot_commands, g_consoleEnabledForPlatform's writers; the server replay player's vtable, size, creator slot, destructor and update, and client replay player members (+0x1c8 .. +0x2f8). Left out as unchecked or wrong: the city alert input offsets (+0x98 ..: the update reads property slots at +0xd8 / +0xe8 / +0xf8 / +0x108), "0x7062fa7a is GameState::FloatAsset" (no FNV-1 or djb2 of that name gives it), the checkpoint's +0x158 as SpawnAreaRadius, ClientCameraViewManager members other than the known ones, the recording component's vtable | n/a |
 
-Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 27) and `mods\mec_trainer.dll`
-(1.5.1); `gridnode_inject.exe` from 2026-11-04 (the 3 s settle back).
+Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 27, with the mission clean-up guard)
+and `mods\mec_trainer.dll` (1.5.2); `gridnode_inject.exe` from 2026-11-04.
 
-## 5. What is planned: the first release
+## 5. What is left for the first release
 
-In order (details in [progress.md](progress.md), "Current task"):
+Done since the plan (2026-11-04): the online page (`online.md`), the players' zip
+(`package --player`), the release docs (troubleshooting, known issues, release notes draft), mods in
+their own repositories, and a guard for the quit-during-Dash crash. Left, in order:
 
-1. **Stability on a clean setup:** a fresh unzip, both install ways, every example mod, the city, a
-   mission, a Dash, a time trial, level changes, quitting, reloads. (Quitting during a Dash crashed
-   twice with GridNode injected, `0x143164d50`; the user believes it is fixed, 2026-11-05: check
-   it in that pass.)
-2. **Online safety audit** and a docs page on it. The rule is now enforced in code (`online_allow`,
-   API 23) and described in modding.md ("Online services"); what is left is the list and the page.
-3. **The release's zips** (decide with the user): a player zip (the player build, injector,
-   `version.dll`, the MEC trainer) and an SDK zip (developer build, headers, templates, examples).
-   `gridnode.py package` makes one zip today; add `--player`.
-4. **Docs for the release:** known issues and release notes (the rest was brought up to date on
-   2026-11-04).
-5. **API 1.0:** review `api.h`, mark the experimental parts (gravity, body velocities, waypoint,
-   checkpoint), then the table only grows at its end.
-6. **Version and release** (decide with the user: 1.0.0 or a 0.9 beta): a tag and a GitHub release
-   from CI's zips.
+1. **Stability on a clean setup** (the user): a fresh unzip of both zips, both install ways, every
+   example mod, the city, a mission, a Dash (and quitting during one), a time trial, level changes,
+   quitting, reloads. Fix every crash.
+2. **The in-game tests waiting** (the user): No KSEC with a mission and with the drone; movement
+   blockers off and no city alerts; the ANT probe (`ant FallingDriverAsset JumpHeight 5`); API 26
+   (`level: ready` in the log) and API 27 (`camera behind`, `camera fov 90`, `replay`); the
+   progression test; noclip floating in the air.
+3. **API 1.0 review:** read `api.h` for names and threads we would regret; mark experimental in the
+   docs: gravity and body velocities, the waypoint (its height is the street's), the checkpoint (a
+   Cheat Engine path: replace it with Faith's safe spawn tracker), the ANT live fields,
+   `replay_recent`'s bones. Then the table only grows at its end.
+4. **The "untested" notes** in progress.md: test, mark experimental, or take out; fill the release
+   notes' "not tested" list from them.
+5. **Version and release (decide with the user):** 1.0.0 or a 0.9 beta; the version in
+   `CMakeLists.txt`, a tag, a GitHub release with the two zips from CI.
 
-Then, if there is time: the example mods in the release, the 29 "untested" notes in progress.md, an
-install on a friend's PC, startup and frame cost written down.
+Should, if there is time: an install on a friend's PC from the zip and the docs alone; startup and
+frame cost written down; the mod template's GitHub workflow run once in a real repository.
 
-After the release: spawnable physics objects (GridNode-made dynamic bodies, so gravity and pushes do
-something), the layout editor, a scripting layer only if mods ask (Lua was skipped on 2026-10-20),
-the 335 `hypothesis` functions.
+After the release: spawnable physics objects, the layout editor (paused), a scripting layer only if
+mods ask, the 335 `hypothesis` functions, a decoder for the replay format (needs
+`ReplayPlayback_DecodeKeyframe`'s bit packing first).
 
-Waiting on the user: the No KSEC test (free roam, a runner nearby, a mission with KSEC), movement
-blockers off and no city alerts in game, the bhop practice's early / late results, the progression
-test (`progress`, setting a flag that is marked online), the console clicks, whether the 16:09 run on
-2026-11-04 (log ended after "level: ended") was a quit or a crash, and the two decisions above.
-
-Open research: whether a mission spawns its KSEC before the mission index is set (No KSEC would stop
-those); stopping an alert from starting instead of ending it (the manager's pause / force-off inputs,
-`research/city-alert.md`).
+**Open research** (Ghidra jobs, `research/` pages): GravityY and the other ANT references (the
+value function 0x142d944a0 reads a live game-state slot when one is bound (+0x20 not 0x7fff), else
+the pointer at +0x50, else the float at +0x58: writing the asset's own value only works when it is
+not bound); whether `FUN_142faa520` loads a type's base fields (its recursion walks child objects; not
+shown to call base loaders); where else a drone comes from (patrol drones placed in levels?); the
+checkpoint from `PamServerSafeSpawnTrackerEntity`; stopping a city alert from starting with its real
+input slots.
 
 ## 6. Things learned the hard way
+
+- **Check research reports in Ghidra before they go into `db/annotations`:** the 2026-11-05 report
+  had right addresses next to invented ones (offsets the code never reads, a hash no hash function
+  gives, a decompile "simplified" into something else). Check each function start, each offset in
+  the code that uses it, each vtable slot.
 
 - **Deploy everything together:** a mod built for API N refuses to load on an older GridNode (and
   before the fix, unloading it crashed). Check by checksum what landed.
