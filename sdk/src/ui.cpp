@@ -191,6 +191,8 @@ void handleRawMouse(LPARAM l) {
 // land on another window.
 void holdCursor(bool hold) {
     static bool held = false;
+    static RECT clipped{};
+    static ULONGLONG clippedAt = 0;
     if (hold && g_window && GetForegroundWindow() == g_window) {
         RECT rc{};
         GetClientRect(g_window, &rc);
@@ -198,8 +200,17 @@ void holdCursor(bool hold) {
         ClientToScreen(g_window, &tl);
         ClientToScreen(g_window, &br);
         const RECT clip{tl.x, tl.y, br.x, br.y};
-        ClipCursor(&clip);
-        SetCursorPos((tl.x + br.x) / 2, (tl.y + br.y) / 2);
+        // Every frame this was a ClipCursor and a SetCursorPos (both go through the window system, and
+        // SetCursorPos sends the game a mouse move): the clip again only when the window moved or the
+        // game may have changed it (4 times a second), the cursor only when it is off the middle.
+        const ULONGLONG now = GetTickCount64();
+        if (!held || memcmp(&clip, &clipped, sizeof(clip)) != 0 || now - clippedAt > 250) {
+            ClipCursor(&clip);
+            clipped = clip, clippedAt = now;
+        }
+        const POINT mid{(tl.x + br.x) / 2, (tl.y + br.y) / 2};
+        POINT cur{};
+        if (!GetCursorPos(&cur) || cur.x != mid.x || cur.y != mid.y) SetCursorPos(mid.x, mid.y);
         held = true;
     } else if (held) {
         ClipCursor(nullptr);
@@ -678,6 +689,63 @@ void putBack() {
     slot(g_resizeSlot, reinterpret_cast<void*>(&resizeHook), reinterpret_cast<void*>(g_origResize), "ResizeBuffers");
 }
 
+// Frame cost (2026-11-05, the free camera lowered the frame rate by ~20 fps): what GridNode itself adds to
+// a frame, and the frame rate with the free camera on and off. While the camera is on, one line in the log
+// every 5 s. "GridNode" is everything between the game calling Present and GridNode handing it on; if that
+// is small, the frames go to the game (the camera's view, Faith's full body), not to GridNode.
+double qpcUs() {
+    static const double perUs = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart) / 1e6;
+    }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) / perUs;
+}
+
+struct PerfBucket {
+    double interval = 0, all = 0, layouts = 0, hold = 0, mods = 0; // microseconds, summed
+    uint32_t frames = 0;
+};
+// The buckets tell what costs the frames: 0 the game's camera, 1 the free camera flying (menu closed: the
+// game's input is captured, the cursor held), 2 only a mod's camera (the same camera hooks, nothing else:
+// console "camera behind"), 3 the free camera with the menu open (hooks, no input capture).
+// 4 only a mod's FOV (the hooks, the game's own transform).
+constexpr int kPerfBuckets = 5;
+const char* const kPerfNames[kPerfBuckets] = {"game camera", "free camera, menu closed", "mod camera only", "free camera, menu open",
+                                              "mod FOV only"};
+PerfBucket g_perf[kPerfBuckets]; // this window
+PerfBucket g_perfLastOff;        // the last window with the game's camera
+double g_perfLast = 0, g_perfWindow = 0;
+
+void perfFrame(int bucket, double all, double layoutsUs, double hold, double mods) {
+    const double now = qpcUs();
+    PerfBucket& b = g_perf[bucket];
+    if (g_perfLast > 0 && now - g_perfLast < 1e6) b.interval += now - g_perfLast, b.frames++; // not across a load screen
+    g_perfLast = now;
+    b.all += all, b.layouts += layoutsUs, b.hold += hold, b.mods += mods;
+    if (g_perfWindow == 0) g_perfWindow = now;
+    if (now - g_perfWindow < 5e6) return;
+    const double seconds = (now - g_perfWindow) / 1e6;
+    uint32_t updates = 0, outputs = 0;
+    double camUs[4] = {};
+    layouts::cameraCallCounts(&updates, &outputs, camUs);
+    auto fps = [](const PerfBucket& p) { return p.frames ? 1e6 * p.frames / p.interval : 0.0; };
+    auto avg = [](double sum, const PerfBucket& p) { return p.frames ? sum / p.frames : 0.0; };
+    for (int i = 1; i < kPerfBuckets; ++i) {
+        const PerfBucket& on = g_perf[i];
+        if (on.frames <= 30) continue;
+        GN_LOG("ui: perf, %s: %.1f fps; GridNode adds %.0f us a frame (layouts %.0f, cursor %.0f, mods %.0f); "
+               "camera update %.0f/s (game %.0f us, ours %.0f us), output %.0f/s (game %.0f us, ours %.0f us); game camera before: %.1f fps, %.0f us",
+               kPerfNames[i], fps(on), avg(on.all, on), avg(on.layouts, on), avg(on.hold, on), avg(on.mods, on), updates / seconds, camUs[0],
+               camUs[1], outputs / seconds, camUs[2], camUs[3], fps(g_perfLastOff), avg(g_perfLastOff.all, g_perfLastOff));
+    }
+    if (g_perf[0].frames > 30) g_perfLastOff = g_perf[0];
+    for (PerfBucket& p : g_perf) p = PerfBucket{};
+    g_perfWindow = now;
+}
+
 HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags) {
     if (g_releaseState.load() != 0) {
         if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
@@ -690,6 +758,8 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
     if (flags & DXGI_PRESENT_TEST) return g_origPresent(sc, sync, flags);
     if (!g_ready && !g_swapChain) g_ready = init(sc);
     if (g_ready && sc == g_swapChain && g_rtv) {
+        const double perfStart = qpcUs();
+        double perfLayouts = 0, perfHold = 0, perfMods = 0;
         ImGui::SetCurrentContext(g_imgui.load());
         updateFontScale();
         ImGui_ImplDX11_NewFrame();
@@ -702,7 +772,9 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
             ImGuiErrorRecoveryState state;
             ImGui::ErrorRecoveryStoreState(&state);
             try {
+                const double t = qpcUs();
                 layouts::frame(open, g_settings.editor); // the free camera (mods use it too); with the editor, its keys
+                perfLayouts = qpcUs() - t;
                 if (g_settings.recorder) recorder::frame();
                 hotkeys::frame(open);
             } catch (...) { // never into the game's Present
@@ -711,7 +783,11 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
                 if (said++ < 10) GN_LOG("ui: an editor or recorder frame threw; ignored");
             }
         }
-        holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
+        {
+            const double t = qpcUs();
+            holdCursor((g_capture.load() && !open) || (open && g_rawMouse.load())); // raw input moves our cursor, so the system one can stay put
+            perfHold = qpcUs() - t;
+        }
         ImGui::GetIO().MouseDrawCursor = open || (g_capture.load() && g_pointer.load());
         {
             static DWORD scaleAt = 0;
@@ -731,7 +807,11 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
                 if (said++ < 10) GN_LOG("ui: the menu threw while drawing; ignored");
             }
         }
-        callMods(open);
+        {
+            const double t = qpcUs();
+            callMods(open);
+            perfMods = qpcUs() - t;
+        }
         g_frames.fetch_add(1, std::memory_order_relaxed);
         g_renderThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
         g_typing = ImGui::GetIO().WantTextInput;
@@ -746,6 +826,8 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         for (ID3D11RenderTargetView* v : gameRtvs)
             if (v) v->Release();
         if (gameDsv) gameDsv->Release();
+        const int mode = layouts::cameraMode();
+        perfFrame(mode == 1 ? (open ? 3 : 1) : mode == 2 ? 2 : mode == 3 ? 4 : 0, qpcUs() - perfStart, perfLayouts, perfHold, perfMods);
     }
     return g_origPresent(sc, sync, flags);
 }

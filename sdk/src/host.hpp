@@ -252,6 +252,8 @@ int antLiveField(const char* type, const char* field, gn_ant_live_field* out); /
 int antObjects(const char* type, void** out, uint32_t max);                     // API 26, client thread
 int replayRecent(gn_replay_info* info, float* times, gn_replay_bone* bones, uint32_t maxFrames); // API 27 (replay.cpp)
 std::string replayCommand(); // the console's "replay"
+std::string sampleCommand(const std::string& args); // the console's "sample [seconds]" (sampler.cpp)
+void sampleRelease();                               // unload: stop and join the sampler thread
 std::string antCommand(const std::string& args); // the console's "ant [FILTER | TYPE]"
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
@@ -310,6 +312,8 @@ int teleportRequest(int to, bool keepFlying); // 1 the crosshair, 2 the free cam
 int cameraSet(const void* caller, const gn_transform* t, uint32_t flags); // API 27: a mod's camera (null: given back)
 int cameraFovSet(const void* caller, float degrees);                     // API 27: 0 gives the FOV back
 void forgetCamera(const CodeRange& r);                                    // a mod unloading: its camera and FOV given back
+void cameraCallCounts(uint32_t* updates, uint32_t* outputs, double* usPerCall); // diagnostics: calls since the last call (any thread); usPerCall[4]: update (game, ours), output (game, ours), microseconds a call
+int cameraMode();                                                         // diagnostics: 0 the game's camera, 1 the free camera, 2 a mod's camera, 3 only a mod's FOV
 std::string cameraCommand(const std::string& args);                      // the console's "camera"
 bool view(gn_view& out);   // render thread: the camera as drawn (the free camera while it flies)
 void release(); // a full unload: the free camera off, copies removed, moved magropes given their own transforms back

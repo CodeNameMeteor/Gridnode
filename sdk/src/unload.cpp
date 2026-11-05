@@ -62,6 +62,7 @@ bool unloadEverything() {
     recorder::release();
     tracer::release();
     layouts::release();
+    sampleRelease();
     faithRelease();
     messagesRelease();
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below

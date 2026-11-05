@@ -3,6 +3,16 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Free camera speed (2026-11-05)
+The free camera and `camera behind` cost about 20 fps (165 to 145). Found with the sampler: the update
+pass waited on the client thread, which re-ran `hookBody()` every 60 frames; it always refused
+("more than 256 entries") after 257 `VirtualQuery` calls, as `vtableSlots` counted executable pages and
+every page of the image is executable. Now `vtableSlots` counts pointers into PE code sections, and a
+refused vtable is not scanned again. User confirmed the free camera is much better (165 fps); the
+third-person body install and `camera behind` fps after the fix are untested. New: console `sample [seconds]`
+(sampler.cpp: samples the three busiest threads, logs top functions and the innermost game function on
+the stack; compare two runs by address in Ghidra) and a `ui: perf` log line every 5 s per camera mode.
+
 ## Current task: getting GridNode ready for its first release (plan, 2026-11-04)
 Everything up to API 22 is committed (d96c362). The plan below is in order: the "must" items before
 a release, "should" before if there is time, the rest after. Open decisions for the user are marked

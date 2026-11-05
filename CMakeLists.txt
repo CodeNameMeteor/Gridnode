@@ -154,6 +154,7 @@ add_library(gridnode SHARED
   sdk/src/api.cpp
   sdk/src/ant.cpp
   sdk/src/replay.cpp
+  sdk/src/sampler.cpp
   sdk/src/ticks.cpp
   sdk/src/entities.cpp
   sdk/src/mods.cpp

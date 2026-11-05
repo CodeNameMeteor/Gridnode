@@ -3509,27 +3509,53 @@ void applyFov(uintptr_t cam) {
 
 // The camera's transform output: everything that asks the camera where it is (its own update, and
 // whatever else calls this slot) gets the free camera.
+// Diagnostics (the log's "ui: perf" line): nanoseconds spent in the game's own camera update / output
+// and in GridNode's part around them, to tell where the frames go when the camera is overridden.
+std::atomic<uint64_t> g_camNs[4]{}; // update: the game's, ours; output: the game's, ours
+uint64_t qpcNs() {
+    static const double perNs = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart) / 1e9;
+    }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return static_cast<uint64_t>(static_cast<double>(c.QuadPart) / perNs);
+}
+
 void camOutput(void* self, void* info, void* out) {
     g_camOutputs.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t t0 = qpcNs();
     if (g_camOrigOutput) g_camOrigOutput(self, info, out);
+    const uint64_t t1 = qpcNs();
+    g_camNs[2].fetch_add(t1 - t0, std::memory_order_relaxed);
     alignas(16) gn_transform t{};
-    if (!out || !takeCamT(t)) return;
+    if (!out || !takeCamT(t)) {
+        g_camNs[3].fetch_add(qpcNs() - t1, std::memory_order_relaxed);
+        return;
+    }
     auto* o = static_cast<gn_transform*>(out);
     o[0] = t;
     o[1] = t;
+    g_camNs[3].fetch_add(qpcNs() - t1, std::memory_order_relaxed);
 }
 
 void camFrameUpdate(void* self, void* info) {
     g_camCalls.fetch_add(1, std::memory_order_relaxed);
     const uintptr_t cam = reinterpret_cast<uintptr_t>(self);
     applyFov(cam); // before the update, which reads it (and again after, in case it set its own)
+    const uint64_t t0 = qpcNs();
     if (g_camOrigFrame) g_camOrigFrame(self, info);
+    const uint64_t t1 = qpcNs();
+    g_camNs[0].fetch_add(t1 - t0, std::memory_order_relaxed);
     applyFov(cam);
     alignas(16) gn_transform t{};
-    if (!takeCamT(t)) return;
-    namespace c = e::st::CameraObject::off;
-    mem::write(cam + c::transform, &t, sizeof(t));
-    mem::write(cam + c::viewTransform, &t, sizeof(t));
+    if (takeCamT(t)) {
+        namespace c = e::st::CameraObject::off;
+        mem::write(cam + c::transform, &t, sizeof(t));
+        mem::write(cam + c::viewTransform, &t, sizeof(t));
+    }
+    g_camNs[1].fetch_add(qpcNs() - t1, std::memory_order_relaxed);
 }
 
 void unhookCamera() {
@@ -3539,14 +3565,28 @@ void unhookCamera() {
 }
 
 // Client thread: put the copy on the view manager's active camera (again after it changes).
-// How many entries the vtable at vt has: the run of pointers to executable code (a hook in a slot
-// counts, it is code too). Up to cap + 1, to tell "more than cap".
+// How many entries the vtable at vt has: the run of pointers to code (a hook in a slot counts, it is
+// code too). Up to cap + 1, to tell "more than cap". Inside the image "code" is a PE code section:
+// every page of the image is executable (Denuvo), so page protections would run on into the next
+// vtable, and a VirtualQuery per slot made each scan cost milliseconds (the free camera repeats it
+// every 60 frames: that was the 20 fps; found with the sampler, 2026-11-05).
 size_t vtableSlots(uintptr_t vt, size_t cap) {
     size_t n = 0;
     for (; n <= cap; ++n) {
         const uintptr_t fn = mem::readOr<uintptr_t>(vt + 8 * n);
+        if (!fn) break;
+        if (mem::inImage(fn)) {
+            bool code = false;
+            for (const mem::Section& sec : mem::imageSections())
+                if (sec.region.code && fn >= sec.region.begin && fn < sec.region.end) {
+                    code = true;
+                    break;
+                }
+            if (!code) break;
+            continue;
+        }
         MEMORY_BASIC_INFORMATION mbi{};
-        if (!fn || !VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
+        if (!VirtualQuery(reinterpret_cast<void*>(fn), &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT ||
             !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
             break;
     }
@@ -3597,6 +3637,9 @@ void hookCamera() {
 constexpr size_t kBodySlots = 256;
 uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
 uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
+// Off: the free camera leaves Faith's first-person body alone. A way to tell what the game's own drawing
+// of her full body costs from what GridNode costs (the editor's Camera section; not saved).
+std::atomic<bool> g_camBody{true};
 
 int bodyViewMode(void*) { return 1; }
 
@@ -3608,6 +3651,7 @@ void unhookBody() {
 
 void hookBody() {
     if (g_released.load()) return;
+    if (!g_camBody.load()) return unhookBody();
     namespace c = e::constant;
     const auto character = reinterpret_cast<uintptr_t>(localClientCharacter());
     const uintptr_t iface = character ? character + c::ClientCharacter_ViewModeInterface : 0;
@@ -3625,7 +3669,10 @@ void hookBody() {
         return;
     }
     const size_t slot = (slotAt - vt) / 8;
+    static uintptr_t refused = 0; // the vtable already found too long: do not scan it again every re-hook
+    if (vt == refused) return;
     if (vtableSlots(vt, kBodySlots) > kBodySlots) {
+        refused = vt;
         static bool said = false;
         if (!said) GN_LOG("layouts: free camera: Faith's view-mode vtable has more than %llu entries; keeping her first-person body",
                           static_cast<unsigned long long>(kBodySlots));
@@ -4904,6 +4951,10 @@ void draw(bool* open) {
         ImGui::PushTextWrapPos(0.f);
         ImGui::TextDisabled("Close the menu to fly: the mouse looks, WASD move, Q/E down/up, Shift faster, Ctrl slower, wheel: speed. With the menu open, hold right mouse to look and click objects to pick them.");
         ImGui::PopTextWrapPos();
+        bool body = g_camBody.load();
+        if (ImGui::Checkbox("Show Faith's full body", &body)) g_camBody = body; // applied within a second
+        ImGui::SameLine();
+        ImGui::TextDisabled("(off: her first-person arms stay; for finding what costs frames)");
     }
     ImGui::TextDisabled("Left-click an object in the world to pick it.");
     ImGui::SeparatorText("Teleport");
@@ -6247,6 +6298,29 @@ std::string cameraCommand(const std::string& args) {
         return res == GN_OK ? "camera: behind Faith (fixed; camera off gives it back)" : "camera: refused (" + std::to_string(res) + ")";
     }
     return "camera behind | camera fov N | camera off";
+}
+
+int cameraMode() {
+    {
+        std::lock_guard<std::mutex> lock(g_viewM);
+        if (g_viewCamOn) return 1;
+    }
+    std::lock_guard<std::mutex> lock(g_camM);
+    return g_modCamOn ? 2 : g_modFov > 0.f ? 3 : 0;
+}
+
+void cameraCallCounts(uint32_t* updates, uint32_t* outputs, double* usPerCall) {
+    const uint32_t u = g_camCalls.exchange(0, std::memory_order_relaxed);
+    const uint32_t o = g_camOutputs.exchange(0, std::memory_order_relaxed);
+    if (updates) *updates = u;
+    if (outputs) *outputs = o;
+    if (usPerCall) { // update: the game's, ours; output: the game's, ours (average microseconds a call)
+        const uint64_t ns[4] = {g_camNs[0].exchange(0), g_camNs[1].exchange(0), g_camNs[2].exchange(0), g_camNs[3].exchange(0)};
+        for (int i = 0; i < 4; ++i) {
+            const uint32_t calls = i < 2 ? u : o;
+            usPerCall[i] = calls ? static_cast<double>(ns[i]) / 1000.0 / calls : 0.0;
+        }
+    }
 }
 
 int freecamSet(bool on) {
