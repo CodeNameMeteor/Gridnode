@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 24 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 25 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -575,6 +575,29 @@ gn::console("list", [](const char* out) { gn::log("%s", out); });  // client thr
 
 In game: GridNode menu → **Console** (every command, with search; Up / Down recall earlier lines,
 Tab completes a command name; online ones in orange ask for confirmation) and Inspector → **Settings** (every settings object; online ones need "Allow changes").
+
+## ANT types and the move tracker (API 25)
+
+ANT, the animation and movement system Faith's parkour runs on, has its own types: every asset,
+driver, processor and value by name, with its fields (`docs/research/ant.md`). GridNode reads them
+from the game:
+
+```cpp
+gn::AntField f;
+if (gn::antField("FallingDriverAsset", "GravityY", f)) gn::log("GravityY: +0x%x, %s", f.offset, f.type_name);
+gn::antFields("FallingDriverAsset", [](const gn::AntField& f) { gn::log("%s +0x%x %s", f.name, f.offset, f.type_name); });
+```
+
+`offset` is the place in ANT's data for the type, which is not the place in the live C++ object
+(checked in game: they differ by a different amount for each type), so `instance_offset` is -1 for
+now and a field cannot yet be written by name. A field with `flags & 1` is a
+reference to another asset (most driver tuning is: the value lives in that asset). In the console:
+`ant [filter]` lists the types, `ant TypeName` a type's fields, `ant TypeName Field` the field in
+every live object and `ant TypeName Field Value` sets it (research; `docs/research/ant.md`). Rust: `ant_type`, `ant_field`.
+
+`gn::moveTracker(m)` (client thread; Rust `move_tracker`) gives Faith's move as ANT tracks it:
+`current_move`, `in_jump_state`, `moving_speed_xz`, `moved_this_tick`, `move_position`,
+`move_normal` (the game's PamClientMoveTrackerComponent).
 
 ## Online services
 

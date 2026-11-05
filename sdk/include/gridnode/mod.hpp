@@ -432,6 +432,39 @@ inline bool mission(int32_t& index, std::string* name = nullptr) {
 // players see which mods touch online play. Call it in gn_mod_load (or before the first such call).
 inline bool allowOnline(const char* reason) { return api().online_allow(modName(), reason) == GN_OK; }
 
+// ---- ANT's types and Faith's move tracker (API 25) --------------------------------------------------
+// ANT's own reflection (docs/modding.md, "ANT types"): a type and its fields by name.
+using AntType = gn_ant_type;
+using AntField = gn_ant_field;
+inline bool antType(const char* name, AntType& out) {
+    out = AntType{};
+    out.size = sizeof(out);
+    return api().ant_type_find(name, &out) == GN_OK;
+}
+inline bool antField(const char* type, const char* field, AntField& out) {
+    out = AntField{};
+    out.size = sizeof(out);
+    return api().ant_field_find(type, field, &out) == GN_OK;
+}
+// fn(const AntField&) for each of the type's own fields; how many (negative: not available).
+template <class F> int antFields(const char* type, F fn) {
+    AntType t;
+    if (!antType(type, t)) return -GN_ERR_NOT_FOUND;
+    for (uint32_t i = 0; i < t.field_count; ++i) {
+        AntField f{};
+        f.size = sizeof(f);
+        if (api().ant_field_at(type, i, &f) == GN_OK) fn(static_cast<const AntField&>(f));
+    }
+    return static_cast<int>(t.field_count);
+}
+// Faith's move as ANT tracks it: current move, in a jump, speed. Client thread.
+using MoveTracker = gn_move_tracker;
+inline bool moveTracker(MoveTracker& out) {
+    out = MoveTracker{};
+    out.size = sizeof(out);
+    return api().move_tracker(&out) == GN_OK;
+}
+
 // ---- the mod's folder (API 20) ------------------------------------------------------------------
 // Where its DLL is installed (mods\ or mods\<name>\, with the trailing backslash): its own files.
 inline std::string modDir() {

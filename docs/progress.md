@@ -59,6 +59,17 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   No city alerts: an active PamServerCityAlertManager gets its deactivate event (0x798161be) when
   no mission runs. **To research:** taking free-roam KSEC away (which characters are free-roam KSEC,
   their spawners) and stopping an alert from starting rather than ending it.
+- **ANT (API 25)** (2026-11-05, from the user's ANT handbook; untested in game). ANT's type
+  registry read by name (`gridnode/ant_types.hpp`, host-tested; `sdk/src/ant.cpp`): `ant_type_*`,
+  `ant_field_*`, the console's `ant` (checked in game: 936 types, 4,511 fields). Layout offsets are
+  ANT's data, not the live object (FallThreshold 0x94 vs +0x40, Timespan 0xac vs +0x10), so
+  `instance_offset` is -1. The console's `ant TYPE FIELD [VALUE]` finds a field's live place by
+  running the type's own create and load on test data, finds the objects by vtable, prints or sets
+  the value (float, int, bool; references print only; untested in game, `docs/research/ant.md`).
+  `move_tracker`: Faith's current move, in-a-jump flag and speed from PamClientMoveTrackerComponent
+  (layout read in Ghidra); the trainer (1.5.0) shows it on the Player tab. `ant_runtime.yaml`:
+  the registry, layouts, move tracker, pipeline, driver / processor factories and the 16 subsystems,
+  every address checked as a function start. Handbook corrections in `docs/research/ant.md`.
 - **No KSEC (free roam)** (2026-11-04, untested in game; `docs/research/ksec-spawning.md`). KSEC
   are the spawners whose template is `Characters/SpawnTemplates/Enemy/...` (the user's spawner logs:
   team is 2 for everyone). While on and no mission runs, the spawner's spawn (vtable +0xd0, slot

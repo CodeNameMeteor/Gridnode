@@ -37,6 +37,7 @@ add_library(gn_reflect STATIC
   sdk/src/x64.cpp
   sdk/src/mod_order.cpp
   sdk/src/pe_file.cpp
+  sdk/src/ant_types.cpp
 )
 target_include_directories(gn_reflect PUBLIC sdk/include)
 set_target_properties(gn_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -151,6 +152,7 @@ add_library(gridnode SHARED
   sdk/src/log.cpp
   sdk/src/build.cpp
   sdk/src/api.cpp
+  sdk/src/ant.cpp
   sdk/src/ticks.cpp
   sdk/src/entities.cpp
   sdk/src/mods.cpp

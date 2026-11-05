@@ -45,6 +45,27 @@ classes:
     properties:
       - { name: Visible, hash: 0x35bc69ab, type: bool, note: "Handled by vf2 (0x143919960), which calls setVisible." }
 
+  - name: PamClientMoveTrackerComponent
+    realm: client
+    confidence: inferred
+    sources: [ghidra]
+    vtable: 0x141c3d368
+    note: "Faith's move tracker (0x200 bytes): each tick it reads the six ANT values its data's AntBindings name (PamMoveTrackerAntBinding: CurrentMove, DamageType, MovePosition, MoveNormal, MovingSpeedXZ, IsInJumpState) into +0x90.. (reader 0x144795f00, bound in vf37 0x143917410), then its update (0x1439189e0) publishes them at +0x60.. and counts each move it enters (+0x170, moves 1..31). Read 2026-11-05 from the user's ANT handbook and Ghidra."
+    members:
+      - { offset: 0x60, name: currentMove, type: i32, note: "Published: the move she is in (from +0x150)." }
+      - { offset: 0x64, name: movingSpeedXZ, type: f32, note: "Published: MovingSpeedXZ (+0xc0)." }
+      - { offset: 0x68, name: movedThisTick, type: f32, note: "Distance her transform moved since the last update (metres)." }
+      - { offset: 0x6c, name: inJumpState, type: bool, note: "Published: IsInJumpState (+0xc4)." }
+      - { offset: 0x78, name: animatable, type: "void*", note: "Her ClientAntAnimatableEntity (found in vf37); null: nothing is read." }
+      - { offset: 0x90, name: antCurrentMove, type: i32, note: "As read from ANT this tick." }
+      - { offset: 0x94, name: antDamageType, type: i32 }
+      - { offset: 0xa0, name: antMovePosition, type: "f32[4]" }
+      - { offset: 0xb0, name: antMoveNormal, type: "f32[4]" }
+      - { offset: 0xc0, name: antMovingSpeedXZ, type: f32 }
+      - { offset: 0xc4, name: antIsInJumpState, type: bool }
+      - { offset: 0x150, name: move, type: i32, note: "The move in effect: ANT's CurrentMove when the move is valid, else -1." }
+      - { offset: 0x154, name: damageType, type: i32, note: "-1 when not valid." }
+
   - name: PamServerMoveTrackerComponent
     realm: server
     confidence: inferred

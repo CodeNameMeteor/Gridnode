@@ -30,7 +30,7 @@ jobs:
       - name: Runtime core and x64 decoder tests (sanitizers)
         run: |
           SRC="sdk/src/reflect/walker.cpp sdk/src/reflect/dump_json.cpp sdk/src/reflect/registry.cpp sdk/src/hook_table.cpp \
-            sdk/src/dispatch.cpp sdk/src/config_core.cpp sdk/src/x64.cpp sdk/src/mod_order.cpp sdk/src/pe_file.cpp"
+            sdk/src/dispatch.cpp sdk/src/config_core.cpp sdk/src/x64.cpp sdk/src/mod_order.cpp sdk/src/pe_file.cpp sdk/src/ant_types.cpp"
           FLAGS="-std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=undefined -g -Isdk/include"
           g++ $FLAGS tests/runtime_core_test.cpp $SRC -o runtime_core_test -pthread
           ./runtime_core_test

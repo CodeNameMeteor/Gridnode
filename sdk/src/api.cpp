@@ -480,6 +480,12 @@ const gn_api* api() {
         a.online_allow = apiOnlineAllow;
         a.view_get_ex = apiViewGetEx;
         a.action_held = actionHeld;
+        a.ant_type_count = antTypeCount;
+        a.ant_type_at = antTypeAt;
+        a.ant_type_find = antTypeFind;
+        a.ant_field_at = antFieldAt;
+        a.ant_field_find = antFieldFind;
+        a.move_tracker = moveTracker;
         a.gridnode_unload = [] {
             unloadRequest();
             return GN_OK;

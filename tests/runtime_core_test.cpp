@@ -1,5 +1,6 @@
 // Host-side tests for the runtime's portable core: type registry, hook table, tick dispatcher.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <thread>
 #include <vector>
 
+#include "gridnode/ant_types.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
@@ -303,6 +305,116 @@ void testDispatcher() {
     CHECK(!w.removing());
 }
 
+// Byte-addressed memory made of blobs (ANT layouts are packed records, not 8-byte words).
+class Bytes : public reflect::MemoryView {
+public:
+    std::map<uint64_t, std::vector<uint8_t>> blobs; // start -> bytes
+    bool read(uint64_t addr, void* out, size_t size) const override {
+        auto it = blobs.upper_bound(addr);
+        if (it == blobs.begin()) return false;
+        --it;
+        const uint64_t off = addr - it->first;
+        if (off + size > it->second.size()) return false;
+        memcpy(out, it->second.data() + off, size);
+        return true;
+    }
+};
+
+// One ANT layout as ant_buildClassLayout writes it: header, records from minIndex, then names.
+struct AntFieldSpec {
+    int32_t index;
+    const char* name;
+    uint32_t offset;
+    uint64_t typeLayout;
+    uint16_t count;
+    uint16_t flags;
+};
+std::vector<uint8_t> antLayout(const char* typeName, uint32_t size, uint32_t id, const std::vector<AntFieldSpec>& fields) {
+    const int32_t minIndex = -3;
+    int32_t maxIndex = -1;
+    for (const auto& f : fields) maxIndex = std::max(maxIndex, f.index);
+    const uint32_t stringsOffset = 0x20u + static_cast<uint32_t>(maxIndex - minIndex + 1) * 0x20u;
+    std::string strings(1, '\0');
+    strings += typeName;
+    strings += '\0';
+    std::vector<uint8_t> b(stringsOffset, 0);
+    auto put32 = [&](size_t o, uint32_t v) { memcpy(&b[o], &v, 4); };
+    auto put16 = [&](size_t o, uint16_t v) { memcpy(&b[o], &v, 2); };
+    auto put64 = [&](size_t o, uint64_t v) { memcpy(&b[o], &v, 8); };
+    put32(0, static_cast<uint32_t>(minIndex)), put32(4, static_cast<uint32_t>(maxIndex)), put32(8, size), put32(0xc, 4);
+    put32(0x10, stringsOffset), put32(0x1c, id);
+    for (const auto& f : fields) {
+        const size_t r = 0x20 + static_cast<size_t>(f.index - minIndex) * 0x20;
+        put32(r + 0x08, f.offset);
+        if (f.name && *f.name) {
+            put32(r + 0x0c, static_cast<uint32_t>(strings.size()));
+            strings += f.name;
+            strings += '\0';
+        }
+        put16(r + 0x10, f.count), put16(r + 0x12, f.flags);
+        put64(r + 0x18, f.typeLayout);
+    }
+    put32(0x14, static_cast<uint32_t>(strings.size()));
+    b.insert(b.end(), strings.begin(), strings.end());
+    return b;
+}
+
+void testAntTypes() {
+    CHECK(ant::nameHash("") == 0x811c9dc5u);
+    CHECK(ant::nameHash("a") == ((0x811c9dc5u * 0x1000193u) ^ 'a')); // FNV-1: multiply, then xor
+    Bytes m;
+    constexpr uint64_t kFloat = 0x101000, kBase = 0x102000, kDriver = 0x103000, kOther = 0x103800; // above readCString's lowest address
+    m.blobs[kFloat] = antLayout("Float", 4, 0xF10A7, {});
+    m.blobs[kBase] = antLayout("DriverAsset", 0x10, 0xBA5E, {{-1, "__base", 0, 0, 1, 0}, {0, "Weight", 0x8, kFloat, 1, 0}});
+    m.blobs[kDriver] = antLayout("FallingDriverAsset", 0x40, 0xFA11,
+                                 {{-1, "__base", 0x0, kBase, 1, 0}, {0, "GravityY", 0x30, kFloat, 1, 1}, {1, "JumpHeight", 0x10, kFloat, 2, 0}});
+    m.blobs[kOther] = antLayout("Other", 8, 0x0, {});
+    // The registry: entries sorted by name hash, each {hash, pad, schema}; a schema's first word is the layout.
+    std::vector<std::pair<uint32_t, uint64_t>> types = {{ant::nameHash("Float"), kFloat}, {ant::nameHash("DriverAsset"), kBase},
+                                                       {ant::nameHash("FallingDriverAsset"), kDriver}, {ant::nameHash("Other"), kOther}};
+    std::sort(types.begin(), types.end());
+    std::vector<uint8_t> entries(types.size() * 16, 0), schemas(types.size() * 16, 0);
+    constexpr uint64_t kEntries = 0x105000, kSchemas = 0x106000, kRegistry = 0x107000;
+    for (size_t i = 0; i < types.size(); ++i) {
+        const uint64_t schema = kSchemas + i * 16;
+        memcpy(&entries[i * 16], &types[i].first, 4);
+        memcpy(&entries[i * 16 + 8], &schema, 8);
+        memcpy(&schemas[i * 16], &types[i].second, 8);
+    }
+    m.blobs[kEntries] = entries;
+    m.blobs[kSchemas] = schemas;
+    std::vector<uint8_t> reg(0x10, 0);
+    const uint64_t end = kEntries + entries.size();
+    memcpy(&reg[0], &kEntries, 8), memcpy(&reg[8], &end, 8);
+    m.blobs[kRegistry] = reg;
+
+    {
+        const auto entries = ant::registry(m, kRegistry);
+        CHECK(entries.size() == 4 && entries[0].layout && entries[0].schema >= kSchemas && entries[0].functions == 0); // no factory in the fake
+    }
+    CHECK(ant::findLayout(m, kRegistry, "FallingDriverAsset") == kDriver);
+    CHECK(ant::findLayout(m, kRegistry, "DriverAsset") == kBase);
+    CHECK(ant::findLayout(m, kRegistry, "NoSuchAsset") == 0);
+    CHECK(ant::findLayout(m, kRegistry, nullptr) == 0);
+    ant::Type t;
+    CHECK(ant::readType(m, kDriver, t) && t.name == "FallingDriverAsset" && t.size == 0x40 && t.id == 0xFA11 && t.minIndex == -3 && t.maxIndex == 1);
+    std::vector<ant::Field> fields;
+    CHECK(ant::readFields(m, t, fields) && fields.size() == 5); // -3, -2, -1, 0, 1
+    CHECK(fields[4].name == "JumpHeight" && fields[4].offset == 0x10 && fields[4].count == 2 && fields[4].typeName == "Float");
+    CHECK(fields[3].name == "GravityY" && fields[3].flags == 1);
+    ant::Field f;
+    CHECK(ant::findField(m, kDriver, "GravityY", f) && f.offset == 0x30);
+    CHECK(ant::findField(m, kDriver, "Weight", f) && f.offset == 0x8); // from the base, at __base's offset 0
+    CHECK(!ant::findField(m, kDriver, "Nope", f));
+    // A bad pointer or a corrupt header reads nothing (no huge index ranges).
+    CHECK(!ant::readType(m, 0x109999, t));
+    std::vector<uint8_t> bad = m.blobs[kOther];
+    const int32_t hugeMax = 100000;
+    memcpy(&bad[4], &hugeMax, 4);
+    m.blobs[0x108000] = bad;
+    CHECK(!ant::readType(m, 0x108000, t));
+}
+
 // A minimal PE32+ file with an export table naming the given functions.
 std::vector<uint8_t> fakeDll(const std::vector<std::string>& names) {
     std::vector<uint8_t> f(0x400, 0);
@@ -551,6 +663,7 @@ int main() {
     testHookTable();
     testDispatcher();
     testPeExports();
+    testAntTypes();
     testConfig();
     testMovementEvents();
     testProjection();

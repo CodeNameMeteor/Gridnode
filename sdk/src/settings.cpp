@@ -217,6 +217,7 @@ std::string consoleRun(const std::string& line) {
     std::string rest = sp == std::string::npos ? std::string() : line.substr(line.find_first_not_of(' ', sp) == std::string::npos ? line.size() : line.find_first_not_of(' ', sp));
     if (_stricmp(word.c_str(), "list") == 0 || _stricmp(word.c_str(), "help") == 0) return listing(rest);
     if (_stricmp(word.c_str(), "progress") == 0) return progressCommand(rest); // GridNode's own (gamestate.cpp)
+    if (_stricmp(word.c_str(), "ant") == 0) return antCommand(rest);           // GridNode's own (ant.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";
     EngineString s{};
     reinterpret_cast<void (*)(EngineString*, const char*, uint8_t)>(mem::rva(e::function::Console_executeCommand))(&s, line.c_str(), 1);

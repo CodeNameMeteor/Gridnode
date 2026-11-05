@@ -626,6 +626,71 @@ pub fn action_held(action_hash: u32) -> Option<bool> {
         _ => None,
     }
 }
+/// One of ANT's types (API 25): its name, id, data size and own field count.
+#[derive(Clone, Debug)]
+pub struct AntType {
+    pub name: String,
+    pub id: u32,
+    pub data_size: u32,
+    pub field_count: u32,
+}
+/// One field of an ANT type: where it is in the type's data and, when GridNode measured the asset
+/// header, in a live asset object.
+#[derive(Clone, Debug)]
+pub struct AntField {
+    pub name: String,
+    pub type_name: String,
+    pub offset: u32,
+    /// `None` when the live asset's header is not known.
+    pub instance_offset: Option<u32>,
+    pub count: u32,
+    /// 1: a reference to another asset, not a value.
+    pub flags: u32,
+}
+fn ant_str(p: *const c_char) -> String {
+    if p.is_null() {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(p) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+/// An ANT type by name.
+pub fn ant_type(name: &str) -> Option<AntType> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let mut t: sys::gn_ant_type = unsafe { core::mem::zeroed() };
+    t.size = core::mem::size_of::<sys::gn_ant_type>() as u32;
+    (unsafe { (api().ant_type_find.unwrap())(c.as_ptr(), &mut t) } == 0).then(|| AntType {
+        name: ant_str(t.name),
+        id: t.id,
+        data_size: t.data_size,
+        field_count: t.field_count,
+    })
+}
+/// A field of an ANT type by name (its own or a base's).
+pub fn ant_field(type_name: &str, field: &str) -> Option<AntField> {
+    let t = std::ffi::CString::new(type_name).ok()?;
+    let f = std::ffi::CString::new(field).ok()?;
+    let mut out: sys::gn_ant_field = unsafe { core::mem::zeroed() };
+    out.size = core::mem::size_of::<sys::gn_ant_field>() as u32;
+    (unsafe { (api().ant_field_find.unwrap())(t.as_ptr(), f.as_ptr(), &mut out) } == 0).then(|| {
+        AntField {
+            name: ant_str(out.name),
+            type_name: ant_str(out.type_name),
+            offset: out.offset,
+            instance_offset: (out.instance_offset >= 0).then_some(out.instance_offset as u32),
+            count: out.count,
+            flags: out.flags,
+        }
+    })
+}
+/// Faith's move as ANT tracks it (API 25). Client thread.
+pub fn move_tracker() -> Option<sys::gn_move_tracker> {
+    let mut m: sys::gn_move_tracker = unsafe { core::mem::zeroed() };
+    m.size = core::mem::size_of::<sys::gn_move_tracker>() as u32;
+    (unsafe { (api().move_tracker.unwrap())(&mut m) } == 0).then_some(m)
+}
 /// Makes Faith jump: the jump action, whatever key is bound (the game decides what it becomes).
 pub fn jump() -> bool {
     unsafe { (api().jump.unwrap())() == 0 }

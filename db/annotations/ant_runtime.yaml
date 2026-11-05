@@ -1,0 +1,346 @@
+# ANT's runtime: the type registry and layouts, the move tracker, the movement pipeline, driver and
+# processor factories, the 16 subsystems. From the user's ANT handbook (2026-11-05) and Ghidra; every
+# address checked to be a function start of that name in the user's Ghidra (2026-11-05). See
+# docs/research/ant.md. The asset definitions themselves are in ant.yaml.
+defaults: { confidence: inferred, sources: [ghidra, research] }
+
+globals:
+  - name: AntTypeRegistryPtr
+    va: 0x1423bd9b0
+    type: "void*"
+    note: "g_antTypeRegistry: the registry object (name map at +0x00: begin, end; id map at +0x28). Set when the core subsystem starts."
+    confidence: confirmed
+
+functions:
+  - name: ant_TypeRegistry_getTypeByName
+    va: 0x142c2d4b0
+    signature: "void*(void* registry, const char* name)"
+    note: "Binary search of the registry's name map (sorted 16-byte entries {u32 FNV-1 hash, pad, Schema*}) for ant_hashString_fnv1(name); returns the Schema (its first word is the type's layout) or null. GridNode's ant_types.cpp does the same."
+    confidence: confirmed
+  - name: ant_TypeRegistry_registerType
+    va: 0x142c352b0
+    signature: "void*(void* registry, const char* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
+    note: "Hashes the name (unique), makes a 0x10-byte Schema {layout, factory} with ant_registerSchema, adds it to the name map (registry +0x00) and the id map (registry +0x28, keyed by the layout's CRC at +0x1c)."
+    confidence: confirmed
+  - name: ant_TypeRegistry_getRegistry
+    va: 0x142c2f840
+    signature: "void*()"
+    note: "Returns g_antTypeRegistry (0x1423bd9b0)."
+    confidence: confirmed
+  - name: ant_registerSchema
+    va: 0x142c0c3c0
+    signature: "void(void* schema, const char* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
+    note: "Prepends __guid (-3), __name (-2) and __base (-1) to the fields and builds the layout (ant_createClassLayout)."
+    confidence: confirmed
+  - name: ant_createClassLayout
+    va: 0x142fb0d60
+    signature: "void*(void* allocator, const char* name, const AntFieldDescriptor* fields, u32 count)"
+    note: "Allocates the layout (size from 0x142fb0980) and fills it (ant_buildClassLayout)."
+    confidence: confirmed
+  - name: ant_buildClassLayout
+    va: 0x142fb0f00
+    signature: "void*(void* layout, const char* name, const AntFieldDescriptor* fields, u32 count, bool pack, u32 alignment)"
+    note: "Header: +0 min index, +4 max index, +8 data size, +0xc alignment, +0x10 string table offset, +0x14 its size, +0x18 pack flag, +0x1c CRC-32 (the type id). Records of 0x20 bytes from +0x20 (0x142fb1880): +0 field type id, +4 element size, +8 offset in the data, +0xc name offset, +0x10 count, +0x12 flags, +0x14 alignment, +0x18 the field type's layout. The string table starts with a 0, then the type's name."
+    confidence: confirmed
+  - name: ant_layoutFields
+    va: 0x142fb1880
+    signature: "void(void* layout, const char* name, const AntFieldDescriptor* fields, u32 count, bool pack)"
+    note: "Fills the field records and assigns offsets by alignment (packed when the flag is set: offsets are not in declaration order) and writes the names."
+    confidence: confirmed
+  - name: ant_computeSchemaCrc32
+    va: 0x142fb0800
+    signature: "u32(const void* layout)"
+    note: "CRC-32 over each record (type id, offset, count, flags, element size, alignment), the string table, the index range and the alignment: the type id at layout +0x1c."
+    confidence: confirmed
+  - name: ant_initFieldDescriptor
+    va: 0x142faf9e0
+    signature: "AntFieldDescriptor*(AntFieldDescriptor* out, i32 index, const char* name, const void* typeLayout, u32 flags, u32 count)"
+    note: "The 0x20-byte descriptor: +0 index, +4 count (at least 1), +8 name, +0x10 type layout, +0x18 flags. (The handbook called +4 alignment and +0x18 offset: the layout pass uses them as count and flags.)"
+    confidence: confirmed
+  - name: ant_hashString_fnv1
+    va: 0x143fbc460
+    signature: "u32(const char* s, u32 seed, i32 mode)"
+    note: "FNV-1 (h = h x 0x1000193 ^ c), seed 0x811c9dc5 for type names; mode 1 / 2 map each byte through a table first (case folding)."
+    confidence: confirmed
+  - name: ant_crc32
+    va: 0x143fbbb70
+    signature: "u32(const void* data, u32 size, u32 crc)"
+    note: "Table-driven CRC-32."
+    confidence: inferred
+  - name: ant_TypeRegistry_assertUniqueName
+    va: 0x142c3cf50
+    signature: "void(void* registry, u32 hash)"
+    note: "Breaks (int3) when the name hash is already registered."
+    confidence: confirmed
+  - name: ant_TypeRegistry_assertUniqueId
+    va: 0x142c3cee0
+    signature: "void(void* registry, u32 id)"
+    note: "Breaks (int3) when the type id is already registered."
+    confidence: inferred
+  - name: PamMoveTracker_readAntValues
+    va: 0x144795f00
+    signature: "void(void* readers, void* out, void* state)"
+    note: "Reads the move tracker's six ANT values into out: +0 CurrentMove, +4 DamageType, +0x10 MovePosition, +0x20 MoveNormal, +0x30 MovingSpeedXZ, +0x34 IsInJumpState (the component's +0x90..)."
+    confidence: confirmed
+  - name: PamClientMoveTrackerComponent_update
+    va: 0x1439189e0
+    signature: "void(void* component, const f32* dt)"
+    note: "Publishes the read values at +0x60.. (current move, speed, distance moved, in jump state) and counts moves (+0x170); every 30 s the counters go to telemetry."
+    confidence: confirmed
+  - name: PamMovement_processAntState
+    va: 0x142da0890
+    note: "From the user's ANT handbook (2026-11-05): evaluates the movement mode from the state readAntState filled and the jump action. Name from the user's Ghidra; behaviour not checked here."
+    confidence: hypothesis
+  - name: PamMovement_applyMovementTrajectory
+    va: 0x142da34a0
+    note: "From the user's ANT handbook: applies ANT's accumulated root motion to Faith's position. Name from the user's Ghidra; behaviour not checked here."
+    confidence: hypothesis
+  - name: PamMovementSubsystem_update
+    va: 0x142d96d30
+    note: "From the user's ANT handbook: the movement loop each frame; calls PamMovement_readAntState (0x142d6c2b0)."
+    confidence: inferred
+  - name: ant_Animatable_sampleAllTracks
+    va: 0x142c267d0
+    note: "From the user's ANT handbook: evaluates the active tracks at their phase into the pose."
+    confidence: hypothesis
+  - name: ant_Animatable_dispatchTrackEvents
+    va: 0x142c26900
+    note: "From the user's ANT handbook: track enter / exit notifications and timeline parameters (bits 1, 2, 4)."
+    confidence: hypothesis
+  - name: ant_Track_getNormalizedPhase
+    va: 0x142c2d8e0
+    note: "From the user's ANT handbook: (time - start) / duration, clamped to 0..1."
+    confidence: hypothesis
+  - name: ant_SkeletonHierarchy_buildTree
+    va: 0x142c0c970
+    note: "From the user's ANT handbook: first child / next sibling bone tree, 24-byte nodes."
+    confidence: hypothesis
+  - name: ant_RigAsset_compileAndInitDefaultPose
+    va: 0x142c18b80
+    note: "From the user's ANT handbook: compiles the rig and sets every DOF's default pose."
+    confidence: hypothesis
+  - name: ant_initExpressionRegistry
+    va: 0x142c2f260
+    note: "Makes EX::ExpressionRegistry (its name string is used)."
+    confidence: inferred
+  - name: engine_shutdownSubsystemModules
+    va: 0x142a26840
+    note: "From the user's ANT handbook: shuts the 16 ANT subsystems down (engine_registerSubsystemModules 0x142a26780 starts them)."
+    confidence: inferred
+  - name: WallrunDriverAsset_create
+    va: 0x142f005a0
+    signature: "void*(void* allocator)"
+    note: "Makes a WallrunDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: WallrunDriverAsset_ctor
+    va: 0x142ee4ba0
+    note: "The WallrunDriverAsset constructor (from the user's ANT handbook; a function start in Ghidra)."
+    confidence: hypothesis
+  - name: WalkingDriverAsset_create
+    va: 0x142f00530
+    signature: "void*(void* allocator)"
+    note: "Makes a WalkingDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: WalkingDriverAsset_ctor
+    va: 0x142ee4a60
+    note: "The WalkingDriverAsset constructor (from the user's ANT handbook; a function start in Ghidra)."
+    confidence: hypothesis
+  - name: VaultDriverAsset_create
+    va: 0x142f004c0
+    signature: "void*(void* allocator)"
+    note: "Makes a VaultDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: VaultDriverAsset_ctor
+    va: 0x142ee4880
+    note: "The VaultDriverAsset constructor (from the user's ANT handbook; a function start in Ghidra)."
+    confidence: hypothesis
+  - name: FallingDriverAsset_create
+    va: 0x142efd9a0
+    signature: "void*(void* allocator)"
+    note: "Makes a FallingDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: CoilDriverAsset_create
+    va: 0x142efd0d0
+    signature: "void*(void* allocator)"
+    note: "Makes a CoilDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: SpringboardDriverAsset_create
+    va: 0x142efff60
+    signature: "void*(void* allocator)"
+    note: "Makes a SpringboardDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: UncontrolledSlideDriveAsset_create
+    va: 0x142f00310
+    signature: "void*(void* allocator)"
+    note: "Makes a UncontrolledSlideDriveAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: FollowSplineDriverAsset_create
+    va: 0x142efddc0
+    signature: "void*(void* allocator)"
+    note: "Makes a FollowSplineDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: LedgeAlignDriverAsset_create
+    va: 0x142efe440
+    signature: "void*(void* allocator)"
+    note: "Makes a LedgeAlignDriverAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: AnalyzeObstacleProcessorAsset_create
+    va: 0x142efcbf0
+    signature: "void*(void* allocator)"
+    note: "Makes a AnalyzeObstacleProcessorAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: FindFloorProcessorAsset_create
+    va: 0x142efdac0
+    signature: "void*(void* allocator)"
+    note: "Makes a FindFloorProcessorAsset (its type name is passed in). Listed in the user's ANT handbook, checked in Ghidra 2026-11-05."
+    confidence: inferred
+  - name: ant_initCoreSubsystem
+    va: 0x142c37740
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownCoreSubsystem
+    va: 0x142c39c90
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initIKRigSubsystem
+    va: 0x142e64300
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownIKRigSubsystem
+    va: 0x142e644f0
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initBlendSpaceVoronoiSubsystem
+    va: 0x142e9f190
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownBlendSpaceVoronoiSubsystem
+    va: 0x142e9f1c0
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initTrajectorySubsystem
+    va: 0x142afe340
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownTrajectorySubsystem
+    va: 0x142afe370
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initPhysicsPoseSubsystem
+    va: 0x142ecaa00
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownPhysicsPoseSubsystem
+    va: 0x142ecab00
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initJointGroupSubsystem
+    va: 0x142d7e7b0
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownJointGroupSubsystem
+    va: 0x142d7e930
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initLocoCameraSubsystem
+    va: 0x142ebcd20
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownLocoCameraSubsystem
+    va: 0x142ebce40
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initContextDatabaseSubsystem
+    va: 0x142d0b010
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownContextDatabaseSubsystem
+    va: 0x142d0b050
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_shutdownPamplonaSubsystem
+    va: 0x142f237a0
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initLocomotionTagsSubsystem
+    va: 0x142d2a990
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownLocomotionTagsSubsystem
+    va: 0x142d29e80
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initCoreDriversSubsystem
+    va: 0x142d00eb0
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownCoreDriversSubsystem
+    va: 0x142d01b30
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initCoreProcessorsSubsystem
+    va: 0x142cf0f30
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownCoreProcessorsSubsystem
+    va: 0x142cf4db0
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initCollisionGeometrySubsystem
+    va: 0x142af7f50
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_initTimelineTagsSubsystem
+    va: 0x142c540f0
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownTimelineTagsSubsystem
+    va: 0x142c56780
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initPA2FacialSubsystem
+    va: 0x142ed3380
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownPA2FacialSubsystem
+    va: 0x142ed3c40
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred
+  - name: ant_initParticleIKSubsystem
+    va: 0x142f53e70
+    signature: "void()"
+    note: "One of the 16 ANT subsystems engine_registerSubsystemModules (0x142a26780) starts (the user's ANT handbook)."
+    confidence: inferred
+  - name: ant_shutdownParticleIKSubsystem
+    va: 0x142f53e90
+    signature: "void()"
+    note: "Its shutdown."
+    confidence: inferred

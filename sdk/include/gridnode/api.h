@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 24 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held) */
+#define GN_API_VERSION 25 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -265,6 +265,46 @@ typedef struct gn_view {
     float width;       /* the screen, pixels (the overlay's display size) */
     float height;
 } gn_view;
+
+/* ANT's types (ant_type_*, API 25): the animation and movement system's own reflection (assets,
+ * drivers, processors, values), separate from Frostbite's types. size: set it to the struct's size
+ * before the call; later versions may add fields at the end. Strings stay valid for the whole run. */
+typedef struct gn_ant_type {
+    uint32_t size;
+    uint32_t id;              /* ANT's type id (the layout's CRC-32) */
+    const char* name;
+    uint32_t data_size;       /* the size of its data */
+    uint32_t alignment;
+    uint32_t field_count;     /* its own fields (ant_field_at); inherited ones are found by ant_field_find */
+    uint32_t reserved;
+    const void* layout;       /* the game's layout object (research) */
+} gn_ant_type;
+typedef struct gn_ant_field {
+    uint32_t size;
+    int32_t index;            /* its place in the type's declaration */
+    const char* name;
+    const char* type_name;    /* its type's ANT name ("" when not known) */
+    uint32_t offset;          /* where it is in the type's data */
+    int32_t instance_offset;  /* where it is in a live asset object (offset + the asset's header, measured
+                               * by GridNode); -1 when not known */
+    uint32_t element_size;
+    uint32_t count;           /* array length (1: one value) */
+    uint32_t flags;           /* 1: a reference (16 bytes); 2 / 4 / 8: aligned to at least 4 / 8 / 16 */
+    uint32_t type_id;
+} gn_ant_field;
+
+/* Faith's move tracker (move_tracker, API 25): what ANT says about her move each client tick, through
+ * the game's PamClientMoveTrackerComponent. size: set it before the call. */
+typedef struct gn_move_tracker {
+    uint32_t size;
+    int32_t current_move;     /* the move she is in (ANT's CurrentMove; -1: none) */
+    int32_t damage_type;      /* -1: none */
+    int32_t in_jump_state;    /* 1 in a jump (ANT's IsInJumpState) */
+    float moving_speed_xz;    /* horizontal speed as ANT has it, m/s */
+    float moved_this_tick;    /* metres her position moved since the last update */
+    float move_position[3];   /* ANT's MovePosition */
+    float move_normal[3];     /* ANT's MoveNormal */
+} gn_move_tracker;
 
 /* An event an entity received (on_event), before it handles it: the entity, its type (null if unknown)
  * and the event's id (the djb2-xor hash of its name; gn::eventHash in mod.hpp). On the thread that
@@ -850,6 +890,29 @@ typedef struct gn_api {
      * action_press (and jump) do not show in it. The game updates it once a frame; read it on the
      * client tick for timing. Any thread (it reads). */
     int (*action_held)(uint32_t action_hash);
+
+    /* ==== GN_API_VERSION 25 =================================================================== */
+
+    /* ---- ANT's types -----------------------------------------------------------------------------
+     * ANT (the animation and movement system) registers every asset, driver, processor and value
+     * type by name with a layout of its fields. ant_type_count: how many (negative: not read yet,
+     * the game is still starting). ant_type_at / ant_type_find: one type by index (sorted by name)
+     * or name. ant_field_at: a type's own fields by index (0..field_count-1); ant_field_find: a field
+     * by name, in the type or its bases. To change a value in a live asset (an ANT object you have,
+     * e.g. from a hook), use instance_offset (when not -1); a field with flags & 1 is a reference to
+     * another asset, not a value. Any thread (they read; the first call reads the registry).
+     * GN_ERR_UNAVAILABLE: not read yet; GN_ERR_NOT_FOUND: no such type, field or index. */
+    int (*ant_type_count)(void);
+    int (*ant_type_at)(uint32_t index, gn_ant_type* out);
+    int (*ant_type_find)(const char* name, gn_ant_type* out);
+    int (*ant_field_at)(const char* type_name, uint32_t index, gn_ant_field* out);
+    int (*ant_field_find)(const char* type_name, const char* field_name, gn_ant_field* out);
+
+    /* ---- Faith's move tracker ------------------------------------------------------------------------
+     * move_tracker: her current move, whether she is in a jump, her speed as ANT has it (see
+     * gn_move_tracker). Client thread (GN_ERR_THREAD otherwise). GN_ERR_UNAVAILABLE: no Faith, or
+     * her tracker is not bound to ANT yet. */
+    int (*move_tracker)(gn_move_tracker* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -67,6 +67,10 @@ std::atomic<float> g_hSpeed{0};
 std::atomic<bool> g_landHud{false}, g_landShow{false}, g_landSoft{false};
 std::atomic<float> g_landTicks{0.f};
 std::atomic<int> g_state{0};
+// Faith's move as ANT tracks it (gn::moveTracker, API 25): shown on the Player tab.
+std::atomic<int> g_antMove{-1};
+std::atomic<bool> g_antJump{false}, g_haveTracker{false};
+std::atomic<float> g_antSpeed{0.f};
 std::atomic<bool> g_loading{false};
 
 // ---- what the trainer changed, put back when it is unloaded (render thread) ----------------------------
@@ -927,6 +931,9 @@ void clientTick(float dt) {
     g_speed = m.speed;
     g_state = m.state;
     g_lastGroundY = m.last_ground_y;
+    gn::MoveTracker mt;
+    g_haveTracker = gn::moveTracker(mt);
+    if (g_haveTracker) g_antMove = mt.current_move, g_antJump = mt.in_jump_state != 0, g_antSpeed = mt.moving_speed_xz;
 
     // Noclip: on and off from here (the client thread, like its hotkey); no fall damage while it flies
     // and until she is down after it (the ray finds the ground under her), at most 15 s.
@@ -1040,6 +1047,8 @@ void playerTab() {
         }
         ImGui::Text("Position (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
         ImGui::Text("Speed %.1f m/s   state %d   last ground %.1f", g_hSpeed.load(), g_state.load(), g_lastGroundY.load());
+        if (g_haveTracker)
+            ImGui::TextDisabled("ANT: move %d%s, speed %.1f m/s", g_antMove.load(), g_antJump ? ", in a jump" : "", g_antSpeed.load());
         if (g_haveMission) {
             std::lock_guard<std::mutex> lock(g_m);
             if (g_mission) ImGui::Text("Mission %d %s", g_mission.load(), g_missionName.c_str());
@@ -1472,7 +1481,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.4.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

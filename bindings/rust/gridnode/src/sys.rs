@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 24;
+pub const GN_API_VERSION: u32 = 25;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -206,6 +206,47 @@ pub struct gn_view {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_ant_type {
+    pub size: u32,
+    pub id: u32,
+    pub name: *const c_char,
+    pub data_size: u32,
+    pub alignment: u32,
+    pub field_count: u32,
+    pub reserved: u32,
+    pub layout: *const c_void,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_ant_field {
+    pub size: u32,
+    pub index: i32,
+    pub name: *const c_char,
+    pub type_name: *const c_char,
+    pub offset: u32,
+    pub instance_offset: i32,
+    pub element_size: u32,
+    pub count: u32,
+    pub flags: u32,
+    pub type_id: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_move_tracker {
+    pub size: u32,
+    pub current_move: i32,
+    pub damage_type: i32,
+    pub in_jump_state: i32,
+    pub moving_speed_xz: f32,
+    pub moved_this_tick: f32,
+    pub move_position: [f32; 3],
+    pub move_normal: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_freecam {
     pub on: i32,
     pub position: [f32; 3],
@@ -389,6 +430,12 @@ pub struct gn_api {
     pub online_allow: Option<unsafe extern "C" fn(mod_: *const c_char, reason: *const c_char) -> c_int>,
     pub view_get_ex: Option<unsafe extern "C" fn(out: *mut gn_view, size: u32) -> c_int>,
     pub action_held: Option<unsafe extern "C" fn(action_hash: u32) -> c_int>,
+    pub ant_type_count: Option<unsafe extern "C" fn() -> c_int>,
+    pub ant_type_at: Option<unsafe extern "C" fn(index: u32, out: *mut gn_ant_type) -> c_int>,
+    pub ant_type_find: Option<unsafe extern "C" fn(name: *const c_char, out: *mut gn_ant_type) -> c_int>,
+    pub ant_field_at: Option<unsafe extern "C" fn(type_name: *const c_char, index: u32, out: *mut gn_ant_field) -> c_int>,
+    pub ant_field_find: Option<unsafe extern "C" fn(type_name: *const c_char, field_name: *const c_char, out: *mut gn_ant_field) -> c_int>,
+    pub move_tracker: Option<unsafe extern "C" fn(out: *mut gn_move_tracker) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -407,9 +454,12 @@ const _: () = assert!(core::mem::size_of::<gn_movement>() == 40);
 const _: () = assert!(core::mem::size_of::<gn_landing>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_movement_event>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_view>() == 60);
+const _: () = assert!(core::mem::size_of::<gn_ant_type>() == 40);
+const _: () = assert!(core::mem::size_of::<gn_ant_field>() == 48);
+const _: () = assert!(core::mem::size_of::<gn_move_tracker>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_freecam>() == 16);
 const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1024);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1072);

@@ -231,6 +231,15 @@ int keyPress(int key, uint32_t ticks);
 int jump();
 int actionPress(uint32_t hash, uint32_t ticks);
 int actionHeld(uint32_t hash); // the player's live input: 1 / 0, or -GN_ERR_*
+// ANT's types and Faith's move tracker (ant.cpp, API 25).
+void antTick(); // client tick: reads ANT's registry once it is complete
+int antTypeCount();
+int antTypeAt(uint32_t i, gn_ant_type* out);
+int antTypeFind(const char* name, gn_ant_type* out);
+int antFieldAt(const char* type, uint32_t i, gn_ant_field* out);
+int antFieldFind(const char* type, const char* name, gn_ant_field* out);
+int moveTracker(gn_move_tracker* out);
+std::string antCommand(const std::string& args); // the console's "ant [FILTER | TYPE]"
 void faithClientTick(); // client thread: applies and releases held keys
 int movementGet(gn_movement* out);
 int jumpHeld();       // the player's jump action: 1 held, 0 not, -1 unavailable
