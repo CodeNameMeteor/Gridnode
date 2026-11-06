@@ -48,12 +48,13 @@ uploads are blocked while it is loaded.
 
 ### Experimental in this release
 
-Used in game by the author and working, but young: expect changes before API 35.
+Young: tested lightly in game or not at all, and likely to change. Expect changes before API 35.
 
 - Standalone collision boxes (`boxBackendNative`, API 34): work in the client world, including after a level
   reload; the server world's boxes still borrow a level body's record.
-- Streaming focus points (API 30), the visual environment and timelines (API 29; the sun sliders work),
-  `raycastFiltered` (API 33), ANT live objects and Faith's last 15 seconds.
+- Streaming focus points (API 30; the game may already stream around the camera), the visual environment and
+  timelines (API 29; the sun sliders work, the rest is untested), `raycastFiltered` (API 33; works), ANT live objects
+  and Faith's last 15 seconds.
 
 Everything else in the API was used by the MEC trainer or the examples. See [Known issues](known-issues.md) and
 [Open research](research/open-research.md) for what is not done.
