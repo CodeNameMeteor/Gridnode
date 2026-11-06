@@ -3,6 +3,12 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Version 1.0.0 (2026-11-06)
+The user confirmed `menuOpen` works and set the version to 1.0.0 (`CMakeLists.txt`, `version.hpp`, the Rust crate, docs). Next: tag `v1.0.0` after the commit; CI builds the zips ([releasing](releasing.md)).
+
+## Final checks before release (2026-11-06)
+Committed `18664df` (API 34). Then: MinGW developer and player builds, release zips, a template mod built against the zip, Linux fixture build + ctest, Rust harness, gen tests, strict docs: all pass. Fixed a `%zu` in `sampler.cpp`'s log (MinGW's log formatting printed it wrongly). Docs: getting-started (zips, uninstall), modding (API 34, what is stable), release notes (experimental list), `docs/research/open-research.md` (twelve large pieces of work for another model). Left for the release: pick the version, tag, publish. Not committed: the docs edits and the sampler fix above.
+
 ## Pause counters and standalone boxes, first test (2026-11-06)
 Log from the user: the pause line read `all 830251856, full-screen 0` in every state. Cause: `PamUISystem +0x8c8` is a **pointer** to the controller (`PamUISystem_update` loads it), Ghidra's struct and our annotation had it inline, so `ui_pause_state` read the pointer's low half. Fixed (api.cpp, ui.yaml). Standalone boxes: the log said `no usable client barrier: 578 tracked, 289 server's, 289 without data`: `data+0x78` (what `PamOBBCollision_enableClient` reads) is not an array for the client barriers; the reflection puts `PhysicsBodies` at +0x70. The setup now tries +0x70 then +0x78 and logs the data's bytes if neither works. Tested the same day: the pause counters now read right (all 0 in play, 1 with the pause menu, full-screen stays 0, so `menuOpen` is `menus > 0`), and standalone boxes are made (`made as a game physics object (id 1000637)`; the user: it seemed to work). Still to check: that they block Faith, moving, and a level change.
 

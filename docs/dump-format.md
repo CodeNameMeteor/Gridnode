@@ -31,7 +31,7 @@ GridNode only writes the dump after its build check has passed (see `sdk/src/bui
 ```jsonc
 {
   "format": "gridnode-reflected", "version": 1,
-  "generator": "gridnode 0.1.0", "created": "2026-10-19T15:00:00Z",
+  "generator": "gridnode 1.0.0", "created": "2026-10-19T15:00:00Z",
   "image": { "name": "MirrorsEdgeCatalyst.exe", "base": "0x140000000", "size": "0x727b000", "timestamp": "0x5762e3b7" },
   "stats": { "listed": 9988, "accessors": ..., "vtablesFromClassInfo": ..., "vtablesFromDataScan": ...,
              "vtableCandidatesAmbiguous": ..., "creators": ..., "shortClassInfos": ..., "unknownCategory": 0, "unreadable": 0 },

@@ -808,7 +808,7 @@ inline std::string localize(const std::string& id) {
     return id;
 }
 // Whether a game menu that asks for a pause is open (the pause menu), from the game's own pause request counters
-// (API 32); false while there is no UI system. Tested with the pause menu; other screens are not.
+// (API 32); false while there is no UI system.
 inline bool menuOpen() {
     int32_t menus = 0, full = 0;
     return api().ui_pause_state(&menus, &full) == GN_OK && menus > 0;

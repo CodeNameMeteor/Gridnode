@@ -7,7 +7,7 @@ python tools/gen/gridnode.py package --build build --examples
 ```
 
 makes `build/release/GridNode-<version>.zip` from a Windows build (MSVC `build\Release` or the MinGW
-build folder). The version is the CMake project's, with the commit: `0.1.0+ccd4784` (`.dirty` when
+build folder). The version is the CMake project's, with the commit: `1.0.0+ccd4784` (`.dirty` when
 the tree has changes). CI makes one on every push (artifact `gridnode-release`).
 
 The zip's folder goes anywhere, not in the game's folder: start the game and run

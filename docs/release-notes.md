@@ -1,6 +1,6 @@
 # Release notes
 
-## First release (draft: version to decide, 1.0.0 or a 0.9 beta)
+## GridNode 1.0.0 (first release)
 
 The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 34.
 
@@ -46,7 +46,14 @@ loads, movement tuning; World: kill volumes off, movement blockers off, no city 
 free roam; trigger volumes shown; bunny hop practice with early / late feedback. Dash and time trial
 uploads are blocked while it is loaded.
 
-### Not tested in game before this release
+### Experimental in this release
 
-To be filled from `docs/progress.md` when the release is cut: the clean-setup pass decides what is
-tested, marked experimental, or taken out. See [Known issues](known-issues.md).
+Used in game by the author and working, but young: expect changes before API 35.
+
+- Standalone collision boxes (`boxBackendNative`, API 34): work in the client world, including after a level
+  reload; the server world's boxes still borrow a level body's record.
+- Streaming focus points (API 30), the visual environment and timelines (API 29; the sun sliders work),
+  `raycastFiltered` (API 33), ANT live objects and Faith's last 15 seconds.
+
+Everything else in the API was used by the MEC trainer or the examples. See [Known issues](known-issues.md) and
+[Open research](research/open-research.md) for what is not done.

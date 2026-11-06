@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gridnode VERSION 0.1.0 LANGUAGES C CXX)
+project(gridnode VERSION 1.0.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "GridNode targets the 64-bit game: build for x64.")

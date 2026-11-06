@@ -39,7 +39,7 @@ DEV_MARKER = b"recorder: armed: recording starts"  # a string only the developer
 
 
 def version(root: str) -> str:
-    """The CMake project version, with the git commit when there is one: 0.1.0+ccd4784."""
+    """The CMake project version, with the git commit when there is one: 1.0.0+ccd4784."""
     with open(os.path.join(root, "CMakeLists.txt"), encoding="utf-8") as f:
         m = re.search(r"project\(gridnode VERSION ([0-9.]+)", f.read())
     v = m.group(1) if m else "0.0.0"

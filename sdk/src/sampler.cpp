@@ -150,8 +150,8 @@ DWORD WINAPI run(LPVOID param) {
                 }
             ++byGame[game];
         }
-        GN_LOG("sample: thread %lu (%.1f%% of cycles), %zu samples in %u rounds:", all[i].id, all[i].share / 10.0,
-               rips[i].size(), rounds);
+        GN_LOG("sample: thread %lu (%.1f%% of cycles), %u samples in %u rounds:", all[i].id, all[i].share / 10.0,
+               static_cast<unsigned>(rips[i].size()), rounds);
         for (int pass = 0; pass < 2; ++pass) {
             const auto& m = pass ? byGame : byLeaf;
             std::vector<std::pair<uint64_t, uint32_t>> top(m.begin(), m.end());

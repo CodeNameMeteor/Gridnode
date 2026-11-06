@@ -5,8 +5,10 @@ passive on any other).
 
 ## Install
 
-1. Get a release zip: CI's `gridnode-release` artifact, or make one with `gridnode.py package`
-   ([Releases](packaging.md)). Or build GridNode yourself ([Building](building.md)).
+1. Get a zip from the GitHub Releases page: `GridNode-player-<version>.zip` to play with mods, or
+   `GridNode-<version>.zip` to make them (it adds the developer tools, the examples and the SDK).
+   Or make one with `gridnode.py package` ([Releases](packaging.md)), or build GridNode yourself
+   ([Building](building.md)).
 2. Unzip it anywhere: a folder of its own, not the game's folder.
 3. Start the game, then run `gridnode_inject.exe` from that folder. It loads `gridnode.dll` from its
    own folder into the running game.
@@ -18,17 +20,21 @@ passive on any other).
 is a proxy Windows loads with the game; it loads `gridnode.dll` from the same folder. Delete
 `version.dll` to stop.
 
+**Uninstall:** open the menu (INSERT) and use Unload, or just close the game; delete the unzipped folder
+(and `version.dll`, `gridnode.dll` and `mods/` from the game's folder if you copied them there). Injected,
+GridNode writes only next to its own `gridnode.dll`, never to the game's files.
+
 ## First start
 
 `gridnode.log` (next to `gridnode.dll`) shows what happened:
 
 ```text
-GridNode 0.1.0 loading into MirrorsEdgeCatalyst.exe (base 0x140000000)
+GridNode 1.0.0 loading into MirrorsEdgeCatalyst.exe (base 0x140000000)
 startup: engine type list ready (9988 types)
 startup: build check passed
 types: 9988 (9988 listed), ...
 dump: written to ...\gridnode-reflected.json
-mods: mec_trainer.dll loaded (mec-trainer 1.3.0), reloadable
+mods: mec_trainer.dll loaded (mec-trainer 1.10.2), reloadable
 mods: 1 of 1 loaded
 ready (2164 hooks installed)
 ```

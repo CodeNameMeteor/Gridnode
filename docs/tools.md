@@ -55,6 +55,10 @@ header of the script has the command. The output comes from the game: do not com
 | `tools/gen/compare_dumps.py` | What `gridnode.py compare` runs. |
 | `tools/gen/mecmp_coverage.py ENGINE_H --reflected FILE` | Maintainer check that every value in MECMP's `engine.h` is in the database. Needs the MECMP source. |
 
+## Research to pick up
+
+[Open research](research/open-research.md) lists the large pieces nobody has done yet, with where to start.
+
 ## In game (developer build)
 
 INSERT opens the menu: inspector (entities, types, settings, messages), console, Recorder (F8 record / pause,

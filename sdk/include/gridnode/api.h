@@ -1095,12 +1095,12 @@ typedef struct gn_api {
 
     /* ---- pause state ---------------------------------------------------------------------------------
      * The game's UI pause request counters: `menus` counts every open screen that asked for a pause (0 in
-     * play, 1 with the pause menu open: tested 2026-11-06), `full` the full-screen ones (0 with the pause menu,
+     * play, 1 with a menu open: tested in game), `full` the full-screen ones (0 with the pause menu,
      * so it is not the pause menu's counter). The game pauses when menus >= 1 and (full >= 1 or its time value
      * is below 1e-6), so a menu is open when menus > 0. These are the counters the game itself adds to
      * and takes from (UIPauseController_request, from the screens' enter and exit); GridNode only reads
      * them. Any thread.
-     * GN_ERR_UNAVAILABLE: no UI system yet (before the front end) or an unknown build. Untested in game. */
+     * GN_ERR_UNAVAILABLE: no UI system yet (before the front end) or an unknown build. */
     int (*ui_pause_state)(int32_t* menus, int32_t* full);
 
     /* ==== GN_API_VERSION 33 =================================================================== */
