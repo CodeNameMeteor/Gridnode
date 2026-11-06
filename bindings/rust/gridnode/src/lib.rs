@@ -745,6 +745,11 @@ pub fn ant_objects(type_name: &str, max: u32) -> Vec<*mut c_void> {
     });
     out
 }
+/// Holds the time of day at `seconds` (API 28) against the game moving it on; `None` lets it run again.
+/// Released when the mod unloads.
+pub fn time_of_day_hold(seconds: Option<f32>) -> bool {
+    unsafe { (api().time_of_day_hold.unwrap())(seconds.unwrap_or(-1.0)) == 0 }
+}
 /// Opens or closes the overlay's menu (API 27), as its key does: for a mod with its own key.
 pub fn ui_menu_set(open: bool) -> bool {
     unsafe { (api().ui_menu_set.unwrap())(open as c_int) == 0 }

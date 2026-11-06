@@ -342,6 +342,21 @@ LiveType& mapType(size_t i) {
         lt.why = "its create / load functions are not in the game's code";
         return lt;
     }
+    // The loader reads the layout through the view, with no checks: a layout that is no longer what was
+    // read (its memory freed or reused after startup; a crash on 2026-11-06: the first word held
+    // 0x3c003816, not -3) sends it into wild memory. Look again first, and look up the live layout.
+    {
+        const mem::ProcessMemory m;
+        ant::Type now;
+        if (!ant::readType(m, t.layout, now) || now.name != t.name || now.id != t.id) {
+            int32_t first = 0;
+            mem::read(t.layout, first);
+            GN_LOG("ant: %s: its layout at %llx is not the one read at startup any more (first word %x, now \"%s\"); not run", t.name.c_str(),
+                   static_cast<unsigned long long>(t.layout), static_cast<unsigned>(first), now.name.c_str());
+            lt.why = "its layout in memory has changed since ANT was read (see the log)";
+            return lt;
+        }
+    }
     GN_LOG("ant: mapping %s: create %llx, load %llx, run on test data (a crash now is in its own loader)", t.name.c_str(),
            static_cast<unsigned long long>(mem::va(create)), static_cast<unsigned long long>(mem::va(load)));
     const uintptr_t obj = reinterpret_cast<uintptr_t>(reinterpret_cast<void* (*)(void*)>(create)(nullptr)); // kept: a few hundred bytes

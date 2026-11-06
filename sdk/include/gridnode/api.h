@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 27 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu */
+#define GN_API_VERSION 28 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day */
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -1014,6 +1014,18 @@ typedef struct gn_api {
      * and gridnode_window=0 leaves the GridNode window out (a mod shipped with GridNode on its own).
      * Any thread. GN_ERR_UNAVAILABLE: no overlay. */
     int (*ui_menu_set)(int open);
+
+    /* ==== GN_API_VERSION 28 =================================================================== */
+
+    /* ---- holding the time of day ---------------------------------------------------------------------
+     * time_of_day_hold: the clock stays at `seconds` (0 .. 86400) until released: it is written back
+     * after each server and each client world update, so the lighting never sees the clock the game
+     * moved on (a single time_of_day_set is advanced again by the next update, and the lighting follows
+     * that drift). seconds < 0 releases it: the clock runs on from where it stands. One hold at a time
+     * (the last call wins); released when the mod that set it unloads. Setting another time while held
+     * is another call. Any thread. GN_ERR_UNAVAILABLE: no level yet (a hold set then waits for the
+     * clock); GN_ERR_ARGUMENT: not a number. */
+    int (*time_of_day_hold)(float seconds);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

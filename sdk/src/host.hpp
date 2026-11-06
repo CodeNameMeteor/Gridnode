@@ -272,6 +272,9 @@ int tuningAt(uint32_t index, gn_tuning* out);
 int tuningSet(const char* name, float value);
 int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
+int timeOfDayHold(const void* caller, float seconds);            // API 28: < 0 releases
+void timeOfDayTick();                                             // server and client post-update: puts a held clock back
+void forgetTimeOfDay(const CodeRange& r);
 int positionSet(const float pos[3]);
 int godModeSet(int on); // server thread
 void faithRelease();     // a full unload: held keys and actions let go (client thread), god mode as it was (server thread)

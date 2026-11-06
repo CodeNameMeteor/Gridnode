@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 27;
+pub const GN_API_VERSION: u32 = 28;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
 pub const GN_ERR_NOT_FOUND: u32 = 2;
@@ -479,6 +479,7 @@ pub struct gn_api {
     pub camera_fov_set: Option<unsafe extern "C" fn(degrees: f32) -> c_int>,
     pub replay_recent: Option<unsafe extern "C" fn(info: *mut gn_replay_info, times: *mut f32, bones: *mut gn_replay_bone, max_frames: u32) -> c_int>,
     pub ui_menu_set: Option<unsafe extern "C" fn(open: c_int) -> c_int>,
+    pub time_of_day_hold: Option<unsafe extern "C" fn(seconds: f32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -508,4 +509,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1152);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1160);

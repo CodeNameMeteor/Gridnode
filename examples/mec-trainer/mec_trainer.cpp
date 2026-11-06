@@ -924,7 +924,6 @@ void clientTick(float dt) {
     // Fast loads: the game's clock at 3000x, but only while loading.
     g_fast = g_fastLoads && gs.loading;
     applyGameSpeed();
-    if (g_freezeTime) gn::setTimeOfDay(g_frozenTime);
 
     void* faith = gn::localClientCharacter();
     gn::Vec3 p;
@@ -1019,18 +1018,18 @@ void clientTick(float dt) {
     // God mode: a fall only counts from where Faith is now (falls are deaths in MEC, not damage), so no
     // stumble or fall death either.
     // Kill volumes off: where she last stood, and a fall out of the level (through a street with no
-    // collision) puts her back there.
+    // collision) puts her back there. Below -300: the game has ground below -50 (user, 2026-11-06).
     static gn::Transform lastStood{};
     static bool haveStood = false;
-    if (m.state == 1 && p.y > -40.f) {
+    if (m.state == 1 && p.y > -250.f) {
         lastStood = gn::Transform{};
         lastStood.right[0] = lastStood.up[1] = lastStood.forward[2] = 1.f;
         lastStood.trans[0] = p.x, lastStood.trans[1] = p.y + 0.5f, lastStood.trans[2] = p.z;
         haveStood = true;
     }
-    if (g_killOff && haveStood && p.y < -50.f && !g_noclip) {
+    if (g_killOff && haveStood && p.y < -300.f && !g_noclip) {
         const gn::Transform to = lastStood;
-        gn::log("kill volumes off: Faith fell below y -50; back to (%.1f, %.1f, %.1f)", to.trans[0], to.trans[1], to.trans[2]);
+        gn::log("kill volumes off: Faith fell below y -300; back to (%.1f, %.1f, %.1f)", to.trans[0], to.trans[1], to.trans[2]);
         gn::runOnServer([to] {
             if (void* f = gn::localServerCharacter()) gn::teleport(f, to);
         });
@@ -1145,12 +1144,20 @@ void worldTab() {
         if (ImGui::SliderFloat("Time of day", &hours, 0.f, 23.99f, "%.2f h")) {
             g_frozenTime = hours * 3600.f;
             const float s = hours * 3600.f;
-            gn::runOnClient([s] { gn::setTimeOfDay(s); });
+            gn::runOnClient([s] {
+                if (g_freezeTime) gn::holdTimeOfDay(s);
+                else gn::setTimeOfDay(s);
+            });
         }
         bool freeze = g_freezeTime;
         if (ImGui::Checkbox("Freeze time of day", &freeze)) {
             if (freeze) g_frozenTime = norm;
             g_freezeTime = freeze;
+            const float held = g_frozenTime;
+            gn::runOnClient([freeze, held] {
+                if (freeze) gn::holdTimeOfDay(held); // the clock is written back after each world update (API 28)
+                else gn::releaseTimeOfDay();
+            });
         }
     } else {
         ImGui::TextDisabled("No time of day clock in this level");
@@ -1172,7 +1179,7 @@ void worldTab() {
         if (ImGui::Checkbox("Kill volumes off", &v)) g_killOff = v;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("No kill volume kills anyone (street kill floors, fans; AI too). The streets have no\n"
-                              "collision: falling below y -50 puts her back where she last stood.");
+                              "collision: falling below y -300 puts her back where she last stood.");
     }
     v = g_barriersOff;
     if (ImGui::Checkbox("Movement blockers off", &v)) g_barriersOff = v;
@@ -1518,7 +1525,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.2", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.3", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

@@ -564,6 +564,37 @@ int timeOfDaySet(float seconds) {
     return mem::write(clock + k::Clock_Time, seconds) ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
+// A held clock (API 28). The game's server update moves the clock on and the visual environment
+// follows what it reads, so one write per frame leaves the lighting chasing a sawtooth; this writes it
+// back after each server and client world update, as the cinematic tools do around the visual
+// environment's update (their VisualsManager, 2026-11-06). Whether the lighting is now steady is
+// untested; the exact point they write at (around the visual environment update) is not hooked yet.
+namespace {
+std::atomic<float> g_todHold{-1.f};
+std::atomic<uintptr_t> g_todOwner{0};
+} // namespace
+
+int timeOfDayHold(const void* caller, float seconds) {
+    if (!std::isfinite(seconds) || seconds > 1e7f) return GN_ERR_ARGUMENT;
+    if (seconds < 0.f) {
+        g_todHold = -1.f;
+        return GN_OK;
+    }
+    g_todOwner = reinterpret_cast<uintptr_t>(caller);
+    g_todHold = seconds;
+    return timeOfDayClock() ? GN_OK : GN_ERR_UNAVAILABLE; // kept: it applies once the clock exists
+}
+
+void timeOfDayTick() {
+    const float hold = g_todHold.load(std::memory_order_relaxed);
+    if (hold < 0.f) return;
+    if (const uintptr_t clock = timeOfDayClock()) mem::write(clock + k::Clock_Time, hold);
+}
+
+void forgetTimeOfDay(const CodeRange& r) {
+    if (g_todHold.load() >= 0.f && r.has(reinterpret_cast<void*>(g_todOwner.load()))) g_todHold = -1.f;
+}
+
 // ---- tuning -----------------------------------------------------------------------------------------
 uint32_t tuningCount() { return static_cast<uint32_t>(tunings().size()); }
 

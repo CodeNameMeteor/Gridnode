@@ -3628,7 +3628,9 @@ void hookCamera() {
 // While the free camera is on, Faith shows the third-person body (with her head) instead of the
 // first-person one: the same per-object vtable copy, on the character's view-mode interface, whose
 // getViewMode answers 1 (MECMP found the slot and the meaning). Its other entries are the originals.
-constexpr size_t kBodySlots = 512;
+constexpr size_t kBodySlots = 64; // copy buffer; the interface has kBodyVtableSlots
+constexpr uint64_t kBodyVtable = 0x141c3cbf0;
+constexpr size_t kBodyVtableSlots = 27;
 uintptr_t g_bodyFakeVtbl[kBodySlots + 1];
 uintptr_t g_bodyIface = 0, g_bodyOrigVtbl = 0; // client thread
 // Off: the free camera leaves Faith's first-person body alone. A way to tell what the game's own drawing
@@ -3663,18 +3665,19 @@ void hookBody() {
         return;
     }
     const size_t slot = (slotAt - vt) / 8;
-    // The vtable's length cannot be read from the image: Frostbite vtables sit back to back with no RTTI
-    // pointer between them, so a run of code pointers (checked in Ghidra, 2026-11-05: 399 slots back and
-    // 600+ forward from this slot) never ends. The copy takes kBodySlots entries, which reads past a short
-    // vtable harmlessly (rdata); an interface with this slot near the copy's end would not fit, so refuse that.
-    if (slot + 64 > kBodySlots) {
+    // The interface's vtable is known exactly: 0x141c3cbf0, 27 slots, the next vtable (the +0x2b0
+    // interface) starts at 0x141c3ccc8 (found from the constructors' LEAs, which are the only place a
+    // length can come from: Frostbite has no RTTI, vtables sit back to back and a run of code pointers
+    // never ends; checked in Ghidra 2026-11-06, docs/research/vtables.md). Any other vtable here is
+    // not the interface we know.
+    if (vt != mem::rva(kBodyVtable) || slot >= kBodyVtableSlots) {
         static bool said = false;
-        if (!said) GN_LOG("layouts: free camera: Faith's view-mode slot is %u, too far into the vtable; keeping her first-person body",
-                          static_cast<unsigned>(slot));
+        if (!said) GN_LOG("layouts: free camera: Faith's view-mode interface has vtable %llx (slot %u), not the known 27-slot one; keeping her first-person body",
+                          static_cast<unsigned long long>(mem::va(vt)), static_cast<unsigned>(slot));
         said = true;
         return;
     }
-    for (size_t k = 0; k <= kBodySlots; ++k) g_bodyFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
+    for (size_t k = 0; k <= kBodyVtableSlots; ++k) g_bodyFakeVtbl[k] = mem::readOr<uintptr_t>(vt - 8 + 8 * k);
     g_bodyFakeVtbl[1 + slot] = reinterpret_cast<uintptr_t>(&bodyViewMode);
     g_bodyOrigVtbl = vt;
     mem::write<uintptr_t>(iface, fake);

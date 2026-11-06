@@ -3,6 +3,20 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Time of day hold, ANT guard, vtables (2026-11-06)
+- **API 28 `time_of_day_hold`** (untested in game). The cinematic tools' VisualsManager (shared 2026-11-06)
+  writes the same clock as `time_of_day_set` (`[[[g]+8]+0x28]+0x30`) but rewrites it before and after the
+  visual environment's update, so the lighting never reads a clock the game moved on. A hold now writes it
+  back after each server and each client world update (`timeOfDayTick`, ticks.cpp); the trainer's freeze
+  uses it. Not hooked yet: the visual environment update itself (the exact point they write at; it
+  reaches the state at MAIN +0x50 -> +0x90 -> +0x1c0 -> +0x30, state +0x85470). If the lighting still
+  misbehaves with the hold, that hook is next.
+- **Body hook** takes exactly the 27-slot vtable at 0x141c3cbf0 (`research/vtables.md`); seen working in game
+  (slot 15).
+- **ANT live mapping** checks the layout is still what was read before running a type's loader (a crash
+  in FallingDriverAsset's loader on 2026-11-06: the layout's memory had changed).
+- Trainer 1.5.3: kill volumes off rescues below y -300 (was -50; the game has ground below -50).
+
 ## Free camera speed (2026-11-05)
 The free camera and `camera behind` cost about 20 fps (165 to 145). Found with the sampler: the update
 pass waited on the client thread, which re-ran `hookBody()` every 60 frames; it always refused
@@ -195,7 +209,7 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
   (tracer.cpp): any game function by address or annotated name, every call's arguments, xmm0..3 and
   caller, "Log the last 50" to gridnode.log; a stub per function in its own page, on the detours.
   Collision boxes are made in the server's world too (AI). Trainer: "Kill volumes off" skips
-  KillVolume_testCharacter; a fall below y -50 puts Faith back where she last stood.
+  KillVolume_testCharacter; a fall below y -300 puts Faith back where she last stood.
   Also: 64 KB near the game's code taken at startup for detours and call patches (in one run no page
   within 2 GB could be found later, and every detour failed).
 - **API 19: collision boxes, sounds, despawning characters, ray hit layers** (2026-11-03, untested in

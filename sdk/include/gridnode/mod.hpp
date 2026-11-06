@@ -769,6 +769,10 @@ inline GameState gameState() {
     return s;
 }
 inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) == GN_OK; }
+// Holds the clock at `seconds` (API 28) against the game moving it on; releaseTimeOfDay lets it run again.
+// Released when the mod unloads.
+inline bool holdTimeOfDay(float seconds) { return api().time_of_day_hold(seconds) == GN_OK; }
+inline void releaseTimeOfDay() { api().time_of_day_hold(-1.f); }
 // God mode (the game's immortality flags). Server thread: wrap in runOnServer.
 inline bool godMode(bool on) { return api().god_mode(on ? 1 : 0) == GN_OK; }
 // Moves Faith without a teleport (the camera stays free): for noclip-style movement every tick.

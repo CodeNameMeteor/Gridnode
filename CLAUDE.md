@@ -35,7 +35,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
 | `tools/gen/` | `gridnode.py`: validate, generators, `setup`, `docs`, Ghidra export/import, fingerprints |
-| `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` |
+| `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
 | `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw`, `detour-demo`; `templates/`: new mods (docs/packaging.md) |
