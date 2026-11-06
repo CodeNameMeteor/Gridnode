@@ -262,7 +262,8 @@ public class FrostbiteVTableLengthFinder extends GhidraScript {
             try {
                 Symbol existing = currentProgram.getSymbolTable().getPrimarySymbol(a);
                 if (existing == null || existing.getSource() == SourceType.DEFAULT) {
-                    String name = String.format("vftable_%08x", a.getOffset());
+                    // GridNodeSync stops a vtable at the next label ending in "vftable", so the name must end with it
+                    String name = String.format("vtbl_%08x_vftable", a.getOffset());
                     currentProgram.getSymbolTable().createLabel(a, name, SourceType.ANALYSIS);
                     count++;
                 }
@@ -270,6 +271,6 @@ public class FrostbiteVTableLengthFinder extends GhidraScript {
                 // Ignore symbol collision
             }
         }
-        println("Labeled " + count + " vtables with symbols ending in 'vftable'.");
+        println("Labeled " + count + " vtables with labels vtbl_<address>_vftable.");
     }
 }

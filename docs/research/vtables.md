@@ -26,7 +26,7 @@ literal followed the table: its real length is 28.
 
 - `tools/ghidra/FrostbiteVTableLengthFinder.java`: run in Ghidra; prints the key classes. Arguments:
   `export FILE.json` (all 15,393 vtables: start, slots, next start, the constructor stores and code
-  references) or `label` (a `vftable_<address>` label on each).
+  references) or `label` (a `vtbl_<address>_vftable` label on each that has no name of its own: `GridNodeSync` ends a vtable at the next label ending in `vftable`).
 - `tools/ghidra/vtable_finder.py --exe DUMP [--lookup 0xADDR] [--export FILE.json]`: the same from the exe
   dump, in about a second; `--lookup` names the vtable that holds an address, its slot and its length.
 
