@@ -1027,9 +1027,12 @@ void clientTick(float dt) {
         lastStood.trans[0] = p.x, lastStood.trans[1] = p.y + 0.5f, lastStood.trans[2] = p.z;
         haveStood = true;
     }
-    if (g_killOff && haveStood && p.y < -300.f && !g_noclip) {
+    // The game also kills a long uncontrolled fall (state 0, 100 or more below her last ground; user, 2026-11-06).
+    const bool longFall = m.state == 0 && m.last_ground_y - p.y >= 100.f;
+    if (g_killOff && haveStood && (p.y < -300.f || longFall) && !g_noclip) {
         const gn::Transform to = lastStood;
-        gn::log("kill volumes off: Faith fell below y -300; back to (%.1f, %.1f, %.1f)", to.trans[0], to.trans[1], to.trans[2]);
+        gn::log("kill volumes off: Faith %s; back to (%.1f, %.1f, %.1f)", longFall ? "fell 100 in the air" : "fell below y -300", to.trans[0],
+                to.trans[1], to.trans[2]);
         gn::runOnServer([to] {
             if (void* f = gn::localServerCharacter()) gn::teleport(f, to);
         });
@@ -1525,7 +1528,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.3", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.4", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

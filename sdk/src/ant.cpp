@@ -344,17 +344,25 @@ LiveType& mapType(size_t i) {
     }
     // The loader reads the layout through the view, with no checks: a layout that is no longer what was
     // read (its memory freed or reused after startup; a crash on 2026-11-06: the first word held
-    // 0x3c003816, not -3) sends it into wild memory. Look again first, and look up the live layout.
+    // 0x3c003816, not -3) sends it into wild memory. The registry entry (hash -> schema -> layout) is what
+    // the game itself follows, so look the layout up there again; refuse only if that is not the type either.
+    uint64_t layout = t.layout;
     {
         const mem::ProcessMemory m;
         ant::Type now;
-        if (!ant::readType(m, t.layout, now) || now.name != t.name || now.id != t.id) {
-            int32_t first = 0;
-            mem::read(t.layout, first);
-            GN_LOG("ant: %s: its layout at %llx is not the one read at startup any more (first word %x, now \"%s\"); not run", t.name.c_str(),
-                   static_cast<unsigned long long>(t.layout), static_cast<unsigned>(first), now.name.c_str());
-            lt.why = "its layout in memory has changed since ANT was read (see the log)";
-            return lt;
+        if (!ant::readType(m, layout, now) || now.name != t.name || now.id != t.id) {
+            const uint64_t moved = ant::findLayout(m, registryObject(), t.name.c_str());
+            if (!moved || !ant::readType(m, moved, now) || now.name != t.name || now.id != t.id) {
+                int32_t first = 0;
+                mem::read(t.layout, first);
+                GN_LOG("ant: %s: its layout at %llx is not the one read at startup any more (first word %x) and the registry has no other; not run",
+                       t.name.c_str(), static_cast<unsigned long long>(t.layout), static_cast<unsigned>(first));
+                lt.why = "its layout in memory has changed since ANT was read (see the log)";
+                return lt;
+            }
+            GN_LOG("ant: %s: its layout moved from %llx to %llx; using the registry's", t.name.c_str(), static_cast<unsigned long long>(t.layout),
+                   static_cast<unsigned long long>(moved));
+            layout = moved;
         }
     }
     GN_LOG("ant: mapping %s: create %llx, load %llx, run on test data (a crash now is in its own loader)", t.name.c_str(),
@@ -365,7 +373,7 @@ LiveType& mapType(size_t i) {
         return lt;
     }
     std::vector<uint8_t> view(kViewData + t.size + 0x40, 0);
-    memcpy(view.data() + 0x10, &t.layout, 8);
+    memcpy(view.data() + 0x10, &layout, 8);
     const uint16_t dataAt = kViewData;
     memcpy(view.data() + 0x1c, &dataAt, 2);
     uint8_t* data = view.data() + kViewData;

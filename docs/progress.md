@@ -4,7 +4,7 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 [handover.md](handover.md).
 
 ## Time of day hold, ANT guard, vtables (2026-11-06)
-- **API 28 `time_of_day_hold`** (untested in game). The cinematic tools' VisualsManager (shared 2026-11-06)
+- **API 28 `time_of_day_hold`** (user: lighting works better). The cinematic tools' VisualsManager (shared 2026-11-06)
   writes the same clock as `time_of_day_set` (`[[[g]+8]+0x28]+0x30`) but rewrites it before and after the
   visual environment's update, so the lighting never reads a clock the game moved on. A hold now writes it
   back after each server and each client world update (`timeOfDayTick`, ticks.cpp); the trainer's freeze
@@ -14,8 +14,10 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 - **Body hook** takes exactly the 27-slot vtable at 0x141c3cbf0 (`research/vtables.md`); seen working in game
   (slot 15).
 - **ANT live mapping** checks the layout is still what was read before running a type's loader (a crash
-  in FallingDriverAsset's loader on 2026-11-06: the layout's memory had changed).
-- Trainer 1.5.3: kill volumes off rescues below y -300 (was -50; the game has ground below -50).
+  in FallingDriverAsset's loader on 2026-11-06: the layout's memory had changed). When it has moved, the
+  layout is looked up again through the registry (hash -> schema -> layout) and used if name and id match.
+- Trainer 1.5.4: kill volumes off rescues below y -300 (was -50) and a long fall (state 0, 100 or more
+  below the last ground; the game kills those itself). User: both work.
 
 ## Free camera speed (2026-11-05)
 The free camera and `camera behind` cost about 20 fps (165 to 145). Found with the sampler: the update
