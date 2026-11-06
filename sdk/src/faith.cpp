@@ -595,6 +595,92 @@ void forgetTimeOfDay(const CodeRange& r) {
     if (g_todHold.load() >= 0.f && r.has(reinterpret_cast<void*>(g_todOwner.load()))) g_todHold = -1.f;
 }
 
+// ---- the visual environment and timelines (API 29, untested in game) -------------------------------
+// The state is recomputed by the game every frame, so a mod's value is a hold written back after each
+// server and client world update, like the clock above. Offsets are the cinematic tools' (docs/research/
+// visual-environment.md); no field is checked here, only that the range lies inside the state.
+namespace {
+struct VeHold {
+    uint32_t offset = 0;
+    std::vector<uint8_t> bytes;
+    uintptr_t owner = 0;
+};
+std::mutex g_veM;
+std::vector<VeHold> g_ve;
+constexpr size_t kMaxVeHolds = 64;
+
+uintptr_t visualEnvState() {
+    uintptr_t p = ptr(mem::rva(e::global::VisualEnvMain));
+    if (!p) return 0;
+    p = ptr(p + k::VisualEnv_A);
+    if (p) p = ptr(p + k::VisualEnv_B);
+    if (p) p = ptr(p + k::VisualEnv_C);
+    if (p) p = ptr(p + k::VisualEnv_D);
+    return p ? p + k::VisualEnv_State : 0;
+}
+bool veRange(uint32_t offset, uint32_t size) { return size > 0 && offset < k::VisualEnv_StateSize && size <= k::VisualEnv_StateSize - offset; }
+} // namespace
+
+int visualEnvGet(uint32_t offset, void* out, uint32_t size) {
+    if (!out || !veRange(offset, size)) return GN_ERR_ARGUMENT;
+    const uintptr_t state = visualEnvState();
+    if (!state) return GN_ERR_UNAVAILABLE;
+    return mem::read(state + offset, out, size) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+int visualEnvSet(const void* caller, uint32_t offset, const void* data, uint32_t size) {
+    if (!data || !veRange(offset, size)) return GN_ERR_ARGUMENT;
+    {
+        std::lock_guard<std::mutex> lock(g_veM);
+        VeHold* hold = nullptr;
+        for (VeHold& h : g_ve)
+            if (h.offset == offset && h.bytes.size() == size) hold = &h;
+        if (!hold) {
+            if (g_ve.size() >= kMaxVeHolds) return GN_ERR_ARGUMENT;
+            g_ve.emplace_back();
+            hold = &g_ve.back();
+            hold->offset = offset;
+        }
+        hold->owner = reinterpret_cast<uintptr_t>(caller);
+        hold->bytes.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    }
+    return visualEnvState() ? GN_OK : GN_ERR_UNAVAILABLE; // kept: it applies once there is a level
+}
+
+int visualEnvRelease(uint32_t offset) {
+    std::lock_guard<std::mutex> lock(g_veM);
+    for (size_t i = g_ve.size(); i-- > 0;)
+        if (offset == GN_VE_ALL || g_ve[i].offset == offset) g_ve.erase(g_ve.begin() + static_cast<std::ptrdiff_t>(i));
+    return GN_OK;
+}
+
+void visualEnvTick() {
+    std::lock_guard<std::mutex> lock(g_veM);
+    if (g_ve.empty()) return;
+    const uintptr_t state = visualEnvState();
+    if (!state) return;
+    for (const VeHold& h : g_ve) mem::write(state + h.offset, h.bytes.data(), h.bytes.size());
+}
+
+void forgetVisualEnv(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_veM);
+    for (size_t i = g_ve.size(); i-- > 0;)
+        if (r.has(reinterpret_cast<void*>(g_ve[i].owner))) g_ve.erase(g_ve.begin() + static_cast<std::ptrdiff_t>(i));
+}
+
+int timelineTime(const void* timeline, float* seconds) {
+    if (!seconds || !typeIs(reinterpret_cast<uintptr_t>(timeline), "TimelineEntity")) return GN_ERR_ARGUMENT;
+    return mem::read(reinterpret_cast<uintptr_t>(timeline) + k::Timeline_Time, *seconds) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+int timelineSetTime(void* timeline, float seconds, int force) {
+    if (!isServerThread()) return GN_ERR_THREAD;
+    if (!std::isfinite(seconds) || !typeIs(reinterpret_cast<uintptr_t>(timeline), "TimelineEntity")) return GN_ERR_ARGUMENT;
+    using SetTimeFn = void (*)(void*, float, bool);
+    reinterpret_cast<SetTimeFn>(mem::rva(k::Timeline_SetTime))(timeline, seconds, force != 0);
+    return GN_OK;
+}
+
 // ---- tuning -----------------------------------------------------------------------------------------
 uint32_t tuningCount() { return static_cast<uint32_t>(tunings().size()); }
 

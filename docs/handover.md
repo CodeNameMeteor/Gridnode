@@ -104,8 +104,19 @@ All pushed to `main` (1f06664 ... 1f513ba, and the commit with this handover).
 | MEC trainer 1.4.0 to 1.5.2 | Noclip flies the free camera while Faith floats where she was (1.5.1; the safe spawn teleport killed her in the air); tabs Trainer / Player / World / Volumes / Settings; World: kill volumes off, movement blockers off, no city alerts, No KSEC (spawner hook on the KSEC templates, despawns, and the city alert's drone call dropped through an `Entity_fireOutputEvent` detour; 1.5.2 asks for the mission again before blocking, so a mission's KSEC spawned in the tick it starts are kept); bhop practice in wall-run state 8; the banner says "MEC Trainer Loaded" | noclip, bhop and the volume key seen working; the rest untested |
 | Annotations from the user's Ghidra work (2026-11-05) | Checked in Ghidra before they came in: 63 ANT creates and constructors (each create allocates under its own type's name and calls its constructor), the core schema and expression registry functions; FPSCamera_update (vtable +0x68), Camera_setTransforms, ClientCameraViewManagers_frameUpdateAll; StaticCommand is 0x28 bytes, Screenshot_commands, g_consoleEnabledForPlatform's writers; the server replay player's vtable, size, creator slot, destructor and update, and client replay player members (+0x1c8 .. +0x2f8). Left out as unchecked or wrong: the city alert input offsets (+0x98 ..: the update reads property slots at +0xd8 / +0xe8 / +0xf8 / +0x108), "0x7062fa7a is GameState::FloatAsset" (no FNV-1 or djb2 of that name gives it), the checkpoint's +0x158 as SpawnAreaRadius, ClientCameraViewManager members other than the known ones, the recording component's vtable | n/a |
 
+### 2026-11-05 to 2026-11-06 (API 28 and 29; trainer 1.5.3 to 1.6.0)
+
+| What | How | State |
+|---|---|---|
+| Free camera fps | `hookBody` was retried every 60 frames and always refused after 257 `VirtualQuery` calls; now it takes only the known 27-slot vtable (0x141c3cbf0). Sampler: console `sample [s]`, `perf on/off` | confirmed (165 fps) |
+| Vtable lengths | `tools/ghidra/FrostbiteVTableLengthFinder.java` (`label` / `export FILE`): every vtable's exact length; labels end in `vftable` for GridNodeSync (`research/vtables.md`) | 15,393 vtables; labels run in Ghidra |
+| Time of day hold (API 28) | `time_of_day_hold`: the clock written back after each world update | the user finds the lighting better |
+| ANT live mapping | the layout is checked, and looked up again through the registry when it moved | confirmed |
+| Trainer 1.5.3 to 1.5.4 | kill volumes off: back below y -300 and after a 100 fall in state 0 (the game kills those) | confirmed |
+| API 29 | `visual_env_*` (holds in the visual environment state) and `timeline_time` / `timeline_set_time`; trainer 1.6.0 World tab "Look" and timelines (`research/visual-environment.md`) | **untested** |
+
 Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 27, with the mission clean-up guard)
-and `mods\mec_trainer.dll` (1.5.2); `gridnode_inject.exe` from 2026-11-04.
+and `mods\mec_trainer.dll` (1.5.2); later builds go to `bin` under new names (`gridnode-api29a.dll`) for the user to swap in; `gridnode_inject.exe` from 2026-11-04.
 
 ## 5. What is left for the first release
 

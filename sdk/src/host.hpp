@@ -275,6 +275,13 @@ int timeOfDaySet(float seconds);
 int timeOfDayHold(const void* caller, float seconds);            // API 28: < 0 releases
 void timeOfDayTick();                                             // server and client post-update: puts a held clock back
 void forgetTimeOfDay(const CodeRange& r);
+int visualEnvGet(uint32_t offset, void* out, uint32_t size);                 // API 29
+int visualEnvSet(const void* caller, uint32_t offset, const void* data, uint32_t size);
+int visualEnvRelease(uint32_t offset);                                       // GN_VE_ALL: every hold
+void visualEnvTick();                                                         // server and client post-update: puts held values back
+void forgetVisualEnv(const CodeRange& r);
+int timelineTime(const void* timeline, float* seconds);
+int timelineSetTime(void* timeline, float seconds, int force);                // server thread
 int positionSet(const float pos[3]);
 int godModeSet(int on); // server thread
 void faithRelease();     // a full unload: held keys and actions let go (client thread), god mode as it was (server thread)

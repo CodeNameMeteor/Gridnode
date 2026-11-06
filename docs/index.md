@@ -23,6 +23,7 @@ known about the engine.
 | Physics | ray casts (entity, body, layer, material), collision bodies, static collision boxes, body velocities, gravity |
 | Faith | movement state, wall counters, speed, camera, health; jump and any input action, whatever the binding; god mode; movement tuning by name; movement events |
 | Game state | levels, settings (every settings class, by name), the console (every command), engine messages, sounds, the checkpoint, the save's progression flags and missions |
+| Look | the time of day (set or held), the visual environment (sun, exposure, depth of field, ...), timelines (experimental) |
 | Overlay | a shared Dear ImGui overlay (INSERT): mods' windows, drawing in the world, declared settings and hotkeys |
 
 The developer build adds research tools: the inspector (entities, types, settings, messages), the

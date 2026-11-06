@@ -27,6 +27,12 @@ globals:
     va: 0x14255c2f8
     type: "void*"
     note: "+0x8 -> +0x28 = the ServerTimeOfDayClockEntity (checked by type); clock +0x30 = time of day in seconds (f32)."
+  - name: VisualEnvMain
+    va: 0x142142a48
+    type: "void*"
+    confidence: inferred
+    sources: [research]
+    note: "The cinematic tools' MAIN: +0x50 -> +0x90 -> +0x1c0 -> +0x30 = the visual environment manager, its current state at +0x85470 (the functions 0x14373e5d0 and 0x143742bd0 use that offset; checked in Ghidra 2026-11-06)."
   - name: SharedContentManagerHolder
     va: 0x14257e7c8
     type: "void*"
@@ -91,6 +97,14 @@ constants:
   - { name: TimeOfDay_Clock1, value: 0x8 }
   - { name: TimeOfDay_Clock2, value: 0x28 }
   - { name: Clock_Time, value: 0x30 }
+  - { name: VisualEnv_A, value: 0x50 }
+  - { name: VisualEnv_B, value: 0x90 }
+  - { name: VisualEnv_C, value: 0x1c0 }
+  - { name: VisualEnv_D, value: 0x30 }
+  - { name: VisualEnv_State, value: 0x85470, note: "The current visual environment state in the manager. Blocks in it (from the cinematic tools; untested here): outdoor light +0x000, tonemap +0x1d0, colour correction +0x330, sky and clouds +0x390, wind +0x6e0, depth of field +0xa50, vignette +0xac0, film grain +0xb00." }
+  - { name: VisualEnv_StateSize, value: 0xb30, note: "Our bound for visual_env_set: the end of the film grain block (0xb00 + 0x30)." }
+  - { name: Timeline_SetTime, value: 0x143691120, note: "void(TimelineEntity*, f32 time, bool force): force writes the time and updates what the timeline drives at once (checked in Ghidra 2026-11-06: current time +0x98, +0x60 an external time connection, which makes it return unless forced)." }
+  - { name: Timeline_Time, value: 0x98, note: "f32 current time in a TimelineEntity (vtable 0x141beab28)." }
   - { name: SharedContent_Manager, value: 0x28 }
   - { name: SharedContent_Active, value: 0x280 }
   - { name: Dash_Started, value: 0xe0 }

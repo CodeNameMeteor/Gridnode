@@ -773,6 +773,14 @@ inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) 
 // Released when the mod unloads.
 inline bool holdTimeOfDay(float seconds) { return api().time_of_day_hold(seconds) == GN_OK; }
 inline void releaseTimeOfDay() { api().time_of_day_hold(-1.f); }
+// The visual environment (API 29, experimental): `offset` is within the state (GN_VE_*). A set value is held
+// against the game recomputing it every frame; released when the mod unloads. See api.h.
+inline bool visualEnvGet(uint32_t offset, void* out, uint32_t size) { return api().visual_env_get(offset, out, size) == GN_OK; }
+inline bool visualEnvSet(uint32_t offset, const void* data, uint32_t size) { return api().visual_env_set(offset, data, size) == GN_OK; }
+inline void visualEnvRelease(uint32_t offset = GN_VE_ALL) { api().visual_env_release(offset); }
+// Timelines (API 29, experimental): doors, gates and lifts. setTimelineTime: server thread.
+inline bool timelineTime(const void* timeline, float& seconds) { return api().timeline_time(timeline, &seconds) == GN_OK; }
+inline bool setTimelineTime(void* timeline, float seconds, bool force = true) { return api().timeline_set_time(timeline, seconds, force ? 1 : 0) == GN_OK; }
 // God mode (the game's immortality flags). Server thread: wrap in runOnServer.
 inline bool godMode(bool on) { return api().god_mode(on ? 1 : 0) == GN_OK; }
 // Moves Faith without a teleport (the camera stays free): for noclip-style movement every tick.

@@ -33,6 +33,7 @@ markdown_extensions:
 not_in_nav: |
   PLAN.md
   progress.md
+  progress-archive.md
   handover.md
 
 nav:
@@ -76,4 +77,7 @@ nav:
       - research/ct-research.md
       - research/cheat-table.md
       - research/ant.md
+      - research/visual-environment.md
+      - research/vtables.md
+      - research/ksec-spawning.md
   # @generated-nav

@@ -750,6 +750,28 @@ pub fn ant_objects(type_name: &str, max: u32) -> Vec<*mut c_void> {
 pub fn time_of_day_hold(seconds: Option<f32>) -> bool {
     unsafe { (api().time_of_day_hold.unwrap())(seconds.unwrap_or(-1.0)) == 0 }
 }
+/// Reads the visual environment state at `offset` (API 29, experimental; `sys::GN_VE_*`).
+pub fn visual_env_get(offset: u32, out: &mut [u8]) -> bool {
+    unsafe { (api().visual_env_get.unwrap())(offset, out.as_mut_ptr() as *mut c_void, out.len() as u32) == 0 }
+}
+/// Holds `data` at `offset` in the visual environment state against the game recomputing it (API 29,
+/// experimental). Released when the mod unloads.
+pub fn visual_env_set(offset: u32, data: &[u8]) -> bool {
+    unsafe { (api().visual_env_set.unwrap())(offset, data.as_ptr() as *const c_void, data.len() as u32) == 0 }
+}
+/// Drops the hold at `offset`; `None` drops every hold (API 29).
+pub fn visual_env_release(offset: Option<u32>) {
+    unsafe { (api().visual_env_release.unwrap())(offset.unwrap_or(sys::GN_VE_ALL)) };
+}
+/// A TimelineEntity's current time (API 29, experimental).
+pub fn timeline_time(timeline: *const c_void) -> Option<f32> {
+    let mut t = 0.0f32;
+    (unsafe { (api().timeline_time.unwrap())(timeline, &mut t) } == 0).then_some(t)
+}
+/// Sets a TimelineEntity's time; `force` updates what it drives at once (API 29, experimental; server thread).
+pub fn timeline_set_time(timeline: *mut c_void, seconds: f32, force: bool) -> bool {
+    unsafe { (api().timeline_set_time.unwrap())(timeline, seconds, force as c_int) == 0 }
+}
 /// Opens or closes the overlay's menu (API 27), as its key does: for a mod with its own key.
 pub fn ui_menu_set(open: bool) -> bool {
     unsafe { (api().ui_menu_set.unwrap())(open as c_int) == 0 }

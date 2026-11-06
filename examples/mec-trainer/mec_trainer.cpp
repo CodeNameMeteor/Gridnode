@@ -1138,6 +1138,81 @@ void playerTab() {
     }
 }
 
+// ---- look: the visual environment (API 29, untested in game) -----------------------------------------
+// Each slider holds its value while its box is ticked; unticked, the game has it back. Offsets are in
+// the state (docs/research/visual-environment.md).
+struct VeSlider {
+    const char* label;
+    uint32_t offset;
+    float lo, hi;
+    bool on = false;
+    float value = 0.f;
+    bool read = false;
+};
+VeSlider g_ve[] = {
+    {"Sun intensity", GN_VE_OUTDOOR_LIGHT + 0x94, 0.f, 20.f},
+    {"Sun rotation X", GN_VE_OUTDOOR_LIGHT + 0x84, -360.f, 360.f},
+    {"Sun rotation Y", GN_VE_OUTDOOR_LIGHT + 0x88, -360.f, 360.f},
+    {"Exposure compensation", GN_VE_TONEMAP + 0x98, -5.f, 5.f},
+    {"Vignette opacity", GN_VE_VIGNETTE + 0x20, 0.f, 1.f},
+    {"Focus distance (DoF)", GN_VE_DEPTH_OF_FIELD + 0x04, 0.f, 200.f},
+};
+
+void lookSection() {
+    ImGui::SeparatorText("Look (experimental)");
+    for (VeSlider& v : g_ve) {
+        ImGui::PushID(v.label);
+        if (!v.read) {
+            v.read = true;
+            gn::visualEnvGet(v.offset, &v.value, sizeof(float));
+        }
+        bool on = v.on;
+        if (ImGui::Checkbox("##on", &on)) {
+            v.on = on;
+            if (on) gn::visualEnvGet(v.offset, &v.value, sizeof(float));
+            else gn::visualEnvRelease(v.offset);
+        }
+        ImGui::SameLine();
+        if (ImGui::SliderFloat(v.label, &v.value, v.lo, v.hi) && v.on) gn::visualEnvSet(v.offset, &v.value, sizeof(float));
+        ImGui::PopID();
+    }
+    if (ImGui::SmallButton("Release all looks")) {
+        for (VeSlider& v : g_ve) v.on = false;
+        gn::visualEnvRelease();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Each ticked slider holds its value (the game recomputes the look every frame).\n"
+                          "The offsets are the cinematic tools'; a wrong one shows as no change, or a flicker.");
+
+    ImGui::SeparatorText("Timelines (experimental)");
+    static int index = 0;
+    static float seekTo = 0.f;
+    static bool force = true;
+    if (ImGui::SmallButton("List timelines in the log")) {
+        int n = 0;
+        gn::entitiesOfClass("TimelineEntity", [&n](void* e, gn::Type) {
+            float t = 0.f;
+            if (n < 25 && gn::timelineTime(e, t)) gn::log("timeline #%d at %p: time %.3f", n, e, t);
+            ++n;
+        });
+        gn::log("timelines: %d", n);
+    }
+    ImGui::InputInt("Timeline #", &index);
+    ImGui::InputFloat("Seek to (s)", &seekTo, 0.5f, 5.f, "%.2f");
+    ImGui::Checkbox("Force", &force);
+    if (ImGui::SmallButton("Seek")) {
+        const int want = index;
+        const float to = seekTo;
+        const bool f = force;
+        gn::runOnServer([want, to, f] {
+            int n = 0;
+            gn::entitiesOfClass("TimelineEntity", [&](void* e, gn::Type) {
+                if (n++ == want) gn::log("timeline #%d: set time %.2f (force %d): %s", want, to, f, gn::setTimelineTime(e, to, f) ? "ok" : "refused");
+            });
+        });
+    }
+}
+
 void worldTab() {
     float raw = g_freezeTime ? g_frozenTime.load() : g_timeOfDay.load();
     if (raw >= 0.f) {
@@ -1165,6 +1240,8 @@ void worldTab() {
     } else {
         ImGui::TextDisabled("No time of day clock in this level");
     }
+    lookSection();
+    ImGui::Separator();
     float scale = g_timeScale;
     if (ImGui::SliderFloat("Game speed", &scale, 0.05f, 4.f, "%.2fx", ImGuiSliderFlags_Logarithmic)) g_timeScale = scale;
     ImGui::SameLine();
@@ -1528,7 +1605,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.5.4", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.6.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

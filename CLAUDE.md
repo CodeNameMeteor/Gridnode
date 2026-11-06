@@ -3,7 +3,7 @@
 GridNode is an open-source modding SDK for Mirror's Edge Catalyst (PC, Frostbite 3, codename
 Pamplona). It loads mods from `mods/` and gives them reflection by name (~9,988 engine types), entity
 callbacks, ticks, hooks, a world API and an ImGui overlay, plus research tools (inspector, recorder,
-Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, next steps), then
+Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, next steps; older history in `progress-archive.md`), then
 [docs/handover.md](docs/handover.md) and [docs/PLAN.md](docs/PLAN.md). Related project: `../mecmp`
 (a separate mod; do not edit it from here).
 

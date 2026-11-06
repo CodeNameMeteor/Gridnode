@@ -42,7 +42,18 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 28 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day */
+#define GN_API_VERSION 29 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines */
+/* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
+#define GN_VE_OUTDOOR_LIGHT 0x000u
+#define GN_VE_TONEMAP 0x1d0u
+#define GN_VE_COLOR_CORRECTION 0x330u
+#define GN_VE_SKY 0x390u
+#define GN_VE_WIND 0x6e0u
+#define GN_VE_DEPTH_OF_FIELD 0xa50u
+#define GN_VE_VIGNETTE 0xac0u
+#define GN_VE_FILM_GRAIN 0xb00u
+#define GN_VE_SIZE 0xb30u
+#define GN_VE_ALL 0xffffffffu
 
 #if defined(_WIN32)
 #define GN_MOD_EXPORT __declspec(dllexport)
@@ -1026,6 +1037,33 @@ typedef struct gn_api {
      * is another call. Any thread. GN_ERR_UNAVAILABLE: no level yet (a hold set then waits for the
      * clock); GN_ERR_ARGUMENT: not a number. */
     int (*time_of_day_hold)(float seconds);
+
+    /* ==== GN_API_VERSION 29 =================================================================== */
+
+    /* ---- the visual environment (experimental) -------------------------------------------------------
+     * The game's current visual environment state: sun, tonemap, colour correction, sky, wind, depth of
+     * field, vignette, film grain. Offsets are within the state (GN_VE_* below, from the cinematic
+     * tools; the fields inside each block are in docs/research/visual-environment.md). The game
+     * recomputes the state every frame, so a value set here is a hold: it is written back after each
+     * server and each client world update until released. At most 64 holds; one per (offset, size);
+     * the last call wins. All are released when the mod that set them unloads. Experimental: whether a
+     * held value is steady on screen (not flickering) is untested.
+     * visual_env_get reads the state now; visual_env_set holds `size` bytes at `offset`;
+     * visual_env_release drops the hold at `offset` (GN_VE_ALL: every hold, whoever set it). offset + size must
+     * be within GN_VE_SIZE. Any thread. GN_ERR_UNAVAILABLE: no level yet (a hold set then waits);
+     * GN_ERR_ARGUMENT: out of range, or too many holds. */
+    int (*visual_env_get)(uint32_t offset, void* out, uint32_t size);
+    int (*visual_env_set)(uint32_t offset, const void* data, uint32_t size);
+    int (*visual_env_release)(uint32_t offset);
+
+    /* ---- timelines (experimental) --------------------------------------------------------------------
+     * Doors, gates and lifts are driven by TimelineEntity objects (find one with entities_near or
+     * entities_of_class). timeline_time reads the current time (seconds); timeline_set_time sets it, and
+     * with force != 0 what it drives is updated at once, in the same frame. The entity must be a
+     * TimelineEntity (checked by type, GN_ERR_ARGUMENT). timeline_set_time: server thread (GN_ERR_THREAD).
+     * Untested in game. */
+    int (*timeline_time)(const void* timeline, float* seconds);
+    int (*timeline_set_time)(void* timeline, float seconds, int force);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

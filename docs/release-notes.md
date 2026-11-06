@@ -2,7 +2,7 @@
 
 ## First release (draft: version to decide, 1.0.0 or a 0.9 beta)
 
-The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 27.
+The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 29.
 
 ### Downloads
 
@@ -30,6 +30,8 @@ Making a mod: [Your mod in its own repository](mod-repository.md).
   (experimental).
 - **Faith:** movement state, speed, health, input actions whatever the binding, god mode, movement
   tuning by name, movement events, landing prediction, her ANT move tracker and her last 15 seconds.
+- **Look:** the time of day, set or held against the game moving it on; the visual environment and
+  timelines (experimental).
 - **The camera:** GridNode's free camera, or a mod's own camera and field of view.
 - **Game state:** levels, every settings class, the console, engine messages, sounds, progression
   flags, missions; online play changed only on purpose ([GridNode and online play](online.md)).

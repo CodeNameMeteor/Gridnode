@@ -4,7 +4,7 @@ An open-source SDK for modding **Mirror's Edge Catalyst** (PC, EA app build). Gr
 find, read, write, call and hook the game's engine classes (Frostbite 3) by name, without reversing
 them first, and documents everything it knows about the engine.
 
-> **Status:** getting ready for the first release (API 27). The plan is in
+> **Status:** getting ready for the first release (API 29). The plan is in
 > [docs/progress.md](docs/progress.md); the full design in [docs/PLAN.md](docs/PLAN.md). The docs site
 > builds with `python tools/gen/gridnode.py docs --build` ([docs/building.md](docs/building.md#these-docs));
 > CI publishes it as the `docs-site` artifact.
@@ -21,6 +21,7 @@ them first, and documents everything it knows about the engine.
 | Physics | ray casts (what was hit: entity, body, layer, material), collision bodies, static collision boxes, body velocities, gravity |
 | Faith | movement state, speed, wall counts, camera, health, input actions whatever the binding, god mode, movement tuning by name, movement events |
 | Game state | levels, settings (every settings class by name), the console, engine messages, sounds, the checkpoint, the save's progression flags and missions |
+| Look | the time of day (set or held), the visual environment (sun, exposure, depth of field, ...), timelines (experimental) |
 | Overlay | a shared Dear ImGui overlay (INSERT): mods' windows, drawing in the world, declared settings and hotkeys |
 
 The developer build adds tools for research: an inspector (entities, types, settings, messages), the
@@ -61,7 +62,7 @@ building, testing in game, showing only your mod's window and shipping it.
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/` | Our findings (committed): addresses, members, virtual functions, hooks; `db/reflected/` is your own dump (git-ignored) |
 | `tools/gen/` | `gridnode.py`: validate, generate headers and docs, set up your dump, fingerprints, Ghidra import / export, the release zip |
-| `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out) and `FrostbiteTypeDumper.java` |
+| `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java` and the vtable length finder |
 | `tools/recording/` | `summarize.py`: reads the Recorder's files |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, the walker run on a memory dump |
 | `examples/` | Example mods: `hello`, `hello-rust`, `trainer`, `mec-trainer` (the MEC trainer), `world-draw`, `detour-demo`, `probe` |

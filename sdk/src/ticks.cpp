@@ -51,6 +51,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
     if (unloaded()) return; // kept in place by a hook over it: the game's update only
     g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("time of day", [] { timeOfDayTick(); }); // before anything of ours reads the clock
+    guarded("visual environment", [] { visualEnvTick(); });
     guarded("server messages", [] { messagesServerTick(); });
     guarded("layouts (server)", [] { layouts::serverTick(); });
     guarded("level ready", [] { levelReadyServerTick(); });
@@ -62,6 +63,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     if (unloaded()) return;
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
     guarded("time of day", [] { timeOfDayTick(); });
+    guarded("visual environment", [] { visualEnvTick(); });
     guarded("world", [] { worldClientTick(); });
     guarded("client messages", [] { messagesClientTick(); });
     guarded("faith", [] { faithClientTick(); });

@@ -222,6 +222,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetSounds(code);
     forgetGravity(code);
     forgetTimeOfDay(code);
+    forgetVisualEnv(code);
     return hooksOut;
 }
 
