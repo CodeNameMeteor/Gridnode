@@ -324,6 +324,10 @@ int freecamSet(bool on);                  // mods: the free camera on / off (nex
 int freecamGet(gn_freecam* out);
 int teleportRequest(int to, bool keepFlying); // 1 the crosshair, 2 the free camera's position (next frame)
 int cameraSet(const void* caller, const gn_transform* t, uint32_t flags); // API 27: a mod's camera (null: given back)
+int streamingFocusAdd(const void* caller, const float pos[3], uint32_t* handle); // API 30
+int streamingFocusMove(uint32_t handle, const float pos[3]);
+int streamingFocusRemove(uint32_t handle);
+void forgetStreamingFocus(const CodeRange& r);                           // a mod unloading: its focus points dropped
 int cameraFovSet(const void* caller, float degrees);                     // API 27: 0 gives the FOV back
 void forgetCamera(const CodeRange& r);                                    // a mod unloading: its camera and FOV given back
 void cameraCallCounts(uint32_t* updates, uint32_t* outputs, double* usPerCall); // diagnostics: calls since the last call (any thread); usPerCall[4]: update (game, ours), output (game, ours), microseconds a call

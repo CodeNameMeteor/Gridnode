@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 29 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines */
+#define GN_API_VERSION 30 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1064,6 +1064,22 @@ typedef struct gn_api {
      * Untested in game. */
     int (*timeline_time)(const void* timeline, float* seconds);
     int (*timeline_set_time)(void* timeline, float seconds, int force);
+
+    /* ==== GN_API_VERSION 30 =================================================================== */
+
+    /* ---- streaming focus points (experimental) -------------------------------------------------------
+     * The city is zone-streamed around its focus points (Faith, normally), so far from her, as with the
+     * free camera or after a far teleport, the world around you is not loaded. A focus point makes the
+     * streamers load the zones around `pos` as well. streaming_focus_add makes one and gives its
+     * handle; streaming_focus_move moves it; streaming_focus_remove drops it. At most 4 at a time
+     * (GN_ERR_FULL), shared with GridNode's own (the layout editor's); points within 60 m of another count
+     * as one. A point is registered and moved within a quarter second, not at once, and a zone loads as
+     * the game loads zones (the districts of the city, not a circle). Released when the mod unloads.
+     * Any thread. GN_ERR_UNAVAILABLE: this build's streamer code is not the known one; GN_ERR_NOT_FOUND:
+     * an unknown handle; GN_ERR_ARGUMENT: not finite numbers. Untested in game. */
+    int (*streaming_focus_add)(const float pos[3], uint32_t* handle);
+    int (*streaming_focus_move)(uint32_t handle, const float pos[3]);
+    int (*streaming_focus_remove)(uint32_t handle);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

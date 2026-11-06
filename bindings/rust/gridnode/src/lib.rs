@@ -769,6 +769,20 @@ pub fn visual_env_set(offset: u32, data: &[u8]) -> bool {
 pub fn visual_env_release(offset: Option<u32>) {
     unsafe { (api().visual_env_release.unwrap())(offset.unwrap_or(sys::GN_VE_ALL)) };
 }
+/// Loads the zones around `pos` as well as those around Faith (API 30, experimental): the handle, `None` if refused.
+/// Released when the mod unloads.
+pub fn streaming_focus_add(pos: [f32; 3]) -> Option<u32> {
+    let mut h = 0u32;
+    (unsafe { (api().streaming_focus_add.unwrap())(pos.as_ptr(), &mut h) } == 0).then_some(h)
+}
+/// Moves a focus point (API 30).
+pub fn streaming_focus_move(handle: u32, pos: [f32; 3]) -> bool {
+    unsafe { (api().streaming_focus_move.unwrap())(handle, pos.as_ptr()) == 0 }
+}
+/// Drops a focus point (API 30).
+pub fn streaming_focus_remove(handle: u32) {
+    unsafe { (api().streaming_focus_remove.unwrap())(handle) };
+}
 /// A TimelineEntity's current time (API 29, experimental).
 pub fn timeline_time(timeline: *const c_void) -> Option<f32> {
     let mut t = 0.0f32;

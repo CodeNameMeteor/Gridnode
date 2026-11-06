@@ -1158,8 +1158,29 @@ VeSlider g_ve[] = {
     {"Focus distance (DoF)", GN_VE_DEPTH_OF_FIELD + 0x04, 0.f, 200.f},
 };
 
+// ---- streaming around the free camera (API 30, untested in game) ----------------------------------------
+void streamSection() {
+    static bool on = false;
+    static uint32_t handle = 0;
+    ImGui::SeparatorText("Streaming");
+    ImGui::Checkbox("Load the world around the free camera", &on);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A focus point follows the free camera so the zones around it load. The game may already do\n"
+                          "this: if nothing changes far from Faith, it does. Dropped when the camera or this goes off.");
+    gn::Freecam f{};
+    const bool flying = on && gn::freecamState(f) && f.on;
+    if (flying) {
+        const gn::Vec3 at{f.position[0], f.position[1], f.position[2]};
+        if (handle) gn::streamingFocusMove(handle, at);
+        else handle = gn::streamingFocusAdd(at);
+        ImGui::TextDisabled(handle ? "Focus point on the camera" : "No focus point (refused: see the log)");
+    } else if (handle) {
+        gn::streamingFocusRemove(handle);
+        handle = 0;
+    }
+}
+
 void lookSection() {
-    ImGui::SeparatorText("Look (experimental)");
     for (VeSlider& v : g_ve) {
         ImGui::PushID(v.label);
         if (!v.read) {
@@ -1183,75 +1204,9 @@ void lookSection() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Each ticked slider holds its value (the game recomputes the look every frame).\n"
                           "The offsets are the cinematic tools'; a wrong one shows as no change, or a flicker.");
-
-    ImGui::SeparatorText("Timelines (experimental)");
-    static int index = 0;
-    static float seekTo = 0.f;
-    static bool force = true;
-    if (ImGui::SmallButton("List timelines in the log")) {
-        int n = 0;
-        gn::entitiesOfClass("TimelineEntity", [&n](void* e, gn::Type) {
-            float t = 0.f;
-            if (n < 25 && gn::timelineTime(e, t)) gn::log("timeline #%d at %p: time %.3f", n, e, t);
-            ++n;
-        });
-        gn::log("timelines: %d", n);
-    }
-    ImGui::InputInt("Timeline #", &index);
-    ImGui::InputFloat("Seek to (s)", &seekTo, 0.5f, 5.f, "%.2f");
-    ImGui::Checkbox("Force", &force);
-    if (ImGui::SmallButton("Seek")) {
-        const int want = index;
-        const float to = seekTo;
-        const bool f = force;
-        gn::runOnServer([want, to, f] {
-            int n = 0;
-            gn::entitiesOfClass("TimelineEntity", [&](void* e, gn::Type) {
-                if (n++ == want) gn::log("timeline #%d: set time %.2f (force %d): %s", want, to, f, gn::setTimelineTime(e, to, f) ? "ok" : "refused");
-            });
-        });
-    }
 }
 
 void worldTab() {
-    float raw = g_freezeTime ? g_frozenTime.load() : g_timeOfDay.load();
-    if (raw >= 0.f) {
-        float norm = std::fmod(raw, 86400.f);
-        if (norm < 0.f) norm += 86400.f;
-        float hours = norm / 3600.f;
-        if (ImGui::SliderFloat("Time of day", &hours, 0.f, 23.99f, "%.2f h")) {
-            g_frozenTime = hours * 3600.f;
-            const float s = hours * 3600.f;
-            gn::runOnClient([s] {
-                if (g_freezeTime) gn::holdTimeOfDay(s);
-                else gn::setTimeOfDay(s);
-            });
-        }
-        bool freeze = g_freezeTime;
-        if (ImGui::Checkbox("Freeze time of day", &freeze)) {
-            if (freeze) g_frozenTime = norm;
-            g_freezeTime = freeze;
-            const float held = g_frozenTime;
-            gn::runOnClient([freeze, held] {
-                if (freeze) gn::holdTimeOfDay(held); // the clock is written back after each world update (API 28)
-                else gn::releaseTimeOfDay();
-            });
-        }
-    } else {
-        ImGui::TextDisabled("No time of day clock in this level");
-    }
-    lookSection();
-    ImGui::Separator();
-    float scale = g_timeScale;
-    if (ImGui::SliderFloat("Game speed", &scale, 0.05f, 4.f, "%.2fx", ImGuiSliderFlags_Logarithmic)) g_timeScale = scale;
-    ImGui::SameLine();
-    if (ImGui::SmallButton("1x")) g_timeScale = 1.f;
-    // The game simulates at most one 30 Hz tick a frame, so above 1x it reaches frame rate / 30.
-    if (g_timeScale > 1.f) {
-        const float most = ImGui::GetIO().Framerate / 30.f;
-        if (most < g_timeScale) ImGui::TextDisabled("At %.0f fps the game reaches at most %.1fx", ImGui::GetIO().Framerate, most);
-    }
-    ImGui::TextDisabled("On top of the game's own slow motion");
     ImGui::SeparatorText("Hazards");
     bool v;
     if (g_killHooked) {
@@ -1285,6 +1240,44 @@ void worldTab() {
     if (ImGui::Checkbox("No city alerts (free roam)", &v)) g_noAlerts = v;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("A KSEC alert ends as soon as it starts, and one already running ends. Not during missions.");
+    ImGui::Separator();
+    float raw = g_freezeTime ? g_frozenTime.load() : g_timeOfDay.load();
+    if (raw >= 0.f) {
+        float norm = std::fmod(raw, 86400.f);
+        if (norm < 0.f) norm += 86400.f;
+        float hours = norm / 3600.f;
+        if (ImGui::SliderFloat("Time of day", &hours, 0.f, 23.99f, "%.2f h")) {
+            g_frozenTime = hours * 3600.f;
+            const float s = hours * 3600.f;
+            gn::runOnClient([s] {
+                if (g_freezeTime) gn::holdTimeOfDay(s);
+                else gn::setTimeOfDay(s);
+            });
+        }
+        bool freeze = g_freezeTime;
+        if (ImGui::Checkbox("Freeze time of day", &freeze)) {
+            if (freeze) g_frozenTime = norm;
+            g_freezeTime = freeze;
+            const float held = g_frozenTime;
+            gn::runOnClient([freeze, held] {
+                if (freeze) gn::holdTimeOfDay(held); // the clock is written back after each world update (API 28)
+                else gn::releaseTimeOfDay();
+            });
+        }
+    } else {
+        ImGui::TextDisabled("No time of day clock in this level");
+    }
+    ImGui::Separator();
+    float scale = g_timeScale;
+    if (ImGui::SliderFloat("Game speed", &scale, 0.05f, 4.f, "%.2fx", ImGuiSliderFlags_Logarithmic)) g_timeScale = scale;
+    ImGui::SameLine();
+    if (ImGui::SmallButton("1x")) g_timeScale = 1.f;
+    // The game simulates at most one 30 Hz tick a frame, so above 1x it reaches frame rate / 30.
+    if (g_timeScale > 1.f) {
+        const float most = ImGui::GetIO().Framerate / 30.f;
+        if (most < g_timeScale) ImGui::TextDisabled("At %.0f fps the game reaches at most %.1fx", ImGui::GetIO().Framerate, most);
+    }
+    ImGui::TextDisabled("On top of the game's own slow motion");
     ImGui::SeparatorText("Post-processing");
     static const char* const kPost[3][2] = {{"Bloom", "BloomEnable"}, {"Blur", "BlurEnable"}, {"Vignette", "VignetteEnable"}};
     gn::Object pp = gn::settings("GlobalPostProcessSettings");
@@ -1298,6 +1291,10 @@ void worldTab() {
                 g_postOriginal.push_back({field, was});
             gn::runOnClient([field, on] { gn::settings("GlobalPostProcessSettings").set(field, on); });
         }
+    }
+    if (ImGui::CollapsingHeader("Look and streaming (experimental)")) {
+        lookSection();
+        streamSection();
     }
 }
 
@@ -1605,7 +1602,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.6.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.7.1", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

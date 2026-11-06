@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 29 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 30 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -297,6 +297,7 @@ std::string level = gn::levelName();
 | `gravity(realm, out)` / `setGravity(realm, g)` | any | **Experimental.** A physics world's gravity (0 client, 1 server; the client's effect world too). It moves dynamic bodies only, not Faith's own movement or the bodies the game moves with animations, so in the city it has almost nothing to act on. Kept for later worlds, undone when the mod unloads; `nullptr` puts the game's back (API 21). |
 | `holdTimeOfDay(seconds)` / `releaseTimeOfDay()` | any | Holds the clock at a time (0 to 86400) against the game moving it on: it is written back after each server and client world update, so the lighting does not chase a drifting clock as it does with one `setTimeOfDay` a frame. Released when the mod unloads (API 28; the user finds the lighting better than with one set a frame). Rust: `time_of_day_hold`. |
 | `visualEnvGet(offset, out, size)` / `visualEnvSet(offset, data, size)` / `visualEnvRelease(offset)` | any | The visual environment state (sun, tonemap, colour correction, sky, wind, depth of field, vignette, film grain; offsets `GN_VE_*`, fields in [research](research/visual-environment.md)). A set value is held: written back after each world update, because the game recomputes the state every frame. Released when the mod unloads (API 29; experimental, untested). Rust: `visual_env_*`. |
+| `streamingFocusAdd(pos)` / `streamingFocusMove(handle, pos)` / `streamingFocusRemove(handle)` | any | Loads the zones around a point as well as those around Faith (a free camera far away, a cutscene). At most 4 per GridNode, points within 60 m of each other share one; refused when the game's streamer is not the known build. Released when the mod unloads (API 30; experimental, untested). Rust: `streaming_focus_*`. |
 | `timelineTime(timeline, seconds)` / `setTimelineTime(timeline, seconds, force)` | server for the set | Reads or sets a `TimelineEntity`'s time (doors, gates, lifts: find them with `entitiesOfClass("TimelineEntity", ...)`). `force` updates what it drives at once (API 29; experimental, untested). Rust: `timeline_time`, `timeline_set_time`. |
 | `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |
 | `waypoint(out)` / `checkpoint(out)` | any | **Experimental.** The map marker (false when none is set; its height is the street's, so under a building it is not where to stand) and where Faith comes back after a death. From a Cheat Engine table's paths, checked by type on the way (API 22). |

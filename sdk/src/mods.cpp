@@ -223,6 +223,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetGravity(code);
     forgetTimeOfDay(code);
     forgetVisualEnv(code);
+    layouts::forgetStreamingFocus(code);
     return hooksOut;
 }
 

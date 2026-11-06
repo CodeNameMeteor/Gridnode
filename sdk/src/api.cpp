@@ -322,6 +322,7 @@ namespace {
 #endif
 GN_NOINLINE int apiCameraSet(const gn_transform* t, uint32_t flags) { return layouts::cameraSet(GN_CALLER, t, flags); }
 GN_NOINLINE int apiTimeOfDayHold(float seconds) { return timeOfDayHold(GN_CALLER, seconds); }
+GN_NOINLINE int apiStreamingFocusAdd(const float pos[3], uint32_t* handle) { return layouts::streamingFocusAdd(GN_CALLER, pos, handle); }
 GN_NOINLINE int apiVisualEnvSet(uint32_t offset, const void* data, uint32_t size) { return visualEnvSet(GN_CALLER, offset, data, size); }
 GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
 } // namespace
@@ -521,6 +522,9 @@ const gn_api* api() {
         a.replay_recent = replayRecent;
         a.ui_menu_set = apiUiMenuSet;
         a.time_of_day_hold = apiTimeOfDayHold;
+        a.streaming_focus_add = apiStreamingFocusAdd;
+        a.streaming_focus_move = layouts::streamingFocusMove;
+        a.streaming_focus_remove = layouts::streamingFocusRemove;
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

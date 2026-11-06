@@ -16,6 +16,14 @@ mod's ground check fails for one or two frames after an undo. Other server queri
 doing it just before the flush, as the engine's own unload does, would be cleaner (hook point: bodies.cpp's
 `flushHook`).
 
+## API 30: streaming focus points (2026-11-06; untested in game)
+- `streaming_focus_add/move/remove` (`layouts.cpp`, `focusApi*`): up to 4 points a mod owns, added to the streamers'
+  focus lists ahead of the layout editor's own, merged when within 60 m, synced every 2 s and 250 ms after a move.
+  Released on unload (`forgetStreamingFocus`). Needs the known streamer (`focusKnown()`).
+- Trainer 1.7.1: World tab has Hazards first; the sun sliders and the streaming box sit in a closed "Look and streaming" header; the timeline buttons are gone (the API stays).
+  "Load the world around the free camera": Open: does a far district really stream in,
+  and how fast does it unload again?
+
 ## API 29: the visual environment and timelines (2026-11-06; untested in game)
 - **`visual_env_get/set/release`**: holds values in the visual environment state (MAIN +0x50 -> +0x90 ->
   +0x1c0 -> +0x30, state +0x85470: sun, tonemap, colour correction, sky, wind, depth of field, vignette,
@@ -107,30 +115,65 @@ mods ask for one (Lua was skipped on 2026-10-20, PLAN.md), the 335 `hypothesis` 
 ## Research for another model (Ghidra, 2026-11-06)
 Each is self-contained: the answer goes into `db/annotations/` and a research page, with the addresses
 checked in the decompiler. Claims from the cinematic tools' synthesis are leads, not facts.
-1. **Class instance lists.** The synthesis says every ClassInfo keeps four instance lists at
-   `+0x60 / +0x70 / +0x80 / +0x90` with the node at entity `+0x40`. TimelineEntity's constructor
-   (0x14368d590) zeroes `+0x30..+0x48` after the base constructor (0x143160100), so the node cannot be at +0x40
-   there. Find the code that links an entity into its class's list (the base constructor, or an
-   `addToClassList` call) and the real node offset, the list head and how a walk ends. Payoff: every
-   door, vehicle or trigger of a class, including ones made before GridNode started.
-2. **ZoneFocusAdd / Remove** (0x143c7e7c0, 0x143c81390). They take the streamer and two pointers, and store
-   24-byte records (+0x00, +0x08, +0x10 = -1, flag in +0x14). Find the callers: what the two pointers
-   are (a position and a radius? a focus object and its owner?) and where the streamer is kept. Payoff: stream
-   the world around the free camera or a far teleport.
-3. **The visual environment update.** Find the function that blends the state (0x143703d60 per the
-   synthesis, unchecked) and its callers; say which one runs once per frame on which thread, and where the
-   render reads the state. Payoff: a hook point to write held values before and after, as the cinematic tools do.
-4. **Dynamic lights.** SphereLightEntity (vtable 0x141bff178) and SpotLightEntity (0x141bff240): how to make one
-   at runtime (creator, entity data, the world to add it to), the update at 0x14376a030, and the light data
-   fields. Payoff: a `light_create` API.
-5. **Audio listeners.** `0x143018a10` (add) and `0x14301d4b0` (remove), the nearest-listener resolver
-   `0x142fe50b0`. Payoff: sound that follows the free camera and Faith at once.
-6. **The long-fall kill.** Faith dies after falling uncontrolled for a while even with kill volumes off and
-   FallThreshold raised: find what kills her (state 0, distance or time) and where. Payoff: a clean
-   `no fall death` without the trainer's teleport back.
-7. **Swarms and traffic.** `CrowdBoidsComponent` agent lists (+0x70 / +0x78, 0x20 bytes an agent): confirm, and
-   find a density or speed control.
-8. **The 335 `hypothesis` functions** left in the annotations: check them area by area.
+1. ~~Class instance lists~~ answered by another model (2026-11-06), partly checked: only spatial entities
+   (SpatialEntity and below) have the node at entity +0x40 and a ClassInfo list; `Entity` is 0x30 bytes
+   and `TimelineEntity` derives from it directly (no node, its +0x30..0x50 are property connections),
+   so its ClassInfo +0x60..+0x78 are 0. A class walk would work for spatial classes only; the list
+   head, the node's prev / next order and the end of a walk are still unchecked. `entities_of_class`
+   (GridNode's own table of created entities) already finds timelines.
+2. ~~ZoneFocusAdd / Remove~~ answered, and already in `research/zone-streaming.md` (2026-10-21): `(focus
+   manager = streamer +0x280, key = 0, focus interface)`; the interface's slot 0 `(self, key, out)` writes
+   position and direction. The caller bytes in `ZoneStreamerFocusEntity`'s Enable handler were re-read
+   2026-11-06 and match. The layout editor keeps 8 focus objects of its own; exposing them as an API
+   (`streaming_focus_*`) is the open step.
+3. ~~The visual environment update~~ answered by another model, **checked in Ghidra 2026-11-06**: the blend is 0x143703d60,
+   called per active context from 0x143705b30 (under the VE mutex); the per-frame hook point is slot 21
+   (0x141BFACA8) of the world renderer's vtable (0x141BFAC00), on the render thread, with `worldRenderer +
+   0x85470` as the destination. Writing there, before and after the blend, would replace the post-update
+   write-back (no flicker). Checked: slot 21 holds 0x14373e5d0, which passes `worldRenderer + 0x85470` to the blend and other calls
+   (six uses); 0x143705b30 locks the mutex and loops over the contexts at +0x2358 / +0x2360, as said. Thread not checked.
+4. ~~Dynamic lights~~ answered, **partly checked in Ghidra**: creator 0x14375e000 `(ctx, ...)` (allocates 0xf0, constructor
+   0x14375f020(mem, ctx + 0x10, *(ctx + 0xd0)), links with 0x14375c4a0; the light data comes from the context,
+   not a parameter; its one caller is 0x143766ec0). Vtables are PBRSphereLightEntity / PBRSpotLightEntity.
+   update 0x14376a030 sets the dirty byte at entity +0xa2 and queues the entity to the light
+   manager (0x14256a3e0): checked. Colour, radius and the other fields: unchecked. Fields: flags +0x80, colour and intensity +0xd8..0xe0, radius and attenuation +0x220.
+   Not enough for a `light_create` yet: the light entity data and the world to add it to are missing.
+5. ~~Audio listeners~~ answered, **checked in Ghidra 2026-11-06, all as said**: sound manager at 0x1423e29b8 (listener array +0x30 / +0x38);
+   add `(mgr, sourceEntity, viewId)` 0x143018a10 (listener object 0x80, entity +0x70, view +0x78, no-op if
+   present); remove `(mgr, sourceEntity)` 0x14301d4b0; nearest-listener 0x142fe50b0 takes the listeners'
+   transforms via vtable slot 1. Listeners are matched by the entity their vtable slot 6 returns. A second listener on the free camera is
+   possible (an entity with a transform is needed). Not built.
+6. ~~The long-fall kill~~ answered, **unchecked**: state 0 with `last_ground_y - y >= 100` (or the air time
+   running out) starts the death. Cleaner than the trainer's teleport: keep `last_ground_y` at her y while in
+   state 0 (`GN_MOVE_LAST_GROUND_Y`). The air-time limit is not found, so this may only cover the distance.
+   Not built: the teleport works (confirmed).
+7. ~~Swarms and traffic~~ **checked in Ghidra 2026-11-06; the other model had parts wrong.** The class is
+   `CrowdPlacementBoidsEntity` (entity +0x28 bus, +0x30 its data); its per-frame step is 0x143b9b7e0 (called
+   from 0x143b9bc10 with the crowd component and its dt). In it:
+   - **Agent buffer** (component +0x70 begin, +0x78 end): two `float4` per agent, 0x20 bytes, indexed by
+     entity +0x44 (first slot) + i, count at entity +0x48. The *even* float4 is the previous position, the
+     *odd* one the current (the other model had it the other way). The step copies odd to even, then writes the
+     new position from the source record to odd.
+   - **Source records**: 0x24 bytes each, from the swarm manager (entity +0x98), index entity +0xa0 + i:
+     position x, y, z at +0x00, heading as a half-float in degrees at +0x0c. `y <= -10042` means the agent is
+     not spawned (both float4s are set to its position).
+   - **Render buffer**: one `float4` per agent (slot entity +0x44 + i): previous position and a half-float
+     heading in radians in the last 16 bits.
+   - **Density**: a `Float32` property (hash 0xbdd8feb6, its default is the data's +0x78) read every step as a
+     percentage; the spawner's reserve (spawner +0x34) is set to `count * (100 - value) / 100`, clamped 0..1,
+     and the respawn (0x143b9cbe0) pops a free agent (the pool at spawner +0x40 / +0x48) only while the pool
+     is bigger than the reserve. So 100 = every agent active, 0 = none spawn. Writing the data's +0x78 should
+     therefore be a density control (untested; it needs a `CrowdPlacementBoidsEntity`'s data from
+     `entities_of_class`). The respawn also needs the time at the context +0x14 to pass the spawner's
+     +0x30 and rolls a chance per spawn point (0x10-byte records at spawner +0x60 / +0x68).
+   - Still unchecked: the agent cap (`SwarmEntityData +0x84`), speed (the behaviour classes 0x141CCEF20 /
+     0x141CCEED8 / 0x141CCEEA0 / 0x141CCEE60 and settings 0x141CD2CA8 are only vtables here), and how many
+     of these entities a level has.
+8. The 377 `hypothesis` functions (the count was 335 above; the other model counted 377): resources 98, render 64,
+   levels 47, reflection 36, startup 32, input 20, 13 other files 80. Still to check, area by area.
+
+From item 2 (checked): the game's `ZoneStreamerFocus_remove` writes out of bounds when the record is missing (index 0xffffffff). GridNode never
+calls it: `focusApply` sets the removed flag (bit 0) on a record it found first.
 
 ## Done earlier
 Everything before 2026-11-06 (the Volumes tab, what was checked in game 2026-11-02, the long list of

@@ -778,6 +778,18 @@ inline void releaseTimeOfDay() { api().time_of_day_hold(-1.f); }
 inline bool visualEnvGet(uint32_t offset, void* out, uint32_t size) { return api().visual_env_get(offset, out, size) == GN_OK; }
 inline bool visualEnvSet(uint32_t offset, const void* data, uint32_t size) { return api().visual_env_set(offset, data, size) == GN_OK; }
 inline void visualEnvRelease(uint32_t offset = GN_VE_ALL) { api().visual_env_release(offset); }
+// Streaming focus points (API 30, experimental): the zones around `pos` are loaded as well as those around Faith.
+// Returns the handle, 0 when refused (full, or this build's streamer is not the known one). Released when the mod unloads.
+inline uint32_t streamingFocusAdd(const Vec3& pos) {
+    const float p[3] = {pos.x, pos.y, pos.z};
+    uint32_t h = 0;
+    return api().streaming_focus_add(p, &h) == GN_OK ? h : 0;
+}
+inline bool streamingFocusMove(uint32_t handle, const Vec3& pos) {
+    const float p[3] = {pos.x, pos.y, pos.z};
+    return api().streaming_focus_move(handle, p) == GN_OK;
+}
+inline void streamingFocusRemove(uint32_t handle) { api().streaming_focus_remove(handle); }
 // Timelines (API 29, experimental): doors, gates and lifts. setTimelineTime: server thread.
 inline bool timelineTime(const void* timeline, float& seconds) { return api().timeline_time(timeline, &seconds) == GN_OK; }
 inline bool setTimelineTime(void* timeline, float seconds, bool force = true) { return api().timeline_set_time(timeline, seconds, force ? 1 : 0) == GN_OK; }

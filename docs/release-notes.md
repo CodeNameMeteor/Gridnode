@@ -2,7 +2,7 @@
 
 ## First release (draft: version to decide, 1.0.0 or a 0.9 beta)
 
-The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 29.
+The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 30.
 
 ### Downloads
 

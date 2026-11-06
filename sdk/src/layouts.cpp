@@ -1564,6 +1564,14 @@ struct FocusWant {
 };
 std::mutex g_focusM;
 std::vector<FocusWant> g_focusTemp;                // (g_focusM) library placements under way
+struct ApiFocus {                                  // mods' (streaming_focus_*), API 30
+    uint32_t handle;
+    uintptr_t owner;
+    float at[3];
+};
+std::vector<ApiFocus> g_focusApi;                  // (g_focusM)
+uint32_t g_focusNextHandle = 1;                    // (g_focusM)
+std::atomic<bool> g_focusDirty{false};             // a mod's point changed: sync soon, not in 2 s
 std::unordered_map<uintptr_t, uint32_t> g_focusReg; // (g_focusM) streamer -> slots GridNode registered
 int g_focusCount = 0;                              // (g_focusM) slots in use
 
@@ -1669,6 +1677,7 @@ void zoneFocusSync() {
         const ULONGLONG now = GetTickCount64();
         g_focusTemp.erase(std::remove_if(g_focusTemp.begin(), g_focusTemp.end(), [&](const FocusWant& w) { return w.until <= now; }),
                           g_focusTemp.end());
+        for (const ApiFocus& f : g_focusApi) addWant(f.at); // a mod's points first: they are the ones asked for
         for (const FocusWant& w : g_focusTemp) addWant(w.at);
     }
     // Where someone is looking from: Faith, and the free camera while it is on.
@@ -1721,6 +1730,61 @@ void zoneFocusSync() {
         if (serverRealm) server().post([streamer, type, mask] { focusApply(streamer, type, mask); });
         else client().post([streamer, type, mask] { focusApply(streamer, type, mask); });
     }
+}
+
+constexpr size_t kMaxApiFocus = 4;
+
+int focusApiAdd(const void* caller, const float pos[3], uint32_t* handle) {
+    if (!pos || !handle) return GN_ERR_ARGUMENT;
+    for (int k = 0; k < 3; ++k)
+        if (!std::isfinite(pos[k]) || std::fabs(pos[k]) > 1e6f) return GN_ERR_ARGUMENT;
+    if (!focusKnown()) return GN_ERR_UNAVAILABLE;
+    {
+        std::lock_guard<std::mutex> lock(g_focusM);
+        if (g_focusApi.size() >= kMaxApiFocus) return GN_ERR_FULL;
+        ApiFocus f{};
+        f.handle = g_focusNextHandle++;
+        f.owner = reinterpret_cast<uintptr_t>(caller);
+        memcpy(f.at, pos, sizeof(f.at));
+        g_focusApi.push_back(f);
+        *handle = f.handle;
+    }
+    g_focusDirty = true;
+    return GN_OK;
+}
+
+int focusApiMove(uint32_t handle, const float pos[3]) {
+    if (!pos) return GN_ERR_ARGUMENT;
+    for (int k = 0; k < 3; ++k)
+        if (!std::isfinite(pos[k]) || std::fabs(pos[k]) > 1e6f) return GN_ERR_ARGUMENT;
+    std::lock_guard<std::mutex> lock(g_focusM);
+    for (ApiFocus& f : g_focusApi)
+        if (f.handle == handle) {
+            memcpy(f.at, pos, sizeof(f.at));
+            g_focusDirty = true;
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+int focusApiRemove(uint32_t handle) {
+    std::lock_guard<std::mutex> lock(g_focusM);
+    for (size_t i = 0; i < g_focusApi.size(); ++i)
+        if (g_focusApi[i].handle == handle) {
+            g_focusApi.erase(g_focusApi.begin() + static_cast<std::ptrdiff_t>(i));
+            g_focusDirty = true;
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+void focusApiForget(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_focusM);
+    const size_t before = g_focusApi.size();
+    g_focusApi.erase(std::remove_if(g_focusApi.begin(), g_focusApi.end(),
+                                    [&](const ApiFocus& f) { return r.has(reinterpret_cast<void*>(f.owner)); }),
+                     g_focusApi.end());
+    if (g_focusApi.size() != before) g_focusDirty = true;
 }
 
 void clearZoneFocus() { // a new level: its streamers are new
@@ -3393,8 +3457,14 @@ std::atomic<bool> g_released{false}; // a full unload: nothing more is applied
 void serverTick() {
     if (g_released.load()) return;
     runQueue(g_serverQ);
-    static DWORD last = 0;
+    static DWORD last = 0, lastFocus = 0;
     const DWORD now = GetTickCount();
+    // A mod's focus point moved: sync within a quarter second, so a flying camera takes its streaming along.
+    if (g_focusDirty.load() && now - lastFocus >= 250) {
+        lastFocus = now;
+        g_focusDirty = false;
+        zoneFocusSync();
+    }
     if (now - last >= 2000) {
         last = now;
         maintainSpawned();
@@ -6239,6 +6309,11 @@ int cameraSet(const void* caller, const gn_transform* t, uint32_t flags) {
     g_modCamBody = (flags & GN_CAMERA_BODY) != 0;
     return GN_OK;
 }
+
+int streamingFocusAdd(const void* caller, const float pos[3], uint32_t* handle) { return focusApiAdd(caller, pos, handle); }
+int streamingFocusMove(uint32_t handle, const float pos[3]) { return focusApiMove(handle, pos); }
+int streamingFocusRemove(uint32_t handle) { return focusApiRemove(handle); }
+void forgetStreamingFocus(const CodeRange& r) { focusApiForget(r); }
 
 int cameraFovSet(const void* caller, float degrees) {
     if (!std::isfinite(degrees) || degrees < 0.f || degrees > 170.f) return GN_ERR_ARGUMENT;

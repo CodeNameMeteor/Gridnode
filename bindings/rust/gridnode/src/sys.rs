@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 29;
+pub const GN_API_VERSION: u32 = 30;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -495,6 +495,9 @@ pub struct gn_api {
     pub visual_env_release: Option<unsafe extern "C" fn(offset: u32) -> c_int>,
     pub timeline_time: Option<unsafe extern "C" fn(timeline: *const c_void, seconds: *mut f32) -> c_int>,
     pub timeline_set_time: Option<unsafe extern "C" fn(timeline: *mut c_void, seconds: f32, force: c_int) -> c_int>,
+    pub streaming_focus_add: Option<unsafe extern "C" fn(pos: *const f32, handle: *mut u32) -> c_int>,
+    pub streaming_focus_move: Option<unsafe extern "C" fn(handle: u32, pos: *const f32) -> c_int>,
+    pub streaming_focus_remove: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -524,4 +527,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1200);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1224);
