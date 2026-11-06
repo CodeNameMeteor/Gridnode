@@ -1180,6 +1180,8 @@ void streamSection() {
     }
 }
 
+std::string g_localized; // the last text lookup (API 31)
+
 void lookSection() {
     for (VeSlider& v : g_ve) {
         ImGui::PushID(v.label);
@@ -1295,6 +1297,14 @@ void worldTab() {
     if (ImGui::CollapsingHeader("Look and streaming (experimental)")) {
         lookSection();
         streamSection();
+        ImGui::SeparatorText("Text lookup");
+        static char id[96] = "ID_NC_THEVIEW02";
+        ImGui::InputText("String id", id, sizeof(id));
+        if (ImGui::SmallButton("Look up (shown, and in the log)")) {
+            g_localized = gn::localize(id);
+            gn::log("localize %s -> %s", id, g_localized.c_str());
+        }
+        if (!g_localized.empty()) ImGui::TextWrapped("%s", g_localized.c_str());
     }
 }
 
@@ -1602,7 +1612,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.7.1", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.8.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

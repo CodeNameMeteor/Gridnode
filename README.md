@@ -4,7 +4,7 @@ An open-source SDK for modding **Mirror's Edge Catalyst** (PC, EA app build). Gr
 find, read, write, call and hook the game's engine classes (Frostbite 3) by name, without reversing
 them first, and documents everything it knows about the engine.
 
-> **Status:** getting ready for the first release (API 30). The plan is in
+> **Status:** getting ready for the first release (API 31). The plan is in
 > [docs/progress.md](docs/progress.md); the full design in [docs/PLAN.md](docs/PLAN.md). The docs site
 > builds with `python tools/gen/gridnode.py docs --build` ([docs/building.md](docs/building.md#these-docs));
 > CI publishes it as the `docs-site` artifact.

@@ -16,6 +16,17 @@ mod's ground check fails for one or two frames after an undo. Other server queri
 doing it just before the flush, as the engine's own unload does, would be cleaner (hook point: bodies.cpp's
 `flushHook`).
 
+## MECMP compared with the API (2026-11-06)
+Another model compared `D:\Dev\MECMP` with API 29. Taken: **API 31 `localize`** (0x1436a8d40). Not taken, and why:
+- Dash and time trial events: `on_message` already delivers them (category 0x54776fc6; types started 0xc164590c,
+  finished 0xd71d027f with the time at +0x58 ms, cancelled 0x9a9a27c6, time trial finished 0x9b35497c); a mod
+  reads the fields itself (MECMP's `runs.h` has the layout). A typed wrapper is possible later.
+- Map markers (`PresenceInfoManager_assignSlot` 0x143a405e0, slots of 0x50 bytes, the pool update slot
+  0x141c74bc8): needs a hook on the pool update and a real online id (the icon is the Runner Tag), so it only
+  suits online mods. Not exposed.
+- Character spawn, outfits, bone poses, vocals, gamepad and pause hooks: large, each needs its own research and
+  game testing (see `research/replay-ghosts.md`); MECMP keeps them. Pause also needs the UISystem instance.
+
 ## API 30: streaming focus points (2026-11-06; untested in game)
 - `streaming_focus_add/move/remove` (`layouts.cpp`, `focusApi*`): up to 4 points a mod owns, added to the streamers'
   focus lists ahead of the layout editor's own, merged when within 60 m, synced every 2 s and 250 ms after a move.

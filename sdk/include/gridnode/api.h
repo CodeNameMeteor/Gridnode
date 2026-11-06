@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 30 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points */
+#define GN_API_VERSION 31 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1080,6 +1080,16 @@ typedef struct gn_api {
     int (*streaming_focus_add)(const float pos[3], uint32_t* handle);
     int (*streaming_focus_move)(uint32_t handle, const float pos[3]);
     int (*streaming_focus_remove)(uint32_t handle);
+
+    /* ==== GN_API_VERSION 31 =================================================================== */
+
+    /* ---- localize ------------------------------------------------------------------------------------
+     * The game's own text lookup: a string id ("ID_NC_THEVIEW02", a mission or challenge title) to the text
+     * in the game's current language, into `out` (cap bytes, UTF-8, always terminated). GN_OK when the game
+     * found a text; GN_ERR_NOT_FOUND when it did not, or before the game's UI is up (out then holds the id, so it can
+     * be shown as is); GN_ERR_ARGUMENT for a null pointer or cap 0.
+     * Any thread. Untested in game here (MECMP has used the same call since October). */
+    int (*localize)(const char* id, char* out, uint32_t cap);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

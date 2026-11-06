@@ -5,17 +5,20 @@
 #include <intrin.h>
 #endif
 
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <set>
 #include <string>
 
+#include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/version.hpp"
 #include "host.hpp"
 
 namespace gn::host {
+namespace e = gn::engine;
 
 void logHookException(const char* where, const char* what) {
     static std::atomic<int> said{0};
@@ -325,6 +328,23 @@ GN_NOINLINE int apiTimeOfDayHold(float seconds) { return timeOfDayHold(GN_CALLER
 GN_NOINLINE int apiStreamingFocusAdd(const float pos[3], uint32_t* handle) { return layouts::streamingFocusAdd(GN_CALLER, pos, handle); }
 GN_NOINLINE int apiVisualEnvSet(uint32_t offset, const void* data, uint32_t size) { return visualEnvSet(GN_CALLER, offset, data, size); }
 GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
+
+// The UI's text lookup. Without a localiser (or an unknown id) the game leaves the buffer empty; the id is
+// given back then, and when the "text" is the id itself or not printable.
+int apiLocalize(const char* id, char* out, uint32_t cap) {
+    if (!id || !out || !cap) return GN_ERR_ARGUMENT;
+    out[0] = 0;
+    char buf[512] = {};
+    void* noArgs = nullptr; // the game's own callers pass a pointer to the arguments, none here
+    const bool ok = reinterpret_cast<uint8_t (*)(char*, uint32_t, const char*, void*)>(mem::rva(e::function::Localize_format))(
+                        buf, sizeof(buf), id, &noArgs) != 0;
+    buf[sizeof(buf) - 1] = 0;
+    bool printable = buf[0] != 0;
+    for (const unsigned char* c = reinterpret_cast<const unsigned char*>(buf); *c; ++c) printable = printable && *c >= 0x20;
+    const char* text = ok && printable && std::strcmp(buf, id) != 0 ? buf : id;
+    std::snprintf(out, cap, "%s", text);
+    return text == buf ? GN_OK : GN_ERR_NOT_FOUND;
+}
 } // namespace
 
 namespace {
@@ -525,6 +545,7 @@ const gn_api* api() {
         a.streaming_focus_add = apiStreamingFocusAdd;
         a.streaming_focus_move = layouts::streamingFocusMove;
         a.streaming_focus_remove = layouts::streamingFocusRemove;
+        a.localize = apiLocalize;
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

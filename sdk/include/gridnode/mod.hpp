@@ -790,6 +790,12 @@ inline bool streamingFocusMove(uint32_t handle, const Vec3& pos) {
     return api().streaming_focus_move(handle, p) == GN_OK;
 }
 inline void streamingFocusRemove(uint32_t handle) { api().streaming_focus_remove(handle); }
+// The game's text for a string id in its current language (API 31); the id itself when there is none.
+inline std::string localize(const std::string& id) {
+    char buf[512] = {};
+    if (api().localize(id.c_str(), buf, sizeof(buf)) == GN_OK) return buf;
+    return id;
+}
 // Timelines (API 29, experimental): doors, gates and lifts. setTimelineTime: server thread.
 inline bool timelineTime(const void* timeline, float& seconds) { return api().timeline_time(timeline, &seconds) == GN_OK; }
 inline bool setTimelineTime(void* timeline, float seconds, bool force = true) { return api().timeline_set_time(timeline, seconds, force ? 1 : 0) == GN_OK; }

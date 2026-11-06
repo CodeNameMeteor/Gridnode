@@ -783,6 +783,22 @@ pub fn streaming_focus_move(handle: u32, pos: [f32; 3]) -> bool {
 pub fn streaming_focus_remove(handle: u32) {
     unsafe { (api().streaming_focus_remove.unwrap())(handle) };
 }
+/// The game's text for a string id in its current language (API 31); the id itself when there is none.
+pub fn localize(id: &str) -> String {
+    let Ok(c) = std::ffi::CString::new(id) else {
+        return id.to_string();
+    };
+    let mut buf = [0u8; 512];
+    let ok = unsafe {
+        (api().localize.unwrap())(c.as_ptr(), buf.as_mut_ptr() as *mut _, buf.len() as u32)
+    } == 0;
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if ok {
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        id.to_string()
+    }
+}
 /// A TimelineEntity's current time (API 29, experimental).
 pub fn timeline_time(timeline: *const c_void) -> Option<f32> {
     let mut t = 0.0f32;

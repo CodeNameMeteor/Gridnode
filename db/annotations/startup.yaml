@@ -222,7 +222,7 @@ functions:
     sources: [ghidra]
   - name: Localize_format
     va: 0x1436a8d40
-    signature: "u8(void* self, u32, u64, u64)"
-    note: "Named in Ghidra as Localize_format; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
+    signature: "u8(char* out, u32 capacity, const char* stringId, void* args)"
+    note: "Writes the localised text of a string id (the UI's lookup; 0 and an empty string when there is no localiser). MECMP passes a pointer to a null pointer as args and has used it for dash and time trial names since October. Checked in Ghidra 2026-11-06: forwards to the localiser's vtable +0xd8."
+    confidence: inferred
     sources: [ghidra]
