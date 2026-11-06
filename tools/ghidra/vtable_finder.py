@@ -10,7 +10,6 @@ Usage:
     python tools/ghidra/vtable_finder.py [--exe PATH] [--export JSON_OUT] [--lookup ADDR]
 """
 
-import sys
 import os
 import argparse
 import struct
