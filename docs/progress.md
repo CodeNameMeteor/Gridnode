@@ -3,6 +3,19 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Layout editor: crash when undoing a copy (2026-11-06; fix confirmed by the user)
+Log: the third copy destroyed, then a crash in the same server tick, in the trainer's ground ray cast
+(`FUN_1434de340` -> `PhysicsOwner_objectOfHit`: the owner's table pointer was ASCII, freed memory). Cause
+(from `PhysicsWorld_flush`'s notes): the game releases a physics record only in the next flush, but
+`destroyEntity` frees the physics component at once, so a query between the two reads a freed component.
+Which copy crashes depends on where the ray goes (two earlier destroys were fine). Fix: after a
+server entity is destroyed, server ray casts (`raycast`, `raycastObject`) answer unavailable until the
+server world's next flush, a second at most (`physicsStaleNote` / `physicsQueriesSafe`, bodies.cpp). A
+mod's ground check fails for one or two frames after an undo. Other server queries (the editor's own
+`entities_near`, body functions) are not guarded. The destroy runs after the flush in our post-update;
+doing it just before the flush, as the engine's own unload does, would be cleaner (hook point: bodies.cpp's
+`flushHook`).
+
 ## API 29: the visual environment and timelines (2026-11-06; untested in game)
 - **`visual_env_get/set/release`**: holds values in the visual environment state (MAIN +0x50 -> +0x90 ->
   +0x1c0 -> +0x30, state +0x85470: sun, tonemap, colour correction, sky, wind, depth of field, vignette,

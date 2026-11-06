@@ -2558,6 +2558,9 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
     }
     reinterpret_cast<void (*)(uintptr_t)>(destroy)(ent);
     reinterpret_cast<void* (*)(uintptr_t, uint32_t)>(del)(ent, 1);
+    // The game frees the physics record only in its next flush, but the component is gone now: no
+    // server ray cast until then (a crash on 2026-11-06 in the trainer's ground check, same tick).
+    if (flags & 1) physicsStaleNote();
     GN_LOG("layouts: destroyed %s entity %llx", realm, static_cast<unsigned long long>(ent));
     return true;
 }

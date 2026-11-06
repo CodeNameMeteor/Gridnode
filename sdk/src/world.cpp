@@ -437,6 +437,7 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
     if (!from || !to || !finite(from, 3) || !finite(to, 3) || !std::isfinite(radius) || radius < 0.f || radius > 100.f)
         return GN_ERR_ARGUMENT;
     if (!isServerThread()) return GN_ERR_THREAD;
+    if (!physicsQueriesSafe()) return GN_ERR_UNAVAILABLE; // a destroyed entity's record lives until the next flush
     static const bool ok = [] {
         const bool b = build::codeMatches("RaycastQuery_execute");
         if (!b) GN_LOG("world: RaycastQuery_execute does not look as expected; ray casts are off");
@@ -506,6 +507,7 @@ static_assert(offsetof(PhysRayHit, fraction) == e::st::PhysicsRayHit::off::fract
 int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part) {
     if (!from || !to || !finite(from, 3) || !finite(to, 3)) return GN_ERR_ARGUMENT;
     if (!isServerThread()) return GN_ERR_THREAD;
+    if (!physicsQueriesSafe()) return GN_ERR_UNAVAILABLE; // see physicsStaleNote
     static const bool ok = [] {
         const bool b = build::codeMatches("Physics_castRay");
         if (!b) GN_LOG("world: Physics_castRay does not look as expected; picking objects by ray is off");

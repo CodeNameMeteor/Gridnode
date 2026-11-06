@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -164,6 +165,10 @@ using FlushFn = void (*)(uintptr_t world);
 FlushFn g_flush = nullptr;
 std::atomic<bool> g_off{false}; // boxes switched off (not used yet: a fault reaches the crash handler)
 std::atomic<int> g_flushes{0};
+std::atomic<uint64_t> g_serverFlushes{0}; // flushes of the server's world (every one, boxes or not)
+std::atomic<uint64_t> g_staleFlush{0};    // the server flush count a destroy is waiting for (0: none)
+std::atomic<int64_t> g_staleSince{0};     // when it was noted (ms, steady clock)
+int64_t nowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 uintptr_t havokWorld(uintptr_t world) { return mem::readOr<uintptr_t>(world + c::PhysicsWorld_HavokWorld); }
 uintptr_t havokBody(uintptr_t hk, uint32_t id) {
@@ -386,6 +391,7 @@ void afterFlushLocked(uintptr_t world, int r) {
 void flushHook(uintptr_t world) {
     g_flush(world);
     const int r = realmOf(world);
+    if (r == 1) g_serverFlushes.fetch_add(1);
     if (r < 0) {
         if (const int any = anyRealmOf(world); any >= 0) {
             std::lock_guard<std::mutex> lock(g_m);
@@ -412,6 +418,25 @@ bool usable(const gn_transform& t) {
     return true;
 }
 } // namespace
+
+// An entity of the server world was destroyed. The game releases a physics record only in the next
+// flush (PhysicsWorld_flush: its slot at +0x130 stays until then), but its physics component is freed
+// at once, so a query in between reads the freed component (a crash in a ray cast on 2026-11-06, in
+// the same server tick as the destroy). Queries wait for the next flush, or a second at most.
+void physicsStaleNote() {
+    g_staleSince.store(nowMs());
+    g_staleFlush.store(g_serverFlushes.load() + 1);
+}
+
+bool physicsQueriesSafe() {
+    const uint64_t want = g_staleFlush.load();
+    if (!want) return true;
+    if (g_serverFlushes.load() >= want || nowMs() - g_staleSince.load() > 1000) {
+        g_staleFlush.store(0);
+        return true;
+    }
+    return false;
+}
 
 void bodiesStart() {
     if (g_started) return;

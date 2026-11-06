@@ -752,12 +752,18 @@ pub fn time_of_day_hold(seconds: Option<f32>) -> bool {
 }
 /// Reads the visual environment state at `offset` (API 29, experimental; `sys::GN_VE_*`).
 pub fn visual_env_get(offset: u32, out: &mut [u8]) -> bool {
-    unsafe { (api().visual_env_get.unwrap())(offset, out.as_mut_ptr() as *mut c_void, out.len() as u32) == 0 }
+    unsafe {
+        (api().visual_env_get.unwrap())(offset, out.as_mut_ptr() as *mut c_void, out.len() as u32)
+            == 0
+    }
 }
 /// Holds `data` at `offset` in the visual environment state against the game recomputing it (API 29,
 /// experimental). Released when the mod unloads.
 pub fn visual_env_set(offset: u32, data: &[u8]) -> bool {
-    unsafe { (api().visual_env_set.unwrap())(offset, data.as_ptr() as *const c_void, data.len() as u32) == 0 }
+    unsafe {
+        (api().visual_env_set.unwrap())(offset, data.as_ptr() as *const c_void, data.len() as u32)
+            == 0
+    }
 }
 /// Drops the hold at `offset`; `None` drops every hold (API 29).
 pub fn visual_env_release(offset: Option<u32>) {

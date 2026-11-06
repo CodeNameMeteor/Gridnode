@@ -199,6 +199,8 @@ int apiBodySetTransform(void* entity, uint32_t body, const gn_transform* to);
 void* apiEntityOtherHalf(void* entity);
 // Collision boxes (bodies.cpp) and what a Havok body says.
 void bodiesStart();
+void physicsStaleNote();     // a server entity was destroyed: queries wait for the next physics flush
+bool physicsQueriesSafe();   // false until then (a second at most)
 int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out, const void* caller);
 int boxMove(uint32_t box, const gn_transform* at);
 int boxRemove(uint32_t box);
