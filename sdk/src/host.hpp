@@ -188,11 +188,13 @@ int levelReady();                                                      // 1: the
 int groundBelow(const float pos[3], float depth, float* groundY);      // server thread: a ray down
 void levelReadyServerTick();
 // Server thread: a ray's closest hit and the physics object it hit (0 when unknown).
-int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part);
+int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part,
+                  const uint32_t* ignore = nullptr, uint32_t ignoreCount = 0); // up to 12 body ids the ray skips
 // A physics entity's collision bodies: (id, its RigidBody or 0 when it is another kind), at most 64.
 std::vector<std::pair<uint32_t, uintptr_t>> physicsBodies(uintptr_t entity);
 std::pair<uintptr_t, const reflect::Type*> entityOfBody(uint32_t body); // the server physics entity with that body
 int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out);
+int apiRaycastFiltered(const float from[3], const float to[3], const uint32_t* ignore, uint32_t count, gn_ray_hit_ex* out);
 int apiEntityBodies(void* entity, uint32_t* ids, int max);
 int apiBodyTransform(void* entity, uint32_t body, gn_transform* out);
 int apiBodySetTransform(void* entity, uint32_t body, const gn_transform* to);

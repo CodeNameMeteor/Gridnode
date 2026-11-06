@@ -1297,7 +1297,22 @@ void worldTab() {
     if (ImGui::CollapsingHeader("Look and streaming (experimental)")) {
         lookSection();
         streamSection();
+        ImGui::SeparatorText("Ray test (API 33)");
+        if (ImGui::SmallButton("Cast down from Faith, then past the first hit")) {
+            const gn::Vec3 from{g_px.load(), g_py.load() + 1.f, g_pz.load()};
+            const gn::Vec3 to{from.x, from.y - 40.f, from.z};
+            gn::runOnServer([from, to] {
+                gn::ObjectHit h1{}, h2{};
+                if (!gn::raycastObject(from, to, h1)) return gn::log("ray test: nothing below");
+                gn::log("ray test: first hit body %08x at y %.2f (%.2f m)", h1.body, h1.hit.position[1], h1.hit.distance);
+                if (gn::raycastFiltered(from, to, {h1.body}, h2))
+                    gn::log("ray test: past it, body %08x at y %.2f (%.2f m)", h2.body, h2.hit.position[1], h2.hit.distance);
+                else
+                    gn::log("ray test: past it, nothing");
+            });
+        }
         ImGui::SeparatorText("Text lookup");
+        ImGui::TextDisabled("Game menu open (pause requests): %s", gn::menuOpen() ? "yes" : "no");
         static char id[96] = "ID_NC_THEVIEW02";
         ImGui::InputText("String id", id, sizeof(id));
         if (ImGui::SmallButton("Look up (shown, and in the log)")) {
@@ -1612,7 +1627,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.8.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.9.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

@@ -325,6 +325,14 @@ inline bool raycastObject(const Vec3& from, const Vec3& to, ObjectHit& hit) {
     return api().raycast_object(a, b, &hit) == GN_OK;
 }
 
+// Like raycastObject, but the ray passes through the bodies in `ignore` (up to 12 ids; API 33).
+inline bool raycastFiltered(const Vec3& from, const Vec3& to, const std::vector<uint32_t>& ignore, ObjectHit& hit) {
+    const float a[3] = {from.x, from.y, from.z}, b[3] = {to.x, to.y, to.z};
+    hit = ObjectHit{};
+    hit.size = sizeof(ObjectHit);
+    return api().raycast_filtered(a, b, ignore.data(), static_cast<uint32_t>(ignore.size()), &hit) == GN_OK;
+}
+
 // ---- collision bodies -------------------------------------------------------------------------
 // A physics entity's collision body ids (empty if it is not one). Any thread.
 inline std::vector<uint32_t> entityBodies(void* entity) {
@@ -795,6 +803,12 @@ inline std::string localize(const std::string& id) {
     char buf[512] = {};
     if (api().localize(id.c_str(), buf, sizeof(buf)) == GN_OK) return buf;
     return id;
+}
+// Whether a game menu is open (the pause menu, the map, a dialog), from the game's own pause request counters
+// (API 32); false while there is no UI system.
+inline bool menuOpen() {
+    int32_t menus = 0, full = 0;
+    return api().ui_pause_state(&menus, &full) == GN_OK && (menus > 0 || full > 0);
 }
 // Timelines (API 29, experimental): doors, gates and lifts. setTimelineTime: server thread.
 inline bool timelineTime(const void* timeline, float& seconds) { return api().timeline_time(timeline, &seconds) == GN_OK; }

@@ -364,6 +364,21 @@ pub fn raycast_object(from: [f32; 3], to: [f32; 3]) -> Option<ObjectHit> {
     (unsafe { (api().raycast_object.unwrap())(from.as_ptr(), to.as_ptr(), &mut h) } == 0)
         .then_some(h)
 }
+/// Like `raycast_object`, but the ray passes through the bodies in `ignore` (up to 12 ids; API 33).
+pub fn raycast_filtered(from: [f32; 3], to: [f32; 3], ignore: &[u32]) -> Option<ObjectHit> {
+    let mut h: ObjectHit = unsafe { core::mem::zeroed() };
+    h.size = core::mem::size_of::<ObjectHit>() as u32;
+    (unsafe {
+        (api().raycast_filtered.unwrap())(
+            from.as_ptr(),
+            to.as_ptr(),
+            ignore.as_ptr(),
+            ignore.len() as u32,
+            &mut h,
+        )
+    } == 0)
+        .then_some(h)
+}
 /// A physics entity's collision body ids (empty if it is not one). Any thread.
 pub fn entity_bodies(entity: *mut c_void) -> Vec<u32> {
     let mut ids = [0u32; 64];
@@ -798,6 +813,12 @@ pub fn localize(id: &str) -> String {
     } else {
         id.to_string()
     }
+}
+/// Whether a game menu is open (API 32): the game's pause request counters, read only.
+pub fn menu_open() -> bool {
+    let (mut menus, mut full) = (0i32, 0i32);
+    (unsafe { (api().ui_pause_state.unwrap())(&mut menus, &mut full) } == 0)
+        && (menus > 0 || full > 0)
 }
 /// A TimelineEntity's current time (API 29, experimental).
 pub fn timeline_time(timeline: *const c_void) -> Option<f32> {

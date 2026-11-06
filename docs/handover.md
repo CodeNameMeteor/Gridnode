@@ -104,7 +104,7 @@ All pushed to `main` (1f06664 ... 1f513ba, and the commit with this handover).
 | MEC trainer 1.4.0 to 1.5.2 | Noclip flies the free camera while Faith floats where she was (1.5.1; the safe spawn teleport killed her in the air); tabs Trainer / Player / World / Volumes / Settings; World: kill volumes off, movement blockers off, no city alerts, No KSEC (spawner hook on the KSEC templates, despawns, and the city alert's drone call dropped through an `Entity_fireOutputEvent` detour; 1.5.2 asks for the mission again before blocking, so a mission's KSEC spawned in the tick it starts are kept); bhop practice in wall-run state 8; the banner says "MEC Trainer Loaded" | noclip, bhop and the volume key seen working; the rest untested |
 | Annotations from the user's Ghidra work (2026-11-05) | Checked in Ghidra before they came in: 63 ANT creates and constructors (each create allocates under its own type's name and calls its constructor), the core schema and expression registry functions; FPSCamera_update (vtable +0x68), Camera_setTransforms, ClientCameraViewManagers_frameUpdateAll; StaticCommand is 0x28 bytes, Screenshot_commands, g_consoleEnabledForPlatform's writers; the server replay player's vtable, size, creator slot, destructor and update, and client replay player members (+0x1c8 .. +0x2f8). Left out as unchecked or wrong: the city alert input offsets (+0x98 ..: the update reads property slots at +0xd8 / +0xe8 / +0xf8 / +0x108), "0x7062fa7a is GameState::FloatAsset" (no FNV-1 or djb2 of that name gives it), the checkpoint's +0x158 as SpawnAreaRadius, ClientCameraViewManager members other than the known ones, the recording component's vtable | n/a |
 
-### 2026-11-05 to 2026-11-06 (API 28 to 31; trainer 1.5.3 to 1.8.0)
+### 2026-11-05 to 2026-11-06 (API 28 to 33; trainer 1.5.3 to 1.9.0)
 
 | What | How | State |
 |---|---|---|
@@ -115,10 +115,12 @@ All pushed to `main` (1f06664 ... 1f513ba, and the commit with this handover).
 | Trainer 1.5.3 to 1.5.4 | kill volumes off: back below y -300 and after a 100 fall in state 0 (the game kills those) | confirmed |
 | API 29 | `visual_env_*` (holds in the visual environment state) and `timeline_time` / `timeline_set_time`; trainer 1.6.0 World tab "Look" and timelines (`research/visual-environment.md`) | **untested** |
 | API 30 | `streaming_focus_add/move/remove`: extra zone focus points (the layout editor's mechanism, `research/zone-streaming.md`); trainer 1.7.0 "Load the world around the free camera" | **untested** |
-| API 31 | `localize(id)`: the game's text lookup (0x1436a8d40), from MECMP; trainer 1.8.0 "Text lookup" in the World tab | **untested** |
+| API 31 | `localize(id)`: the game's text lookup (0x1436a8d40), from MECMP; trainer 1.8.0 "Text lookup" in the World tab | confirmed |
+| API 32 | `ui_pause_state`: the game's pause request counters (PamUISystem 0x1424157f0, +0x8c8); trainer 1.8.1 shows it under "Text lookup" | **untested** |
+| API 33 | `raycast_filtered`: `raycast_object` skipping up to 12 body ids (the query's inline ignore list, `PhysicsRayInput`) | **untested** |
 
 Deployed to the user's `bin` (2026-11-05): `gridnode.dll` (API 27, with the mission clean-up guard)
-and `mods\mec_trainer.dll` (1.5.2); later builds go to `bin` under new names (`gridnode-api31a.dll`) for the user to swap in; `gridnode_inject.exe` from 2026-11-04.
+and `mods\mec_trainer.dll` (1.5.2); later builds go to `bin` under new names (`gridnode-api33a.dll`) for the user to swap in; `gridnode_inject.exe` from 2026-11-04.
 
 ## 5. What is left for the first release
 

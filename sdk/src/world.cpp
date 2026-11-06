@@ -504,7 +504,9 @@ static_assert(offsetof(PhysRayHit, position) == e::st::PhysicsRayHit::off::posit
 static_assert(offsetof(PhysRayHit, fraction) == e::st::PhysicsRayHit::off::fraction, "PhysicsRayHit layout");
 } // namespace
 
-int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part) {
+int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintptr_t* object, uint32_t* body, uint32_t* part,
+                  const uint32_t* ignore, uint32_t ignoreCount) {
+    if (ignoreCount > 12 || (ignoreCount && !ignore)) return GN_ERR_ARGUMENT; // the list is inline in the query: 12 ids
     if (!from || !to || !finite(from, 3) || !finite(to, 3)) return GN_ERR_ARGUMENT;
     if (!isServerThread()) return GN_ERR_THREAD;
     if (!physicsQueriesSafe()) return GN_ERR_UNAVAILABLE; // see physicsStaleNote
@@ -520,6 +522,7 @@ int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintp
     PhysRayInput in;
     in.ignoreBegin = in.ignoreEnd = in.ignoreInline;
     in.ignoreCapacityEnd = in.ignoreInline + 12;
+    for (uint32_t i = 0; i < ignoreCount; ++i) *in.ignoreEnd++ = ignore[i]; // bodies the ray passes through
     memcpy(in.from, from, 12);
     memcpy(in.to, to, 12);
     PhysRayHit h;
@@ -617,13 +620,14 @@ Fn bodyVirtual(uintptr_t body, uint32_t slot) {
 }
 } // namespace
 
-int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out) {
+namespace {
+int rayObject(const float from[3], const float to[3], const uint32_t* ignore, uint32_t ignoreCount, gn_ray_hit_ex* out) {
     // API 18's struct ended at hit; API 19 added the body's filter, layer and material.
     if (!out || out->size < offsetof(gn_ray_hit_ex, filter_info)) return GN_ERR_ARGUMENT;
     gn_ray_hit hit{};
     uintptr_t object = 0;
     uint32_t body = 0xffffffffu, part = 0xffffffffu;
-    const int r = raycastObject(from, to, &hit, &object, &body, &part);
+    const int r = raycastObject(from, to, &hit, &object, &body, &part, ignore, ignoreCount);
     if (r != GN_OK) return r;
     out->hit = hit;
     out->body = body;
@@ -640,6 +644,12 @@ int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out)
         out->reserved2 = 0;
     }
     return GN_OK;
+}
+} // namespace
+
+int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out) { return rayObject(from, to, nullptr, 0, out); }
+int apiRaycastFiltered(const float from[3], const float to[3], const uint32_t* ignore, uint32_t count, gn_ray_hit_ex* out) {
+    return rayObject(from, to, ignore, count, out);
 }
 
 int apiEntityBodies(void* entity, uint32_t* ids, int max) {

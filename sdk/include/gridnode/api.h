@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 31 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize */
+#define GN_API_VERSION 33 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1090,6 +1090,25 @@ typedef struct gn_api {
      * be shown as is); GN_ERR_ARGUMENT for a null pointer or cap 0.
      * Any thread. Untested in game here (MECMP has used the same call since October). */
     int (*localize)(const char* id, char* out, uint32_t cap);
+
+    /* ==== GN_API_VERSION 32 =================================================================== */
+
+    /* ---- pause state ---------------------------------------------------------------------------------
+     * How many pause requests the game's UI holds: `menus` for menus (the pause menu, the map, dialogs),
+     * `full` for the full-screen ones. A menu is open when menus > 0. These are the counters the game itself
+     * adds to and takes from (UIPauseController_request); GridNode only reads them. Any thread.
+     * GN_ERR_UNAVAILABLE: no UI system yet (before the front end) or an unknown build. Untested in game. */
+    int (*ui_pause_state)(int32_t* menus, int32_t* full);
+
+    /* ==== GN_API_VERSION 33 =================================================================== */
+
+    /* ---- a ray that skips bodies ---------------------------------------------------------------------
+     * raycast_filtered: raycast_object, but the ray passes through the bodies in `ignore` (up to 12 body
+     * ids: a hit's `body`, entity_bodies' ids), so it finds what is behind a character or a prop. Cast again
+     * with the hit's body added to look further. Server thread, like raycast_object (GN_ERR_THREAD),
+     * and the same errors; GN_ERR_ARGUMENT for more than 12 ids. Ported from MECMP's camera probe (which
+     * does the same in the client's world with the game's ray function); untested in game here. */
+    int (*raycast_filtered)(const float from[3], const float to[3], const uint32_t* ignore, uint32_t count, gn_ray_hit_ex* out);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

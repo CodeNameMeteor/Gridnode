@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 31 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 33 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -298,6 +298,8 @@ std::string level = gn::levelName();
 | `holdTimeOfDay(seconds)` / `releaseTimeOfDay()` | any | Holds the clock at a time (0 to 86400) against the game moving it on: it is written back after each server and client world update, so the lighting does not chase a drifting clock as it does with one `setTimeOfDay` a frame. Released when the mod unloads (API 28; the user finds the lighting better than with one set a frame). Rust: `time_of_day_hold`. |
 | `visualEnvGet(offset, out, size)` / `visualEnvSet(offset, data, size)` / `visualEnvRelease(offset)` | any | The visual environment state (sun, tonemap, colour correction, sky, wind, depth of field, vignette, film grain; offsets `GN_VE_*`, fields in [research](research/visual-environment.md)). A set value is held: written back after each world update, because the game recomputes the state every frame. Released when the mod unloads (API 29; experimental, untested). Rust: `visual_env_*`. |
 | `streamingFocusAdd(pos)` / `streamingFocusMove(handle, pos)` / `streamingFocusRemove(handle)` | any | Loads the zones around a point as well as those around Faith (a free camera far away, a cutscene). At most 4 per GridNode, points within 60 m of each other share one; refused when the game's streamer is not the known build. Released when the mod unloads (API 30; experimental, untested). Rust: `streaming_focus_*`. |
+| `raycastFiltered(from, to, ignore, hit)` | server | `raycastObject` that passes through up to 12 body ids (a character, a prop), to find what is behind them (API 33; untested). Rust: `raycast_filtered`. |
+| `menuOpen()` | any | Whether a game menu is open (pause menu, map, dialogs), from the game's own pause request counters (API 32; read only, untested). Rust: `menu_open`. |
 | `localize(id)` | any | The game's text for a string id (`ID_NC_THEVIEW02`, challenge and mission titles) in its current language; the id itself when there is none (API 31; ported from MECMP's dash names, untested here). Rust: `localize`. |
 | `timelineTime(timeline, seconds)` / `setTimelineTime(timeline, seconds, force)` | server for the set | Reads or sets a `TimelineEntity`'s time (doors, gates, lifts: find them with `entitiesOfClass("TimelineEntity", ...)`). `force` updates what it drives at once (API 29; experimental, untested). Rust: `timeline_time`, `timeline_set_time`. |
 | `health(character, health, max)` / `setHealth(character, health)` | server | A server character's health and max health, from its health component (Faith 100; a KSEC 3, his hits). `setHealth` writes the value only: 0 is not a death, the next hit acts on it (API 22). |

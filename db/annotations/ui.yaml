@@ -21,6 +21,14 @@ structs:
       - { offset: 0x08, name: pauseRequestsA, type: i32 }
       - { offset: 0x0c, name: pauseRequestsB, type: i32 }
 
+globals:
+  - name: PamUISystemInstance
+    va: 0x1424157f0
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: "The PamUISystem (0x9e0 bytes), read by the getter at 0x143269ae0 (mov rax, [rip+..]; ret); zeroed by the UI system's destructor. Checked in Ghidra 2026-11-06."
+
 hooks:
   - name: PamUISystem_update
     kind: vtable-slot

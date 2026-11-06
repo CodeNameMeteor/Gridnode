@@ -27,6 +27,29 @@ Another model compared `D:\Dev\MECMP` with API 29. Taken: **API 31 `localize`** 
 - Character spawn, outfits, bone poses, vocals, gamepad and pause hooks: large, each needs its own research and
   game testing (see `research/replay-ghosts.md`); MECMP keeps them. Pause also needs the UISystem instance.
 
+## The ReGlitched branch (2026-11-06)
+Another model read `mecmp-reglitched-physics`. Taken: **API 33 `raycast_filtered`** (the ignore list in `PhysicsRayInput`
+was already annotated). Already in GridNode: the third-person body (`ClientCharacter_GetViewMode`, the 27-slot body
+hook), boxes (`box_add`, which borrow a static body), sounds and rays. Checked in Ghidra and **wrong in the report**: the
+voice vtable (0x141acfad0) +0x18 is not `setParameter` (it registers the voice with the sound manager) and +0x78 takes no
+vector (it clears the 3D state's velocity fields), so no `sound_set_velocity` / `sound_set_parameter`. Not taken:
+standalone Havok boxes (`PhysicsEntityFactory_create` 0x1435169e0, `RigidBody_transformSource` 0x1434f6d90 exist in Ghidra;
+creating a body without a borrowed one is the one real gain, but a wrong call crashes the physics world: needs its own
+research and an in-game test), the audio graph cloning and PCM injection (MECMP's voice chat), the conversation system
+(`VoiceOverSystem_*` are annotated, not exposed).
+
+## Second MECMP comparison (2026-11-06)
+Another model went through MECMP's other files. Taken: **API 32 `ui_pause_state`** (the UI system global 0x1424157f0,
+checked in Ghidra: the getter 0x143269ae0 is `mov rax, [rip+..]; ret`). Paused means requests A >= 1 and either B >= 1
+or a time value below 1e-6 (`UIPauseController_applyToClient`). Not taken yet, all from MECMP and unchecked here:
+- **Safe save reload**: `PamplonaRestartGameMessage` (category 0x0dc84585, type 0x04aea817, vtable 0x141c8eee0, 0x38 bytes)
+  with "ResumeSaveGame" at +0x30, queued on the client manager. Ghidra shows the helpers exist (poolAlloc 0x142a770c0,
+  Message_ctor 0x142a37120, MessageManager_queueMessage 0x142a3ad30); reloads the checkpoint, so it needs an in-game test.
+- **Damage and death**: health component vtable slots 0x100 (apply damage) and 0xf0 (set health, death at <= 0).
+- **AI targets and teams**: a `ServerPlayer` made for a character, team at +0x139c, `AIPlayerEnableAsTargetMessage`.
+- **Press-F triggers**: `PamServerSpatialEntryInputTriggerEntity`, fire through trigger vtable slot 0x88.
+- **Outfits and map pins**: see the first comparison above.
+
 ## API 30: streaming focus points (2026-11-06; untested in game)
 - `streaming_focus_add/move/remove` (`layouts.cpp`, `focusApi*`): up to 4 points a mod owns, added to the streamers'
   focus lists ahead of the layout editor's own, merged when within 60 m, synced every 2 s and 250 ms after a move.
