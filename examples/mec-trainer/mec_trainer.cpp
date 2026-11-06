@@ -1181,6 +1181,60 @@ void streamSection() {
 }
 
 std::string g_localized; // the last text lookup (API 31)
+uint32_t g_testBox = 0;     // the standalone-box test (API 34): the box, and where it is
+float g_testBoxAt[3] = {};
+bool g_nativeBoxes = false;
+
+void boxTestSection() {
+    ImGui::SeparatorText("Standalone boxes (API 34, untested)");
+    if (ImGui::Checkbox("Make boxes with the game's own factory", &g_nativeBoxes)) gn::boxBackendNative(g_nativeBoxes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: a Havok body lending a level body's record. On: a real game physics object, copied from a\n"
+                          "barrier in the client world (needs one nearby in the level). Set it before spawning.");
+    if (ImGui::SmallButton("Spawn 2 m ahead")) {
+        if (g_testBox) gn::boxRemove(g_testBox);
+        gn_view v{};
+        gn::api().view_get(&v);
+        float fx = v.forward[0], fz = v.forward[2];
+        const float n = std::sqrt(fx * fx + fz * fz);
+        if (n > 1e-3f) fx /= n, fz /= n; else fx = 0.f, fz = 1.f;
+        g_testBoxAt[0] = g_px.load() + 2.f * fx, g_testBoxAt[1] = g_py.load(), g_testBoxAt[2] = g_pz.load() + 2.f * fz;
+        gn_transform t{};
+        t.right[0] = t.up[1] = t.forward[2] = 1.f;
+        t.trans[0] = g_testBoxAt[0], t.trans[1] = g_testBoxAt[1], t.trans[2] = g_testBoxAt[2], t.trans[3] = 1.f;
+        g_testBox = gn::boxAdd(t, {0.5f, 0.25f, 0.5f});
+        gn::log("box test: spawned box %u at %.2f %.2f %.2f (%s)", g_testBox, g_testBoxAt[0], g_testBoxAt[1], g_testBoxAt[2], g_nativeBoxes ? "standalone" : "lent record");
+    }
+    auto shift = [](float dy) {
+        if (!g_testBox) return;
+        g_testBoxAt[1] += dy;
+        gn_transform t{};
+        t.right[0] = t.up[1] = t.forward[2] = 1.f;
+        t.trans[0] = g_testBoxAt[0], t.trans[1] = g_testBoxAt[1], t.trans[2] = g_testBoxAt[2], t.trans[3] = 1.f;
+        gn::boxMove(g_testBox, t);
+        gn::log("box test: moved box %u to y %.2f", g_testBox, g_testBoxAt[1]);
+    };
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Raise 2 m")) shift(2.f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Lower 2 m")) shift(-2.f);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Remove")) {
+        if (g_testBox) gn::boxRemove(g_testBox), gn::log("box test: removed box %u", g_testBox);
+        g_testBox = 0;
+    }
+    if (ImGui::SmallButton("Ray down onto it")) {
+        const gn::Vec3 from{g_testBoxAt[0], g_testBoxAt[1] + 3.f, g_testBoxAt[2]};
+        const gn::Vec3 to{from.x, from.y - 6.f, from.z};
+        gn::runOnServer([from, to] {
+            gn::ObjectHit h{};
+            if (!gn::raycastObject(from, to, h)) return gn::log("box test: server ray, nothing below (this ray is the server world's: it only sees the server's copy of the box)");
+            gn::log("box test: server ray hit body %08x layer %u at y %.2f (%.2f m)", h.body, h.layer, h.hit.position[1], h.hit.distance);
+        });
+    }
+    if (g_testBox) ImGui::TextDisabled("Box %u: state %d (1 in the world, 0 waiting)", g_testBox, gn::boxState(g_testBox));
+}
+
 
 void lookSection() {
     for (VeSlider& v : g_ve) {
@@ -1311,8 +1365,18 @@ void worldTab() {
                     gn::log("ray test: past it, nothing");
             });
         }
+        boxTestSection();
         ImGui::SeparatorText("Text lookup");
-        ImGui::TextDisabled("Game menu open (pause requests): %s", gn::menuOpen() ? "yes" : "no");
+        int32_t pauseA = 0, pauseB = 0;
+        gn::pauseRequests(pauseA, pauseB);
+        {
+            static int32_t lastA = -1, lastB = -1;
+            if (pauseA != lastA || pauseB != lastB) {
+                gn::log("pause counters: all %d, full-screen %d (was %d, %d)", pauseA, pauseB, lastA, lastB);
+                lastA = pauseA, lastB = pauseB;
+            }
+        }
+        ImGui::TextDisabled("Game menu open: %s   (pause requests: all %d, full-screen %d)", gn::menuOpen() ? "yes" : "no", pauseA, pauseB);
         static char id[96] = "ID_NC_THEVIEW02";
         ImGui::InputText("String id", id, sizeof(id));
         if (ImGui::SmallButton("Look up (shown, and in the log)")) {
@@ -1627,7 +1691,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.9.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.10.2", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))

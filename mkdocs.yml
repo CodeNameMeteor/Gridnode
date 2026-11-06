@@ -53,6 +53,8 @@ nav:
       - recording.md
       - building.md
       - contributing.md
+      - tools.md
+      - releasing.md
   - Engine notes:
       - engine/index.md
       - engine/characters.md
@@ -79,5 +81,6 @@ nav:
       - research/ant.md
       - research/visual-environment.md
       - research/vtables.md
+      - research/havok-reference.md
       - research/ksec-spawning.md
   # @generated-nav

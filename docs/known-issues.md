@@ -26,6 +26,10 @@ something goes wrong; report anything not listed here with `gridnode.log`.
   first time.
 - **`replay_recent`**: the bones are as ANT's pose has them; which bone is which past the root and
   the trajectory is not mapped yet.
+- **Experimental APIs, not yet tested in game or only lightly:** standalone collision boxes (`boxBackendNative`,
+  API 34; a box made this way copies a barrier's setup and could crash if that barrier is destroyed first), streaming
+  focus points (API 30; the game may already stream around the camera), timelines and the visual environment hooks
+  (API 29), `raycastFiltered` (API 33). Each is marked experimental in [Modding](modding.md).
 - **The Layout editor** (custom maps) is paused: saved layouts load, the editor itself is not being
   worked on.
 

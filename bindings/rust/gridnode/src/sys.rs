@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 33;
+pub const GN_API_VERSION: u32 = 34;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -501,6 +501,7 @@ pub struct gn_api {
     pub localize: Option<unsafe extern "C" fn(id: *const c_char, out: *mut c_char, cap: u32) -> c_int>,
     pub ui_pause_state: Option<unsafe extern "C" fn(menus: *mut i32, full: *mut i32) -> c_int>,
     pub raycast_filtered: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, ignore: *const u32, count: u32, out: *mut gn_ray_hit_ex) -> c_int>,
+    pub box_backend: Option<unsafe extern "C" fn(native: c_int) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -530,4 +531,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1248);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1256);

@@ -423,6 +423,11 @@ pub fn box_remove(b: u32) -> bool {
 pub fn box_state(b: u32) -> i32 {
     unsafe { (api().box_state.unwrap())(b) }
 }
+/// API 34, experimental: `true` makes boxes added from now on (client world) through the game's own
+/// physics factory (copied from a live barrier) instead of a borrowed record.
+pub fn box_backend_native(native: bool) -> bool {
+    unsafe { (api().box_backend.unwrap())(native as c_int) == 0 }
+}
 /// A loaded sound asset played at `pos` (`event` None: its default start). Client thread.
 pub fn sound_play(asset_path: &str, pos: Option<[f32; 3]>, event: Option<&str>) -> Option<u32> {
     let path = std::ffi::CString::new(asset_path).ok()?;
@@ -814,11 +819,10 @@ pub fn localize(id: &str) -> String {
         id.to_string()
     }
 }
-/// Whether a game menu is open (API 32): the game's pause request counters, read only.
+/// Whether a game menu that asks for a pause is open (API 32): the game's pause request counters, read only.
 pub fn menu_open() -> bool {
     let (mut menus, mut full) = (0i32, 0i32);
-    (unsafe { (api().ui_pause_state.unwrap())(&mut menus, &mut full) } == 0)
-        && (menus > 0 || full > 0)
+    (unsafe { (api().ui_pause_state.unwrap())(&mut menus, &mut full) } == 0) && menus > 0
 }
 /// A TimelineEntity's current time (API 29, experimental).
 pub fn timeline_time(timeline: *const c_void) -> Option<f32> {

@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 33 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies */
+#define GN_API_VERSION 34 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend) */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1094,9 +1094,12 @@ typedef struct gn_api {
     /* ==== GN_API_VERSION 32 =================================================================== */
 
     /* ---- pause state ---------------------------------------------------------------------------------
-     * How many pause requests the game's UI holds: `menus` for menus (the pause menu, the map, dialogs),
-     * `full` for the full-screen ones. A menu is open when menus > 0. These are the counters the game itself
-     * adds to and takes from (UIPauseController_request); GridNode only reads them. Any thread.
+     * The game's UI pause request counters: `menus` counts every open screen that asked for a pause (0 in
+     * play, 1 with the pause menu open: tested 2026-11-06), `full` the full-screen ones (0 with the pause menu,
+     * so it is not the pause menu's counter). The game pauses when menus >= 1 and (full >= 1 or its time value
+     * is below 1e-6), so a menu is open when menus > 0. These are the counters the game itself adds to
+     * and takes from (UIPauseController_request, from the screens' enter and exit); GridNode only reads
+     * them. Any thread.
      * GN_ERR_UNAVAILABLE: no UI system yet (before the front end) or an unknown build. Untested in game. */
     int (*ui_pause_state)(int32_t* menus, int32_t* full);
 
@@ -1109,6 +1112,18 @@ typedef struct gn_api {
      * and the same errors; GN_ERR_ARGUMENT for more than 12 ids. Ported from MECMP's camera probe (which
      * does the same in the client's world with the game's ray function); untested in game here. */
     int (*raycast_filtered)(const float from[3], const float to[3], const uint32_t* ignore, uint32_t count, gn_ray_hit_ex* out);
+
+    /* ==== GN_API_VERSION 34 =================================================================== */
+
+    /* ---- standalone collision boxes (experimental) -----------------------------------------------------
+     * box_backend(native): 0 (the default) makes boxes the old way (a Havok body lending a static body's
+     * record); 1 makes the client world's boxes through the game's own physics factory, as a barrier
+     * does, so they are real game physics objects (a ray hit's object is the box's own, not a borrowed
+     * one). Only boxes made after the call change; the server world's boxes stay the old way. Needs a
+     * live barrier (PamOBBCollisionEntity) in the client world to borrow its setup from; with none the
+     * box waits (box_state 0). Returns GN_OK, GN_ERR_UNAVAILABLE if boxes are off. Global, not per mod.
+     * Untested in game until the user's run. */
+    int (*box_backend)(int native);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

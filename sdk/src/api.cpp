@@ -346,14 +346,16 @@ int apiLocalize(const char* id, char* out, uint32_t cap) {
     return text == buf ? GN_OK : GN_ERR_NOT_FOUND;
 }
 
-// The game's pause request counters (PamUISystem +0x8c8: the ints at +0x08 and +0x0c). Read only; the object is
+// The game's pause request counters (the controller PamUISystem +0x8c8 points to: the ints at +0x08 and +0x0c). Read only; the object is
 // checked by its vtable because the global is zeroed when the UI system is destroyed.
 int apiUiPauseState(int32_t* menus, int32_t* full) {
     if (!menus || !full) return GN_ERR_ARGUMENT;
     const uintptr_t ui = mem::readOr<uintptr_t>(mem::rva(e::global::PamUISystemInstance));
     if (!ui || mem::readOr<uintptr_t>(ui) != mem::rva(0x141cb63b0ull)) return GN_ERR_UNAVAILABLE;
+    const uintptr_t ctrl = mem::readOr<uintptr_t>(ui + 0x8c8); // a pointer, not an inline struct
+    if (ctrl < 0x10000) return GN_ERR_UNAVAILABLE;
     int32_t pair[2] = {};
-    if (!mem::read(ui + 0x8c8 + 0x08, pair, sizeof(pair))) return GN_ERR_UNAVAILABLE;
+    if (!mem::read(ctrl + 0x08, pair, sizeof(pair))) return GN_ERR_UNAVAILABLE;
     *menus = pair[0];
     *full = pair[1];
     return GN_OK;
@@ -561,6 +563,7 @@ const gn_api* api() {
         a.localize = apiLocalize;
         a.ui_pause_state = apiUiPauseState;
         a.raycast_filtered = apiRaycastFiltered;
+        a.box_backend = boxBackend;
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

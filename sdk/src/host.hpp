@@ -207,6 +207,7 @@ int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t*
 int boxMove(uint32_t box, const gn_transform* at);
 int boxRemove(uint32_t box);
 int boxState(uint32_t box);
+int boxBackend(int native);
 void forgetBoxes(const CodeRange& r); // a mod's boxes (made from its code)
 bool bodiesRelease(unsigned long ms);
 bool bodyFilter(uintptr_t object, uint32_t& filter, uint32_t& material);

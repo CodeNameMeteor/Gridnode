@@ -47,7 +47,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 recordings (`*.jsonl`, see below), `reviews/`. `docs/research/` only when the task is engine research.
 
 **Docs on demand:** writing a mod `docs/modding.md` (in its own repository: `mod-repository.md`);
-release `troubleshooting.md`, `online.md`, `known-issues.md`, `release-notes.md`; building `building.md`; types
+release `troubleshooting.md`, `online.md`, `known-issues.md`, `release-notes.md`, `releasing.md`; tools `tools.md`; building `building.md`; types
 `annotations.md`, `dump-format.md`; Ghidra `contributing.md`; recordings `recording.md`; maps `layout-editor.md`.
 
 ## Build and test

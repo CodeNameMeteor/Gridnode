@@ -2,7 +2,7 @@
 
 ## First release (draft: version to decide, 1.0.0 or a 0.9 beta)
 
-The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 33.
+The first public GridNode: a modding SDK for Mirror's Edge Catalyst (PC, the EA app build), API 34.
 
 ### Downloads
 
@@ -26,8 +26,8 @@ Making a mod: [Your mod in its own repository](mod-repository.md).
   ready (Faith over loaded ground).
 - **Hooks:** chained pointer hooks, function detours and code patches, all listed and undone on
   unload; two mods on one place are named in the log and the Mods list.
-- **Physics:** ray casts (what was hit), collision bodies, static boxes; body velocities and gravity
-  (experimental).
+- **Physics:** ray casts (what was hit, and past chosen bodies), collision bodies, static boxes (optionally
+  made by the game's own physics factory, experimental); body velocities and gravity (experimental).
 - **Faith:** movement state, speed, health, input actions whatever the binding, god mode, movement
   tuning by name, movement events, landing prediction, her ANT move tracker and her last 15 seconds.
 - **Look:** the time of day, set or held against the game moving it on; the visual environment and

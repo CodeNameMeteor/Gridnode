@@ -2,6 +2,7 @@
 defaults: { confidence: confirmed, sources: [mecmp] }
 
 globals:
+  - { name: TI_PhysicsEntityFactory, va: 0x142831670, type: "void*", note: "fb::TI_PhysicsEntityFactory, the type the game world's factory list (+0x58) is searched for (PhysicsFactory_find) when a barrier makes its body.", confidence: inferred, sources: [ghidra] }
   - name: HavokAabb6Step
     va: 0x1425a8e10
     type: f32
@@ -119,6 +120,9 @@ functions:
     sources: [ghidra]
   - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(float* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(float* hkTransform, const float* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
+  - { name: PhysicsFactory_find, va: 0x143506830, signature: "void*(void* factories, const void* typeInfo)", note: "The first factory in a game world's list (+0x58; vector at +0x28..+0x30) whose type matches. A barrier's enable calls it with TI_PhysicsEntityFactory.", confidence: inferred, sources: [ghidra] }
+  - { name: PhysicsEntityFactory_createBody, va: 0x143516450, signature: "void(void* factory, u32* outId, PhysicsCreationInfo* info, void* rigidData, void* desc)", note: "What PhysicsEntityFactory_create (a 32-byte stub) jumps to. Reads rigidData +0xd4, +0xd8, +0xdc..+0xe4 and info +0xc0 (the physics owner) / +0xc8 (parent); keeps neither rigidData nor desc.", confidence: inferred, sources: [ghidra] }
+  - { name: RigidBody_destroy, va: 0x1434eba50, signature: "void(void* owner, u32* id, const u32* args)", note: "The barrier's deinit (PamOBBCollision_deinit) passes {realm, 1}: the owner's object (table +0x130) is destroyed.", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
@@ -185,6 +189,7 @@ functions:
     sources: [ghidra, user]
 
 constants:
+  - { name: PhysicsBoxDesc_vtable, value: 0x141b41a00, confidence: inferred, sources: [ghidra], note: "The description object a barrier hands PhysicsEntityFactory_create (its local at PamOBBCollision_enableClient): vtable[0]() = 1 (a box), kind +0x14 = 2, layer +0x1c, half extents +0x20." }
   - { name: GameWorld_PhysicsManager, value: 0x50, confidence: inferred, sources: [ghidra], note: "A game world's physics manager (PhysicsManager_Owners at its +0xf0)." }
   - { name: OBBCollision_WorldTransform, value: 0x50, confidence: inferred, sources: [ghidra], note: "A barrier's world transform, resolved when it is enabled." }
   - { name: OBBCollision_BodyId, value: 0x90, confidence: inferred, sources: [ghidra], note: "u32 body id (-1: none yet)." }

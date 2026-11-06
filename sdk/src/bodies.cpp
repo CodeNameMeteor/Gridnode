@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -27,6 +28,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/reflect/registry.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -49,11 +51,17 @@ struct Box {
     bool moved[2] = {};      // a new place to put it at
     bool removed = false;    // to destroy
     bool failed[2] = {};     // could not be made (logged)
+    // The standalone (native) kind, client world only: a game physics object made by the game's own factory
+    // (box_backend 1) instead of a Havok body lending a record. Then body[0] stays kNoBody.
+    uint32_t nid = kNoBody;
+    uintptr_t parent = 0;        // the barrier it was made from: the game keeps its pointer, so the box goes when the barrier does
+    gn_transform* ntf = nullptr; // where the game reads its transform from: kept (the game holds the pointer), never freed
 };
 
 std::mutex g_m;
 std::vector<Box> g_boxes; // (g_m)
 uint32_t g_next = 1;      // (g_m)
+std::atomic<bool> g_native{false}; // box_backend: boxes made from now on in the client world are native
 uintptr_t g_world[2] = {}; // (g_m) the client and server physics worlds (PhysicsWorld, 0xBB0) the bodies are in
 struct Donor {
     uint64_t userData = 0;
@@ -314,13 +322,152 @@ void destroyBodies(uintptr_t world, const std::vector<uint32_t>& ids) {
         hk, ids.data(), static_cast<int32_t>(ids.size()), 1);
 }
 
-// After the game's flush of one realm's world, on its thread (g_m held).
-void afterFlushLocked(uintptr_t world, int r) {
+
+// ---- standalone boxes (box_backend 1) ----------------------------------------------------------------
+// The calls a barrier (PamOBBCollisionEntity) makes to build its body (PamOBBCollision_enableClient),
+// with a box's size in the description. Needs a live client barrier for the setup the factory reads
+// (its bus, its data's first RigidBodyData); nothing of it is kept by the new object but the parent
+// pointer (the barrier's +0x30), so a box can outlive it only if the game does not read that again.
+struct NativeCtx {
+    uintptr_t gw = 0, ent = 0, bus = 0, rigid = 0, owner = 0, factory = 0;
+    char why[200] = {}; // when nothing is usable: where it stopped (logged, a few times)
+};
+
+uintptr_t g_nativeEnt = 0; // (flush thread) the barrier last used
+ULONGLONG g_worldSince[2] = {}; // (g_m) when each realm's physics world was last replaced
+
+bool nativeContext(NativeCtx& c) {
+    static const reflect::Type* type = registry().find("PamOBBCollisionEntity");
+    auto fail = [&](const char* what) {
+        snprintf(c.why, sizeof(c.why), "%s", what);
+        return false;
+    };
+    if (!type) return fail("the type PamOBBCollisionEntity is not known");
+    c.gw = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds)); // [0]: the client's
+    if (!c.gw) return fail("no client game world");
+    const uintptr_t mgr = mem::readOr<uintptr_t>(c.gw + 0x50), factories = mem::readOr<uintptr_t>(c.gw + 0x58);
+    if (!mgr || !factories) return fail("the game world has no physics manager or factory list");
+    int server = 0, noBus = 0, noData = 0, noRigid = 0, noOwner = 0;
+    auto usableEnt = [&](uintptr_t ent) {
+        if ((mem::readOr<uint32_t>(ent + 0x18) & 1) != 0) return ++server, false; // the server's
+        c.ent = ent;
+        c.bus = mem::readOr<uintptr_t>(ent + 0x20);
+        const uintptr_t data = mem::readOr<uintptr_t>(ent + 0x28);
+        // The body setups array: +0x70 in the data's reflection (PhysicsBodies); the client barrier's enable reads +0x78.
+        uintptr_t arr = 0;
+        for (const uintptr_t off : {0x70, 0x78}) {
+            const uintptr_t cand = data ? mem::readOr<uintptr_t>(data + off) : 0;
+            if (cand > 0x10000 && mem::readOr<int32_t>(cand - 4, 0) > 0 && mem::readOr<uintptr_t>(cand) > 0x10000) {
+                arr = cand;
+                break;
+            }
+        }
+        if (!c.bus) return ++noBus, false;
+        if (!arr) {
+            static int dumped = 0;
+            if (data && dumped++ < 2) {
+                uint64_t q[8] = {};
+                mem::read(data + 0x60, q, sizeof(q));
+                GN_LOG("bodies: barrier data %llx +0x60..: %llx %llx %llx %llx %llx %llx %llx %llx", static_cast<unsigned long long>(data), static_cast<unsigned long long>(q[0]),
+                       static_cast<unsigned long long>(q[1]), static_cast<unsigned long long>(q[2]), static_cast<unsigned long long>(q[3]), static_cast<unsigned long long>(q[4]),
+                       static_cast<unsigned long long>(q[5]), static_cast<unsigned long long>(q[6]), static_cast<unsigned long long>(q[7]));
+            }
+            return ++noData, false;
+        }
+        c.rigid = mem::readOr<uintptr_t>(arr);
+        if (!c.rigid) return ++noRigid, false;
+        const uintptr_t table = mem::readOr<uintptr_t>(mgr + 0xf0);
+        c.owner = table ? mem::readOr<uintptr_t>(table + uint64_t(mem::readOr<uint8_t>(c.rigid + 0x2a)) * 8) : 0;
+        return c.owner != 0 || (++noOwner, false);
+    };
+    if (g_nativeEnt && inspector::alive(g_nativeEnt, type) && usableEnt(g_nativeEnt)) {
+    } else {
+        g_nativeEnt = 0;
+        size_t tracked = 0;
+        for (const auto& [ent, t] : inspector::trackedOf(type)) {
+            ++tracked;
+            if (inspector::alive(ent, t) && usableEnt(ent)) {
+                g_nativeEnt = ent;
+                break;
+            }
+        }
+        if (!g_nativeEnt) {
+            snprintf(c.why, sizeof(c.why), "no usable client barrier: %zu tracked, %d server's, %d without a bus, %d without data, %d without a body setup, %d without a physics owner",
+                     tracked, server, noBus, noData, noRigid, noOwner);
+            return false;
+        }
+    }
+    using FindFn = uintptr_t (*)(uintptr_t, const void*);
+    c.factory = reinterpret_cast<FindFn>(mem::rva(e::function::PhysicsFactory_find))(factories, reinterpret_cast<const void*>(mem::rva(e::global::TI_PhysicsEntityFactory)));
+    if (!c.factory) return fail("the game world has no PhysicsEntityFactory");
+    return true;
+}
+
+uintptr_t nativeOwner(uintptr_t gw, uint32_t id) {
+    const uintptr_t mgr = gw ? mem::readOr<uintptr_t>(gw + 0x50) : 0;
+    const uintptr_t table = mgr ? mem::readOr<uintptr_t>(mgr + 0xf0) : 0;
+    return table ? mem::readOr<uintptr_t>(table + uint64_t((id >> 16) & 0xff) * 8) : 0;
+}
+
+void nativePlace(Box& b, uintptr_t owner, uint32_t id) {
+    if (!b.ntf) {
+        b.ntf = static_cast<gn_transform*>(_aligned_malloc(sizeof(gn_transform), 16)); // leaked on purpose (see ntf)
+        if (!b.ntf) return;
+    }
+    *b.ntf = b.at;
+    b.ntf->right[3] = b.ntf->up[3] = b.ntf->forward[3] = 0.f, b.ntf->trans[3] = 1.f;
+    using XformFn = void (*)(uintptr_t, uint32_t*, const gn_transform*);
+    uint32_t a = id, n = id;
+    reinterpret_cast<XformFn>(mem::rva(e::function::RigidBody_transformSource))(owner, &a, b.ntf);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, const gn_transform*, bool)>(mem::rva(e::function::RigidBody_setTransformNative))(owner, &n, b.ntf, true);
+}
+
+bool nativeMake(const NativeCtx& c, Box& b) {
+    alignas(16) uint8_t desc[0x40] = {}; // a box's description: vtable[0]() is 1; kind 2 (static), layer, half extents
+    const uintptr_t vt = mem::rva(c::PhysicsBoxDesc_vtable);
+    memcpy(desc, &vt, 8);
+    const uint32_t kind = 2, layer = 1;
+    memcpy(desc + 0x14, &kind, 4);
+    memcpy(desc + 0x1c, &layer, 4);
+    memcpy(desc + 0x20, b.half, 12);
+    alignas(16) uint8_t info[0x100] = {};
+    reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
+    uint32_t id = kNoBody;
+    const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::PhysicsEntityFactory_create))(
+        c.factory, &id, info, c.rigid, desc);
+    if (made) id = *made;
+    if (id == kNoBody || id == 0xffffffffu) return false;
+    nativePlace(b, c.owner, id);
+    if (!b.ntf) return false;
+    uint32_t t1 = id, t2 = id;
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_enable))(c.owner, &t1);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_registerSpatial))(c.owner, &t2);
+    b.nid = id;
+    b.parent = c.ent;
+    return true;
+}
+
+// What PamOBBCollision_disable and _deinit do.
+void nativeDestroy(uintptr_t gw, uint32_t id) {
+    const uintptr_t owner = nativeOwner(gw, id);
+    if (!owner) return;
+    uint32_t a = id, d = id, k = id;
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_unregisterSpatial))(owner, &a);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_disable))(owner, &d);
+    const uint32_t args[2] = {0, 1}; // {realm, 1}
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, const uint32_t*)>(mem::rva(e::function::RigidBody_destroy))(owner, &k, args);
+}
+
+// After the game's flush of one realm's world, on its thread (g_m held). `nat`: a barrier's setup for
+// native boxes (client world, box_backend 1), else null.
+void afterFlushLocked(uintptr_t world, int r, const NativeCtx* nat) {
     Donor& donor = g_donor[r];
     if (world != g_world[r]) {
         // A new world (a level load): the bodies died with the old one.
-        for (Box& b : g_boxes) b.body[r] = kNoBody, b.failed[r] = false;
+        for (Box& b : g_boxes) b.body[r] = kNoBody, b.failed[r] = false, b.nid = r == 0 ? kNoBody : b.nid, b.parent = r == 0 ? 0 : b.parent;
         g_world[r] = world;
+        g_worldSince[r] = GetTickCount64();
+        if (r == 0) g_nativeEnt = 0;
         donor = Donor{};
         static std::atomic<int> said{0};
         if (said.fetch_add(1) < 8) GN_LOG("bodies: the %s physics world is %llx", r ? "server" : "client", static_cast<unsigned long long>(world));
@@ -360,17 +507,36 @@ void afterFlushLocked(uintptr_t world, int r) {
         }
     }
     std::vector<uint32_t> gone;
+    const uintptr_t gw = r == 0 ? mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds)) : 0;
     int made = 0;
     for (auto it = g_boxes.begin(); it != g_boxes.end();) {
         Box& b = *it;
         if (b.removed) {
             if (b.body[r] != kNoBody) gone.push_back(b.body[r]), b.body[r] = kNoBody;
+            if (r == 0 && b.nid != kNoBody) {
+                guardHook("native box destroy", [&] { nativeDestroy(gw, b.nid); });
+                b.nid = kNoBody;
+            }
             // Gone from both worlds (or never made in the other): forgotten.
-            if (b.body[0] == kNoBody && b.body[1] == kNoBody) {
+            if (b.body[0] == kNoBody && b.body[1] == kNoBody && b.nid == kNoBody) {
                 it = g_boxes.erase(it);
                 continue;
             }
-        } else if (b.body[r] == kNoBody && !b.failed[r] && donor.ok && made < 32) {
+        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && made < 32 && r == 0 && g_native.load()) {
+            // A new world: the level is still loading (a box made then crashed the game when Faith touched it). Wait 3 s.
+            if (nat && GetTickCount64() - g_worldSince[0] >= 3000) { // else it waits for a barrier to copy the setup from
+                bool ok = false;
+                guardHook("native box make", [&] { ok = nativeMake(*nat, b); });
+                b.moved[r] = false;
+                if (ok) {
+                    GN_LOG("[%s] box %u: made as a game physics object (id %x)", b.mod.c_str(), b.handle, b.nid);
+                } else {
+                    b.failed[r] = true;
+                    GN_LOG("[%s] box %u: the game's factory did not make it", b.mod.c_str(), b.handle);
+                }
+                ++made;
+            }
+        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && donor.ok && made < 32) {
             b.body[r] = makeBody(world, donor, b);
             b.moved[r] = false;
             if (b.body[r] == kNoBody) {
@@ -379,6 +545,9 @@ void afterFlushLocked(uintptr_t world, int r) {
                        r ? "server" : "client");
             }
             ++made;
+        } else if (b.nid != kNoBody && b.moved[r] && r == 0) {
+            guardHook("native box move", [&] { nativePlace(b, nativeOwner(gw, b.nid), b.nid); });
+            b.moved[r] = false;
         } else if (b.body[r] != kNoBody && b.moved[r]) {
             placeBody(world, b.body[r], b.at);
             b.moved[r] = false;
@@ -401,13 +570,45 @@ void flushHook(uintptr_t world) {
     }
     if (g_off.load()) return;
     g_flushes.fetch_add(1);
+    // The setup for native boxes is found before g_m: it takes the entity lists' lock.
+    NativeCtx nat;
+    bool haveNat = false;
+    if (r == 0 && g_native.load()) {
+        guardHook("native setup", [&] { haveNat = nativeContext(nat); });
+        static ULONGLONG lastSaid = 0;
+        static int said = 0;
+        if (!haveNat && nat.why[0] && said < 12 && GetTickCount64() - lastSaid > 5000) {
+            lastSaid = GetTickCount64(), ++said;
+            GN_LOG("bodies: standalone boxes cannot be made yet: %s", nat.why);
+        }
+    }
     std::lock_guard<std::mutex> lock(g_m);
     gravityLocked(world, r, 0);
     if (g_boxes.empty() && world == g_world[r]) return;
-    guardHook("bodies", [&] { afterFlushLocked(world, r); });
+    guardHook("bodies", [&] { afterFlushLocked(world, r, haveNat ? &nat : nullptr); });
+}
+
+// A client barrier is being destroyed (still whole): native boxes made from it go now. The game keeps the
+// barrier's pointer in each box (its surface classification reads it when Faith touches the box), so one
+// outliving it crashed the game. They are made again from another barrier at the next flush.
+void barrierDestroyed(void* entity, void*) {
+    const uintptr_t ent = reinterpret_cast<uintptr_t>(entity);
+    std::lock_guard<std::mutex> lock(g_m);
+    for (Box& b : g_boxes) {
+        if (b.nid == kNoBody || b.parent != ent) continue;
+        // Only while the world and the object are still there (a level ending takes the world's objects itself).
+        const uintptr_t gw = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds));
+        const uintptr_t owner = nativeOwner(gw, b.nid);
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsWorld_Records) : 0;
+        const uintptr_t rec = table ? mem::readOr<uintptr_t>(table + uint64_t(b.nid & 0xffff) * 8) : 0;
+        if (owner == g_world[0] && rec > 0x10000)
+            guardHook("native box destroy", [&] { nativeDestroy(gw, b.nid); });
+        b.nid = kNoBody, b.parent = 0, b.moved[0] = false;
+    }
 }
 
 bool g_started = false;
+bool g_followOk = true; // the barrier-destroyed listener is in (else standalone boxes are refused)
 bool g_ready = false; // the flush is hooked
 
 bool usable(const gn_transform& t) {
@@ -455,6 +656,13 @@ void bodiesStart() {
     }
     g_flush = reinterpret_cast<FlushFn>(original);
     g_ready = true;
+    if (onDestroyed("GridNode", "PamOBBCollisionEntity", &barrierDestroyed, nullptr) != GN_OK) GN_LOG("bodies: standalone boxes cannot follow their barrier's destruction; they are off"), g_followOk = false;
+}
+
+int boxBackend(int native) {
+    if (!g_ready || g_off.load() || (native && !g_followOk)) return GN_ERR_UNAVAILABLE;
+    if (g_native.exchange(native != 0) != (native != 0)) GN_LOG("bodies: new client-world boxes are made %s", native ? "by the game's physics factory (standalone, experimental)" : "as Havok bodies lending a record");
+    return GN_OK;
 }
 
 int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out, const void* caller) {
@@ -500,7 +708,7 @@ int boxRemove(uint32_t box) {
 int boxState(uint32_t box) {
     std::lock_guard<std::mutex> lock(g_m);
     for (const Box& b : g_boxes)
-        if (b.handle == box && !b.removed) return b.failed[0] ? -GN_ERR_FULL : b.body[0] != kNoBody ? 1 : 0; // what Faith collides with
+        if (b.handle == box && !b.removed) return b.failed[0] ? -GN_ERR_FULL : b.body[0] != kNoBody || b.nid != kNoBody ? 1 : 0; // what Faith collides with
     return -GN_ERR_NOT_FOUND;
 }
 
@@ -529,7 +737,7 @@ bool bodiesRelease(unsigned long ms) {
         Sleep(20);
     }
     std::lock_guard<std::mutex> lock(g_m);
-    const bool inWorld = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return b.body[0] != kNoBody || b.body[1] != kNoBody; });
+    const bool inWorld = std::any_of(g_boxes.begin(), g_boxes.end(), [](const Box& b) { return b.body[0] != kNoBody || b.body[1] != kNoBody || b.nid != kNoBody; });
     if (!inWorld) g_boxes.clear();
     return !inWorld;
 }

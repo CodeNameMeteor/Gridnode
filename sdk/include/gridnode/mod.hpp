@@ -359,6 +359,9 @@ inline uint32_t boxAdd(const gn_transform& at, const Vec3& halfExtents) {
 inline bool boxMove(uint32_t box, const gn_transform& at) { return api().box_move(box, &at) == GN_OK; }
 inline bool boxRemove(uint32_t box) { return api().box_remove(box) == GN_OK; }
 inline int boxState(uint32_t box) { return api().box_state(box); } // 1 in the world, 0 waiting, < 0 gone / failed
+// API 34, experimental: true makes boxes added from now on (client world) through the game's own physics
+// factory instead of a borrowed record. Needs a live barrier to copy the setup from (else they wait).
+inline bool boxBackendNative(bool native) { return api().box_backend(native ? 1 : 0) == GN_OK; }
 
 // ---- sounds (API 19) ----------------------------------------------------------------------------
 // A loaded sound asset played at pos (event null: its default start). 0 on failure. Client thread.
@@ -804,12 +807,14 @@ inline std::string localize(const std::string& id) {
     if (api().localize(id.c_str(), buf, sizeof(buf)) == GN_OK) return buf;
     return id;
 }
-// Whether a game menu is open (the pause menu, the map, a dialog), from the game's own pause request counters
-// (API 32); false while there is no UI system.
+// Whether a game menu that asks for a pause is open (the pause menu), from the game's own pause request counters
+// (API 32); false while there is no UI system. Tested with the pause menu; other screens are not.
 inline bool menuOpen() {
     int32_t menus = 0, full = 0;
-    return api().ui_pause_state(&menus, &full) == GN_OK && (menus > 0 || full > 0);
+    return api().ui_pause_state(&menus, &full) == GN_OK && menus > 0;
 }
+// The raw counters (API 32): every screen that asked for a pause, and the full-screen ones.
+inline bool pauseRequests(int32_t& menus, int32_t& full) { return api().ui_pause_state(&menus, &full) == GN_OK; }
 // Timelines (API 29, experimental): doors, gates and lifts. setTimelineTime: server thread.
 inline bool timelineTime(const void* timeline, float& seconds) { return api().timeline_time(timeline, &seconds) == GN_OK; }
 inline bool setTimelineTime(void* timeline, float seconds, bool force = true) { return api().timeline_set_time(timeline, seconds, force ? 1 : 0) == GN_OK; }

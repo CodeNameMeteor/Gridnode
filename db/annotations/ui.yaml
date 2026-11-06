@@ -6,7 +6,7 @@ classes:
     realm: client
     vtable: 0x141cb63b0
     members:
-      - { offset: 0x8c8, name: pauseController, type: "UIPauseController", note: "Inline. Pause requests are the ints at +0x08 / +0x0c." }
+      - { offset: 0x8c8, name: pauseController, type: "UIPauseController*", note: "A POINTER to the controller (PamUISystem_update loads it: *(UIPauseController**)(ui+0x8c8)), not inline: Ghidra's struct had it inline and the trainer read garbage until 2026-11-06. Pause requests are the ints at +0x08 / +0x0c of the controller." }
 
   - name: PamClientPresenceInfoManagerEntity
     realm: client
