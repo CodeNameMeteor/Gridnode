@@ -405,6 +405,8 @@ GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* 
 GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out) {
     return soundPlay(mod, path, event, pos, out, GN_CALLER);
 }
+GN_NOINLINE int apiBusVolumeSet(const char* mod, const char* bus, float gain) { return busVolumeSet(mod, bus, gain, GN_CALLER); }
+GN_NOINLINE int apiBusDuck(const char* mod, const char* bus, float gain, float seconds) { return busDuck(mod, bus, gain, seconds, GN_CALLER); }
 } // namespace
 
 const gn_api* api() {
@@ -564,6 +566,9 @@ const gn_api* api() {
         a.ui_pause_state = apiUiPauseState;
         a.raycast_filtered = apiRaycastFiltered;
         a.box_backend = boxBackend;
+        a.bus_volume_get = busVolumeGet;
+        a.bus_volume_set = apiBusVolumeSet;
+        a.bus_duck = apiBusDuck;
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

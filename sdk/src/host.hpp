@@ -218,6 +218,12 @@ int soundMove(uint32_t sound, const float* pos);
 int soundPlaying(uint32_t sound);
 int soundStop(uint32_t sound);
 void forgetSounds(const CodeRange& r); // a mod's sounds; an empty range: every one
+// The mixer's groups (sounds.cpp, API 35).
+int busVolumeGet(const char* bus, float* out);
+int busVolumeSet(const char* mod, const char* bus, float gain, const void* caller);
+int busDuck(const char* mod, const char* bus, float gain, float seconds, const void* caller);
+void audioMixTick(float dt);             // client tick: ducks move on, offsets reach the game
+void forgetAudioMix(const CodeRange& r); // a mod's offsets; an empty range: every one
 int characterDespawn(void* entity);
 int apiBodyVelocity(void* entity, uint32_t body, float* linear, float* angular);
 int apiBodySetVelocity(void* entity, uint32_t body, const float* linear, const float* angular);

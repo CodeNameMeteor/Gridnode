@@ -220,6 +220,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     }
     forgetBoxes(code);
     forgetSounds(code);
+    forgetAudioMix(code);
     forgetGravity(code);
     forgetTimeOfDay(code);
     forgetVisualEnv(code);

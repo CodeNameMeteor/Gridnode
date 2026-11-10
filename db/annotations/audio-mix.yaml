@@ -1,0 +1,63 @@
+# Audio mix: the mixer behind the options sliders and the ducking (topic audio-mix).
+# Every entry was read in Ghidra on 2026-11-10 (decompile and disassembly); none is game-tested yet.
+# Own file because audio.yaml carries other uncommitted work.
+defaults: { confidence: confirmed, sources: [ghidra] }
+
+globals:
+  - { name: g_mixerManager, va: 0x1423dd6f8, type: "void*", note: "The mixer: a 0x1b50-byte object made in 0x142fe1fd0 (pool alloc, constructor 0x142ff7a80). Not part of the sound manager (0x1423e29b8, a separate 0x2180 object). Group buffer at +0x1a88." }
+
+structs:
+  - name: MixerPropertyBlock
+    size: 0x4c
+    align: 4
+    opaque: true
+    note: "One mix property of a group (gain, ...). Values are dB for the gain block. Updated by 0x143001260 (virtual +0x28 of the property descriptor)."
+    members:
+      - { offset: 0x00, name: finalValue, type: f32, note: "parent value + current + bias; recomputed only while the group is dirty or fading" }
+      - { offset: 0x04, name: current, type: f32, note: "target after the fade (a fade is interpolated in linear gain, stored in dB)" }
+      - { offset: 0x08, name: defaultValue, type: f32, note: "from the descriptor (gain: 0.0 dB, 0x142d94510)" }
+      - { offset: 0x0c, name: fadeElapsed, type: f32 }
+      - { offset: 0x10, name: fadeTotal, type: f32, note: "reloaded from fadeTimes when a fade starts" }
+      - { offset: 0x14, name: fadeStart, type: f32 }
+      - { offset: 0x18, name: fadeTarget, type: f32 }
+      - { offset: 0x1c, name: unmutedTarget, type: f32 }
+      - { offset: 0x20, name: mutedTarget, type: f32 }
+      - { offset: 0x24, name: fadeTimes, type: "f32[4]", note: "picked by the muted and fade-in flags of the group; the snapshot code (0x1430008a0) writes them, 0x143001ba0 zeroes them when the group settles" }
+      - { offset: 0x34, name: snapshotPriority, type: i32, confidence: inferred, note: "written by 0x1430008a0 from the snapshot entry; only read there" }
+      - { offset: 0x38, name: clampEnabled, type: u8 }
+      - { offset: 0x3c, name: clampMin, type: f32 }
+      - { offset: 0x40, name: clampMax, type: f32 }
+      - { offset: 0x44, name: bias, type: f32, note: "sum of the active snapshots' values; added to the final value" }
+      - { offset: 0x48, name: accumulate, type: u32, note: "0 add, 1 multiply, 2 min of the parent and this" }
+  - name: MixerGroupInstance
+    size: 0x198
+    opaque: true
+    note: "Runtime state of one mix group, index = the MixGroup asset's GroupIndex (u16 at asset +0x20). Index 0 is the master: it has no asset (+0x00 is null)."
+    members:
+      - { offset: 0x00, name: asset, type: "void*", note: "the MixGroup asset (reflected type MixGroup, size 0x28)" }
+      - { offset: 0x08, name: parent, type: "MixerGroupInstance*", note: "instance of the asset's ParentGroupIndex (+0x22)" }
+      - { offset: 0x14, name: muteCount, type: i32, note: "0x1430007b0 adds or subtracts 1; mute is a counter, not a flag" }
+      - { offset: 0x18, name: flags, type: u8, note: "0x143001ba0 recomputes the properties only when (flags & 0x28) is set or the asset's flag 0x20 is set; the snapshot code sets bit 1, the update turns it into 0x0c" }
+      - { offset: 0x1c, name: properties, type: "MixerPropertyBlock[5]", note: "index 0 is the gain; the property count is at mixer +0x1a9c" }
+  - name: MixerManager
+    size: 0x1b50
+    opaque: true
+    members:
+      - { offset: 0x1a78, name: resource, type: "void*", note: "the mix resource (argument of the constructor, refcount at +8); its list at +0x18 holds the MixGroup assets" }
+      - { offset: 0x1a80, name: propertyDescriptors, type: "void**", note: "5 descriptors, one per property" }
+      - { offset: 0x1a88, name: groups, type: "u8*", note: "(groupCount + 1) instances of stride groupStride; index 0 = master" }
+      - { offset: 0x1a90, name: groupByAssetOrder, type: "void**", note: "pointers to the instances in the asset list's order (NOT indexed by GroupIndex)" }
+      - { offset: 0x1a98, name: groupStride, type: u32, note: "0x198" }
+      - { offset: 0x1a9c, name: propertyCount, type: u32, note: "5" }
+      - { offset: 0x1aa0, name: groupCount, type: u32, note: "groups without the master" }
+
+functions:
+  - { name: MixerManager_construct, va: 0x142ff7a80, signature: "void*(void* self, void* mixResource)", note: "Takes the critical sections GlobalMixers (+0x30) and InstanceMixers (+0x60), builds the group buffer and starts every property at its descriptor default." }
+  - { name: MixerManager_getGroupProperty, va: 0x142ffd5e0, signature: "u32(void* mixer, void* groupAsset, u32 property, u32 defaultBits, i32* outFlags)", note: "Reads properties[property].finalValue of the group (group = asset +0x20); returns the default when the mixer has no groups. The movss is at 0x142ffd617. Returns the float bits in xmm0, no lock taken." }
+  - { name: MixerManager_updateProperty, va: 0x143001260, signature: "void(void* descriptor, void* group, MixerPropertyBlock* block, MixerPropertyBlock* parentBlock, f32 dt)", note: "Virtual +0x28 of the property descriptors: starts a fade when the target changed and the group flag 0x08 is set, then writes finalValue." }
+  - { name: MixerManager_pushMixer, va: 0x142ffbdb0, signature: "void*(void* mixer, void* mixerAsset)", note: "Under the GlobalMixers lock: finds the active entry by the asset's 16-byte id (refcount +1, state 1) or creates one. SoundSystem vtable slot 26 (+0xd0, 0x142fe0e00) jumps here with rcx = the mixer." }
+  - { name: MixerManager_popMixer, va: 0x142ffce10, signature: "void(void* mixer, void* mixerInstance)", note: "Refcount -1; at 0 sets the state to 3 (release). SoundSystem vtable slot 27 (+0xd8, 0x142fe3110) jumps here." }
+  - { name: MixerManager_applySnapshot, va: 0x1430008a0, signature: "void(void* mixer, void* mixerInstance, void* extra, f32 dt)", note: "Per group and property: turns an active snapshot's values (entry +0x0c for state 1, +0x10 for state 3) into bias and fade times." }
+  - { name: MixerManager_muteGroup, va: 0x1430007b0, signature: "void(void* mixer, void* groupAsset, bool mute)", note: "Adds or removes one mute of the group (null asset = master) and refreshes the effective mute bit (flags 0x40) of the group and its children. SoundSystem slots 16 and 17 (0x142fecaf0, 0x142febf90) call it with null and true or false; they also write this+0x74 and a global byte." }
+  - { name: MixerManager_update, va: 0x143001ba0, signature: "void(void* mixer, f32 dt)", note: "Called by SoundSystem_update (0x142ff1420, vtable 0x141abd460 slot 14) with dt 0.1f: expires snapshots, applies them, then updates the properties of every dirty group." }
+  - { name: SoundSystem_update, va: 0x142ff1420, signature: "void(void* system, i64, i64, i64)", note: "Slot 14 (+0x70) of the sound system vtable. Calls MixerManager_update with 0.1f, then the sound manager, 0x1423dd5b8, 0x1423e2f30 and 0x1423dd590." }

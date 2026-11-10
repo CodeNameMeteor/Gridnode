@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 34 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend) */
+#define GN_API_VERSION 35 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck) */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1124,6 +1124,30 @@ typedef struct gn_api {
      * box waits (box_state 0). Returns GN_OK, GN_ERR_UNAVAILABLE if boxes are off. Global, not per mod.
      * Untested in game until the user's run. */
     int (*box_backend)(int native);
+
+    /* ==== GN_API_VERSION 35 ==================================================== */
+
+    /* ---- the mixer's groups (stable) ---------------------------------------------------------------------------
+     * The game's own mix groups (the ones behind the options sliders). `bus` is "master", "music", "sfx",
+     * "dialogue", "ambience" or "ui", or a group's own name ("Footsteps", "VO", ...; case does not matter; the
+     * first of a name used twice). "master" is the group "All", the root of every group; "sfx" is "Game". An offset
+     * is added to the group's gain inside the game's own update, so the player's slider and the game's pause and
+     * cutscene mixes still apply, and the group's children follow. Nothing of the game's own values is saved
+     * or written: with the offset gone the game's value is back exactly.
+     * bus_volume_get: read only. The group's gain as the game mixes it now, linear (1 = full): the end result for
+     *   that group (parents, pause and cutscene mixes and mods' offsets included), not the player's slider position.
+     *   A group the mixer leaves idle keeps its last value until the game recomputes it, so it can read stale.
+     * bus_volume_set: this mod's steady gain on the group, linear 0..1 (1 = no change, 0 = silent; it is
+     *   20*log10(gain) dB, floor -96 dB). The same call again replaces it. Offsets of several mods add up (in dB).
+     * bus_duck: pulls the group down to `gain` over 0.1 s, holds it `seconds`, lets it back over 0.5 s.
+     *   Ducks on one group do not add: the deepest wins. They add to bus_volume_set's offset.
+     * Both take effect on the next client tick. A mod's offsets and ducks go when the mod is unloaded.
+     * Any thread. GN_ERR_ARGUMENT: null or not finite; GN_ERR_NOT_FOUND: no such group; GN_ERR_UNAVAILABLE: no
+     * mixer yet (before the sound system is up) or an unknown build. Stable, game-tested; the thread the mixer runs
+     * on is not verified (the hook uses atomics only). */
+    int (*bus_volume_get)(const char* bus, float* out_gain);
+    int (*bus_volume_set)(const char* mod, const char* bus, float gain);
+    int (*bus_duck)(const char* mod, const char* bus, float gain, float seconds);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

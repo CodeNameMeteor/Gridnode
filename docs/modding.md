@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 34 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 35 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -34,8 +34,7 @@ list "needs a newer GridNode". Say which GridNode your mod needs when you ship i
 **What is stable.** Everything up to API 28 was used in game by the MEC trainer or the examples and is stable.
 These are newer and **experimental** (tested lightly, or not at all, and may change before they settle): the visual
 environment and timelines (API 29), streaming focus points (30), `raycastFiltered` (33), standalone collision boxes
-(`boxBackendNative`, 34), and the ANT live objects and Faith's last 15 seconds (26 and 27). `localize` (31) and
-`menuOpen` / `pauseRequests` (32) work in game. [Known issues](known-issues.md)
+(`boxBackendNative`, 34), and the ANT live objects and Faith's last 15 seconds (26 and 27). `localize` (31), `menuOpen` / `pauseRequests` (32) and the mixer's groups (`busVolume`, `duck`, 35) work in game. [Known issues](known-issues.md)
 lists the limits.
 
 Memory, for what the API does not cover: `gn::read(address, out)` and `gn::write(address, value)`
@@ -306,6 +305,7 @@ std::string level = gn::levelName();
 | `visualEnvGet(offset, out, size)` / `visualEnvSet(offset, data, size)` / `visualEnvRelease(offset)` | any | The visual environment state (sun, tonemap, colour correction, sky, wind, depth of field, vignette, film grain; offsets `GN_VE_*`, fields in [research](research/visual-environment.md)). A set value is held: written back after each world update, because the game recomputes the state every frame. Released when the mod unloads (API 29; experimental, untested). Rust: `visual_env_*`. |
 | `streamingFocusAdd(pos)` / `streamingFocusMove(handle, pos)` / `streamingFocusRemove(handle)` | any | Loads the zones around a point as well as those around Faith (a free camera far away, a cutscene). At most 4 per GridNode, points within 60 m of each other share one; refused when the game's streamer is not the known build. Released when the mod unloads (API 30; experimental, untested). Rust: `streaming_focus_*`. |
 | `boxBackendNative(on)` | any | **Experimental (API 34, untested).** Boxes added from now on in the client world are made by the game's own physics factory (the calls a barrier makes), as real game physics objects, instead of borrowing a level body's record. Copies its setup from a live barrier (`PamOBBCollisionEntity`) in the client world; with none the box waits (`boxState` 0). The server world's boxes stay as before. Off by default. Rust: `box_backend_native`. |
+| `busVolume(bus)` / `busVolume(bus, gain)` / `duck(bus, gain, seconds)` | any | **API 35 (stable).** The game's mixer groups (the sliders in its options). `bus` is `"master"`, `"music"`, `"sfx"`, `"dialogue"`, `"ambience"`, `"ui"` or a group's own name (`"Footsteps"`). `busVolume(bus)` only reads: the group's gain as the game mixes it now (linear, -1 if unavailable). It is the end result for that group (its parents, the pause and cutscene mixes and mods' offsets included), not the player's slider position, and it changes nothing; `busVolume(bus, gain)` sets this mod's steady gain, 0 to 1 (1 = no change), added in dB to the game's own value inside its update, so the player's slider, pause and cutscene mixes still apply and the group's children follow; `duck(bus, gain, seconds)` goes down in 0.1 s, holds, and returns in 0.5 s (the deepest duck on a group wins). Offsets are dropped when the mod unloads. Takes effect on the next client tick. Game-tested. Unloading GridNode while game audio plays with an offset set was tested in game (volume restored, no crash); only the thread the mixer runs on is unverified (the hook uses atomics only). A group the mixer leaves idle can read a stale value. Rust: the raw table only (`sys.rs`). |
 | `raycastFiltered(from, to, ignore, hit)` | server | `raycastObject` that passes through up to 12 body ids (a character, a prop), to find what is behind them (API 33; untested). Rust: `raycast_filtered`. |
 | `menuOpen()` / `pauseRequests(menus, full)` | any | Whether a game menu that asks for a pause is open (the pause menu: `menus` is 0 in play and 1 with it open; `full` stayed 0), from the game's own pause request counters (API 32; read only; works in game). Rust: `menu_open`. |
 | `localize(id)` | any | The game's text for a string id (`ID_NC_THEVIEW02`, challenge and mission titles) in its current language; the id itself when there is none (API 31; ported from MECMP's dash names, untested here). Rust: `localize`. |
