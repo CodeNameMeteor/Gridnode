@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 35;
+pub const GN_API_VERSION: u32 = 36;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -28,6 +28,7 @@ pub const GN_SETTING_FLOAT: u32 = 3;
 pub const GN_SETTING_CHOICE: u32 = 4;
 pub const GN_SETTING_TEXT: u32 = 5;
 pub const GN_SETTING_HIDDEN: u32 = 1;
+pub const GN_HOOK_SUBCLASSES: u32 = 1;
 pub const GN_COMMAND_SETTING: u32 = 1;
 pub const GN_COMMAND_ONLINE: u32 = 2;
 pub const GN_MOVE_STATE: u32 = 0x1;
@@ -505,6 +506,15 @@ pub struct gn_api {
     pub bus_volume_get: Option<unsafe extern "C" fn(bus: *const c_char, out_gain: *mut f32) -> c_int>,
     pub bus_volume_set: Option<unsafe extern "C" fn(mod_: *const c_char, bus: *const c_char, gain: f32) -> c_int>,
     pub bus_duck: Option<unsafe extern "C" fn(mod_: *const c_char, bus: *const c_char, gain: f32, seconds: f32) -> c_int>,
+    pub type_vtable_count: Option<unsafe extern "C" fn(type_: *const gn_type) -> c_int>,
+    pub type_vtable_at: Option<unsafe extern "C" fn(type_: *const gn_type, index: u32) -> u64>,
+    pub type_virtual_find: Option<unsafe extern "C" fn(type_: *const gn_type, name: *const c_char, out_offset: *mut u32) -> c_int>,
+    pub hook_virtual: Option<unsafe extern "C" fn(mod_: *const c_char, type_: *const gn_type, offset: u32, detour: *mut c_void, flags: u32, out_handle: *mut u32) -> c_int>,
+    pub hook_original: Option<unsafe extern "C" fn(handle: u32, self_: *const c_void) -> *mut c_void>,
+    pub hook_virtual_remove: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub entity_component: Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, out: *mut *mut c_void) -> c_int>,
+    pub entity_components: Option<unsafe extern "C" fn(entity: *mut c_void, fn_: gn_entity_each_fn, user: *mut c_void) -> c_int>,
+    pub data_path: Option<unsafe extern "C" fn(out: *mut c_char, size: usize) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -534,4 +544,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1280);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1352);

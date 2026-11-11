@@ -917,13 +917,137 @@ private:
     uint32_t group_ = 0;
 };
 
+// ---- optional calls (API 36) -----------------------------------------------------------------------
+// Whether the host has a gn_api member: a mod built with GN_MOD_MIN_API below this header's version
+// checks gn::has(&gn_api::hook_virtual) before calling anything newer than its minimum.
+template <class M> bool has(M gn_api::*member) {
+    static const gn_api probe{};
+    const size_t at = static_cast<size_t>(reinterpret_cast<const char*>(&(probe.*member)) - reinterpret_cast<const char*>(&probe));
+    return detail::apiPtr() && at + sizeof(M) <= api().size && api().*member != nullptr;
+}
+
+// ---- hooking a class's virtual by name (API 36) ------------------------------------------------------
+//     static gn::VirtualHook<void(void* self, bool visible)> g_setVisible;
+//     g_setVisible.install("PamClientCharacterEntity", "setVisible", [](void* self, bool visible) {
+//         gn::log("setVisible %d", visible);
+//         g_setVisible.original(self)(self, visible);
+//     });
+// The detour is a plain function (a lambda without captures). Every vtable of the class and, by
+// default, of its subclasses; original(self) is the function for that object's class.
+template <class Sig> class VirtualHook;
+template <class R, class... A> class VirtualHook<R(void*, A...)> {
+public:
+    using Fn = R (*)(void*, A...);
+    bool install(const char* className, const char* virtualName, Fn detour, bool subclasses = true) {
+        const Type t = Type::find(className);
+        uint32_t offset = 0;
+        if (!t || !has(&gn_api::type_virtual_find) || api().type_virtual_find(t.get(), virtualName, &offset) != GN_OK) return false;
+        return install(className, offset, detour, subclasses);
+    }
+    // By vtable byte offset (engine.hpp cls::<Class>::vf::<name>, or one read in Ghidra).
+    bool install(const char* className, uint32_t offset, Fn detour, bool subclasses = true) {
+        const Type t = Type::find(className);
+        if (!t || !has(&gn_api::hook_virtual)) return false;
+        return api().hook_virtual(modName(), t.get(), offset, reinterpret_cast<void*>(detour), subclasses ? GN_HOOK_SUBCLASSES : 0u, &handle_) == GN_OK;
+    }
+    Fn original(const void* self) const { return reinterpret_cast<Fn>(api().hook_original(handle_, self)); }
+    bool remove() { return handle_ && api().hook_virtual_remove(handle_) == GN_OK; }
+    explicit operator bool() const { return handle_ != 0; }
+
+private:
+    uint32_t handle_ = 0;
+};
+
+// ---- field handles (API 36, header only) -------------------------------------------------------------
+//     static const gn::Field<float> kTimeScale("GameTimeSettings", "TimeScale");
+//     float v = kTimeScale.get(settings);
+// Looked up once, on first use (the size is checked against sizeof(T)); after that a read is one call.
+// get / set go through GridNode's fault-tolerant read and write (any pointer); getLive / setLive are
+// plain loads and stores, for an object the game just handed a hook or a callback. Plain values only:
+// String, CString and arrays are not plain in memory (docs/modding.md).
+template <class T> class Field {
+    static_assert(std::is_trivially_copyable<T>::value, "fields are read as plain bytes");
+
+public:
+    Field(const char* className, const char* fieldName) : class_(className), field_(fieldName) {}
+    // Found, with the size of T: get/set can work.
+    bool valid() const { return resolve(); }
+    uint32_t offset() const { return resolve() ? offset_ : 0; }
+    bool get(const void* object, T& out) const {
+        return object && resolve() && api().read(static_cast<const char*>(object) + offset_, &out, sizeof(T)) == GN_OK;
+    }
+    T get(const void* object) const { return getOr(object, T{}); }
+    T getOr(const void* object, T fallback) const {
+        T v;
+        return get(object, v) ? v : fallback;
+    }
+    bool set(void* object, const T& value) const {
+        return object && resolve() && api().write(static_cast<char*>(object) + offset_, &value, sizeof(T)) == GN_OK;
+    }
+    T getLive(const void* object) const {
+        T v{};
+        if (object && resolve()) memcpy(&v, static_cast<const char*>(object) + offset_, sizeof(T));
+        return v;
+    }
+    bool setLive(void* object, const T& value) const {
+        if (!object || !resolve()) return false;
+        memcpy(static_cast<char*>(object) + offset_, &value, sizeof(T));
+        return true;
+    }
+
+private:
+    bool resolve() const {
+        if (state_ == 0 && detail::apiPtr()) { // found by any thread: the same answer each time
+            gn_field f;
+            const Type t = Type::find(class_);
+            state_ = t && t.field(field_, f) && f.size == sizeof(T) ? (offset_ = f.offset, 1) : -1;
+        }
+        return state_ > 0;
+    }
+    const char* class_;
+    const char* field_;
+    mutable uint32_t offset_ = 0;
+    mutable int state_ = 0; // 0 not looked up, 1 found, -1 not (or a different size)
+};
+
+// ---- any entity's components, the data folder (API 36) ----------------------------------------------
+// The first component of the entity that is a `type` (or a subclass); null if none. Any ComponentEntity,
+// on its realm's thread.
+inline void* entityComponent(void* entity, const Type& type) {
+    void* out = nullptr;
+    return has(&gn_api::entity_component) && api().entity_component(entity, type.get(), &out) == GN_OK ? out : nullptr;
+}
+// fn(void* component, gn::Type type) for each of the entity's components; how many (negative: an error).
+template <class F> int entityComponents(void* entity, F fn) {
+    if (!has(&gn_api::entity_components)) return -GN_ERR_UNAVAILABLE;
+    return api().entity_components(entity, [](void* c, const gn_type* t, void* u) { detail::guarded("an entityComponents callback", [&] { (*static_cast<F*>(u))(c, Type(t)); }); }, &fn);
+}
+// The game's data root as launched (-dataPath when given, else the install's Data folder), with a
+// trailing backslash; "" before API 36.
+inline std::string dataPath() {
+    char buf[1024] = {};
+    return has(&gn_api::data_path) && api().data_path(buf, sizeof(buf)) == GN_OK ? std::string(buf) : std::string();
+}
+
 } // namespace gn
 
+// The oldest GridNode API the mod runs on (API 36). By default the header's own version: a mod built
+// with this header refuses an older GridNode. A mod that uses only older calls, or checks the newer
+// ones with gn::has, can say so before including this header:
+//     #define GN_MOD_MIN_API 20
+#ifndef GN_MOD_MIN_API
+#define GN_MOD_MIN_API GN_API_VERSION
+#endif
+
 // Defines the mod's entry point. The body runs once and returns true when the mod loaded.
+// An API version's table holds every member of the versions before it (the table only grows), so a
+// host of GN_MOD_MIN_API or newer has what the mod needs; the size check stays for the full header.
 #define GN_MOD(NAME)                                                                              \
     static bool gn_mod_main();                                                                    \
     extern "C" GN_MOD_EXPORT int gn_mod_load(const gn_api* api) {                                 \
-        if (!api || api->version < GN_API_VERSION || api->size < sizeof(gn_api)) return 2; /* GridNode too old */ \
+        if (!api || api->version < GN_MOD_MIN_API ||                                              \
+            (GN_MOD_MIN_API >= GN_API_VERSION && api->size < sizeof(gn_api)))                     \
+            return 2; /* GridNode too old */                                                      \
         ::gn::detail::apiPtr() = api;                                                             \
         ::gn::detail::modName() = NAME;                                                           \
         return gn_mod_main() ? 0 : 1;                                                             \

@@ -15,12 +15,12 @@
 #include <string>
 #include <vector>
 
-#include "gridnode/mod_call.hpp"
 #include "gridnode/build.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "host.hpp"
 
 namespace gn::host {

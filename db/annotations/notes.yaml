@@ -1,0 +1,16 @@
+# Notes on reflected fields: what was learned about a field the dump already describes (units, who
+# reads it, "copied at spawn: write the instance instead"). No offset or type here: those stay the
+# dump's. validate --reflected checks that the type and field exist. engine.hpp meta::fieldNotes; the
+# inspector shows a note as the field's tooltip and greys out readonly fields.
+defaults: { confidence: inferred, sources: [ghidra] }
+
+notes:
+  - type: PamCharacterEntityData
+    field: PamUseRunnersGhostShader
+    readonly: true
+    note: "Copied into each character at creation (PamClientCharacterEntity ghostShader, +0x334): writing the data changes only characters made later, and every one of them. Write the character's copy instead."
+    sources: [ghidra, game]
+  - type: PamUIPauseEntityData
+    field: PostponePauseUntilScreenIsFadedIn
+    note: "When 1, UIPauseController_request only adds to the first pause counter (a soft pause); when 0, to the second (a hard pause, at once)."
+    confidence: hypothesis

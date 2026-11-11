@@ -23,6 +23,7 @@
 #include "gridnode/near_alloc.hpp"
 #include "gridnode/pe_file.hpp"
 #include "gridnode/projection.hpp"
+#include "gridnode/vhook_set.hpp"
 #include "gridnode/reflect/registry.hpp"
 
 using namespace gn;
@@ -773,6 +774,46 @@ void testModCall() {
     std::thread([&] { CHECK(modcall::current() == nullptr); }).join(); // per thread
 }
 
+// hook_virtual's bookkeeping: a class and two subclasses, one overriding the slot.
+void testVirtualHooks() {
+    constexpr uint64_t kBase = 0x1000, kSub = 0x2000, kOver = 0x3000, kSlot = 0x18;
+    std::map<uint64_t, uint64_t> mem{{kBase + kSlot, 0xA0}, {kSub + kSlot, 0xA0}, {kOver + kSlot, 0xB0}};
+    hook::HookTable t({[&](uint64_t s, uint64_t& v) {
+                           auto it = mem.find(s);
+                           if (it == mem.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           mem[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; }, nullptr});
+    vhook::Set set("mod", {kOver, kBase, kSub, kBase}, kSlot, 0xD1); // unsorted, a duplicate
+    CHECK(set.vtableCount() == 3);
+    std::string why;
+    CHECK(set.install(t, &why) == 3 && why.empty());
+    CHECK(mem[kBase + kSlot] == 0xD1 && mem[kSub + kSlot] == 0xD1 && mem[kOver + kSlot] == 0xD1);
+    // Each object reaches its own class's function.
+    CHECK(set.original(kBase) == 0xA0 && set.original(kSub) == 0xA0 && set.original(kOver) == 0xB0);
+    CHECK(set.original(0x4000) == 0); // a vtable it did not hook
+    // A second hook on top: its originals are the first one's detour; the first's stay the game's.
+    vhook::Set top("other", {kBase, kOver}, kSlot, 0xD2);
+    CHECK(top.install(t) == 2 && top.original(kOver) == 0xD1 && set.original(kOver) == 0xB0);
+    // The lower one taken out: the upper one now calls the game's function directly.
+    CHECK(set.remove(t) == 3);
+    CHECK(top.original(kOver) == 0xB0 && top.original(kBase) == 0xA0);
+    CHECK(mem[kSub + kSlot] == 0xA0 && mem[kOver + kSlot] == 0xD2);
+    CHECK(set.hookedCount() == 0 && set.original(kBase) == 0xA0); // still callable by a thread inside it
+    CHECK(top.remove(t) == 2);
+    CHECK(mem[kBase + kSlot] == 0xA0 && mem[kSub + kSlot] == 0xA0 && mem[kOver + kSlot] == 0xB0); // all restored
+    // A slot holding no game function is refused; the rest still take.
+    mem[0x5000 + kSlot] = 0x55;
+    vhook::Set part("mod", {kBase, 0x5000}, kSlot, 0xD3);
+    CHECK(part.install(t, &why) == 1 && !why.empty() && part.hookedCount() == 1);
+    CHECK(part.remove(t) == 1 && mem[kBase + kSlot] == 0xA0);
+}
+
 void testNearAlloc() {
     constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
     auto run = [&](FakeSpace& s, bool down, uint64_t from) {
@@ -823,6 +864,7 @@ void testNearAlloc() {
 int main() {
     testNearAlloc();
     testModCall();
+    testVirtualHooks();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();

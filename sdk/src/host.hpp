@@ -92,6 +92,20 @@ void modReload(const std::string& file);             // any thread: done on Grid
 void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
+// API 36 (vhooks.cpp, world.cpp): classes' vtables and virtuals by name, hooks on a class's virtual,
+// any entity's components, the game's data folder.
+int typeVtableCount(const reflect::Type* type);
+uint64_t typeVtableAt(const reflect::Type* type, uint32_t index);
+int typeVirtualFind(const reflect::Type* type, const char* name, uint32_t* outOffset);
+int hookVirtual(const char* mod, const reflect::Type* type, uint32_t offset, void* detour, uint32_t flags, uint32_t* outHandle);
+void* hookOriginal(uint32_t handle, const void* self);
+int hookVirtualRemove(uint32_t handle);
+int entityComponent(void* entity, const gn_type* type, void** out);
+int entityComponents(void* entity, gn_entity_each_fn fn, void* user);
+std::string dataPath(bool* fromArgument); // UTF-8, ends in a backslash
+int dataPathCopy(char* out, size_t size);
+// An entity's components, from its collection at +0x38 (world.cpp): live, reflected ones only.
+std::vector<std::pair<uintptr_t, const reflect::Type*>> componentsOf(uintptr_t entity);
 int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
 // The address an API call is credited to: its return address, or, when that is in gridnode.dll (the
 // mod's callback tail-called the API), the mod callback GridNode is running on this thread (mod_call.hpp).
@@ -133,6 +147,7 @@ void forgetTicks(const CodeRange& r);    // at the next tick of each realm (serv
 size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_client tasks, now (just before its DLL is freed)
 bool taskLive(const thread::Dispatcher::Task& t); // false for a task into a mod being unloaded
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
+void forgetVirtualHooks(const CodeRange& r); // after forgetHooks: the class hooks' bookkeeping (vhooks.cpp)
 void forgetCreated(const CodeRange& r);
 void forgetDestroyed(const CodeRange& r);
 void forgetLevelReady(const CodeRange& r);

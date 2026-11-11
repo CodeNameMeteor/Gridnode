@@ -11,10 +11,10 @@
 #include <set>
 #include <string>
 
-#include "gridnode/mod_call.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/version.hpp"
 #include "host.hpp"
 
@@ -579,6 +579,17 @@ const gn_api* api() {
         a.bus_volume_get = busVolumeGet;
         a.bus_volume_set = apiBusVolumeSet;
         a.bus_duck = apiBusDuck;
+        a.type_vtable_count = [](const gn_type* t) { return typeVtableCount(T(t)); };
+        a.type_vtable_at = [](const gn_type* t, uint32_t i) { return typeVtableAt(T(t), i); };
+        a.type_virtual_find = [](const gn_type* t, const char* name, uint32_t* out) { return typeVirtualFind(T(t), name, out); };
+        a.hook_virtual = [](const char* mod, const gn_type* t, uint32_t offset, void* detour, uint32_t flags, uint32_t* out) {
+            return hookVirtual(mod, T(t), offset, detour, flags, out);
+        };
+        a.hook_original = hookOriginal;
+        a.hook_virtual_remove = hookVirtualRemove;
+        a.entity_component = entityComponent;
+        a.entity_components = entityComponents;
+        a.data_path = dataPathCopy;
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

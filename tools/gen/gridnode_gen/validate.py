@@ -70,6 +70,14 @@ def check(db: Database, r: Reflected | None) -> Problems:
                 if off == m.offset:
                     p.error(w, f"member {m.name} (+{m.offset:#x}) is the reflected field {fname}: do not annotate reflected fields")
 
+    for (tname, fname), n in db.notes.items():
+        w = f"{n.meta.file} note {tname}.{fname}"
+        t = r.by_name.get(tname)
+        if t is None:
+            p.error(w, "no reflected type with this name")
+        elif not any(f["name"] == fname for c in r.chain(t) for f in c.get("fields", [])):
+            p.error(w, f"{tname} has no reflected field {fname} (its own or a base class's)")
+
     for ft in db.fp_types:
         t = r.by_name.get(ft.name)
         if t is None:

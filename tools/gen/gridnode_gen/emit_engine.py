@@ -120,6 +120,29 @@ def emit(db: Database) -> str:
         if not rows:
             w("    {nullptr, nullptr, 0, nullptr, nullptr},\n")
         w("};\n")
+    # Notes on reflected fields (db/annotations notes:), sorted by type and field for a binary search.
+    w("struct FieldNote { const char* type; const char* field; const char* note; const char* unit; bool readonly; };\n")
+    w("inline constexpr FieldNote fieldNotes[] = {\n")
+    for (tname, fname), n in sorted(db.notes.items()):
+        note = " ".join(n.meta.note.split())
+        if n.meta.confidence != "confirmed":
+            note = f"[{n.meta.confidence}] {note}"
+        w(f"    {{{_cstr(tname)}, {_cstr(fname)}, {_cstr(note)}, {_cstr(n.unit)}, {'true' if n.readonly else 'false'}}},\n")
+    if not db.notes:
+        w("    {nullptr, nullptr, nullptr, nullptr, false},\n")
+    w("};\n")
+    # Virtuals by class and name (vtable byte offsets), for hooking a class's virtual by name
+    # (gn_api type_virtual_find); sorted by class, then name, for a binary search.
+    w("struct Virtual { const char* owner; const char* name; uint32_t offset; };\n")
+    w("inline constexpr Virtual classVirtuals[] = {\n")
+    vrows = 0
+    for c in sorted(db.classes.values(), key=lambda c: c.name):
+        for v in sorted(c.virtuals, key=lambda v: v.name):
+            w(f"    {{{_cstr(c.name)}, {_cstr(v.name)}, {v.offset:#x}}},\n")
+            vrows += 1
+    if not vrows:
+        w("    {nullptr, nullptr, 0},\n")
+    w("};\n")
     # Named functions by address (functions and runtime classes' virtuals), for naming code addresses
     # (the crash notes).
     named: dict[int, str] = {}

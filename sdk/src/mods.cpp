@@ -22,9 +22,9 @@
 #include <map>
 #include <set>
 
-#include "gridnode/mod_call.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/mod_order.hpp"
 #include "gridnode/pe_file.hpp"
 #include "host.hpp"
@@ -203,6 +203,7 @@ void forgetExports(const CodeRange& r, const std::string& id);
 // is listed in `refused`. How many hooks came out.
 size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::string>* refused) {
     const size_t hooksOut = forgetHooks(code, refused);
+    forgetVirtualHooks(code);
     forgetPatches(code);
     forgetTicks(code);
     forgetCreated(code);

@@ -324,6 +324,18 @@ void value(uintptr_t at, const Type* ft, const char* id, int depth) {
     ImGui::PopID();
 }
 
+// A note on a reflected field (engine.hpp meta::fieldNotes, sorted by type then field), or null.
+const e::meta::FieldNote* fieldNote(const std::string& type, const std::string& field) {
+    const auto& table = e::meta::fieldNotes;
+    const auto* end = table + sizeof(table) / sizeof(table[0]);
+    const auto* it = std::lower_bound(table, end, std::make_pair(type, field), [](const e::meta::FieldNote& n, const std::pair<std::string, std::string>& k) {
+        if (!n.type) return false;
+        const int c = std::strcmp(n.type, k.first.c_str());
+        return c < 0 || (c == 0 && std::strcmp(n.field, k.second.c_str()) < 0);
+    });
+    return it != end && it->type && type == it->type && field == it->field ? it : nullptr;
+}
+
 // The reflected fields of `t` and its bases (bases first), as rows of a table.
 void fieldsOf(uintptr_t base, const Type* t, int depth) {
     std::vector<const Type*> chain;
@@ -375,17 +387,25 @@ void fieldsOf(uintptr_t base, const Type* t, int depth) {
         }
         for (const reflect::Field& f : c->fields) {
             const reflect::FieldInfo fi = registry().describe(c, f);
+            // A note on the field (db/annotations notes:), named on its own class or on the object's.
+            const e::meta::FieldNote* note = fieldNote(c->name, f.name);
+            if (!note && t != c) note = fieldNote(t->name, f.name);
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::TextDisabled("+%03x", f.offset);
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(f.name.c_str());
+            if (note) ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.f, 1.f), "%s", f.name.c_str());
+            else ImGui::TextUnformatted(f.name.c_str());
+            if (note && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s%s%s%s", note->note, *note->unit ? " (unit: " : "", note->unit, *note->unit ? ")" : "");
             ImGui::TableNextColumn();
             ImGui::TextDisabled("%s", display(fi.type).c_str());
             ImGui::TableNextColumn();
             char id[64];
             snprintf(id, sizeof(id), "%s%x", f.name.c_str(), f.offset);
+            ImGui::BeginDisabled(note && note->readonly); // a note says writing it does not do what it seems
             value(base + f.offset, fi.type, id, depth);
+            ImGui::EndDisabled();
         }
     }
     ImGui::EndTable();

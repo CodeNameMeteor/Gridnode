@@ -5,7 +5,7 @@ globals:
   - name: TypeInfoListHead
     va: 0x14215d028
     type: "TypeInfo*"
-    note: Head of the engine's singly linked list of every runtime TypeInfo (next at +0x08).
+    note: "Head of the engine's singly linked list of every runtime TypeInfo (next at +0x08). verify-image also finds it by the code that links each type into it (tools/gen/gridnode_gen/type_list.py: 27 sites, 2026-11-11)."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: g_soundSystem
     va: 0x1423dd580
