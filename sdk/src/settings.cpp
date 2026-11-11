@@ -144,8 +144,9 @@ std::string cstr(uintptr_t p) {
 
 const char* onlineWarning(const std::string& name) { return onlineFor(name); }
 
-std::vector<SettingsEntry> settingsList() {
-    std::lock_guard<std::mutex> lock(g_setM);
+namespace {
+// (g_setM held) The settings objects, scanned again after a second.
+const std::vector<SettingsEntry>& settingsLocked() {
     if (g_settings.empty() || GetTickCount() - g_settingsAt > 1000) {
         g_settings = scanSettings();
         g_settingsAt = GetTickCount();
@@ -158,6 +159,23 @@ std::vector<SettingsEntry> settingsList() {
         }
     }
     return g_settings;
+}
+} // namespace
+
+std::vector<SettingsEntry> settingsList() {
+    std::lock_guard<std::mutex> lock(g_setM);
+    return settingsLocked();
+}
+size_t settingsCount() {
+    std::lock_guard<std::mutex> lock(g_setM);
+    return settingsLocked().size();
+}
+bool settingsAt(size_t i, SettingsEntry& out) {
+    std::lock_guard<std::mutex> lock(g_setM);
+    const std::vector<SettingsEntry>& l = settingsLocked();
+    if (i >= l.size()) return false;
+    out = l[i];
+    return true;
 }
 
 uintptr_t settingsFind(const std::string& className) {
@@ -233,8 +251,9 @@ std::string consoleRun(const std::string& line) {
     return out.empty() ? "(done; the command printed nothing)" : out;
 }
 
-std::vector<ConsoleCommand> consoleCommands() {
-    std::lock_guard<std::mutex> lock(g_cmdM);
+namespace {
+// (g_cmdM held) The commands, read again when the game's lists changed size.
+const std::vector<ConsoleCommand>& commandsLocked() {
     if (!consoleOk()) return g_commands;
     uintptr_t sv[2] = {}, bv[2] = {};
     const auto staticVec = reinterpret_cast<uintptr_t (*)()>(mem::rva(e::function::ConsoleRegistry_getStaticCommands))();
@@ -285,6 +304,26 @@ std::vector<ConsoleCommand> consoleCommands() {
     g_seenStatic = ns;
     g_seenBound = nb;
     return g_commands;
+}
+} // namespace
+
+std::vector<ConsoleCommand> consoleCommands() {
+    std::lock_guard<std::mutex> lock(g_cmdM);
+    return commandsLocked();
+}
+
+// One entry without copying the list: console_command_at walked the list one index at a time and
+// copied all of it each time (review, 2026-11-11).
+size_t consoleCommandCount() {
+    std::lock_guard<std::mutex> lock(g_cmdM);
+    return commandsLocked().size();
+}
+bool consoleCommandAt(size_t i, ConsoleCommand& out) {
+    std::lock_guard<std::mutex> lock(g_cmdM);
+    const std::vector<ConsoleCommand>& c = commandsLocked();
+    if (i >= c.size()) return false;
+    out = c[i];
+    return true;
 }
 
 const char* commandOnline(const std::string& line) {

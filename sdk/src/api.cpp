@@ -250,12 +250,12 @@ int apiUiMenuSet(int open) {
     return ui::setMenu(open != 0) ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
-uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsList().size()); }
+uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsCount()); }
 int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
-    const std::vector<SettingsEntry> l = settingsList();
-    if (i >= l.size()) return GN_ERR_ARGUMENT;
-    if (type) *type = G(l[i].type);
-    if (object) *object = reinterpret_cast<void*>(l[i].object);
+    SettingsEntry e;
+    if (!settingsAt(i, e)) return GN_ERR_ARGUMENT;
+    if (type) *type = G(e.type);
+    if (object) *object = reinterpret_cast<void*>(e.object);
     return GN_OK;
 }
 const char* apiOnlineWarning(const char* name) { return name ? onlineWarning(name) : nullptr; }
@@ -303,15 +303,15 @@ void* settingsFindFor(const char* name, const void* caller) {
     return obj;
 }
 
-uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommands().size()); }
+uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommandCount()); }
 int apiConsoleCommandAt(uint32_t i, gn_command* out) {
-    const std::vector<ConsoleCommand> c = consoleCommands();
-    if (i >= c.size() || !out) return GN_ERR_ARGUMENT;
-    out->name = c[i].name;
-    out->group = c[i].group;
-    out->full = c[i].full;
-    out->help = c[i].help;
-    out->flags = (c[i].setting ? GN_COMMAND_SETTING : 0u) | (c[i].online ? GN_COMMAND_ONLINE : 0u);
+    ConsoleCommand c;
+    if (!out || !consoleCommandAt(i, c)) return GN_ERR_ARGUMENT;
+    out->name = c.name;
+    out->group = c.group;
+    out->full = c.full;
+    out->help = c.help;
+    out->flags = (c.setting ? GN_COMMAND_SETTING : 0u) | (c.online ? GN_COMMAND_ONLINE : 0u);
     return GN_OK;
 }
 

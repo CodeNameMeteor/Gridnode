@@ -64,7 +64,7 @@ template <size_t I> void* factoryDetour(void* creator, void* ci, void* a3, void*
     SlotState& s = g_slots[I];
     void* entity = reinterpret_cast<FactoryFn>(s.original)(creator, ci, a3, a4);
     if (!entity) return entity;
-    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uint64_t>(entity));
+    const reflect::Type* t = registry().typeOfLive(entity); // just made by the game
     if (!t) return entity;
     // The listeners to call, copied under the lock and called after it is released: a listener may
     // register another (on_created takes the lock exclusively) or create an entity of a hooked class.
@@ -232,7 +232,7 @@ std::vector<DestroyedListener> g_destroyedListeners; // (g_destroyedLock)
 std::atomic<size_t> g_destroyedListening{0};
 
 void callDestroyed(void* self) {
-    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uint64_t>(self));
+    const reflect::Type* t = registry().typeOfLive(self); // the game is destroying it: still whole
     if (!t) return;
     struct Call {
         gn_destroyed_fn fn;

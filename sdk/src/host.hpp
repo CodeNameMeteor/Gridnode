@@ -420,12 +420,16 @@ struct ConsoleCommand {
     const char* online = nullptr;
 };
 std::vector<SettingsEntry> settingsList(); // cached for a second
+size_t settingsCount();                    // the same list, without a copy
+bool settingsAt(size_t i, SettingsEntry& out);
 uintptr_t settingsFind(const std::string& className);
 const char* onlineWarning(const std::string& name); // settings class or console group
 const char* commandOnline(const std::string& line);
 bool consoleAvailable();
 std::string consoleRun(const std::string& line); // client thread
 std::vector<ConsoleCommand> consoleCommands();
+size_t consoleCommandCount(); // the same list, without a copy
+bool consoleCommandAt(size_t i, ConsoleCommand& out);
 
 // Messages (messages.cpp).
 struct MessageType {

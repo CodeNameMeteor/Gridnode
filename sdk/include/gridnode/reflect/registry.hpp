@@ -31,6 +31,11 @@ public:
     // The object's type, from the getType accessor in its vtable slot 0. Calls nothing in the
     // game: the accessor is looked up among the ones the walker found. Null if unknown.
     const Type* typeOf(const MemoryView& mem, uint64_t object) const;
+    // The same with plain loads, for an object the engine has just handed over (a hook's argument:
+    // a creator's new entity, a destructor's self, an event's peer). typeOf reads through
+    // ReadProcessMemory, a kernel call per read, and ran for every entity created and destroyed and
+    // every event delivered (review, 2026-11-11). Never for a pointer of unknown origin.
+    const Type* typeOfLive(const void* object) const;
 
     // Class: t is base or derives from it (class id range). Value types and others: equality.
     bool isKindOf(const Type* t, const Type* base) const;

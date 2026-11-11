@@ -115,6 +115,16 @@ void testRegistry() {
     CHECK(reg.typeOf(m, 0x5100) == nullptr);
     CHECK(reg.typeOf(m, 0x5200) == nullptr); // unreadable
     CHECK(reg.typeOf(m, 0) == nullptr);
+
+    // typeOfLive: the same answer from real memory with plain loads.
+    const uint64_t leafVtable[1] = {0x9100}, otherVtable[1] = {0x1234};
+    const uint64_t* leafObject = leafVtable;
+    const uint64_t* otherObject = otherVtable;
+    const uint64_t* noVtable = nullptr;
+    CHECK(reg.typeOfLive(&leafObject) == L);
+    CHECK(reg.typeOfLive(&otherObject) == nullptr);
+    CHECK(reg.typeOfLive(&noVtable) == nullptr);
+    CHECK(reg.typeOfLive(nullptr) == nullptr);
 }
 
 void testHookTable() {
