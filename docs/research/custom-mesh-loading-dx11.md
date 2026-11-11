@@ -11,7 +11,7 @@ Reverse-engineering research and architectural guide for dynamically injecting c
 
 Frostbite 3 renders static 3D world geometry via the **StaticModelGroup** and **StaticModelEntity** systems. At the core of every mesh entity is a **MeshAsset** / **RigidMeshAsset**, which references an underlying low-level **MeshSetResource** containing geometric Level of Detail (LOD) representations.
 
-Traditionally, Frostbite meshes are cooked offline into binary `.res` (resource) files and packaged into `.cas` / `.sb` chunks. However, our reverse engineering reveals that Frostbite's native Direct3D 11 mesh ingestion code path (`MeshLod_createGpuBuffers` at [`0x14354fe00`](file:///D:/Dev/GridNode/db/annotations/render.yaml#L285)) and vertex declaration resolver (`GraphicsPlatform_createOrGetVertexDeclaration` at [`0x1435b8f30`](file:///D:/Dev/GridNode/db/annotations/render.yaml#L311)) can be invoked **entirely in memory at runtime**, completely bypassing offline cooking and bundle files.
+Traditionally, Frostbite meshes are cooked offline into binary `.res` (resource) files and packaged into `.cas` / `.sb` chunks. However, our reverse engineering reveals that Frostbite's native Direct3D 11 mesh ingestion code path (`MeshLod_createGpuBuffers` at [`0x14354fe00`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml)) and vertex declaration resolver (`GraphicsPlatform_createOrGetVertexDeclaration` at [`0x1435b8f30`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml)) can be invoked **entirely in memory at runtime**, completely bypassing offline cooking and bundle files.
 
 ```mermaid
 flowchart TD
@@ -178,7 +178,7 @@ static_assert(sizeof(MeshSetResource) == 0x90, "MeshSetResource size mismatch");
 ## 3. Dynamic GPU Ingestion & Shader Resolution
 
 ### 3.1 Allocating Direct3D 11 GPU Buffers (`MeshLod_createGpuBuffers`)
-- **Virtual Address**: [`0x14354fe00`](file:///D:/Dev/GridNode/db/annotations/render.yaml#L285)
+- **Virtual Address**: [`0x14354fe00`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml)
 - **Signature**: `void MeshLod_createGpuBuffers(MeshLod* lod, void* renderDevice, void* geometryBuffer, void* optionalStream)`
 
 When called:
@@ -191,10 +191,10 @@ When called:
    Flag `0x20000000` signals to Frostbite's visibility culler and renderer that the GPU buffers are resident in VRAM and ready for immediate drawing.
 
 ### 3.2 Dynamic Input Layout Generation (`GraphicsPlatform_createOrGetVertexDeclaration`)
-- **Virtual Address**: [`0x1435b8f30`](file:///D:/Dev/GridNode/db/annotations/render.yaml#L311)
+- **Virtual Address**: [`0x1435b8f30`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml)
 - **Signature**: `void* GraphicsPlatform_createOrGetVertexDeclaration(void* platform, void* alloc, uint64_t nameHash, GeometryDeclarationDesc* desc)`
 
-When `MeshSetSection_initShadersFromDeclaration` ([`0x14354b140`](file:///D:/Dev/GridNode/db/annotations/render.yaml#L273)) executes:
+When `MeshSetSection_initShadersFromDeclaration` ([`0x14354b140`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml)) executes:
 1. It computes a 32-bit hash of `GeometryDeclarationDesc` (84 bytes) via `thunk_FUN_142ab10e0(0x54, desc)`.
 2. Searches the red-black tree (`eastl::map<uint32_t, VertexDeclaration*>`) at `*g_platformInfo + 0xb0`.
 3. If not cached, it allocates a `0x70`-byte `VertexDeclaration` object (vtable `0x141bd3918`), copies the element descriptors, dynamically creates the `ID3D11InputLayout`, and inserts it into the map.

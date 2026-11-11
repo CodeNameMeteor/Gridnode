@@ -1,7 +1,7 @@
 # Standalone Havok Collision & Touch Classification
 
 > **Research Status (2026-11-06)**: The reverse engineering, disassembly analysis, and architectural design documented here are inferred from static analysis in Ghidra on binary `MirrorsEdgeCatalyst_dump_SCY.exe` (Image Base `0x140000000`, Build `0x5762E3B7`). All findings, offsets, and dummy entity layouts are **purely research for now, to be confirmed in future in-game runtime testing**.
-> Relevant annotations have been cataloged in [`db/annotations/physics.yaml`](file:///D:/Dev/GridNode/db/annotations/physics.yaml).
+> Relevant annotations have been cataloged in [`db/annotations/physics.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/physics.yaml).
 
 ---
 

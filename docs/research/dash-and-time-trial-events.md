@@ -1,7 +1,7 @@
 # Dash and Time Trial Events Reverse Engineering & Typed Event Interface
 
 > [!NOTE]
-> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`) and validated against `MECMP` reference implementation (`runs.cpp` / `runs.h`). Database annotations added to [`db/annotations/messages.yaml`](file:///D:/Dev/GridNode/db/annotations/messages.yaml) and [`db/annotations/ui.yaml`](file:///D:/Dev/GridNode/db/annotations/ui.yaml).
+> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`) and validated against `MECMP` reference implementation (`runs.cpp` / `runs.h`). Database annotations added to [`db/annotations/messages.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/messages.yaml) and [`db/annotations/ui.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/ui.yaml).
 > **Confirmation Status**: Pure research for now; to be confirmed in game during live gameplay testing.
 
 ---

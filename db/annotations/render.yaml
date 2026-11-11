@@ -1,766 +1,766 @@
-# Rendering: render devices (DX11 / DX12), shader database, meshes, textures, debug drawing.
-# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
-defaults: { confidence: hypothesis, sources: [ghidra] }
-globals:
-  - name: g_visualEnvironmentManager
-    va: 0x142568cd8
-    type: "void*"
-    confidence: hypothesis
-    sources: [ghidra]
-    note: "Global singleton managing active visual environment contexts, mutex, and per-frame blend."
-  - name: GameWorlds
-    va: 0x1424a9b98
-    type: "void*"
-    note: "The game worlds by realm: [0] client, [1] server (0x1432e1210 indexes it by an entity's flags & 1). +0x48 of the client one is the render world that static model groups hand render-object updates to (0x14318fbc0); +0x28 is the index of its per-class entity lists in each ClassInfo (0x143164d50). Was named RenderRoot."
-    confidence: inferred
-    sources: [research, ghidra]
-  - name: VisibilitySystem
-    va: 0x142563a30
-    type: "void*"
-    note: "Culling spheres: a RigidMeshEntity registers {centre xyz, radius} (0x14356ac00, from 0x143766f60), handle at the render object's +0x84; moved by 0x14357b970, removed by 0x1435782e0."
-  - name: MeshStreamingManager
-    va: 0x142563410
-    type: "void*"
-    note: "Mesh streaming priorities: per instance {radius, mesh index u16, slot, ..., position xyz, scale} (+0x350070, 0x20 each); a group copy gets one when its render object is made (0x1431841f0, name \"rigidMeshEntity\"), its handle at the render object's +0x78."
-    confidence: inferred
-    sources: [ghidra]
-  - name: ZoneStreamerEntity_TypeInfo
-    va: 0x14289ec20
-    type: "void*"
-    note: "Its per-world entity lists: first node at + (world list index + 6) * 0x10."
-    confidence: confirmed
-    sources: [reflected, ghidra]
-  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
-  - name: RigidMeshEntity_vtable
-    va: 0x141bf72c8
-    type: "void*"
-    note: "A static model's render object (transform +0x10, bounding sphere +0x50, mesh box via +0x60)."
-    confidence: inferred
-    sources: [ghidra, research]
-  - name: CompositeMeshEntity_vtable
-    va: 0x141c012c0
-    type: "void*"
-    note: "The other static model render object (ctor 0x14377f750); same base and set-transform as RigidMeshEntity."
-    confidence: inferred
-    sources: [ghidra]
-  - name: StaticModelGroup_LodScale
-    va: 0x141a4e8dc
-    type: u32
-    note: "Copied into a render-object update at +0x60 by ClientStaticModelGroup_placeMember (0x14318fbc0); the layout editor does the same."
-    confidence: inferred
-    sources: [research]
-  - name: g_renderDevice
-    va: 0x142563300
-    type: "u64"
-    note: "Labelled in Ghidra as g_renderDevice."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: g_meshSetManager
-    va: 0x142563790
-    type: "u64"
-    note: "Labelled in Ghidra as g_meshSetManager."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: g_debugShaderParam_worldViewProj
-    va: 0x142563ab4
-    type: "u32"
-    note: "Labelled in Ghidra as g_debugShaderParam_worldViewProj."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: g_debugShaderParam_screenScale
-    va: 0x142563ab8
-    type: "u32"
-    note: "Labelled in Ghidra as g_debugShaderParam_screenScale."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: g_dx12Renderer
-    va: 0x1425654f0
-    type: "u64"
-    note: "Labelled in Ghidra as g_dx12Renderer."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: DebugRenderSettings_TypeInfo
-    va: 0x1427b24c0
-    type: "TypeInfo*"
-    note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
-    confidence: confirmed
-    sources: [reflected]
-functions:
-  - name: VisualEnvironmentManager_update
-    va: 0x143705b30
-    signature: "void(void* manager, void* updateContext)"
-    confidence: hypothesis
-    sources: [ghidra]
-    note: "Per-frame visual environment update under VE mutex. Iterates contexts at +0x2358/+0x2360 and invokes VisualEnvironmentContext_blend."
-  - name: VisualEnvironmentContext_blend
-    va: 0x143703d60
-    signature: "void(void* context, void* updateContext)"
-    confidence: hypothesis
-    sources: [ghidra]
-    note: "Multi-layer visual environment blend function (7,487 bytes) combining sun, tonemapping, color correction, sky, wind, and post-process parameters."
-  - name: VisibilitySystem_update
-    va: 0x14357b970
-    signature: "void(void* system, u32 handle, const f32* sphere)"
-    confidence: inferred
-    sources: [ghidra]
-    note: "Moves a culling sphere {centre xyz, radius}: locks, writes, marks the entry dirty. Called by RigidMeshEntity_setTransform (0x14376c060) with the render object's +0x84 handle."
-  - name: StaticModelGroup_placementHash
-    va: 0x143b722e0
-    signature: "void(u8* out16, void* assetMinus10, const LinearTransform* world)"
-    confidence: inferred
-    sources: [ghidra]
-    note: "Hashes a mesh asset (asset - 0x10, when its +10 u16 has 0x100; else null) with the quantised position, rotation and scale; the 16 bytes go in a group member's render update at +0x78. See docs/research/render-objects.md."
-  - name: ClientStaticModelGroup_makeMemberObject
-    va: 0x143185940
-    signature: "void(void* block, void* group, void* a3, u32 copy, void* a5)"
-    confidence: inferred
-    sources: [ghidra]
-    note: "Fills a stack update template (render world, factory value at +0x8a, flags) and calls 0x1431841f0, which makes the copy's RigidMeshEntity, sets the view mask (+0x8c), placement hash (+0x78) and submits it."
-  - name: ClientStaticModelGroup_placeMember
-    va: 0x14318fbc0
-    signature: "void(void* block, const LinearTransform* group, u32 firstPart)"
-    note: >-
-      Places one member's render objects: per copy, InstanceTransforms[i] (or the physics part
-      transform) times the group transform; object vtable +0x10 sets it, RenderObject_buildUpdate
-      and RenderWorld_submitUpdate push it. Called per member by the group's transform-changed
-      function (0x143193690), which passes this function's (void) result as the next member's first
-      part, so GridNode does not call that function.
-    confidence: inferred
-    sources: [research]
-  - name: RenderObject_buildUpdate
-    va: 0x143769330
-    signature: "void(void* object, u8* update)"
-    confidence: inferred
-    sources: [research]
-  - name: RenderWorld_submitUpdate
-    va: 0x1436d6ce0
-    signature: "void(void* renderWorld, u8* update)"
-    confidence: inferred
-    sources: [research]
-  - name: ClientStaticModelEntity_bounds
-    va: 0x1431833a0
-    signature: "void(void* entity, void* out)"
-    note: "Vtable +0xb8: out+0x00 its world transform (4 rows), out+0x40 / +0x50 its local box (min, max). Computes the box when bit 0 of +0x142 is set and caches it at +0x100 / +0x110 (clearing the bit). Client thread."
-    confidence: inferred
-    sources: [ghidra]
-  - name: MeshStreaming_setTransform
-    va: 0x143555450
-    signature: "void(void* manager, u32* handle, const LinearTransform* transform, f32 value)"
-    note: "Sets a streaming instance's position (the mesh box's centre in the transform) and a value kept at +0x1c (0x1435556a0 with a count of 1). The game passes the float at 0x1419fd590; RigidMeshEntity_setTransform already calls it, so callers moving a render object should not."
-    confidence: inferred
-    sources: [ghidra]
-  - name: RigidMeshEntity_setTransform
-    va: 0x14376c060
-    signature: "void(void* object, const LinearTransform* world)"
-    note: >-
-      Vtable +0x10 of RigidMeshEntity (vtable 0x141bf72c8), a static model's render object. Stores
-      the transform at +0x10 (four float4 rows) and the world bounding sphere at +0x50, from the
-      mesh's local box at *(**(object + 0x60) + 0x20) (min xyz, pad, max xyz). The layout editor's
-      outline reads both (docs/research/render-objects.md; fit confirmed in game 2026-10-21).
-    confidence: inferred
-    sources: [ghidra, research]
-  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
-  - name: DebugRenderShader_initParamIds
-    va: 0x142988e40
-    signature: "void()"
-    note: "Named in Ghidra as DebugRenderShader_initParamIds; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: registerDx11ShaderDatabaseTypeInfo
-    va: 0x142989240
-    signature: "void()"
-    note: "Named in Ghidra as registerDx11ShaderDatabaseTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSetManager_findCachedByNameHash
-    va: 0x142abbef0
-    signature: "u64(i64, u32, u64, u64)"
-    note: "Named in Ghidra as MeshSetManager_findCachedByNameHash; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSetManager_insertCached
-    va: 0x142abc060
-    signature: "void(u64, void*, u64, u32)"
-    note: "Named in Ghidra as MeshSetManager_insertCached; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ResourceFactoryNullD_ctor
-    va: 0x14352bd60
-    signature: "void*(void* self)"
-    note: "Named in Ghidra as ResourceFactoryNullD_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshLod_chunkIndexDataSource
-    va: 0x14352cc40
-    signature: "void*(void* self, u64, u64, u64)"
-    note: "Named in Ghidra as MeshLod_chunkIndexDataSource; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: TextureSubsystem_ctor
-    va: 0x14352ceb0
-    signature: "void*(void* self, u64, u64, u64)"
-    note: "Named in Ghidra as TextureSubsystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ResourceFactoryNullC_deletingDtor
-    va: 0x14352d9e0
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as ResourceFactoryNullC_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: TextureSubsystem_deletingDtor
-    va: 0x14352da30
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as TextureSubsystem_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_allocSectionRecords_A
-    va: 0x143539940
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as MeshSet_allocSectionRecords_A; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_allocSectionRecords_B
-    va: 0x1435399e0
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as MeshSet_allocSectionRecords_B; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_freeSectionRecords
-    va: 0x143539bc0
-    signature: "void(u64, i64, u32)"
-    note: "Named in Ghidra as MeshSet_freeSectionRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSetManager_ctor
-    va: 0x14353b490
-    signature: "void*(void* self)"
-    note: "Named in Ghidra as MeshSetManager_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_construct
-    va: 0x14353b770
-    signature: "void*(void* self)"
-    note: "Named in Ghidra as MeshSet_construct; checked in the decompiler (2026-10-30): uses MeshSet:: members."
-    confidence: inferred
-    sources: [ghidra]
-  - name: MeshSetSystem_init
-    va: 0x14353d930
-    signature: "void(u64, u64, u64, u64)"
-    note: "Named in Ghidra as MeshSetSystem_init; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_deserializeFromRes
-    va: 0x1435404c0
-    signature: "void(void* self, u64, void*, u32, i64, u64, u32)"
-    note: "Named in Ghidra as MeshSet_deserializeFromRes; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSet_releaseAll
-    va: 0x1435428f0
-    signature: "void(void* self)"
-    note: "Named in Ghidra as MeshSet_releaseAll; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshLod_initMorphDeclarations
-    va: 0x14354adf0
-    signature: "void(void* self, u64, i64)"
-    note: "Named in Ghidra as MeshLod_initMorphDeclarations; checked in the decompiler (2026-10-30): its strings ('Mesh/Standard/MorphDeclaration')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: MeshSetSection_initShadersFromDeclaration
-    va: 0x14354b140
-    signature: "void(void* lod, void* renderDevice, void* section)"
-    note: "Initializes 18 vertex declaration permutations for a mesh section from the GeometryDeclarationDesc at section +0x4c. Populates section's declaration table."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: MeshSetFactory_finishLoad
-    va: 0x14354b800
-    signature: "void(u64, void*, void*, u64, void*)"
-    note: "Named in Ghidra as MeshSetFactory_finishLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshLod_createGpuBuffers
-    va: 0x14354fe00
-    signature: "void(void* lod, void* renderDevice, void* geometryBuffer, void* optionalStream)"
-    note: "Creates Direct3D 11 vertex and index buffers via render device slot 21 (0xa8). Populates MeshLodGpuRecord at lod +0x9c and asserts status flag lod +0x50 |= 0x20000000 (Resident/Ready)."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: MeshSetFactory_prepareLoad
-    va: 0x143551870
-    signature: "i32(u64, void*, void*)"
-    note: "Named in Ghidra as MeshSetFactory_prepareLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshSetFactory_allocBuffersFromResMeta
-    va: 0x143554c80
-    signature: "void(void* self, void*, u64, void*, void*)"
-    note: "Named in Ghidra as MeshSetFactory_allocBuffersFromResMeta; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: MeshLod_destroy
-    va: 0x143554e50
-    signature: "void(void* self)"
-    note: "Releases Direct3D 11 vertex and index buffer COM interfaces in MeshLodGpuRecord at lod +0x9c and clears status flag lod +0x50 &= ~0x20000000."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: GraphicsPlatform_createOrGetVertexDeclaration
-    va: 0x1435b8f30
-    signature: "void*(void* platform, void* alloc, u64 nameHash, GeometryDeclarationDesc* desc)"
-    note: "Looks up or creates an ID3D11InputLayout / VertexDeclaration from a 0x54-byte GeometryDeclarationDesc. Caches declarations in an eastl::map at platform +0xb0 keyed by the 32-bit declaration hash."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: RigidMeshEntity_ctor
-    va: 0x14370b400
-    signature: "void*(void* self, void* renderWorld, void* memberData, LinearTransform* world, u16 param5, u32 flags, u8 param7)"
-    note: "Constructs a RigidMeshEntity static model render object (vtable 0x141bf72c8). Sets up transform at +0x10, culling sphere at +0x50, local mesh box via +0x60."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: MeshEntityBase_ctor
-    va: 0x14375f930
-    signature: "void(void* self, const char* name, void* memberData, LinearTransform* world, void* resource, u16 param6, u32 flags, u8 param8)"
-    note: "Base constructor for static mesh render objects. Reads local bounding box from *(**(self + 0x60) + 0x20) (min xyz, pad, max xyz) and calculates world bounding sphere at +0x50."
-    confidence: hypothesis
-    sources: [ghidra, research]
-  - name: RenderSystem_ctor
-    va: 0x143567280
-    signature: "void*(void* self, u64)"
-    note: "Named in Ghidra as RenderSystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: DebugRenderer_render
-    va: 0x14356e440
-    signature: "void(void* self, void*, u64, u64, u64, u64)"
-    note: "Named in Ghidra as DebugRenderer_render; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: DebugRenderer_drawBatches2
-    va: 0x14356e530
-    signature: "void(u64, void*, u64, i64, u32, void*, i64)"
-    note: "Named in Ghidra as DebugRenderer_drawBatches2; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: DebugRenderer_drawPrimitiveBatches
-    va: 0x143571ca0
-    signature: "void(u64, void*, i64, void*, void*, u8)"
-    note: "Named in Ghidra as DebugRenderer_drawPrimitiveBatches; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: GraphicsSystem_initResourceFactories
-    va: 0x143574140
-    signature: "void(void* self)"
-    note: "Named in Ghidra as GraphicsSystem_initResourceFactories; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: enqueueShaderCreateJob
-    va: 0x143580550
-    signature: "void(void*, u64, u64, i32, u64, i32)"
-    note: "Named in Ghidra as enqueueShaderCreateJob; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: enqueueShaderCreateJobVS
-    va: 0x143580780
-    signature: "void(void*, u64, u64, i32, u64, i32)"
-    note: "Named in Ghidra as enqueueShaderCreateJobVS; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: GraphicsPlatform_ctor
-    va: 0x1435883e0
-    signature: "void*(void* self, u64)"
-    note: "Named in Ghidra as GraphicsPlatform_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ResourceFactoryNull_deletingDtor_shared
-    va: 0x14358be30
-    signature: "u64(u64, u32)"
-    note: "Named in Ghidra as ResourceFactoryNull_deletingDtor_shared; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: createDomainShaderJob
-    va: 0x143592580
-    signature: "void(void*)"
-    note: "Named in Ghidra as createDomainShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateDomainShader(permutation->data, per')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: GraphicsPlatform_create
-    va: 0x143592650
-    signature: "u64(u64, u64, u64, u64)"
-    note: "Named in Ghidra as GraphicsPlatform_create; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: createGeometryShaderJob
-    va: 0x143592a90
-    signature: "void(void*)"
-    note: "Named in Ghidra as createGeometryShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateGeometryShader(permutation->data, p')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createHullShaderJob
-    va: 0x143592b10
-    signature: "void(void*)"
-    note: "Named in Ghidra as createHullShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateHullShader(permutation->data, permu')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createRootSignatureTableSet1
-    va: 0x143593500
-    signature: "void(u64, u64, void*)"
-    note: "Named in Ghidra as createRootSignatureTableSet1; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: createPixelShaderJob
-    va: 0x143593a00
-    signature: "void(void*)"
-    note: "Named in Ghidra as createPixelShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreatePixelShader(permutation->data, perm')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createShaderPermutationsD3D11
-    va: 0x143594220
-    signature: "void(void*)"
-    note: "Named in Ghidra as createShaderPermutationsD3D11; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: createVertexShaderJob
-    va: 0x143594b00
-    signature: "void(void*)"
-    note: "Named in Ghidra as createVertexShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateVertexShader(permutation->data, per')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: fb_Dx11ShaderDatabase_Dx11ShaderDatabase_load
-    va: 0x14359a260
-    signature: "void(Dx11ShaderDatabase* self, u64, u8)"
-    note: "Named in Ghidra as fb::Dx11ShaderDatabase::Dx11ShaderDatabase_load; checked in the decompiler (2026-10-30): uses Dx11ShaderDatabase:: members."
-    confidence: inferred
-    sources: [ghidra]
-  - name: loadDomainShaderTable
-    va: 0x14359a4c0
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadDomainShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderStateTable
-    va: 0x14359a790
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderStateTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadGeometryShaderTable
-    va: 0x14359a930
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadGeometryShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadHullShaderTable
-    va: 0x14359ab70
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadHullShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadPixelShaderTable
-    va: 0x14359ae40
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadPixelShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderBlobTableU32
-    va: 0x14359b110
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderBlobTableU32; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderPermutationIndexTable
-    va: 0x14359b300
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderPermutationIndexTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ShaderDatabaseSource_createForCurrentRenderPath
-    va: 0x1435ce8d0
-    signature: "void*(void* self, u64, u64, u64, u64, u64)"
-    note: "Named in Ghidra as ShaderDatabaseSource_createForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: lookupTripleBlob
-    va: 0x1435ce980
-    signature: "u64(void*, void*)"
-    note: "Named in Ghidra as lookupTripleBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderTripleBlobTable
-    va: 0x1435ce9d0
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderTripleBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: lookupU16KeyedBlob
-    va: 0x1435ceac0
-    signature: "u64(void*, void*)"
-    note: "Named in Ghidra as lookupU16KeyedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderU16KeyedTable
-    va: 0x1435ceaf0
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderU16KeyedTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderReflectionTable
-    va: 0x1435ceca0
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderReflectionTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: lookupIndexedBlob
-    va: 0x1435ceff0
-    signature: "u64(void*, void*)"
-    note: "Named in Ghidra as lookupIndexedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: loadShaderIndexedBlobTable
-    va: 0x1435cf030
-    signature: "void(void*, void*)"
-    note: "Named in Ghidra as loadShaderIndexedBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ShaderDatabaseSource_readSectionBytes
-    va: 0x1435d1470
-    signature: "void(void* self, void*, u64, u64)"
-    note: "Named in Ghidra as ShaderDatabaseSource_readSectionBytes; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ShaderDatabaseSource_loadForCurrentRenderPath
-    va: 0x1435d1530
-    signature: "void(u64, u64, u64, u64, u64, u64, u64)"
-    note: "Named in Ghidra as ShaderDatabaseSource_loadForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: findShaderDatabaseSectionForRenderPath
-    va: 0x1435d35b0
-    signature: "void(u64, i32, u64)"
-    note: "Named in Ghidra as findShaderDatabaseSectionForRenderPath; checked in the decompiler (2026-10-30): its strings ('Wanted shader path ;  wasn't found in shader solution database ')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: Dx11Renderer_ctor
-    va: 0x1435dec80
-    signature: "void*(void* self, u64, i64)"
-    note: "Named in Ghidra as Dx11Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: Dx12Renderer_ctor
-    va: 0x1435e0310
-    signature: "void*(void* self, u64, i64)"
-    note: "Named in Ghidra as Dx12Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ResourceFactoryNullA_deletingDtor
-    va: 0x1435e5b40
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as ResourceFactoryNullA_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: ResourceFactoryNullB_deletingDtor
-    va: 0x1435e5ca0
-    signature: "void*(void* self, u32)"
-    note: "Named in Ghidra as ResourceFactoryNullB_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: createRootSignatureSimple
-    va: 0x1435eebc0
-    signature: "void()"
-    note: "Named in Ghidra as createRootSignatureSimple; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createRootSignatureTableSet2
-    va: 0x1435efaa0
-    signature: "void()"
-    note: "Named in Ghidra as createRootSignatureTableSet2; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createDx11RenderDevice
-    va: 0x1435f7200
-    signature: "void*(u64)"
-    note: "Named in Ghidra as createDx11RenderDevice; checked in the decompiler (2026-10-30): its strings ('RenderDevice')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: createDx12RenderDevice
-    va: 0x1435f7500
-    signature: "void*(u64)"
-    note: "Named in Ghidra as createDx12RenderDevice; checked in the decompiler (2026-10-30): its strings ('d3d12.dll; RenderDevice')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: renderDeviceInit_D3D12
-    va: 0x14360c670
-    signature: "void(void*, u32, i64, u32)"
-    note: "Named in Ghidra as renderDeviceInit_D3D12; checked in the decompiler (2026-10-30): its strings ('m_dxgiFactory->QueryInterface(__uuidof(IDXGIFactory4), (void**)&dxgiFa; dxgiFact')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: d3d12CheckHr
-    va: 0x143632cf0
-    signature: "void(i32, u64)"
-    note: "Named in Ghidra as d3d12CheckHr; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: registerEnlightenSubsystem
-    va: 0x1436e43e0
-    signature: "void()"
-    note: "Named in Ghidra as registerEnlightenSubsystem; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  - name: shaderRenderPathName
-    va: 0x1446e3760
-    signature: "void*(u32)"
-    note: "Named in Ghidra as shaderRenderPathName; checked in the decompiler (2026-10-30): its strings ('ShaderRenderPath_Dx10; ShaderRenderPath_Dx10Plus')."
-    confidence: inferred
-    sources: [ghidra]
-  - name: registerShaderDatabaseAssetTypeInfo
-    va: 0x1446e6710
-    signature: "void()"
-    note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
-  # Checked in Ghidra, 2026-10-21 (the user's research).
-  - name: DebugRenderer_getContext
-    va: 0x142aa9e80
-    signature: "void*()"
-    note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
-    confidence: inferred
-    sources: [ghidra, user]
-constants:
-  - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
-  - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
-  - { name: ClientStaticModel_vf_bounds, value: 0xb8, confidence: inferred, sources: [ghidra] }
-  - { name: ClientStaticModel_BoxMin, value: 0x100, confidence: inferred, sources: [ghidra], note: "Cached local box: min xyz (+pad), then max xyz at +0x110." }
-  - { name: ClientStaticModel_BoxFlags, value: 0x142, confidence: inferred, sources: [ghidra], note: "Bit 0: the box is not computed yet." }
-  - { name: RigidMeshEntity_StreamingHandle, value: 0x78, confidence: inferred, sources: [ghidra], note: "Its instance in MeshStreamingManager (0xffffffff: none)." }
-  - { name: Mesh_Box, value: 0x20, confidence: inferred, sources: [ghidra] }
-  - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
-  - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
-  - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }
-structs:
-  - name: WorldRenderer
-    size: 0x3c2000
-    opaque: true
-    members:
-      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0xb30 bytes)." }
-  - name: VisualEnvironmentState
-    size: 0xb30
-    members:
-      - { offset: 0x000, name: sunColor, type: "f32[3]", note: "Outdoor light sun RGB color." }
-      - { offset: 0x060, name: skyColor, type: "f32[3]", note: "Sky ambient RGB color." }
-      - { offset: 0x070, name: groundColor, type: "f32[3]", note: "Ground bounce RGB color." }
-      - { offset: 0x084, name: sunRotationX, type: f32, note: "Sun elevation angle (pitch)." }
-      - { offset: 0x088, name: sunRotationY, type: f32, note: "Sun azimuth angle (yaw)." }
-      - { offset: 0x094, name: sunIntensity, type: f32, note: "Sun illuminance intensity." }
-      - { offset: 0x118, name: sunEnable, type: u8, note: "Sun light enable flag." }
-      - { offset: 0x1d0, name: bloomScale, type: f32, note: "Tonemap bloom scale factor." }
-      - { offset: 0x264, name: exposureValue, type: f32, note: "Target exposure value (EV)." }
-      - { offset: 0x268, name: exposureCompensation, type: f32, note: "Exposure compensation EV offset." }
-      - { offset: 0x330, name: colorBrightness, type: "f32[3]", note: "Color grading RGB brightness multiplier." }
-      - { offset: 0x340, name: colorContrast, type: "f32[3]", note: "Color grading RGB contrast." }
-      - { offset: 0x350, name: colorSaturation, type: "f32[3]", note: "Color grading RGB saturation." }
-      - { offset: 0x364, name: colorHue, type: f32, note: "Color grading hue offset." }
-      - { offset: 0x6e4, name: windDirection, type: f32, note: "Wind direction in radians." }
-      - { offset: 0x6e8, name: windStrength, type: f32, note: "Wind speed / force." }
-      - { offset: 0xa54, name: dofFocusDistance, type: f32, note: "Depth of field focus plane distance (meters)." }
-      - { offset: 0xa58, name: dofBlurFactor, type: f32, note: "Depth of field blur intensity." }
-      - { offset: 0xaa8, name: dofEnable, type: u8, note: "Depth of field enable flag." }
-      - { offset: 0xac0, name: vignetteColor, type: "f32[3]", note: "Vignette RGB color." }
-      - { offset: 0xad4, name: vignetteScale, type: f32, note: "Vignette radial scale." }
-      - { offset: 0xae4, name: vignetteEnable, type: u8, note: "Vignette enable flag." }
-      - { offset: 0xb00, name: filmGrainColorScale, type: "f32[3]", note: "Film grain RGB noise scale." }
-      - { offset: 0xb28, name: filmGrainEnable, type: u8, note: "Film grain enable flag." }
-  - name: VertexElementDesc
-    size: 0x04
-    align: 1
-    members:
-      - { offset: 0x00, name: usage, type: u8, note: "Vertex element semantic (1=Pos, 6=Norm, 7=Tan, 27=UV0)." }
-      - { offset: 0x01, name: format, type: u8, note: "Element format (1=R10G10B10A2, 3=Float3, 12=Half2)." }
-      - { offset: 0x02, name: offset, type: u8, note: "Byte offset of element in vertex stream." }
-      - { offset: 0x03, name: stream, type: u8, note: "Stream buffer index (typically 0)." }
-  - name: GeometryDeclarationDesc
-    size: 0x54
-    align: 4
-    members:
-      - { offset: 0x00, name: elements, type: "VertexElementDesc[16]", note: "Array of 16 vertex element descriptors." }
-      - { offset: 0x50, name: elementCount, type: u8, note: "Number of active vertex elements." }
-      - { offset: 0x51, name: streamCount, type: u8, note: "Number of vertex buffer streams (typically 1)." }
-  - name: MeshLodGpuRecord
-    size: 0x48
-    members:
-      - { offset: 0x00, name: renderDevice, type: "void*", note: "Render device pointer." }
-      - { offset: 0x08, name: vertexBuffer, type: "void*", note: "Direct3D 11 vertex buffer (ID3D11Buffer*)." }
-      - { offset: 0x10, name: indexBuffer, type: "void*", note: "Direct3D 11 index buffer (ID3D11Buffer*)." }
-      - { offset: 0x18, name: rawVertexData, type: "u8*", note: "Pointer to CPU raw vertex buffer." }
-      - { offset: 0x20, name: rawIndexData, type: "u8*", note: "Pointer to CPU raw index buffer." }
-      - { offset: 0x30, name: rawMorphData, type: "u8*", note: "Pointer to CPU raw morph data." }
-      - { offset: 0x38, name: morphBuffer, type: "void*", note: "Direct3D 11 morph target buffer." }
-      - { offset: 0x40, name: bufferGroupHandle, type: "void*", note: "Internal buffer group handle." }
-  - name: MeshSetSectionRecord
-    size: 0x90
-    members:
-      - { offset: 0x00, name: declarations, type: "void*[18]", note: "18 shader permutation / vertex declaration pointers." }
-  - name: MeshSetSection
-    size: 0x130
-    members:
-      - { offset: 0x00, name: sectionRecord, type: "MeshSetSectionRecord*", note: "Pointer to 18-permutation declaration table." }
-      - { offset: 0x4c, name: geometryDesc, type: GeometryDeclarationDesc, note: "84-byte vertex declaration descriptor." }
-  - name: MeshLod
-    size: 0xa8
-    align: 8
-    members:
-      - { offset: 0x00, name: meshSet, type: "void*", note: "Owner MeshSet resource pointer." }
-      - { offset: 0x08, name: sectionCount, type: u32, note: "Number of sections in this LOD." }
-      - { offset: 0x0c, name: sections, type: "void*", note: "Pointer to array of MeshSetSection records." }
-      - { offset: 0x50, name: statusFlags, type: u32, note: "Bit 0x20000000 = GPU buffers resident and ready." }
-      - { offset: 0x54, name: indexFormat, type: u32, note: "Index buffer format: 2 = 16-bit uint, 4 = 32-bit uint." }
-      - { offset: 0x58, name: indexCount, type: u32, note: "Total number of indices." }
-      - { offset: 0x5c, name: indexOffset, type: u32, note: "Byte offset of index buffer from geometry start (equals vertex buffer byte size)." }
-      - { offset: 0x60, name: vertexCount, type: u32, note: "Total number of vertices in stream 0." }
-      - { offset: 0x74, name: geometryDataOffset, type: u32, note: "Offset to raw vertex data from inline buffer base." }
-      - { offset: 0x9c, name: gpuRecord, type: "MeshLodGpuRecord*", note: "Pointer to runtime GPU buffer handles container." }
-  - name: MeshSetResource
-    size: 0x90
-    members:
-      - { offset: 0x20, name: lodPointers, type: "void*[8]", note: "Pointers to MeshLod structures for each LOD level." }
-      - { offset: 0x88, name: flags, type: u32, note: "Bit 0 = isStreamed (0 = static in-memory mesh, 1 = streamed)." }
-      - { offset: 0x8c, name: lodCount, type: u16, note: "Number of LOD levels." }
-      - { offset: 0x8e, name: totalSections, type: u16, note: "Total section count across all LODs." }
-hooks:
-  - name: WorldRenderer_renderView
-    kind: vtable-slot
-    vtable: 0x141bfac00
-    slot: 0x141bfaca8
-    original: 0x14373e5d0
-    signature: "void(void* worldRenderer, void* context)"
-    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to shader constants upload. Hook point for overriding visual environment state without flicker."
-classes:
-  - name: ClientStaticModelGroupEntity
-    vtable: 0x141afbe90
-    size: 0x108
-    realm: client
-    confidence: hypothesis
-    sources: [ghidra, reflected]
-    note: "Client entity managing hardware-instanced static mesh members and visibility streaming registration."
-  - name: ServerStaticModelGroupEntity
-    vtable: 0x141b5e3a0
-    size: 0xc0
-    realm: server
-    confidence: hypothesis
-    sources: [ghidra, reflected]
-    note: "Server entity managing static model group replication, network IDs, and physics health components."
-  - name: StaticModelGroupEntityData
-    vtable: 0x141b73f40
-    size: 0xb0
-    confidence: hypothesis
-    sources: [ghidra, reflected]
-    note: "Reflected entity data defining multi-instance static model groups (MemberDatas at +0x90)."
-  - name: RigidMeshAsset
-    vtable: 0x141bbdab0
-    size: 0x78
-    confidence: hypothesis
-    sources: [ghidra, reflected]
-    note: "Reflected mesh asset holding MeshSetResource (+0x20) and Materials array (+0x60)."
-  - name: MeshMaterial
-    vtable: 0x141bbdae0
-    size: 0x70
-    confidence: hypothesis
-    sources: [ghidra, reflected]
-    note: "Reflected material holding SurfaceShaderInstanceDataStruct (+0x10) and tessellation/displacement parameters."
+# Rendering: render devices (DX11 / DX12), shader database, meshes, textures, debug drawing.
+# Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
+defaults: { confidence: hypothesis, sources: [ghidra] }
+globals:
+  - name: g_visualEnvironmentManager
+    va: 0x142568cd8
+    type: "void*"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Global singleton managing active visual environment contexts, mutex, and per-frame blend."
+  - name: GameWorlds
+    va: 0x1424a9b98
+    type: "void*"
+    note: "The game worlds by realm: [0] client, [1] server (0x1432e1210 indexes it by an entity's flags & 1). +0x48 of the client one is the render world that static model groups hand render-object updates to (0x14318fbc0); +0x28 is the index of its per-class entity lists in each ClassInfo (0x143164d50). Was named RenderRoot."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: VisibilitySystem
+    va: 0x142563a30
+    type: "void*"
+    note: "Culling spheres: a RigidMeshEntity registers {centre xyz, radius} (0x14356ac00, from 0x143766f60), handle at the render object's +0x84; moved by 0x14357b970, removed by 0x1435782e0."
+  - name: MeshStreamingManager
+    va: 0x142563410
+    type: "void*"
+    note: "Mesh streaming priorities: per instance {radius, mesh index u16, slot, ..., position xyz, scale} (+0x350070, 0x20 each); a group copy gets one when its render object is made (0x1431841f0, name \"rigidMeshEntity\"), its handle at the render object's +0x78."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ZoneStreamerEntity_TypeInfo
+    va: 0x14289ec20
+    type: "void*"
+    note: "Its per-world entity lists: first node at + (world list index + 6) * 0x10."
+    confidence: confirmed
+    sources: [reflected, ghidra]
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: RigidMeshEntity_vtable
+    va: 0x141bf72c8
+    type: "void*"
+    note: "A static model's render object (transform +0x10, bounding sphere +0x50, mesh box via +0x60)."
+    confidence: inferred
+    sources: [ghidra, research]
+  - name: CompositeMeshEntity_vtable
+    va: 0x141c012c0
+    type: "void*"
+    note: "The other static model render object (ctor 0x14377f750); same base and set-transform as RigidMeshEntity."
+    confidence: inferred
+    sources: [ghidra]
+  - name: StaticModelGroup_LodScale
+    va: 0x141a4e8dc
+    type: u32
+    note: "Copied into a render-object update at +0x60 by ClientStaticModelGroup_placeMember (0x14318fbc0); the layout editor does the same."
+    confidence: inferred
+    sources: [research]
+  - name: g_renderDevice
+    va: 0x142563300
+    type: "u64"
+    note: "Labelled in Ghidra as g_renderDevice."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_meshSetManager
+    va: 0x142563790
+    type: "u64"
+    note: "Labelled in Ghidra as g_meshSetManager."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_debugShaderParam_worldViewProj
+    va: 0x142563ab4
+    type: "u32"
+    note: "Labelled in Ghidra as g_debugShaderParam_worldViewProj."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_debugShaderParam_screenScale
+    va: 0x142563ab8
+    type: "u32"
+    note: "Labelled in Ghidra as g_debugShaderParam_screenScale."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: g_dx12Renderer
+    va: 0x1425654f0
+    type: "u64"
+    note: "Labelled in Ghidra as g_dx12Renderer."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DebugRenderSettings_TypeInfo
+    va: 0x1427b24c0
+    type: "TypeInfo*"
+    note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
+    confidence: confirmed
+    sources: [reflected]
+functions:
+  - name: VisualEnvironmentManager_update
+    va: 0x143705b30
+    signature: "void(void* manager, void* updateContext)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Per-frame visual environment update under VE mutex. Iterates contexts at +0x2358/+0x2360 and invokes VisualEnvironmentContext_blend."
+  - name: VisualEnvironmentContext_blend
+    va: 0x143703d60
+    signature: "void(void* context, void* updateContext)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Multi-layer visual environment blend function (7,487 bytes) combining sun, tonemapping, color correction, sky, wind, and post-process parameters."
+  - name: VisibilitySystem_update
+    va: 0x14357b970
+    signature: "void(void* system, u32 handle, const f32* sphere)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Moves a culling sphere {centre xyz, radius}: locks, writes, marks the entry dirty. Called by RigidMeshEntity_setTransform (0x14376c060) with the render object's +0x84 handle."
+  - name: StaticModelGroup_placementHash
+    va: 0x143b722e0
+    signature: "void(u8* out16, void* assetMinus10, const LinearTransform* world)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Hashes a mesh asset (asset - 0x10, when its +10 u16 has 0x100; else null) with the quantised position, rotation and scale; the 16 bytes go in a group member's render update at +0x78. See docs/research/render-objects.md."
+  - name: ClientStaticModelGroup_makeMemberObject
+    va: 0x143185940
+    signature: "void(void* block, void* group, void* a3, u32 copy, void* a5)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Fills a stack update template (render world, factory value at +0x8a, flags) and calls 0x1431841f0, which makes the copy's RigidMeshEntity, sets the view mask (+0x8c), placement hash (+0x78) and submits it."
+  - name: ClientStaticModelGroup_placeMember
+    va: 0x14318fbc0
+    signature: "void(void* block, const LinearTransform* group, u32 firstPart)"
+    note: >-
+      Places one member's render objects: per copy, InstanceTransforms[i] (or the physics part
+      transform) times the group transform; object vtable +0x10 sets it, RenderObject_buildUpdate
+      and RenderWorld_submitUpdate push it. Called per member by the group's transform-changed
+      function (0x143193690), which passes this function's (void) result as the next member's first
+      part, so GridNode does not call that function.
+    confidence: inferred
+    sources: [research]
+  - name: RenderObject_buildUpdate
+    va: 0x143769330
+    signature: "void(void* object, u8* update)"
+    confidence: inferred
+    sources: [research]
+  - name: RenderWorld_submitUpdate
+    va: 0x1436d6ce0
+    signature: "void(void* renderWorld, u8* update)"
+    confidence: inferred
+    sources: [research]
+  - name: ClientStaticModelEntity_bounds
+    va: 0x1431833a0
+    signature: "void(void* entity, void* out)"
+    note: "Vtable +0xb8: out+0x00 its world transform (4 rows), out+0x40 / +0x50 its local box (min, max). Computes the box when bit 0 of +0x142 is set and caches it at +0x100 / +0x110 (clearing the bit). Client thread."
+    confidence: inferred
+    sources: [ghidra]
+  - name: MeshStreaming_setTransform
+    va: 0x143555450
+    signature: "void(void* manager, u32* handle, const LinearTransform* transform, f32 value)"
+    note: "Sets a streaming instance's position (the mesh box's centre in the transform) and a value kept at +0x1c (0x1435556a0 with a count of 1). The game passes the float at 0x1419fd590; RigidMeshEntity_setTransform already calls it, so callers moving a render object should not."
+    confidence: inferred
+    sources: [ghidra]
+  - name: RigidMeshEntity_setTransform
+    va: 0x14376c060
+    signature: "void(void* object, const LinearTransform* world)"
+    note: >-
+      Vtable +0x10 of RigidMeshEntity (vtable 0x141bf72c8), a static model's render object. Stores
+      the transform at +0x10 (four float4 rows) and the world bounding sphere at +0x50, from the
+      mesh's local box at *(**(object + 0x60) + 0x20) (min xyz, pad, max xyz). The layout editor's
+      outline reads both (docs/research/render-objects.md; fit confirmed in game 2026-10-21).
+    confidence: inferred
+    sources: [ghidra, research]
+  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
+  - name: DebugRenderShader_initParamIds
+    va: 0x142988e40
+    signature: "void()"
+    note: "Named in Ghidra as DebugRenderShader_initParamIds; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: registerDx11ShaderDatabaseTypeInfo
+    va: 0x142989240
+    signature: "void()"
+    note: "Named in Ghidra as registerDx11ShaderDatabaseTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSetManager_findCachedByNameHash
+    va: 0x142abbef0
+    signature: "u64(i64, u32, u64, u64)"
+    note: "Named in Ghidra as MeshSetManager_findCachedByNameHash; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSetManager_insertCached
+    va: 0x142abc060
+    signature: "void(u64, void*, u64, u32)"
+    note: "Named in Ghidra as MeshSetManager_insertCached; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactoryNullD_ctor
+    va: 0x14352bd60
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as ResourceFactoryNullD_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshLod_chunkIndexDataSource
+    va: 0x14352cc40
+    signature: "void*(void* self, u64, u64, u64)"
+    note: "Named in Ghidra as MeshLod_chunkIndexDataSource; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TextureSubsystem_ctor
+    va: 0x14352ceb0
+    signature: "void*(void* self, u64, u64, u64)"
+    note: "Named in Ghidra as TextureSubsystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactoryNullC_deletingDtor
+    va: 0x14352d9e0
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullC_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: TextureSubsystem_deletingDtor
+    va: 0x14352da30
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as TextureSubsystem_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_allocSectionRecords_A
+    va: 0x143539940
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as MeshSet_allocSectionRecords_A; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_allocSectionRecords_B
+    va: 0x1435399e0
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as MeshSet_allocSectionRecords_B; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_freeSectionRecords
+    va: 0x143539bc0
+    signature: "void(u64, i64, u32)"
+    note: "Named in Ghidra as MeshSet_freeSectionRecords; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSetManager_ctor
+    va: 0x14353b490
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as MeshSetManager_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_construct
+    va: 0x14353b770
+    signature: "void*(void* self)"
+    note: "Named in Ghidra as MeshSet_construct; checked in the decompiler (2026-10-30): uses MeshSet:: members."
+    confidence: inferred
+    sources: [ghidra]
+  - name: MeshSetSystem_init
+    va: 0x14353d930
+    signature: "void(u64, u64, u64, u64)"
+    note: "Named in Ghidra as MeshSetSystem_init; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_deserializeFromRes
+    va: 0x1435404c0
+    signature: "void(void* self, u64, void*, u32, i64, u64, u32)"
+    note: "Named in Ghidra as MeshSet_deserializeFromRes; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSet_releaseAll
+    va: 0x1435428f0
+    signature: "void(void* self)"
+    note: "Named in Ghidra as MeshSet_releaseAll; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshLod_initMorphDeclarations
+    va: 0x14354adf0
+    signature: "void(void* self, u64, i64)"
+    note: "Named in Ghidra as MeshLod_initMorphDeclarations; checked in the decompiler (2026-10-30): its strings ('Mesh/Standard/MorphDeclaration')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: MeshSetSection_initShadersFromDeclaration
+    va: 0x14354b140
+    signature: "void(void* lod, void* renderDevice, void* section)"
+    note: "Initializes 18 vertex declaration permutations for a mesh section from the GeometryDeclarationDesc at section +0x4c. Populates section's declaration table."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: MeshSetFactory_finishLoad
+    va: 0x14354b800
+    signature: "void(u64, void*, void*, u64, void*)"
+    note: "Named in Ghidra as MeshSetFactory_finishLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshLod_createGpuBuffers
+    va: 0x14354fe00
+    signature: "void(void* lod, void* renderDevice, void* geometryBuffer, void* optionalStream)"
+    note: "Creates Direct3D 11 vertex and index buffers via render device slot 21 (0xa8). Populates MeshLodGpuRecord at lod +0x9c and asserts status flag lod +0x50 |= 0x20000000 (Resident/Ready)."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: MeshSetFactory_prepareLoad
+    va: 0x143551870
+    signature: "i32(u64, void*, void*)"
+    note: "Named in Ghidra as MeshSetFactory_prepareLoad; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshSetFactory_allocBuffersFromResMeta
+    va: 0x143554c80
+    signature: "void(void* self, void*, u64, void*, void*)"
+    note: "Named in Ghidra as MeshSetFactory_allocBuffersFromResMeta; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: MeshLod_destroy
+    va: 0x143554e50
+    signature: "void(void* self)"
+    note: "Releases Direct3D 11 vertex and index buffer COM interfaces in MeshLodGpuRecord at lod +0x9c and clears status flag lod +0x50 &= ~0x20000000."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: GraphicsPlatform_createOrGetVertexDeclaration
+    va: 0x1435b8f30
+    signature: "void*(void* platform, void* alloc, u64 nameHash, GeometryDeclarationDesc* desc)"
+    note: "Looks up or creates an ID3D11InputLayout / VertexDeclaration from a 0x54-byte GeometryDeclarationDesc. Caches declarations in an eastl::map at platform +0xb0 keyed by the 32-bit declaration hash."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: RigidMeshEntity_ctor
+    va: 0x14370b400
+    signature: "void*(void* self, void* renderWorld, void* memberData, LinearTransform* world, u16 param5, u32 flags, u8 param7)"
+    note: "Constructs a RigidMeshEntity static model render object (vtable 0x141bf72c8). Sets up transform at +0x10, culling sphere at +0x50, local mesh box via +0x60."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: MeshEntityBase_ctor
+    va: 0x14375f930
+    signature: "void(void* self, const char* name, void* memberData, LinearTransform* world, void* resource, u16 param6, u32 flags, u8 param8)"
+    note: "Base constructor for static mesh render objects. Reads local bounding box from *(**(self + 0x60) + 0x20) (min xyz, pad, max xyz) and calculates world bounding sphere at +0x50."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: RenderSystem_ctor
+    va: 0x143567280
+    signature: "void*(void* self, u64)"
+    note: "Named in Ghidra as RenderSystem_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DebugRenderer_render
+    va: 0x14356e440
+    signature: "void(void* self, void*, u64, u64, u64, u64)"
+    note: "Named in Ghidra as DebugRenderer_render; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DebugRenderer_drawBatches2
+    va: 0x14356e530
+    signature: "void(u64, void*, u64, i64, u32, void*, i64)"
+    note: "Named in Ghidra as DebugRenderer_drawBatches2; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: DebugRenderer_drawPrimitiveBatches
+    va: 0x143571ca0
+    signature: "void(u64, void*, i64, void*, void*, u8)"
+    note: "Named in Ghidra as DebugRenderer_drawPrimitiveBatches; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: GraphicsSystem_initResourceFactories
+    va: 0x143574140
+    signature: "void(void* self)"
+    note: "Named in Ghidra as GraphicsSystem_initResourceFactories; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: enqueueShaderCreateJob
+    va: 0x143580550
+    signature: "void(void*, u64, u64, i32, u64, i32)"
+    note: "Named in Ghidra as enqueueShaderCreateJob; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: enqueueShaderCreateJobVS
+    va: 0x143580780
+    signature: "void(void*, u64, u64, i32, u64, i32)"
+    note: "Named in Ghidra as enqueueShaderCreateJobVS; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: GraphicsPlatform_ctor
+    va: 0x1435883e0
+    signature: "void*(void* self, u64)"
+    note: "Named in Ghidra as GraphicsPlatform_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactoryNull_deletingDtor_shared
+    va: 0x14358be30
+    signature: "u64(u64, u32)"
+    note: "Named in Ghidra as ResourceFactoryNull_deletingDtor_shared; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: createDomainShaderJob
+    va: 0x143592580
+    signature: "void(void*)"
+    note: "Named in Ghidra as createDomainShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateDomainShader(permutation->data, per')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: GraphicsPlatform_create
+    va: 0x143592650
+    signature: "u64(u64, u64, u64, u64)"
+    note: "Named in Ghidra as GraphicsPlatform_create; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: createGeometryShaderJob
+    va: 0x143592a90
+    signature: "void(void*)"
+    note: "Named in Ghidra as createGeometryShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateGeometryShader(permutation->data, p')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createHullShaderJob
+    va: 0x143592b10
+    signature: "void(void*)"
+    note: "Named in Ghidra as createHullShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateHullShader(permutation->data, permu')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createRootSignatureTableSet1
+    va: 0x143593500
+    signature: "void(u64, u64, void*)"
+    note: "Named in Ghidra as createRootSignatureTableSet1; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: createPixelShaderJob
+    va: 0x143593a00
+    signature: "void(void*)"
+    note: "Named in Ghidra as createPixelShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreatePixelShader(permutation->data, perm')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createShaderPermutationsD3D11
+    va: 0x143594220
+    signature: "void(void*)"
+    note: "Named in Ghidra as createShaderPermutationsD3D11; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: createVertexShaderJob
+    va: 0x143594b00
+    signature: "void(void*)"
+    note: "Named in Ghidra as createVertexShaderJob; checked in the decompiler (2026-10-30): its strings ('g_dx11Renderer->getDevice()->CreateVertexShader(permutation->data, per')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: fb_Dx11ShaderDatabase_Dx11ShaderDatabase_load
+    va: 0x14359a260
+    signature: "void(Dx11ShaderDatabase* self, u64, u8)"
+    note: "Named in Ghidra as fb::Dx11ShaderDatabase::Dx11ShaderDatabase_load; checked in the decompiler (2026-10-30): uses Dx11ShaderDatabase:: members."
+    confidence: inferred
+    sources: [ghidra]
+  - name: loadDomainShaderTable
+    va: 0x14359a4c0
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadDomainShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderStateTable
+    va: 0x14359a790
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderStateTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadGeometryShaderTable
+    va: 0x14359a930
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadGeometryShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadHullShaderTable
+    va: 0x14359ab70
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadHullShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadPixelShaderTable
+    va: 0x14359ae40
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadPixelShaderTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderBlobTableU32
+    va: 0x14359b110
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderBlobTableU32; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderPermutationIndexTable
+    va: 0x14359b300
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderPermutationIndexTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ShaderDatabaseSource_createForCurrentRenderPath
+    va: 0x1435ce8d0
+    signature: "void*(void* self, u64, u64, u64, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_createForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: lookupTripleBlob
+    va: 0x1435ce980
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupTripleBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderTripleBlobTable
+    va: 0x1435ce9d0
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderTripleBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: lookupU16KeyedBlob
+    va: 0x1435ceac0
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupU16KeyedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderU16KeyedTable
+    va: 0x1435ceaf0
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderU16KeyedTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderReflectionTable
+    va: 0x1435ceca0
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderReflectionTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: lookupIndexedBlob
+    va: 0x1435ceff0
+    signature: "u64(void*, void*)"
+    note: "Named in Ghidra as lookupIndexedBlob; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: loadShaderIndexedBlobTable
+    va: 0x1435cf030
+    signature: "void(void*, void*)"
+    note: "Named in Ghidra as loadShaderIndexedBlobTable; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ShaderDatabaseSource_readSectionBytes
+    va: 0x1435d1470
+    signature: "void(void* self, void*, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_readSectionBytes; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ShaderDatabaseSource_loadForCurrentRenderPath
+    va: 0x1435d1530
+    signature: "void(u64, u64, u64, u64, u64, u64, u64)"
+    note: "Named in Ghidra as ShaderDatabaseSource_loadForCurrentRenderPath; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: findShaderDatabaseSectionForRenderPath
+    va: 0x1435d35b0
+    signature: "void(u64, i32, u64)"
+    note: "Named in Ghidra as findShaderDatabaseSectionForRenderPath; checked in the decompiler (2026-10-30): its strings ('Wanted shader path ;  wasn't found in shader solution database ')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Dx11Renderer_ctor
+    va: 0x1435dec80
+    signature: "void*(void* self, u64, i64)"
+    note: "Named in Ghidra as Dx11Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: Dx12Renderer_ctor
+    va: 0x1435e0310
+    signature: "void*(void* self, u64, i64)"
+    note: "Named in Ghidra as Dx12Renderer_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactoryNullA_deletingDtor
+    va: 0x1435e5b40
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullA_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: ResourceFactoryNullB_deletingDtor
+    va: 0x1435e5ca0
+    signature: "void*(void* self, u32)"
+    note: "Named in Ghidra as ResourceFactoryNullB_deletingDtor; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: createRootSignatureSimple
+    va: 0x1435eebc0
+    signature: "void()"
+    note: "Named in Ghidra as createRootSignatureSimple; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createRootSignatureTableSet2
+    va: 0x1435efaa0
+    signature: "void()"
+    note: "Named in Ghidra as createRootSignatureTableSet2; checked in the decompiler (2026-10-30): its strings ('D3D12SerializeRootSignature( &rootSignatureDesc, D3D_ROOT_SIGNATURE_VE')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createDx11RenderDevice
+    va: 0x1435f7200
+    signature: "void*(u64)"
+    note: "Named in Ghidra as createDx11RenderDevice; checked in the decompiler (2026-10-30): its strings ('RenderDevice')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: createDx12RenderDevice
+    va: 0x1435f7500
+    signature: "void*(u64)"
+    note: "Named in Ghidra as createDx12RenderDevice; checked in the decompiler (2026-10-30): its strings ('d3d12.dll; RenderDevice')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: renderDeviceInit_D3D12
+    va: 0x14360c670
+    signature: "void(void*, u32, i64, u32)"
+    note: "Named in Ghidra as renderDeviceInit_D3D12; checked in the decompiler (2026-10-30): its strings ('m_dxgiFactory->QueryInterface(__uuidof(IDXGIFactory4), (void**)&dxgiFa; dxgiFact')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: d3d12CheckHr
+    va: 0x143632cf0
+    signature: "void(i32, u64)"
+    note: "Named in Ghidra as d3d12CheckHr; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: registerEnlightenSubsystem
+    va: 0x1436e43e0
+    signature: "void()"
+    note: "Named in Ghidra as registerEnlightenSubsystem; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: shaderRenderPathName
+    va: 0x1446e3760
+    signature: "void*(u32)"
+    note: "Named in Ghidra as shaderRenderPathName; checked in the decompiler (2026-10-30): its strings ('ShaderRenderPath_Dx10; ShaderRenderPath_Dx10Plus')."
+    confidence: inferred
+    sources: [ghidra]
+  - name: registerShaderDatabaseAssetTypeInfo
+    va: 0x1446e6710
+    signature: "void()"
+    note: "Named in Ghidra as registerShaderDatabaseAssetTypeInfo; signature from the decompiler (2026-10-30), the name is not checked yet."
+    confidence: hypothesis
+    sources: [ghidra]
+  # Checked in Ghidra, 2026-10-21 (the user's research).
+  - name: DebugRenderer_getContext
+    va: 0x142aa9e80
+    signature: "void*()"
+    note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
+    confidence: inferred
+    sources: [ghidra, user]
+constants:
+  - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
+  - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
+  - { name: ClientStaticModel_vf_bounds, value: 0xb8, confidence: inferred, sources: [ghidra] }
+  - { name: ClientStaticModel_BoxMin, value: 0x100, confidence: inferred, sources: [ghidra], note: "Cached local box: min xyz (+pad), then max xyz at +0x110." }
+  - { name: ClientStaticModel_BoxFlags, value: 0x142, confidence: inferred, sources: [ghidra], note: "Bit 0: the box is not computed yet." }
+  - { name: RigidMeshEntity_StreamingHandle, value: 0x78, confidence: inferred, sources: [ghidra], note: "Its instance in MeshStreamingManager (0xffffffff: none)." }
+  - { name: Mesh_Box, value: 0x20, confidence: inferred, sources: [ghidra] }
+  - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
+  - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
+  - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }
+structs:
+  - name: WorldRenderer
+    size: 0x3c2000
+    opaque: true
+    members:
+      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0xb30 bytes)." }
+  - name: VisualEnvironmentState
+    size: 0xb30
+    members:
+      - { offset: 0x000, name: sunColor, type: "f32[3]", note: "Outdoor light sun RGB color." }
+      - { offset: 0x060, name: skyColor, type: "f32[3]", note: "Sky ambient RGB color." }
+      - { offset: 0x070, name: groundColor, type: "f32[3]", note: "Ground bounce RGB color." }
+      - { offset: 0x084, name: sunRotationX, type: f32, note: "Sun elevation angle (pitch)." }
+      - { offset: 0x088, name: sunRotationY, type: f32, note: "Sun azimuth angle (yaw)." }
+      - { offset: 0x094, name: sunIntensity, type: f32, note: "Sun illuminance intensity." }
+      - { offset: 0x118, name: sunEnable, type: u8, note: "Sun light enable flag." }
+      - { offset: 0x1d0, name: bloomScale, type: f32, note: "Tonemap bloom scale factor." }
+      - { offset: 0x264, name: exposureValue, type: f32, note: "Target exposure value (EV)." }
+      - { offset: 0x268, name: exposureCompensation, type: f32, note: "Exposure compensation EV offset." }
+      - { offset: 0x330, name: colorBrightness, type: "f32[3]", note: "Color grading RGB brightness multiplier." }
+      - { offset: 0x340, name: colorContrast, type: "f32[3]", note: "Color grading RGB contrast." }
+      - { offset: 0x350, name: colorSaturation, type: "f32[3]", note: "Color grading RGB saturation." }
+      - { offset: 0x364, name: colorHue, type: f32, note: "Color grading hue offset." }
+      - { offset: 0x6e4, name: windDirection, type: f32, note: "Wind direction in radians." }
+      - { offset: 0x6e8, name: windStrength, type: f32, note: "Wind speed / force." }
+      - { offset: 0xa54, name: dofFocusDistance, type: f32, note: "Depth of field focus plane distance (meters)." }
+      - { offset: 0xa58, name: dofBlurFactor, type: f32, note: "Depth of field blur intensity." }
+      - { offset: 0xaa8, name: dofEnable, type: u8, note: "Depth of field enable flag." }
+      - { offset: 0xac0, name: vignetteColor, type: "f32[3]", note: "Vignette RGB color." }
+      - { offset: 0xad4, name: vignetteScale, type: f32, note: "Vignette radial scale." }
+      - { offset: 0xae4, name: vignetteEnable, type: u8, note: "Vignette enable flag." }
+      - { offset: 0xb00, name: filmGrainColorScale, type: "f32[3]", note: "Film grain RGB noise scale." }
+      - { offset: 0xb28, name: filmGrainEnable, type: u8, note: "Film grain enable flag." }
+  - name: VertexElementDesc
+    size: 0x04
+    align: 1
+    members:
+      - { offset: 0x00, name: usage, type: u8, note: "Vertex element semantic (1=Pos, 6=Norm, 7=Tan, 27=UV0)." }
+      - { offset: 0x01, name: format, type: u8, note: "Element format (1=R10G10B10A2, 3=Float3, 12=Half2)." }
+      - { offset: 0x02, name: offset, type: u8, note: "Byte offset of element in vertex stream." }
+      - { offset: 0x03, name: stream, type: u8, note: "Stream buffer index (typically 0)." }
+  - name: GeometryDeclarationDesc
+    size: 0x54
+    align: 4
+    members:
+      - { offset: 0x00, name: elements, type: "VertexElementDesc[16]", note: "Array of 16 vertex element descriptors." }
+      - { offset: 0x50, name: elementCount, type: u8, note: "Number of active vertex elements." }
+      - { offset: 0x51, name: streamCount, type: u8, note: "Number of vertex buffer streams (typically 1)." }
+  - name: MeshLodGpuRecord
+    size: 0x48
+    members:
+      - { offset: 0x00, name: renderDevice, type: "void*", note: "Render device pointer." }
+      - { offset: 0x08, name: vertexBuffer, type: "void*", note: "Direct3D 11 vertex buffer (ID3D11Buffer*)." }
+      - { offset: 0x10, name: indexBuffer, type: "void*", note: "Direct3D 11 index buffer (ID3D11Buffer*)." }
+      - { offset: 0x18, name: rawVertexData, type: "u8*", note: "Pointer to CPU raw vertex buffer." }
+      - { offset: 0x20, name: rawIndexData, type: "u8*", note: "Pointer to CPU raw index buffer." }
+      - { offset: 0x30, name: rawMorphData, type: "u8*", note: "Pointer to CPU raw morph data." }
+      - { offset: 0x38, name: morphBuffer, type: "void*", note: "Direct3D 11 morph target buffer." }
+      - { offset: 0x40, name: bufferGroupHandle, type: "void*", note: "Internal buffer group handle." }
+  - name: MeshSetSectionRecord
+    size: 0x90
+    members:
+      - { offset: 0x00, name: declarations, type: "void*[18]", note: "18 shader permutation / vertex declaration pointers." }
+  - name: MeshSetSection
+    size: 0x130
+    members:
+      - { offset: 0x00, name: sectionRecord, type: "MeshSetSectionRecord*", note: "Pointer to 18-permutation declaration table." }
+      - { offset: 0x4c, name: geometryDesc, type: GeometryDeclarationDesc, note: "84-byte vertex declaration descriptor." }
+  - name: MeshLod
+    size: 0xa8
+    align: 8
+    members:
+      - { offset: 0x00, name: meshSet, type: "void*", note: "Owner MeshSet resource pointer." }
+      - { offset: 0x08, name: sectionCount, type: u32, note: "Number of sections in this LOD." }
+      - { offset: 0x0c, name: sections, type: "void*", note: "Pointer to array of MeshSetSection records." }
+      - { offset: 0x50, name: statusFlags, type: u32, note: "Bit 0x20000000 = GPU buffers resident and ready." }
+      - { offset: 0x54, name: indexFormat, type: u32, note: "Index buffer format: 2 = 16-bit uint, 4 = 32-bit uint." }
+      - { offset: 0x58, name: indexCount, type: u32, note: "Total number of indices." }
+      - { offset: 0x5c, name: indexOffset, type: u32, note: "Byte offset of index buffer from geometry start (equals vertex buffer byte size)." }
+      - { offset: 0x60, name: vertexCount, type: u32, note: "Total number of vertices in stream 0." }
+      - { offset: 0x74, name: geometryDataOffset, type: u32, note: "Offset to raw vertex data from inline buffer base." }
+      - { offset: 0x9c, name: gpuRecord, type: "MeshLodGpuRecord*", note: "Pointer to runtime GPU buffer handles container." }
+  - name: MeshSetResource
+    size: 0x90
+    members:
+      - { offset: 0x20, name: lodPointers, type: "void*[8]", note: "Pointers to MeshLod structures for each LOD level." }
+      - { offset: 0x88, name: flags, type: u32, note: "Bit 0 = isStreamed (0 = static in-memory mesh, 1 = streamed)." }
+      - { offset: 0x8c, name: lodCount, type: u16, note: "Number of LOD levels." }
+      - { offset: 0x8e, name: totalSections, type: u16, note: "Total section count across all LODs." }
+hooks:
+  - name: WorldRenderer_renderView
+    kind: vtable-slot
+    vtable: 0x141bfac00
+    slot: 0x141bfaca8
+    original: 0x14373e5d0
+    signature: "void(void* worldRenderer, void* context)"
+    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to shader constants upload. Hook point for overriding visual environment state without flicker."
+classes:
+  - name: ClientStaticModelGroupEntity
+    vtable: 0x141afbe90
+    size: 0x108
+    realm: client
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Client entity managing hardware-instanced static mesh members and visibility streaming registration."
+  - name: ServerStaticModelGroupEntity
+    vtable: 0x141b5e3a0
+    size: 0xc0
+    realm: server
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Server entity managing static model group replication, network IDs, and physics health components."
+  - name: StaticModelGroupEntityData
+    vtable: 0x141b73f40
+    size: 0xb0
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected entity data defining multi-instance static model groups (MemberDatas at +0x90)."
+  - name: RigidMeshAsset
+    vtable: 0x141bbdab0
+    size: 0x78
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected mesh asset holding MeshSetResource (+0x20) and Materials array (+0x60)."
+  - name: MeshMaterial
+    vtable: 0x141bbdae0
+    size: 0x70
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected material holding SurfaceShaderInstanceDataStruct (+0x10) and tessellation/displacement parameters."

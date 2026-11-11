@@ -1,7 +1,7 @@
 # The Visual Environment and Timelines Reverse Engineering & Render Hook
 
 > [!NOTE]
-> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`), verified against Ghidra decompilation and runtime traces. Database annotations added to [`db/annotations/render.yaml`](file:///D:/Dev/GridNode/db/annotations/render.yaml), [`db/annotations/entity.yaml`](file:///D:/Dev/GridNode/db/annotations/entity.yaml), and [`db/annotations/faith.yaml`](file:///D:/Dev/GridNode/db/annotations/faith.yaml).
+> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`), verified against Ghidra decompilation and runtime traces. Database annotations added to [`db/annotations/render.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/render.yaml), [`db/annotations/entity.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/entity.yaml), and [`db/annotations/faith.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/faith.yaml).
 > **Confirmation Status**: Pure research for now; to be confirmed in game during live gameplay testing.
 
 ---

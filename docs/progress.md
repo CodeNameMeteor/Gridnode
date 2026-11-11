@@ -6,6 +6,11 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 ## Mixer groups: API 35 (2026-11-10; game-tested, stable)
 - `busVolume` / `duck` (API 35) move the game's mixer groups. Ghidra-confirmed: group table, property blocks, the gain processor's update (`db/annotations/audio-mix.yaml`). Game-confirmed: the hook on the gain processor, per-group offset with fades, restore, duck, and unload undoing it. Not tested: which thread the mixer runs on, and unloading while the mixer is inside the hook. Stable (the user asked, 2026-11-10). `busVolume(bus)` only reads the group's end gain (parents, pause mixes and offsets included); it does not set a slider.
 
+## Research notes of 2026-11-06: what "confirmed" means below (2026-11-11)
+- The sections below up to Version 1.0.0 are bulk research (another agent, Ghidra and the MECMP sources). Where they
+  say "confirmed", read: claimed by that research. Their annotations entered `db/annotations/` as `hypothesis`
+  (2026-11-11) and become `confirmed` only when checked again in Ghidra; nothing in them is game-confirmed.
+
 ## Custom maps & static mesh custom loading: synthetic DirectX 11 ingestion and vertex declarations (2026-11-06; to be confirmed in game)
 - **Synthetic Direct3D 11 mesh ingestion pipeline resolved**: Documented in [custom-mesh-loading-dx11.md](research/custom-mesh-loading-dx11.md) and annotated in `db/annotations/render.yaml` (confirmed in Ghidra; to be confirmed in game).
   - Runtime GPU buffer allocation (`MeshLod_createGpuBuffers` at `0x14354fe00`): Direct creation of `ID3D11Buffer` vertex and index buffers via render device slot 21 (`0xa8`) without offline `.ebx` or `.sb` compilation. Automatically sets status flag `lod->statusFlags |= 0x20000000` (Resident / Ready). Index buffer offset (`lod->indexOffset` at `+0x5c`) defines vertex buffer byte size, supporting contiguous single-buffer memory layouts `[Vertices || Indices]`.

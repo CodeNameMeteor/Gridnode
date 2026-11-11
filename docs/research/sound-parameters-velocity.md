@@ -11,17 +11,17 @@
 
 Earlier notes (2026-11-06) reported that `Voice` vtable (`0x141acfad0`) slot `+0x18` was "not setParameter" and slot `+0x78` "takes no vector".
 
-Disassembly of both the caller [`FUN_14303d190`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md#L45) and the internal graph dispatcher [`FUN_1430060b0`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md#L72) proves that:
+Disassembly of both the caller [`FUN_14303d190`](sound-parameters-velocity.md) and the internal graph dispatcher [`FUN_1430060b0`](sound-parameters-velocity.md) proves that:
 1. **Slot `+0x18` (`0x14301da40`) IS `Voice::setParameter`:**
-   In x64 Windows ABI, caller [`0x14303d190`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md#L45) passes:
+   In x64 Windows ABI, caller [`0x14303d190`](sound-parameters-velocity.md) passes:
    - `RCX`: `Voice*`
    - `EDX`: `uint32_t paramKey` (DJB2 hash of the graph parameter name)
    - `XMM2`: `float value`
-   `Voice::setParameter` (`0x14301da40`) loads `self->graphInstance` from `[RCX + 0x18]` into `RCX`, leaves `EDX` and `XMM2` completely untouched in their registers, and calls [`FUN_1430060b0(graphInstance, paramKey, value)`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md#L72). Ghidra's decompiler in isolation omitted `param_2` and `param_3` because the wrapper didn't modify them.
+   `Voice::setParameter` (`0x14301da40`) loads `self->graphInstance` from `[RCX + 0x18]` into `RCX`, leaves `EDX` and `XMM2` completely untouched in their registers, and calls [`FUN_1430060b0(graphInstance, paramKey, value)`](sound-parameters-velocity.md). Ghidra's decompiler in isolation omitted `param_2` and `param_3` because the wrapper didn't modify them.
 2. **Slot `+0x78` (`0x14301dd30`) is `Voice::clearVelocity`:**
    It zeroes the velocity and smoothing buffers in `State3D` (`[state3d + 0x40]`, `[state3d + 0x50]`, `[state3d + 0x70]`).
 3. **Slot `+0x80` (`0x143021f60`) is `Voice::updateVelocity`:**
-   Takes `(Voice* rcx, const float* newPos, float dt)`. Calls [`State3D_update`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md#L108) (`0x143021cc8`), which differentiates $\vec{v} = \frac{\Delta \vec{x}}{\Delta t}$, updates scalar speed $\|v\|$, and stores linear velocity at `State3D + 0x40`.
+   Takes `(Voice* rcx, const float* newPos, float dt)`. Calls [`State3D_update`](sound-parameters-velocity.md) (`0x143021cc8`), which differentiates $\vec{v} = \frac{\Delta \vec{x}}{\Delta t}$, updates scalar speed $\|v\|$, and stores linear velocity at `State3D + 0x40`.
 4. **Direct Velocity Override:**
    A mod can directly write $\vec{v} = (v_x, v_y, v_z, 0)$ into `*(float[4]*)(*(uintptr_t*)(voice + 0x28) + 0x40)` to impart instantaneous 3D audio velocity and Doppler shift.
 
@@ -63,7 +63,7 @@ Allocated by `SoundSystem::createVoice` (`0x142fe2ee0` $\to$ `0x143019860`, size
 ## 3. Disassembly Proofs
 
 ### Proof 1: `SoundEntity` Calling `Voice::setParameter`
-In [`SoundEntity::updateProperties`](file:///D:/Dev/GridNode/docs/research/sound-parameters-velocity.md) (`0x14303d190` lines `14303d214`–`14303d231`):
+In [`SoundEntity::updateProperties`](sound-parameters-velocity.md) (`0x14303d190` lines `14303d214`–`14303d231`):
 ```assembly
 14303d214  LEA    RDX, [0x1427b0cb8]
 14303d21b  MOV    RCX, RBX

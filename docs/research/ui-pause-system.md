@@ -1,7 +1,7 @@
 # UI Systems & Game Pause Architecture
 
 > **Research Status (2026-11-06)**: The reverse engineering, disassembly analysis, and mathematical models documented here are inferred from static analysis in Ghidra on binary `MirrorsEdgeCatalyst_dump_SCY.exe` (Image Base `0x140000000`, Build `0x5762E3B7`). All findings, offsets, formulas, and API designs are **purely research for now, to be confirmed in future in-game runtime testing**.
-> Relevant annotations have been cataloged in [`db/annotations/ui.yaml`](file:///D:/Dev/GridNode/db/annotations/ui.yaml).
+> Relevant annotations have been cataloged in [`db/annotations/ui.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/ui.yaml).
 
 ---
 
@@ -14,7 +14,7 @@ In GridNode API 32, `ui_pause_state` exposed the game's internal pause request c
 In in-game testing, the user observed:
 > *"The pause counters read: `all 1, full-screen 0` with the pause menu open, and `0, 0` in play; the full-screen counter stayed 0 in every state."*
 
-Item 5 of [`docs/research/open-research.md`](file:///D:/Dev/GridNode/docs/research/open-research.md#5-ui-and-pause) raised several key questions:
+Item 5 of [`docs/research/open-research.md`](open-research.md#5-ui-and-pause) raised several key questions:
 1. Which screens add to which counter, and what entity triggers them?
 2. What are events `0x0dd8ddf7` and `0xc44b5c3c`?
 3. What is the "time value" ($s$) read in `UIPauseController_applyToClient` (`0x143b16ae0`)?
@@ -302,7 +302,7 @@ A mod has two reliable ways to query pause state:
 
 ## 6. Follow-Up Research Areas (Needing Even More Research)
 
-As requested, any aspects requiring further investigation are cataloged below and reflected in [`open-research.md`](file:///D:/Dev/GridNode/docs/research/open-research.md):
+As requested, any aspects requiring further investigation are cataloged below and reflected in [`open-research.md`](open-research.md):
 
 1. **Direct Timescale Manipulation (Bullet Time / Slow Motion)**:
    - `PlayerView_getTimescale` (`0x1432a8710`) reads `subview + 0x3c`, `+0x64`, and `+0x8c`.

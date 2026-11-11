@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Mirror's Edge Catalyst executes its physical simulation using a heavily customized build of **Havok 2013 (`hknp`)**. Previously, custom collision geometry in mods (e.g. MECMP and GridNode standalone collision boxes in [`sdk/src/bodies.cpp`](file:///D:/Dev/GridNode/sdk/src/bodies.cpp)) was restricted to **static immovable geometry** (`m_motionId = 0`, `MOTION_STATIC`).
+Mirror's Edge Catalyst executes its physical simulation using a heavily customized build of **Havok 2013 (`hknp`)**. Previously, custom collision geometry in mods (e.g. MECMP and GridNode standalone collision boxes in [`sdk/src/bodies.cpp`](https://github.com/CodeNameMeteor/Gridnode/blob/main/sdk/src/bodies.cpp)) was restricted to **static immovable geometry** (`m_motionId = 0`, `MOTION_STATIC`).
 
 This research report documents the reverse engineering of Havok's **dynamic rigid body simulation pipeline**, revealing how to instantiate movable props that react to gravity, bounce against static architecture, collide with Faith's character controller (`CharacterPhysicsEntity` / `hknpCharacterProxy`), receive physical impulses (punches, kicks, explosions), and fire contact callbacks when collisions occur.
 

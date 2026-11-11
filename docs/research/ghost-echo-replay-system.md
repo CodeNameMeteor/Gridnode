@@ -2,7 +2,7 @@
 
 This document details the reverse engineering of Mirror's Edge Catalyst's player replay and echo pipeline. It covers recording, bitstream compression, skeletal pose playback, holographic visual shaders, echo customizations, and online Pamplona/Gateway network endpoints.
 
-Related annotations live in [`db/annotations/replay.yaml`](file:///D:/Dev/GridNode/db/annotations/replay.yaml) and [`db/annotations/messages.yaml`](file:///D:/Dev/GridNode/db/annotations/messages.yaml).
+Related annotations live in [`db/annotations/replay.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/replay.yaml) and [`db/annotations/messages.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/messages.yaml).
 
 ---
 

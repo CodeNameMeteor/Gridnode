@@ -1,14 +1,14 @@
 # Free Camera Streaming & Zone Streamer Focus Points Reverse Engineering
 
 > [!NOTE]
-> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`) and validated against `GridNode` layout engine (`sdk/src/layouts.cpp`). Database annotations added to [`db/annotations/levels.yaml`](file:///D:/Dev/GridNode/db/annotations/levels.yaml).
+> **Status**: Reverse engineered from binary dump (`MirrorsEdgeCatalyst_dump_SCY.exe`, Image Base `0x140000000`) and validated against `GridNode` layout engine (`sdk/src/layouts.cpp`). Database annotations added to [`db/annotations/levels.yaml`](https://github.com/CodeNameMeteor/Gridnode/blob/main/db/annotations/levels.yaml).
 > **Confirmation Status**: Pure research for now; to be confirmed in game during live gameplay testing.
 
 ---
 
 ## 1. Executive Summary & Core Verdict
 
-This document answers the core research questions posed in **Option 6** of [`docs/research/open-research.md`](file:///D:/Dev/GridNode/docs/research/open-research.md):
+This document answers the core research questions posed in **Option 6** of [`docs/research/open-research.md`](open-research.md):
 > *"Does the game already stream the world around the free camera? `zone-streaming.md` and API 30 (streaming focus points) were written without an answer: the trainer's test showed nothing either way. Instrument the zone streamer's focus list while the camera flies far away, and decide whether the API is needed."*
 
 ### Key Conclusions:
