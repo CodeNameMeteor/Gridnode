@@ -9,8 +9,9 @@ indexes (.toc) and bundles (.sb), and the payload blocks every stored file is cu
     <name>.sb   per bundle, a tree with three lists: ebx, res, chunks
     sources     Patch, Update, Data: searched in that order
 
-How many counts follow the catalogue's magic is not known for sure: the reader takes the layout whose
-entries and patch entries fill the file exactly, and refuses one where none does.
+Checked on the user's install (2026-11-11): every cas.cat sits behind the signed header, and two counts
+(entries, patch entries) follow the magic in all 11. The reader still takes whichever layout fills the
+file exactly, and refuses one where none does.
 """
 
 from __future__ import annotations
@@ -106,9 +107,9 @@ def read_catalogue(path: str) -> Catalogue:
 
 # ---- payload blocks -------------------------------------------------------------------------------
 # Each block: uncompressed size (big-endian u32), a compression type (big-endian u16), compressed
-# size (big-endian u16). The high byte of the type says the codec; which ones Catalyst uses is what
-# `assets check` measures. Codes other than none and zlib are what other Frostbite games use, and
-# unconfirmed here.
+# size (big-endian u16). The high byte of the type says the codec. Catalyst uses LZ4 (0x09) and
+# stored blocks (0x00): 3,092 and 2,068 blocks in the first 2,000 entries of the user's install
+# (2026-11-11); no zlib, zstd or Oodle seen there. The others are what other Frostbite games use.
 CODECS = {0x00: "none", 0x02: "zlib", 0x09: "lz4", 0x0F: "zstd", 0x11: "oodle", 0x15: "oodle", 0x19: "oodle"}
 
 

@@ -47,7 +47,10 @@ catalogues are now listed with their first 48 bytes and the rest read on. The se
 `.toc` and `.sb` read (24 superbundles, 622 bundles; 151,832 ebx, 74,646 res, 101,056 chunk entries), so the tree
 format is confirmed; every `cas.cat` starts with the signed header `00 d1 ce 01` (as the tocs do): the reader
 now skips it (and tries the XOR form when the magic is not behind it). The class hook was taken out at both
-unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`).
+unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`). Third run: `assets check`
+passes: 11 catalogues (two counts after the magic, 115,276 entries, no patch entries in Data), every bundle
+entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is done; extracting needs
+`pip install lz4`.
 
 Not done (next): 2.1 step 2 (`hooks_begin` / `hooks_commit`), 2.3 the entity index, 3.2 the mod context
 (open question: `gn_mod_load2` or the manifest), 3.6 the `unverified` namespace (open question: hide
