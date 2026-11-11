@@ -9,7 +9,7 @@
 //       return true;            // false: the mod failed to load
 //   }
 //
-// Callbacks are std::function-like lambdas; GridNode keeps them for the life of the process.
+// Callbacks are std::function-like lambdas; GridNode keeps them while the mod is loaded.
 
 #include <algorithm>
 #include <cstdarg>
@@ -20,6 +20,7 @@
 #include <exception>
 #include <functional>
 #include <initializer_list>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <type_traits>
@@ -38,7 +39,33 @@ inline const char*& modName() {
     static const char* n = "mod";
     return n;
 }
-template <class F> F* keep(F f) { return new F(std::move(f)); } // lives for the process, by design
+// The callbacks' closures. They live as long as the mod's DLL: freed when it is unloaded (its static
+// destructors run at FreeLibrary, after GridNode has taken its callbacks out and seen no thread in its
+// code), and only after GN_MOD_UNLOAD agreed to go; at process exit they are left alone (what they
+// hold may call into a GridNode that is gone). Each reload leaked one per callback before (2026-11-11).
+inline bool& unloadAgreed() {
+    static bool agreed = false;
+    return agreed;
+}
+struct Kept {
+    std::mutex m;
+    std::vector<std::pair<void*, void (*)(void*)>> items;
+    ~Kept() {
+        if (unloadAgreed())
+            for (auto& [p, free] : items) free(p);
+    }
+};
+inline Kept& kept() {
+    static Kept k;
+    return k;
+}
+template <class F> F* keep(F f) {
+    F* p = new F(std::move(f));
+    Kept& k = kept();
+    std::lock_guard<std::mutex> lock(k.m);
+    k.items.push_back({p, [](void* q) { delete static_cast<F*>(q); }});
+    return p;
+}
 } // namespace detail
 
 inline const gn_api& api() { return *detail::apiPtr(); }
@@ -224,7 +251,7 @@ template <class T> bool write(void* address, const T& value) { return api().writ
 template <class F> bool onCreated(const char* className, F f) {
     auto* p = detail::keep(std::function<void(void*, void*)>(std::move(f)));
     return api().on_created(modName(), className,
-                            [](void* e, void* ci, void* u) { (*static_cast<std::function<void(void*, void*)>*>(u))(e, ci); },
+                            [](void* e, void* ci, void* u) { detail::guarded("an onCreated listener", [&] { (*static_cast<std::function<void(void*, void*)>*>(u))(e, ci); }); },
                             p) == GN_OK;
 }
 
@@ -261,7 +288,9 @@ inline std::string levelName() {
 template <class F> bool onLevel(F f) {
     auto* p = detail::keep(std::function<void(const char*, bool)>(std::move(f)));
     return api().on_level(modName(),
-                          [](const char* l, int loaded, void* u) { (*static_cast<std::function<void(const char*, bool)>*>(u))(l, loaded != 0); },
+                          [](const char* l, int loaded, void* u) {
+                              detail::guarded("an onLevel listener", [&] { (*static_cast<std::function<void(const char*, bool)>*>(u))(l, loaded != 0); });
+                          },
                           p) == GN_OK;
 }
 
@@ -270,7 +299,7 @@ template <class F> bool onLevel(F f) {
 // thread): true and y when the ground there has streamed in.
 template <class F> bool onLevelReady(F f) {
     auto* p = detail::keep(std::function<void(const char*)>(std::move(f)));
-    return api().on_level_ready(modName(), [](const char* l, void* u) { (*static_cast<std::function<void(const char*)>*>(u))(l); }, p) == GN_OK;
+    return api().on_level_ready(modName(), [](const char* l, void* u) { detail::guarded("an onLevelReady listener", [&] { (*static_cast<std::function<void(const char*)>*>(u))(l); }); }, p) == GN_OK;
 }
 inline bool levelReady() { return api().level_ready() != 0; }
 inline bool groundBelow(const float at[3], float& y, float depth = 100.f) { return api().ground_below(at, depth, &y) == GN_OK; }
@@ -279,7 +308,7 @@ inline bool groundBelow(const float at[3], float& y, float depth = 100.f) { retu
 // on the thread destroying it: drop it from what the mod keeps.
 template <class F> bool onDestroyed(const char* className, F f) {
     auto* p = detail::keep(std::function<void(void*)>(std::move(f)));
-    return api().on_destroyed(modName(), className, [](void* e, void* u) { (*static_cast<std::function<void(void*)>*>(u))(e); }, p) == GN_OK;
+    return api().on_destroyed(modName(), className, [](void* e, void* u) { detail::guarded("an onDestroyed listener", [&] { (*static_cast<std::function<void(void*)>*>(u))(e); }); }, p) == GN_OK;
 }
 
 // ---- settings and console --------------------------------------------------------------------
@@ -299,7 +328,7 @@ template <class F> bool console(const char* line, F f) {
     const int r = api().console_run(modName(), line,
                                     [](const char* out, void* u) {
                                         auto* fn = static_cast<std::function<void(const char*)>*>(u);
-                                        (*fn)(out);
+                                        detail::guarded("a console callback", [&] { (*fn)(out); });
                                         delete fn;
                                     },
                                     p);
@@ -449,7 +478,7 @@ inline bool checkpoint(Vec3& out) {
 // fn(const gn_progress_flag&) for every flag the game defines, with its value now; how many
 // (negative: not available, e.g. no level). Any thread.
 template <class F> int progressFlags(F fn) {
-    return api().progress_flags([](const gn_progress_flag* f, void* u) { (*static_cast<F*>(u))(*f); }, &fn);
+    return api().progress_flags([](const gn_progress_flag* f, void* u) { detail::guarded("a progressFlags callback", [&] { (*static_cast<F*>(u))(*f); }); }, &fn);
 }
 // One flag by name (case sensitive). Any thread.
 inline bool progressFind(const char* name, gn_progress_flag& out) { return api().progress_find(name, &out) == GN_OK; }
@@ -564,7 +593,7 @@ template <class F> bool onMessage(const char* typeOrCategory, F f) {
     auto* p = detail::keep(std::function<void(const void*, const gn_message_info&)>(std::move(f)));
     return api().on_message(modName(), typeOrCategory,
                             [](const void* m, const gn_message_info* i, void* u) {
-                                (*static_cast<std::function<void(const void*, const gn_message_info&)>*>(u))(m, *i);
+                                detail::guarded("an onMessage listener", [&] { (*static_cast<std::function<void(const void*, const gn_message_info&)>*>(u))(m, *i); });
                             },
                             p) == GN_OK;
 }
@@ -632,7 +661,7 @@ template <class F> bool onEvent(const char* event, const char* className, F f) {
     using Fn = std::function<void(void*, Type, uint32_t)>;
     auto* p = detail::keep(Fn(std::move(f)));
     return api().on_event(modName(), event, className,
-                          [](void* e, const gn_type* t, uint32_t id, void* u) { (*static_cast<Fn*>(u))(e, Type(t), id); }, p) == GN_OK;
+                          [](void* e, const gn_type* t, uint32_t id, void* u) { detail::guarded("an onEvent listener", [&] { (*static_cast<Fn*>(u))(e, Type(t), id); }); }, p) == GN_OK;
 }
 
 // ---- movement events, settings, hotkeys (API 9) ------------------------------------------------
@@ -642,7 +671,7 @@ using MovementEvent = gn_movement_event;
 template <class F> bool onMovement(F f) {
     using Fn = std::function<void(const MovementEvent&, const Movement&)>;
     auto* p = detail::keep(Fn(std::move(f)));
-    return api().on_movement(modName(), [](const gn_movement_event* e, const gn_movement* m, void* u) { (*static_cast<Fn*>(u))(*e, *m); },
+    return api().on_movement(modName(), [](const gn_movement_event* e, const gn_movement* m, void* u) { detail::guarded("an onMovement listener", [&] { (*static_cast<Fn*>(u))(*e, *m); }); },
                              p) == GN_OK;
 }
 
@@ -746,7 +775,7 @@ inline Setting addText(const char* id, const char* label, const char* def, const
 // f(const char* id) on the client thread when a setting changes (id null: any of the mod's).
 template <class F> bool onChange(const char* id, F f) {
     auto* p = ::gn::detail::keep(std::function<void(const char*)>(std::move(f)));
-    return api().setting_on_change(modName(), id, [](const char* changed, void* u) { (*static_cast<std::function<void(const char*)>*>(u))(changed); },
+    return api().setting_on_change(modName(), id, [](const char* changed, void* u) { ::gn::detail::guarded("a setting onChange listener", [&] { (*static_cast<std::function<void(const char*)>*>(u))(changed); }); },
                                    p) == GN_OK;
 }
 // false: no page in the GridNode menu for this mod (its own window shows them).
@@ -758,7 +787,7 @@ inline void page(bool shown) { api().settings_page(modName(), shown ? 1 : 0); }
 // 0 none. Show it in the mod's window with gn::ui::hotkeyButton(id) (gridnode/ui.hpp).
 template <class F> bool hotkey(const char* id, const char* label, int defaultVk, F f) {
     auto* p = detail::keep(std::function<void()>(std::move(f)));
-    return api().hotkey_add(modName(), id, label, defaultVk, [](void* u) { (*static_cast<std::function<void()>*>(u))(); }, p) == GN_OK;
+    return api().hotkey_add(modName(), id, label, defaultVk, [](void* u) { detail::guarded("a hotkey", [&] { (*static_cast<std::function<void()>*>(u))(); }); }, p) == GN_OK;
 }
 using HotkeyInfo = gn_hotkey_info;
 inline bool hotkeyInfo(const char* id, HotkeyInfo& out) { return api().hotkey_info(modName(), id, &out) == GN_OK; }
@@ -850,14 +879,14 @@ inline void unloadGridNode() { api().gridnode_unload(); }
 // fn(void* entity, gn::Type type) for every live entity of the class (and subclasses), logic entities
 // too; how many (negative: an unknown class).
 template <class F> int entitiesOfClass(const char* className, F fn) {
-    return api().entities_of_class(className, [](void* e, const gn_type* t, void* u) { (*static_cast<F*>(u))(e, Type(t)); }, &fn);
+    return api().entities_of_class(className, [](void* e, const gn_type* t, void* u) { detail::guarded("an entitiesOfClass callback", [&] { (*static_cast<F*>(u))(e, Type(t)); }); }, &fn);
 }
 
 template <class F> int entitiesNear(const Vec3& pos, float radius, F fn) {
     const float p[3] = {pos.x, pos.y, pos.z};
     return api().entities_near(p, radius,
                                [](void* e, const gn_type* t, const gn_transform* at, float d, void* u) {
-                                   (*static_cast<F*>(u))(e, Type(t), *at, d);
+                                   detail::guarded("an entitiesNear callback", [&] { (*static_cast<F*>(u))(e, Type(t), *at, d); });
                                },
                                &fn);
 }
@@ -925,6 +954,8 @@ private:
     static bool gn_mod_unload_main();                                                             \
     extern "C" GN_MOD_EXPORT int gn_mod_unload() {                                                \
         if (!::gn::detail::apiPtr()) return 0; /* never loaded: nothing to stop */                \
-        return gn_mod_unload_main() ? 0 : 1;                                                      \
+        const bool go = gn_mod_unload_main();                                                     \
+        ::gn::detail::unloadAgreed() = go; /* its closures are freed with the DLL */              \
+        return go ? 0 : 1;                                                                        \
     }                                                                                             \
     static bool gn_mod_unload_main()

@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "host.hpp"
@@ -90,6 +91,7 @@ template <size_t I> void* factoryDetour(void* creator, void* ci, void* a3, void*
     }
     for (size_t i = 0; i < n; ++i) {
         try {
+            modcall::Scope scope(calls[i].fn);
             calls[i].fn(entity, ci, calls[i].user);
         } catch (...) { // never into the engine's frames
             static std::atomic<int> said{0};
@@ -246,6 +248,7 @@ void callDestroyed(void* self) {
     }
     for (size_t i = 0; i < n; ++i) {
         try {
+            modcall::Scope scope(calls[i].fn);
             calls[i].fn(self, calls[i].user);
         } catch (...) { // never into the engine's frames
             static std::atomic<int> said{0};

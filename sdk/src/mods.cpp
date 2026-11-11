@@ -22,6 +22,7 @@
 #include <map>
 #include <set>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/mod_order.hpp"
@@ -84,8 +85,8 @@ FILETIME writeTime(const std::wstring& path) {
 }
 bool sameTime(const FILETIME& a, const FILETIME& b) { return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime; }
 
-// Whether the DLL exports gn_mod_unload, read from the file (no DllMain, no imports, nothing mapped).
-bool exportsUnload(const std::wstring& path) {
+// Whether the DLL exports `name`, read from the file (no DllMain, no imports, nothing mapped).
+bool fileExports(const std::wstring& path, const char* name) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
@@ -96,7 +97,7 @@ bool exportsUnload(const std::wstring& path) {
         if (!ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr) || got != bytes.size()) bytes.clear();
     }
     CloseHandle(f);
-    return pe::exportsName(bytes.data(), bytes.size(), "gn_mod_unload");
+    return pe::exportsName(bytes.data(), bytes.size(), name);
 }
 
 CodeRange imageOf(HMODULE m) {
@@ -133,7 +134,13 @@ void readManifest(Mod& m) {
 bool openMod(Mod& m) {
     const std::string name = m.info.file;
     m.written = writeTime(m.path);
-    m.info.reloadable = exportsUnload(m.path);
+    // Not a mod: never loaded, so its DllMain does not run (every DLL in mods\ was loaded first, 2026-11-11).
+    if (!fileExports(m.path, "gn_mod_load")) {
+        GN_LOG("mods: %s does not export gn_mod_load; skipped", name.c_str());
+        m.info.loaded = false, m.info.result = -1;
+        return false;
+    }
+    m.info.reloadable = fileExports(m.path, "gn_mod_unload");
     std::wstring from = m.path;
     if (m.info.reloadable) {
         // A copy under a new name each time: the original stays free to be rebuilt, and Windows never
@@ -157,16 +164,12 @@ bool openMod(Mod& m) {
             m.info.reloadable = false;
         }
     }
-    // A mod in its own folder may bring DLLs of its own there: found from that folder (the copy it
-    // runs from is in .loaded).
+    // A mod may bring DLLs of its own beside it: found from its folder, mods\ itself included (the
+    // copy it runs from is in .loaded, where a mod in the root of mods\ did not find them, 2026-11-11).
     const std::wstring own = m.path.substr(0, m.path.find_last_of(L"\\/") + 1);
-    if (own != g_folder) {
-        DLL_DIRECTORY_COOKIE cookie = AddDllDirectory(own.c_str());
-        m.module = LoadLibraryExW(from.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-        if (cookie) RemoveDllDirectory(cookie);
-    } else {
-        m.module = LoadLibraryW(from.c_str());
-    }
+    DLL_DIRECTORY_COOKIE cookie = AddDllDirectory(own.c_str());
+    m.module = LoadLibraryExW(from.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+    if (cookie) RemoveDllDirectory(cookie);
     if (!m.module) {
         m.info.loaded = false, m.info.result = -1;
         GN_LOG("mods: %s could not be loaded (error %lu)", name.c_str(), static_cast<unsigned long>(GetLastError()));
@@ -243,7 +246,11 @@ void start(Mod& m) {
         std::lock_guard<std::mutex> lock(g_expM);
         g_startingId = m.info.id, g_startingCode = m.code, g_startingPath = m.path;
     }
-    const int r = entry(api());
+    int r;
+    {
+        modcall::Scope scope(entry); // its gn_mod_load may tail-call the API too
+        r = entry(api());
+    }
     {
         std::lock_guard<std::mutex> lock(g_expM);
         g_startingId.clear(), g_startingCode = CodeRange{}, g_startingPath.clear();
@@ -643,6 +650,16 @@ void* modImport(const void* caller, const char* modId, const char* name) {
     return it->second.fn;
 }
 
+const void* callerOf(const void* ret) {
+    static const CodeRange self = [] {
+        HMODULE me = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(reinterpret_cast<const void*>(&callerOf)), &me);
+        return me ? imageOf(me) : CodeRange{};
+    }();
+    return modcall::resolve(ret, [](const void* p) { return self.has(p); });
+}
+
 std::string modNameAt(const void* caller) {
     std::string id;
     CodeRange unused;
@@ -745,6 +762,18 @@ void loadMods(const std::wstring& folder) {
     std::vector<bool> placed(opened.size(), false);
     for (size_t i : plan.order) {
         placed[i] = true;
+        // A hard dependency whose gn_mod_load failed: not started, as load() does (it started anyway).
+        std::string why;
+        {
+            std::lock_guard<std::mutex> lock(g_modsM);
+            why = missingDep(opened[i]);
+        }
+        if (!why.empty()) {
+            closeMod(opened[i], why);
+            std::lock_guard<std::mutex> lock(g_modsM);
+            g_mods.push_back(opened[i]);
+            continue;
+        }
         start(opened[i]);
         if (opened[i].info.loaded) ++loaded;
         std::lock_guard<std::mutex> lock(g_modsM);

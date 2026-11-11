@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
@@ -133,7 +134,10 @@ void dispatch(int manager, const uint8_t* msg) {
     info.realm = head[2];
     info.manager = manager;
     for (const Sub& s : subs)
-        if (!s.typeId || s.typeId == head[1]) s.fn(msg, &info, s.user);
+        if (!s.typeId || s.typeId == head[1]) {
+            modcall::Scope scope(s.fn);
+            s.fn(msg, &info, s.user);
+        }
 }
 
 // ---- registration with the managers --------------------------------------------------------------

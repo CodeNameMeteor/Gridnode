@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/build.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/engine.hpp"
@@ -893,6 +894,7 @@ void movementEventsClientTick() {
         const gn_movement_event ev{e.kind, e.state, e.oldState, now.inAir ? 1 : 0};
         for (const MoveListener& l : listeners) {
             try {
+                modcall::Scope scope(l.fn);
                 l.fn(&ev, &m, l.user);
             } catch (...) {
                 static std::atomic<int> said{0};

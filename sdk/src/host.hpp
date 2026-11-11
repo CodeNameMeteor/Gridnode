@@ -93,6 +93,9 @@ void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
 int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
+// The address an API call is credited to: its return address, or, when that is in gridnode.dll (the
+// mod's callback tail-called the API), the mod callback GridNode is running on this thread (mod_call.hpp).
+const void* callerOf(const void* returnAddress);
 void pollMods();                                     // GridNode's thread: reloads asked for or due
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
 int modDir(const void* caller, char* out, size_t size);                 // gn_api mod_dir

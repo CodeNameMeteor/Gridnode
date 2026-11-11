@@ -31,6 +31,7 @@
 
 #include "backends/imgui_impl_dx11.h"
 #include "backends/imgui_impl_win32.h"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/version.hpp"
@@ -628,6 +629,7 @@ void callMods(bool open) {
         ImGuiErrorRecoveryState state;
         ImGui::ErrorRecoveryStoreState(&state);
         try {
+            modcall::Scope scope(l.fn);
             l.fn(open ? 1 : 0, l.user);
         } catch (...) {
             static int said = 0;

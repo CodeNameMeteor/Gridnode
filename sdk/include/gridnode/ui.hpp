@@ -58,7 +58,8 @@ template <class F> bool onDraw(F f) {
     auto* p = ::gn::detail::keep(std::function<void(bool)>(std::move(f)));
     return api().on_ui(modName(),
                        [](int open, void* u) {
-                           if (detail::bind()) (*static_cast<std::function<void(bool)>*>(u))(open != 0);
+                           if (detail::bind())
+                               ::gn::detail::guarded("an onDraw callback", [&] { (*static_cast<std::function<void(bool)>*>(u))(open != 0); });
                        },
                        p) == GN_OK;
 }

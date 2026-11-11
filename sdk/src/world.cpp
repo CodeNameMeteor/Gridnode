@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
@@ -118,6 +119,7 @@ void* fromCreatedCharacters() {
 void callLevel(const std::vector<LevelListener>& ls, const std::string& level, bool loaded) {
     for (const LevelListener& l : ls) {
         try {
+            modcall::Scope scope(l.fn);
             l.fn(level.c_str(), loaded ? 1 : 0, l.user);
         } catch (...) {
             GN_LOG("level: a mod's level listener threw; ignored");
@@ -824,7 +826,10 @@ int onLevel(const std::string& mod, gn_level_fn fn, void* user) {
         g_levelListeners.push_back({mod, fn, user});
         current = g_level;
     }
-    if (!current.empty()) fn(current.c_str(), 1, user);
+    if (!current.empty()) {
+        modcall::Scope scope(fn);
+        fn(current.c_str(), 1, user);
+    }
     return GN_OK;
 }
 
@@ -872,7 +877,10 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
         const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > r2) continue;
-        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        {
+            modcall::Scope scope(fn);
+            fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        }
         ++n;
     }
     return n;
@@ -885,7 +893,10 @@ int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user) {
     int n = 0;
     for (const auto& [p, t] : inspector::trackedOf(cls)) {
         if (!inspector::alive(p, t)) continue;
-        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
+        {
+            modcall::Scope scope(fn);
+            fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
+        }
         ++n;
     }
     return n;
@@ -982,6 +993,7 @@ void levelReadyServerTick() {
     }
     for (const ReadyListener& l : tell) {
         try {
+            modcall::Scope scope(l.fn);
             l.fn(level.c_str(), l.user);
         } catch (...) {
             GN_LOG("level: %s's level-ready listener threw; ignored", l.mod.c_str());

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/log.hpp"
 #include "host.hpp"
 #include "imgui.h"
@@ -64,6 +65,7 @@ struct Fire {
             std::lock_guard<std::mutex> lock(g_m);
             if (std::none_of(g_keys.begin(), g_keys.end(), [this](const Hotkey& k) { return k.fn == fn && k.user == user; })) return;
         }
+        modcall::Scope scope(fn);
         fn(user);
     }
 };

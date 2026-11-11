@@ -18,6 +18,7 @@
 #include <tuple>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/log.hpp"
 #include "host.hpp"
@@ -82,6 +83,7 @@ struct Notify {
             g_pending.erase(std::remove(g_pending.begin(), g_pending.end(), me), g_pending.end());
             if (std::none_of(g_listeners.begin(), g_listeners.end(), [this](const Listener& l) { return l.fn == fn && l.user == user; })) return;
         }
+        modcall::Scope scope(fn);
         fn(id.c_str(), user);
     }
 };
