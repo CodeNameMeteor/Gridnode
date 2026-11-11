@@ -64,7 +64,7 @@ def _rust_type(ctype: str, structs: set[str], fnptrs: set[str]) -> str:
     base = " ".join(w for w in words if w != "const")
     if base in PRIMS:
         r = PRIMS[base]
-    elif base in structs or base == "gn_type":
+    elif base in structs or base in ("gn_type", "gn_mod"):
         r = base
     elif base in fnptrs:
         r = base
@@ -145,6 +145,7 @@ def emit(header: str) -> str:
             w(f"pub const {n}: c_int = {value};\n")
             value += 1
     w("\n/// A runtime TypeInfo / ClassInfo of the engine (opaque).\n#[repr(C)]\npub struct gn_type {\n    _private: [u8; 0],\n}\n\n")
+    w("/// A mod's handle (API 37), given to gn_mod_load2 (opaque).\n#[repr(C)]\npub struct gn_mod {\n    _private: [u8; 0],\n}\n\n")
     # Function pointer typedefs come before the structs that use them, and vice versa: Rust does
     # not care about order, so emit typedefs first.
     for ret, name, params in fnptr_src:

@@ -395,7 +395,8 @@ const Patch* overlapping(uintptr_t at, size_t n) { // g_m held
         if (at < p.at + p.original.size() && p.at < at + n) return &p;
     return nullptr;
 }
-bool overlaps(uintptr_t at, size_t n) { return overlapping(at, n) != nullptr; } // g_m held
+bool pendingAt(uintptr_t at, size_t n);
+bool overlaps(uintptr_t at, size_t n) { return overlapping(at, n) != nullptr || pendingAt(at, n); } // g_m held
 
 // written: the bytes are already there (a detour's entry, written with the other threads stopped);
 // `original` then holds what was there before.
@@ -513,6 +514,27 @@ bool writeEntry(uintptr_t fn, const uint8_t (&jmp)[5], size_t copied, const std:
     return ok;
 }
 
+// Detour entries queued between hooks_begin and hooks_commit on one thread (API 37): written in one
+// pause at commit instead of one pause each. GridNode batches every gn_mod_load this way.
+struct PendingEntry {
+    DWORD thread = 0;
+    uintptr_t fn = 0;
+    uint8_t entry[5] = {};
+    uint8_t original[5] = {};
+    size_t copied = 0;
+    std::vector<std::pair<size_t, size_t>> starts;
+    uint8_t* tramp = nullptr;
+    std::string mod;
+};
+std::vector<PendingEntry> g_pending; // (g_m)
+thread_local int t_batchDepth = 0;
+
+bool pendingAt(uintptr_t at, size_t n) { // g_m held
+    for (const PendingEntry& p : g_pending)
+        if (at < p.fn + 5 && p.fn < at + n) return true;
+    return false;
+}
+
 struct Detour {
     uint8_t* tramp = nullptr;
     uint64_t* slot = nullptr;
@@ -599,6 +621,16 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
         giveBack();
         return GN_ERR_SLOT;
     }
+    if (t_batchDepth > 0) { // written at hooks_commit, with the others of this batch
+        PendingEntry p;
+        p.thread = GetCurrentThreadId(), p.fn = fn, p.copied = copied, p.starts = starts, p.tramp = room, p.mod = mod;
+        memcpy(p.entry, entry, 5);
+        memcpy(p.original, code, 5);
+        g_pending.push_back(std::move(p));
+        out = {room, slot};
+        g_detours[fn] = out;
+        return GN_OK;
+    }
     int moved = 0;
     // One instruction of 5 bytes or more at the entry: the jump replaces only it, no thread can be
     // half way through it, and one store is enough (writeCode pauses only when the 5 bytes cross a
@@ -632,6 +664,67 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
     return GN_OK;
 }
 } // namespace
+
+void hooksBegin() { ++t_batchDepth; }
+
+int hooksCommit() {
+    if (t_batchDepth <= 0) return GN_ERR_ARGUMENT;
+    if (--t_batchDepth > 0) return GN_OK; // nested: the outermost commit writes
+    std::lock_guard<std::mutex> lock(g_m);
+    std::vector<PendingEntry> mine;
+    const DWORD me = GetCurrentThreadId();
+    for (auto it = g_pending.begin(); it != g_pending.end();) {
+        if (it->thread == me) mine.push_back(std::move(*it)), it = g_pending.erase(it);
+        else ++it;
+    }
+    if (mine.empty()) return GN_OK;
+    std::vector<char> ok(mine.size(), 0);
+    std::vector<int> moved(mine.size(), 0);
+    LARGE_INTEGER t0{}, t1{}, freq{};
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    {
+        // One pause for all of them. Nothing allocates or logs until resumeAll.
+        std::vector<HANDLE> stopped;
+        pauseOthers(stopped);
+        for (size_t i = 0; i < mine.size(); ++i) {
+            const PendingEntry& p = mine[i];
+            for (HANDLE h : stopped) {
+                alignas(16) CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_CONTROL;
+                if (!GetThreadContext(h, &ctx) || ctx.Rip < p.fn || ctx.Rip >= p.fn + p.copied) continue;
+                for (const auto& [from, to] : p.starts)
+                    if (ctx.Rip == p.fn + from) {
+                        ctx.Rip = reinterpret_cast<uintptr_t>(p.tramp) + to;
+                        if (SetThreadContext(h, &ctx)) ++moved[i];
+                        break;
+                    }
+            }
+            ok[i] = writeCode(p.fn, p.entry, 5, true) ? 1 : 0;
+        }
+        resumeAll(stopped);
+    }
+    QueryPerformanceCounter(&t1);
+    const double pauseMs = freq.QuadPart ? double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart) : 0.0;
+    int failed = 0;
+    for (size_t i = 0; i < mine.size(); ++i) {
+        const PendingEntry& p = mine[i];
+        if (!ok[i]) {
+            // The slot and its hooks stay, unreachable: the function runs as the game's.
+            GN_LOG("[%s] hook_function %llx: the entry could not be written (batched)", p.mod.c_str(), static_cast<unsigned long long>(mem::va(p.fn)));
+            ++failed;
+            continue;
+        }
+        char what[128];
+        snprintf(what, sizeof(what), "detour entry (%llu bytes moved, one of %llu written in one pause of %.1f ms%s)",
+                 static_cast<unsigned long long>(p.copied), static_cast<unsigned long long>(mine.size()), pauseMs,
+                 moved[i] ? ", a thread moved into the trampoline" : "");
+        if (addLocked("GridNode", p.fn, p.entry, 5, reinterpret_cast<uintptr_t>(&detourSlot), what, p.original) != GN_OK &&
+            !writeCode(p.fn, p.original, 5))
+            GN_LOG("[%s] hook_function %llx: the entry could not be put back", p.mod.c_str(), static_cast<unsigned long long>(mem::va(p.fn)));
+    }
+    return failed ? GN_ERR_SLOT : GN_OK;
+}
 
 void patchesReserve() {
     std::lock_guard<std::mutex> lock(g_thunkM);

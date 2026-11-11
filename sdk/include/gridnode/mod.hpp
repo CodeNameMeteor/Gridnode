@@ -72,6 +72,62 @@ template <class F> F* keep(F f) {
 inline const gn_api& api() { return *detail::apiPtr(); }
 inline const char* modName() { return detail::modName(); }
 
+namespace detail {
+// The mod's handle from gn_mod_load2 (API 37); null on an older GridNode (gn_mod_load was called).
+inline gn_mod*& self() {
+    static gn_mod* s = nullptr;
+    return s;
+}
+// Whether the host's table has `member` (it may be older than this header).
+template <class M> bool hostHas(M gn_api::*member) {
+    static const gn_api probe{};
+    const size_t at = static_cast<size_t>(reinterpret_cast<const char*>(&(probe.*member)) - reinterpret_cast<const char*>(&probe));
+    return apiPtr() && at + sizeof(M) <= api().size && api().*member != nullptr;
+}
+// The calls that identify the mod: with its handle when GridNode has the _m form (API 37), else by name
+// and return address as before.
+namespace m {
+#define GN_M(member) (self() && hostHas(&gn_api::member))
+inline int unload() { return GN_M(mod_unload_m) ? api().mod_unload_m(self()) : api().mod_unload(); }
+inline int patchBytes(uint64_t va, const void* e, const void* b, size_t n) {
+    return GN_M(patch_bytes_m) ? api().patch_bytes_m(self(), va, e, b, n) : api().patch_bytes(modName(), va, e, b, n);
+}
+inline int patchCall(uint64_t site, uint64_t target, void* detour, void** original) {
+    return GN_M(patch_call_m) ? api().patch_call_m(self(), site, target, detour, original) : api().patch_call(modName(), site, target, detour, original);
+}
+inline int exportFn(const char* name, void* fn) { return GN_M(mod_export_m) ? api().mod_export_m(self(), name, fn) : api().mod_export(name, fn); }
+inline void* importFn(const char* id, const char* name) { return GN_M(mod_import_m) ? api().mod_import_m(self(), id, name) : api().mod_import(id, name); }
+inline int dir(char* out, size_t size) { return GN_M(mod_dir_m) ? api().mod_dir_m(self(), out, size) : api().mod_dir(out, size); }
+inline int consoleRun(const char* line, gn_console_fn fn, void* user) {
+    return GN_M(console_run_m) ? api().console_run_m(self(), line, fn, user) : api().console_run(modName(), line, fn, user);
+}
+inline void* settingsFind(const char* cls) { return GN_M(settings_find_m) ? api().settings_find_m(self(), cls) : api().settings_find(cls); }
+inline int onlineAllow(const char* reason) { return GN_M(online_allow_m) ? api().online_allow_m(self(), reason) : api().online_allow(modName(), reason); }
+inline int settingAdd(const gn_setting* s) { return GN_M(setting_add_m) ? api().setting_add_m(self(), s) : api().setting_add(modName(), s); }
+inline int boxAdd(const gn_transform* at, const float* half, uint32_t* out) {
+    return GN_M(box_add_m) ? api().box_add_m(self(), at, half, out) : api().box_add(modName(), at, half, out);
+}
+inline int soundPlay(const char* path, const char* event, const float* pos, uint32_t* out) {
+    return GN_M(sound_play_m) ? api().sound_play_m(self(), path, event, pos, out) : api().sound_play(modName(), path, event, pos, out);
+}
+inline int busVolumeSet(const char* bus, float gain) { return GN_M(bus_volume_set_m) ? api().bus_volume_set_m(self(), bus, gain) : api().bus_volume_set(modName(), bus, gain); }
+inline int busDuck(const char* bus, float gain, float seconds) {
+    return GN_M(bus_duck_m) ? api().bus_duck_m(self(), bus, gain, seconds) : api().bus_duck(modName(), bus, gain, seconds);
+}
+inline int setGravity(int realm, const float* g) { return GN_M(physics_set_gravity_m) ? api().physics_set_gravity_m(self(), realm, g) : api().physics_set_gravity(realm, g); }
+inline int cameraSet(const gn_transform* t, uint32_t flags) { return GN_M(camera_set_m) ? api().camera_set_m(self(), t, flags) : api().camera_set(t, flags); }
+inline int cameraFovSet(float degrees) { return GN_M(camera_fov_set_m) ? api().camera_fov_set_m(self(), degrees) : api().camera_fov_set(degrees); }
+inline int timeOfDayHold(float seconds) { return GN_M(time_of_day_hold_m) ? api().time_of_day_hold_m(self(), seconds) : api().time_of_day_hold(seconds); }
+inline int visualEnvSet(uint32_t offset, const void* data, uint32_t size) {
+    return GN_M(visual_env_set_m) ? api().visual_env_set_m(self(), offset, data, size) : api().visual_env_set(offset, data, size);
+}
+inline int streamingFocusAdd(const float* pos, uint32_t* handle) {
+    return GN_M(streaming_focus_add_m) ? api().streaming_focus_add_m(self(), pos, handle) : api().streaming_focus_add(pos, handle);
+}
+#undef GN_M
+} // namespace m
+} // namespace detail
+
 // ---- logging ---------------------------------------------------------------------------------
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((format(printf, 1, 2)))
@@ -149,11 +205,11 @@ template <class Fn> bool hookSlot(uint64_t slotVa, uint64_t expectedVa, Fn detou
 // through *original. patchBytes: size bytes at va, which must be `expected`, become `bytes`.
 template <class Fn> bool patchCall(uint64_t siteVa, uint64_t expectedTargetVa, Fn detour, Fn* original) {
     static_assert(std::is_pointer<Fn>::value, "detour must be a function pointer");
-    return api().patch_call(modName(), siteVa, expectedTargetVa, reinterpret_cast<void*>(detour),
+    return detail::m::patchCall(siteVa, expectedTargetVa, reinterpret_cast<void*>(detour),
                             reinterpret_cast<void**>(original)) == GN_OK;
 }
 inline bool patchBytes(uint64_t va, const void* expected, const void* bytes, size_t size) {
-    return api().patch_bytes(modName(), va, expected, bytes, size) == GN_OK;
+    return detail::m::patchBytes(va, expected, bytes, size) == GN_OK;
 }
 
 // Function detours (API 16): calls to the game's function at fnVa go to detour, with the same
@@ -170,11 +226,11 @@ template <class Fn> bool hookFunction(uint64_t fnVa, Fn detour, Fn* original) {
 // it is not loaded or does not offer it); modVersion: whether a mod is loaded, and its version.
 template <class Fn> bool exportFn(const char* name, Fn fn) {
     static_assert(std::is_pointer<Fn>::value, "fn must be a function pointer");
-    return api().mod_export(name, reinterpret_cast<void*>(fn)) == GN_OK;
+    return detail::m::exportFn(name, reinterpret_cast<void*>(fn)) == GN_OK;
 }
 template <class Fn> Fn importFn(const char* modId, const char* name) {
     static_assert(std::is_pointer<Fn>::value, "Fn must be a function pointer type");
-    return reinterpret_cast<Fn>(api().mod_import(modId, name));
+    return reinterpret_cast<Fn>(detail::m::importFn(modId, name));
 }
 inline bool modVersion(const char* modId, std::string* version = nullptr) {
     char b[64] = {};
@@ -316,17 +372,17 @@ template <class F> bool onDestroyed(const char* className, F f) {
 // A settings object by class name, e.g. gn::settings("GameTimeSettings").set("TimeScale", 0.5f).
 // Look it up each time: the console can replace it with a changed copy.
 inline Object settings(const char* className) {
-    void* p = api().settings_find(className);
+    void* p = detail::m::settingsFind(className);
     return p ? Object(p, Type::find(className)) : Object();
 }
 // Why a settings class or console group touches online play, or null.
 inline const char* onlineWarning(const char* classOrGroup) { return api().online_warning(classOrGroup); }
 
 // Runs a console line (every command works). fn(std::string output) runs on the client thread.
-inline bool console(const char* line) { return api().console_run(modName(), line, nullptr, nullptr) == GN_OK; }
+inline bool console(const char* line) { return detail::m::consoleRun(line, nullptr, nullptr) == GN_OK; }
 template <class F> bool console(const char* line, F f) {
     auto* p = new std::function<void(const char*)>(std::move(f));
-    const int r = api().console_run(modName(), line,
+    const int r = detail::m::consoleRun(line,
                                     [](const char* out, void* u) {
                                         auto* fn = static_cast<std::function<void(const char*)>*>(u);
                                         detail::guarded("a console callback", [&] { (*fn)(out); });
@@ -384,7 +440,7 @@ inline void* entityOtherHalf(void* entity) { return api().entity_other_half(enti
 inline uint32_t boxAdd(const gn_transform& at, const Vec3& halfExtents) {
     const float h[3] = {halfExtents.x, halfExtents.y, halfExtents.z};
     uint32_t box = 0;
-    return api().box_add(modName(), &at, h, &box) == GN_OK ? box : 0;
+    return detail::m::boxAdd(&at, h, &box) == GN_OK ? box : 0;
 }
 inline bool boxMove(uint32_t box, const gn_transform& at) { return api().box_move(box, &at) == GN_OK; }
 inline bool boxRemove(uint32_t box) { return api().box_remove(box) == GN_OK; }
@@ -401,15 +457,15 @@ inline float busVolume(const char* bus) {
     float g = -1.f;
     return api().bus_volume_get(bus, &g) == GN_OK ? g : -1.f;
 }
-inline bool busVolume(const char* bus, float gain) { return api().bus_volume_set(modName(), bus, gain) == GN_OK; }
-inline bool duck(const char* bus, float gain, float seconds) { return api().bus_duck(modName(), bus, gain, seconds) == GN_OK; }
+inline bool busVolume(const char* bus, float gain) { return detail::m::busVolumeSet(bus, gain) == GN_OK; }
+inline bool duck(const char* bus, float gain, float seconds) { return detail::m::busDuck(bus, gain, seconds) == GN_OK; }
 
 // ---- sounds (API 19) ----------------------------------------------------------------------------
 // A loaded sound asset played at pos (event null: its default start). 0 on failure. Client thread.
 inline uint32_t soundPlay(const char* assetPath, const Vec3* pos = nullptr, const char* event = nullptr) {
     const float p[3] = {pos ? pos->x : 0.f, pos ? pos->y : 0.f, pos ? pos->z : 0.f};
     uint32_t s = 0;
-    return api().sound_play(modName(), assetPath, event, pos ? p : nullptr, &s) == GN_OK ? s : 0;
+    return detail::m::soundPlay(assetPath, event, pos ? p : nullptr, &s) == GN_OK ? s : 0;
 }
 inline bool soundEvent(uint32_t sound, const char* event) { return api().sound_event(sound, event) == GN_OK; }
 inline bool soundMove(uint32_t sound, const Vec3& pos) {
@@ -451,7 +507,7 @@ inline bool gravity(int realm, Vec3& out) {
 }
 inline int setGravity(int realm, const Vec3* g) {
     const float v[3] = {g ? g->x : 0.f, g ? g->y : 0.f, g ? g->z : 0.f};
-    return api().physics_set_gravity(realm, g ? v : nullptr);
+    return detail::m::setGravity(realm, g ? v : nullptr);
 }
 
 // ---- health, where to go (API 22) ------------------------------------------------------------------
@@ -500,7 +556,7 @@ inline bool mission(int32_t& index, std::string* name = nullptr) {
 // reason is one line, shown in the menu's Mods list and logged with a warning. Until it is called,
 // online console commands are refused. Not for leaderboard cheats:
 // players see which mods touch online play. Call it in gn_mod_load (or before the first such call).
-inline bool allowOnline(const char* reason) { return api().online_allow(modName(), reason) == GN_OK; }
+inline bool allowOnline(const char* reason) { return detail::m::onlineAllow(reason) == GN_OK; }
 
 // ---- ANT's types and Faith's move tracker (API 25) --------------------------------------------------
 // ANT's own reflection (docs/modding.md, "ANT types"): a type and its fields by name.
@@ -537,9 +593,9 @@ inline bool moveTracker(MoveTracker& out) {
 
 // The camera for mods (API 27): placed at t each frame until cameraRelease(); GN_CAMERA_BODY shows
 // Faith's whole body. cameraFov(degrees): the camera's FOV (the game's is 55), 0 gives it back.
-inline bool cameraSet(const Transform& t, uint32_t flags = 0) { return api().camera_set(&t, flags) == GN_OK; }
-inline void cameraRelease() { api().camera_set(nullptr, 0); }
-inline bool cameraFov(float degrees) { return api().camera_fov_set(degrees) == GN_OK; }
+inline bool cameraSet(const Transform& t, uint32_t flags = 0) { return detail::m::cameraSet(&t, flags) == GN_OK; }
+inline void cameraRelease() { detail::m::cameraSet(nullptr, 0); }
+inline bool cameraFov(float degrees) { return detail::m::cameraFovSet(degrees) == GN_OK; }
 
 // Faith's last 15 seconds (API 27; client thread): the newest maxFrames keyframes, oldest first.
 using ReplayBone = gn_replay_bone;
@@ -584,7 +640,7 @@ inline std::vector<void*> antObjects(const char* type, uint32_t max = 256) {
 // Where its DLL is installed (mods\ or mods\<name>\, with the trailing backslash): its own files.
 inline std::string modDir() {
     char b[1024] = {};
-    return api().mod_dir(b, sizeof(b)) == GN_OK ? std::string(b) : std::string();
+    return detail::m::dir(b, sizeof(b)) == GN_OK ? std::string(b) : std::string();
 }
 
 // ---- messages ---------------------------------------------------------------------------------
@@ -753,7 +809,7 @@ inline Setting add(const char* id, const char* label, int32_t kind, double def, 
     gn_setting s{};
     s.size = sizeof(s), s.kind = kind, s.id = id, s.label = label, s.description = o.description, s.group = o.group;
     s.def = def, s.min = min, s.max = max, s.step = o.step, s.choices = choices, s.def_text = defText, s.flags = o.flags;
-    return api().setting_add(modName(), &s) == GN_OK ? Setting(id) : Setting();
+    return ::gn::detail::m::settingAdd(&s) == GN_OK ? Setting(id) : Setting();
 }
 } // namespace detail
 inline Setting addBool(const char* id, const char* label, bool def, const Options& o = {}) {
@@ -823,19 +879,19 @@ inline GameState gameState() {
 inline bool setTimeOfDay(float seconds) { return api().time_of_day_set(seconds) == GN_OK; }
 // Holds the clock at `seconds` (API 28) against the game moving it on; releaseTimeOfDay lets it run again.
 // Released when the mod unloads.
-inline bool holdTimeOfDay(float seconds) { return api().time_of_day_hold(seconds) == GN_OK; }
-inline void releaseTimeOfDay() { api().time_of_day_hold(-1.f); }
+inline bool holdTimeOfDay(float seconds) { return detail::m::timeOfDayHold(seconds) == GN_OK; }
+inline void releaseTimeOfDay() { detail::m::timeOfDayHold(-1.f); }
 // The visual environment (API 29, experimental): `offset` is within the state (GN_VE_*). A set value is held
 // against the game recomputing it every frame; released when the mod unloads. See api.h.
 inline bool visualEnvGet(uint32_t offset, void* out, uint32_t size) { return api().visual_env_get(offset, out, size) == GN_OK; }
-inline bool visualEnvSet(uint32_t offset, const void* data, uint32_t size) { return api().visual_env_set(offset, data, size) == GN_OK; }
+inline bool visualEnvSet(uint32_t offset, const void* data, uint32_t size) { return detail::m::visualEnvSet(offset, data, size) == GN_OK; }
 inline void visualEnvRelease(uint32_t offset = GN_VE_ALL) { api().visual_env_release(offset); }
 // Streaming focus points (API 30, experimental): the zones around `pos` are loaded as well as those around Faith.
 // Returns the handle, 0 when refused (full, or this build's streamer is not the known one). Released when the mod unloads.
 inline uint32_t streamingFocusAdd(const Vec3& pos) {
     const float p[3] = {pos.x, pos.y, pos.z};
     uint32_t h = 0;
-    return api().streaming_focus_add(p, &h) == GN_OK ? h : 0;
+    return detail::m::streamingFocusAdd(p, &h) == GN_OK ? h : 0;
 }
 inline bool streamingFocusMove(uint32_t handle, const Vec3& pos) {
     const float p[3] = {pos.x, pos.y, pos.z};
@@ -871,7 +927,7 @@ inline bool setPosition(const Vec3& p) {
 // This mod unloaded (its GN_MOD_UNLOAD runs, everything it registered goes) once the current callback
 // returns; it stays unloaded until the GridNode menu's Load. False without GN_MOD_UNLOAD. For an
 // "Unload" button in the mod's own window.
-inline bool unloadSelf() { return api().mod_unload() == GN_OK; }
+inline bool unloadSelf() { return detail::m::unload() == GN_OK; }
 // Every mod and GridNode itself unloaded, the game put back as it was (the menu's Unload section).
 inline void unloadGridNode() { api().gridnode_unload(); }
 
@@ -921,11 +977,7 @@ private:
 // ---- optional calls (API 36) -----------------------------------------------------------------------
 // Whether the host has a gn_api member: a mod built with GN_MOD_MIN_API below this header's version
 // checks gn::has(&gn_api::hook_virtual) before calling anything newer than its minimum.
-template <class M> bool has(M gn_api::*member) {
-    static const gn_api probe{};
-    const size_t at = static_cast<size_t>(reinterpret_cast<const char*>(&(probe.*member)) - reinterpret_cast<const char*>(&probe));
-    return detail::apiPtr() && at + sizeof(M) <= api().size && api().*member != nullptr;
-}
+template <class M> bool has(M gn_api::*member) { return detail::hostHas(member); }
 
 // ---- hooking a class's virtual by name (API 36) ------------------------------------------------------
 //     static gn::VirtualHook<void(void* self, bool visible)> g_setVisible;
@@ -1049,14 +1101,18 @@ inline std::string dataPath() {
 // host of GN_MOD_MIN_API or newer has what the mod needs; the size check stays for the full header.
 #define GN_MOD(NAME)                                                                              \
     static bool gn_mod_main();                                                                    \
-    extern "C" GN_MOD_EXPORT int gn_mod_load(const gn_api* api) {                                 \
+    static int gn_mod_start(const gn_api* api, gn_mod* self) {                                    \
         if (!api || api->version < GN_MOD_MIN_API ||                                              \
             (GN_MOD_MIN_API >= GN_API_VERSION && api->size < sizeof(gn_api)))                     \
             return 2; /* GridNode too old */                                                      \
         ::gn::detail::apiPtr() = api;                                                             \
         ::gn::detail::modName() = NAME;                                                           \
+        ::gn::detail::self() = self;                                                              \
         return gn_mod_main() ? 0 : 1;                                                             \
     }                                                                                             \
+    /* API 37: GridNode calls gn_mod_load2 when it has it (the mod gets its handle), else this. */ \
+    extern "C" GN_MOD_EXPORT int gn_mod_load(const gn_api* api) { return gn_mod_start(api, nullptr); } \
+    extern "C" GN_MOD_EXPORT int gn_mod_load2(const gn_api* api, gn_mod* self) { return gn_mod_start(api, self); } \
     static bool gn_mod_main()
 
 // Optional: makes the mod reloadable while the game runs (GridNode's menu, Mods: Reload, or when its

@@ -14,7 +14,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -28,6 +30,15 @@
 #include "gridnode/mod_order.hpp"
 #include "gridnode/pe_file.hpp"
 #include "host.hpp"
+
+// A mod's handle (gn_mod, API 37): GridNode's own record of one load of a mod, handed to
+// gn_mod_load2. Never freed (a mod may keep it and call with it after it was unloaded: then refused);
+// a reload makes a new one.
+struct gn_mod {
+    std::string id;
+    gn::host::CodeRange code;
+    std::atomic<bool> live{true};
+};
 
 namespace gn::host {
 namespace {
@@ -56,6 +67,7 @@ struct Mod {
     CodeRange code;            // its image while loaded (to find a mod by an address in it)
     ULONGLONG changedAt = 0; // the file changed (auto reload waits for it to settle)
     std::vector<modorder::Dep> deps;
+    gn_mod* handle = nullptr;  // given to its gn_mod_load2 (null for gn_mod_load only)
 };
 
 // Functions mods offer each other (gn_api mod_export / mod_import), by "<id>.<name>".
@@ -73,6 +85,9 @@ CodeRange g_startingCode;
 std::wstring g_startingPath;
 // (g_expM) Mods that called online_allow, by id: their reason. Taken out with the mod (takeOut).
 std::map<std::string, std::string> g_online;
+
+std::mutex g_handlesM;
+std::vector<std::unique_ptr<gn_mod>> g_handles; // (g_handlesM) every handle ever given out (never freed)
 
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
@@ -202,6 +217,11 @@ void forgetExports(const CodeRange& r, const std::string& id);
 // (an unload, or a gn_mod_load that failed half way). A hook with another mod's hook on top stays and
 // is listed in `refused`. How many hooks came out.
 size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::string>* refused) {
+    {
+        std::lock_guard<std::mutex> lock(g_handlesM);
+        for (const auto& h : g_handles)
+            if (h->code.begin == code.begin && h->id == id) h->live = false; // calls with it are refused from now
+    }
     const size_t hooksOut = forgetHooks(code, refused);
     forgetVirtualHooks(code);
     forgetPatches(code);
@@ -237,6 +257,18 @@ void start(Mod& m) {
     const std::string name = m.info.file;
     crash::refreshModules(); // the crash notes name frames in it (and whatever it loads, next time)
     auto entry = reinterpret_cast<gn_mod_load_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load")));
+    // gn_mod_load2 (API 37) is preferred: the mod gets its handle, and calls made with it need no
+    // name and no return address.
+    auto entry2 = reinterpret_cast<gn_mod_load2_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load2")));
+    gn_mod* self = nullptr;
+    if (entry2) {
+        auto rec = std::make_unique<gn_mod>();
+        rec->id = m.info.id, rec->code = m.code;
+        self = rec.get();
+        std::lock_guard<std::mutex> lock(g_handlesM);
+        g_handles.push_back(std::move(rec));
+    }
+    m.handle = self;
     if (!m.info.reloadable) {
         // Never unloaded: their hooks and callbacks point into them.
         HMODULE pinned = nullptr;
@@ -250,7 +282,11 @@ void start(Mod& m) {
     int r;
     {
         modcall::Scope scope(entry); // its gn_mod_load may tail-call the API too
-        r = entry(api());
+        // Its function detours are written together when gn_mod_load returns: one pause of the game
+        // instead of one per detour (API 37; 7 detours paused it 7 times, 2026-11-11).
+        hooksBegin();
+        r = entry2 ? entry2(api(), self) : entry(api());
+        hooksCommit();
     }
     {
         std::lock_guard<std::mutex> lock(g_expM);
@@ -649,6 +685,19 @@ void* modImport(const void* caller, const char* modId, const char* name) {
     if (it == g_exports.end()) return nullptr;
     if (!me.empty() && me != modId) g_importers[modId].insert(me); // it now needs that mod loaded
     return it->second.fn;
+}
+
+bool modContext(const gn_mod* m, std::string& id, const void*& caller) {
+    if (!m) return false;
+    std::lock_guard<std::mutex> lock(g_handlesM);
+    for (const auto& h : g_handles)
+        if (h.get() == m) {
+            if (!h->live) return false;
+            id = h->id;
+            caller = reinterpret_cast<const void*>(h->code.begin); // an address in its code: owns what the call makes
+            return true;
+        }
+    return false;
 }
 
 const void* callerOf(const void* ret) {

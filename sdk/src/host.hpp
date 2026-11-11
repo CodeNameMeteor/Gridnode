@@ -100,6 +100,10 @@ int typeVirtualFind(const reflect::Type* type, const char* name, uint32_t* outOf
 int hookVirtual(const char* mod, const reflect::Type* type, uint32_t offset, void* detour, uint32_t flags, uint32_t* outHandle);
 void* hookOriginal(uint32_t handle, const void* self);
 int hookVirtualRemove(uint32_t handle);
+// Function detours made on this thread between the two are written in one pause at the commit
+// (patches.cpp; nested pairs: the outermost commits). GN_ERR_SLOT when an entry could not be written.
+void hooksBegin();
+int hooksCommit();
 struct VirtualHookInfo {
     std::string mod, cls;
     uint32_t offset;
@@ -116,6 +120,9 @@ int modUnloadAt(const void* address);                // the mod whose code holds
 // The address an API call is credited to: its return address, or, when that is in gridnode.dll (the
 // mod's callback tail-called the API), the mod callback GridNode is running on this thread (mod_call.hpp).
 const void* callerOf(const void* returnAddress);
+// A mod's handle (gn_mod_load2, API 37): its id and an address in its code, as an API call made with
+// it is credited. False for a handle GridNode did not give out, or one of a mod since unloaded.
+bool modContext(const gn_mod* m, std::string& id, const void*& caller);
 void pollMods();                                     // GridNode's thread: reloads asked for or due
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
 int modDir(const void* caller, char* out, size_t size);                 // gn_api mod_dir

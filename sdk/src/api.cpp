@@ -126,12 +126,14 @@ struct CallTask {
 
 int apiOnServerTick(gn_tick_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
-    server().addListener("mod", CallTick{fn, user});
+    const std::string who = modNameAt(reinterpret_cast<const void*>(fn)); // the mod whose code fn is in
+    server().addListener(who.empty() ? "mod" : who, CallTick{fn, user});
     return GN_OK;
 }
 int apiOnClientTick(gn_tick_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
-    client().addListener("mod", CallTick{fn, user});
+    const std::string who = modNameAt(reinterpret_cast<const void*>(fn));
+    client().addListener(who.empty() ? "mod" : who, CallTick{fn, user});
     return GN_OK;
 }
 void apiRunOnServer(gn_task_fn fn, void* user) {
@@ -419,6 +421,39 @@ GN_NOINLINE int apiBusVolumeSet(const char* mod, const char* bus, float gain) { 
 GN_NOINLINE int apiBusDuck(const char* mod, const char* bus, float gain, float seconds) { return busDuck(mod, bus, gain, seconds, GN_CALLER); }
 } // namespace
 
+namespace {
+// API 37: the same calls with the mod's handle (gn_mod_load2) instead of its name and return address.
+#define GN_SELF(fail)                                                                                            \
+    std::string id;                                                                                              \
+    const void* who = nullptr;                                                                                   \
+    if (!modContext(self, id, who)) return fail;
+int mUnload(gn_mod* self) { GN_SELF(GN_ERR_ARGUMENT) return modUnloadAt(who); }
+int mPatchBytes(gn_mod* self, uint64_t va, const void* e, const void* b, size_t n) { GN_SELF(GN_ERR_ARGUMENT) return patchBytes(id.c_str(), va, e, b, n, who); }
+int mPatchCall(gn_mod* self, uint64_t site, uint64_t target, void* detour, void** original) {
+    GN_SELF(GN_ERR_ARGUMENT) return patchCall(id.c_str(), site, target, detour, original, who);
+}
+int mExport(gn_mod* self, const char* name, void* fn) { GN_SELF(GN_ERR_ARGUMENT) return modExport(who, name, fn); }
+void* mImport(gn_mod* self, const char* modId, const char* name) { GN_SELF(nullptr) return modImport(who, modId, name); }
+int mDir(gn_mod* self, char* out, size_t size) { GN_SELF(GN_ERR_ARGUMENT) return modDir(who, out, size); }
+int mConsoleRun(gn_mod* self, const char* line, gn_console_fn fn, void* user) { GN_SELF(GN_ERR_ARGUMENT) return consoleRunFor(id.c_str(), line, fn, user, who); }
+void* mSettingsFind(gn_mod* self, const char* name) { GN_SELF(nullptr) return settingsFindFor(name, who); }
+int mOnlineAllow(gn_mod* self, const char* reason) { GN_SELF(GN_ERR_ARGUMENT) return onlineAllow(who, id.c_str(), reason); }
+int mSettingAdd(gn_mod* self, const gn_setting* s) { GN_SELF(GN_ERR_ARGUMENT) return settingAdd(id.c_str(), s, who); }
+int mBoxAdd(gn_mod* self, const gn_transform* at, const float* half, uint32_t* out) { GN_SELF(GN_ERR_ARGUMENT) return boxAdd(id.c_str(), at, half, out, who); }
+int mSoundPlay(gn_mod* self, const char* path, const char* event, const float* pos, uint32_t* out) {
+    GN_SELF(GN_ERR_ARGUMENT) return soundPlay(id.c_str(), path, event, pos, out, who);
+}
+int mBusVolumeSet(gn_mod* self, const char* bus, float gain) { GN_SELF(GN_ERR_ARGUMENT) return busVolumeSet(id.c_str(), bus, gain, who); }
+int mBusDuck(gn_mod* self, const char* bus, float gain, float seconds) { GN_SELF(GN_ERR_ARGUMENT) return busDuck(id.c_str(), bus, gain, seconds, who); }
+int mSetGravity(gn_mod* self, int realm, const float* g) { GN_SELF(GN_ERR_ARGUMENT) return physicsSetGravity(realm, g, who); }
+int mCameraSet(gn_mod* self, const gn_transform* t, uint32_t flags) { GN_SELF(GN_ERR_ARGUMENT) return layouts::cameraSet(who, t, flags); }
+int mCameraFovSet(gn_mod* self, float degrees) { GN_SELF(GN_ERR_ARGUMENT) return layouts::cameraFovSet(who, degrees); }
+int mTimeOfDayHold(gn_mod* self, float seconds) { GN_SELF(GN_ERR_ARGUMENT) return timeOfDayHold(who, seconds); }
+int mVisualEnvSet(gn_mod* self, uint32_t offset, const void* data, uint32_t size) { GN_SELF(GN_ERR_ARGUMENT) return visualEnvSet(who, offset, data, size); }
+int mStreamingFocusAdd(gn_mod* self, const float* pos, uint32_t* handle) { GN_SELF(GN_ERR_ARGUMENT) return layouts::streamingFocusAdd(who, pos, handle); }
+#undef GN_SELF
+} // namespace
+
 const gn_api* api() {
     static const gn_api table = [] {
         gn_api a{};
@@ -590,6 +625,28 @@ const gn_api* api() {
         a.entity_component = entityComponent;
         a.entity_components = entityComponents;
         a.data_path = dataPathCopy;
+        a.hooks_begin = hooksBegin;
+        a.hooks_commit = hooksCommit;
+        a.mod_unload_m = mUnload;
+        a.patch_bytes_m = mPatchBytes;
+        a.patch_call_m = mPatchCall;
+        a.mod_export_m = mExport;
+        a.mod_import_m = mImport;
+        a.mod_dir_m = mDir;
+        a.console_run_m = mConsoleRun;
+        a.settings_find_m = mSettingsFind;
+        a.online_allow_m = mOnlineAllow;
+        a.setting_add_m = mSettingAdd;
+        a.box_add_m = mBoxAdd;
+        a.sound_play_m = mSoundPlay;
+        a.bus_volume_set_m = mBusVolumeSet;
+        a.bus_duck_m = mBusDuck;
+        a.physics_set_gravity_m = mSetGravity;
+        a.camera_set_m = mCameraSet;
+        a.camera_fov_set_m = mCameraFovSet;
+        a.time_of_day_hold_m = mTimeOfDayHold;
+        a.visual_env_set_m = mVisualEnvSet;
+        a.streaming_focus_add_m = mStreamingFocusAdd;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
