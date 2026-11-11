@@ -3,14 +3,60 @@ defaults: { confidence: confirmed, sources: [mecmp] }
 
 globals:
   - { name: TI_PhysicsEntityFactory, va: 0x142831670, type: "void*", note: "fb::TI_PhysicsEntityFactory, the type the game world's factory list (+0x58) is searched for (PhysicsFactory_find) when a barrier makes its body.", confidence: inferred, sources: [ghidra] }
+  - { name: TI_PamOBBCollisionEntity, va: 0x142858650, type: "void*", note: "fb::TI_PamOBBCollisionEntity (classId 1001 at +0x28). Checked by SurfaceTouch_classifyBody (0x143913840).", confidence: hypothesis, sources: [ghidra] }
+  - { name: TI_ClientCapsuleCollisionComponent, va: 0x1427bd350, type: "void*", note: "fb::TI_ClientCapsuleCollisionComponent (classId at +0x28: 0x1427bd378). SurfaceTouch_classifyBody returns 0x1e without data lookup if parent is a capsule collision component.", confidence: hypothesis, sources: [ghidra] }
   - name: HavokAabb6Step
     va: 0x1425a8e10
     type: f32
-    note: "The 6-byte AABB codec's step factor (a child box's step = parent size * this; 1/226 in Havok)."
-    confidence: inferred
+    note: "The 6-byte AABB codec's step factor (a child box's step = parent size * this; exactly 1/226.0 = 0.0044247787f at 0x1425a8e10). Confirmed in Ghidra."
+    confidence: hypothesis
     sources: [ghidra]
 
 structs:
+  - name: hknpMotion
+    size: 0x80
+    align: 16
+    confidence: hypothesis
+    sources: [ghidra, research]
+    note: "Havok 2013 motion state (stride 0x80 in hknpWorld::m_motions at world + 0xe0). Contains center of mass, orientation quaternion, half-float inverse inertia/mass, linear velocity, and angular velocity in the local principal inertia frame."
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: centerOfMass, type: "f32[4]", note: "Center of mass in world space." }
+      - { confidence: hypothesis, offset: 0x10, name: orientation, type: "f32[4]", note: "Orientation quaternion (qx, qy, qz, qw) of the principal inertia frame." }
+      - { confidence: hypothesis, offset: 0x20, name: invInertiaAndMass, type: "u16[4]", note: "16-bit half-float diagonal inverse inertia (Ixx^-1, Iyy^-1, Izz^-1) and inverse mass (1/m at +0x26)." }
+      - { confidence: hypothesis, offset: 0x28, name: firstAttachedBodyId, type: u32, note: "Head of the linked list of bodies sharing this motion." }
+      - { confidence: hypothesis, offset: 0x38, name: expansionLookAhead, type: u16, note: "Expansion radius / lookahead distance for continuous collision detection." }
+      - { confidence: hypothesis, offset: 0x3a, name: dampingVelocityFactor, type: u16, note: "Velocity damping factor." }
+      - { confidence: hypothesis, offset: 0x40, name: linearVelocity, type: "f32[4]", note: "World-space linear velocity vector (vx, vy, vz, 0)." }
+      - { confidence: hypothesis, offset: 0x50, name: angularVelocity, type: "f32[4]", note: "Angular velocity vector (wx, wy, wz, 0) rotated into the local principal inertia frame." }
+  - name: hknpBody
+    size: 0x90
+    align: 16
+    confidence: hypothesis
+    sources: [ghidra, research]
+    note: "Havok 2013 rigid body record (stride 0x90 in hknpWorld::m_bodies at world + 0x20). Links a collision shape with a transform, collision filter, and motion record."
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: transform, type: "f32[16]", note: "4x4 affine transform matrix (Right, Up, Forward, Translation)." }
+      - { confidence: hypothesis, offset: 0x50, name: shape, type: "void*", note: "Pointer to hknpShape (box, sphere, capsule, convex, composite)." }
+      - { confidence: hypothesis, offset: 0x58, name: flags, type: u32, note: "Bit 0: static, Bit 1: dynamic, Bit 2: hasMass, Bit 3: active in simulation." }
+      - { confidence: hypothesis, offset: 0x5c, name: collisionFilterInfo, type: u32, note: "Havok collision filter layer / mask." }
+      - { confidence: hypothesis, offset: 0x60, name: bodyId, type: u32, note: "Index of this body in the world body pool." }
+      - { confidence: hypothesis, offset: 0x64, name: nextAttachedBodyId, type: u32, note: "Next body in the linked list sharing the same motion." }
+      - { confidence: hypothesis, offset: 0x68, name: motionId, type: u32, note: "Index into hknpWorld::m_motions (0 if static)." }
+      - { confidence: hypothesis, offset: 0x6e, name: motionType, type: u8, note: "1 = static, 2 = dynamic, 5 = keyframed." }
+      - { confidence: hypothesis, offset: 0x70, name: simulationIslandId, type: i32, note: "Active simulation island index (-1 if deactivated/sleeping)." }
+      - { confidence: hypothesis, offset: 0x88, name: userData, type: u64, note: "User data pointer (Frostbite PhysicsEntity/PhysicsBody wrapper)." }
+  - name: hknpContactImpulseEvent
+    size: 0x40
+    align: 16
+    confidence: hypothesis
+    sources: [ghidra, research]
+    note: "Havok 2013 contact impulse event dispatched via hkSignal2. Unpacked via hknpContactImpulseEvent_unpack (0x143f3ddf0) into contact normal and up to 4 contact manifold points."
+    members:
+      - { confidence: hypothesis, offset: 0x08, name: bodyIdA, type: u32, note: "First colliding body ID." }
+      - { confidence: hypothesis, offset: 0x0c, name: bodyIdB, type: u32, note: "Second colliding body ID." }
+      - { confidence: hypothesis, offset: 0x10, name: manifold, type: "void*", note: "Pointer to compressed contact manifold." }
+      - { confidence: hypothesis, offset: 0x20, name: status, type: u8, note: "Contact status: 0 = NONE, 1 = STARTED, 2 = FINISHED, 3 = CONTINUED." }
+      - { confidence: hypothesis, offset: 0x30, name: impulses, type: "f32[4]", note: "Impulse magnitudes along contact normal and friction directions." }
   - name: RaycastQuery
     size: 0x30
     align: 16
@@ -118,9 +164,88 @@ functions:
       calls it with zeros for a dynamic body. Checked in Ghidra 2026-11-04.
     confidence: confirmed
     sources: [ghidra]
+  - name: hknpWorld_setBodyLinearVelocity
+    va: 0x143f3b139
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* linear)"
+    note: "Writes motion->linearVelocity (+0x40) for dynamic bodies (flags & 2), activates the body if sleeping, and notifies listeners."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_setBodyAngularVelocity
+    va: 0x143f3b200
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* angular)"
+    note: "Transforms angular velocity into the motion's local principal inertia frame using orientation (+0x10) and writes to motion->angularVelocity (+0x50)."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_setPointVelocity
+    va: 0x143f3b3a0
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* velocity, const hkVector4* position)"
+    note: "Sets target point velocity at a specific world position by updating linear velocity and angular velocity around the center of mass."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_applyLinearImpulse
+    va: 0x143f3b450
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* impulse)"
+    note: "Applies a linear impulse delta v = invMass * impulse to motion linear velocity (+0x40), using 16-bit float invMass from motion +0x26."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_applyAngularImpulse
+    va: 0x143f3b4f0
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* impulse)"
+    note: "Applies angular impulse delta omega = invInertia * impulse_local to motion angular velocity (+0x50) in the principal inertia frame."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_applyPointImpulse
+    va: 0x143f3b610
+    signature: "void(void* hknpWorld, u32 id, const hkVector4* impulse, const hkVector4* point)"
+    note: "Applies impulse at a world contact point: computes torque impulse L = (point - centerOfMass) x impulse and applies both linear and angular impulses."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_allocateMotion
+    va: 0x143f43540
+    signature: "u32(void* hknpWorld, u16 motionPropertiesId)"
+    note: "Allocates a new hknpMotion record from the world motion pool (world + 0xd0) and initializes defaults with motion properties."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpMotion_initialize
+    va: 0x143f76890
+    signature: "void(void* motion, const void* motionProperties)"
+    note: "Initializes default motion properties, orientation quaternion, and damping."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpMotion_computeInertia
+    va: 0x1434cf0d0
+    signature: "void(void* hknpWorld, void* shape, float mass, void* outMotion)"
+    note: "Frostbite helper that computes shape mass properties, extracts diagonal inertia tensor, computes inverse inertia components, and initializes dynamic motion properties."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpWorld_getEventSignal
+    va: 0x143f44e00
+    signature: "void*(void* hknpWorld, u16 eventType, u32 bodyId)"
+    note: "Retrieves the hkSignal2 event signal from hknpEventManager (world + 0x540). Event types: 1 = manifoldStatus, 2 = manifoldProcess, 5 = contactImpulse, 6 = contactImpulseClipped, 10 = bodyActivation."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: HavokRigidBodyHook_registerSignals
+    va: 0x1434f9580
+    signature: "void(void* hookOwner, u32 bodyId, void* callbackObj)"
+    note: "Subscribes Frostbite entity collision contact listeners to Havok body activation, manifold process, and contact impulse signals."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: hknpContactImpulseEvent_unpack
+    va: 0x143f3ddf0
+    signature: "void(const void* event, void* hknpWorld, float* outNormalAndContactPoints)"
+    note: "Decompresses contact manifold: outputs contact normal (Vec4) and 4 contact points (Vec4 pos0..pos3) in world coordinates."
+    confidence: hypothesis
+    sources: [ghidra]
   - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(float* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(float* hkTransform, const float* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: PhysicsFactory_find, va: 0x143506830, signature: "void*(void* factories, const void* typeInfo)", note: "The first factory in a game world's list (+0x58; vector at +0x28..+0x30) whose type matches. A barrier's enable calls it with TI_PhysicsEntityFactory.", confidence: inferred, sources: [ghidra] }
+  - { name: SurfaceTouch_classifyBody, va: 0x143913840, signature: "u32(void* probeContext, u32 bodyId, u32 partIndex)", note: "Classifies Faith's contact traversal permissions for a Havok body. Reads parent via PhysicsManager_objectOfId; if PamOBBCollisionEntity, reads traversal flags at parent[-1] (+0x90 Climb, +0x91 Vault, +0x92 Stand, +0x93 Wallrun) returning 0x1e for solid. If ClientCapsuleCollisionComponent, returns 0x1e directly. Pure research, to be confirmed in game.", confidence: inferred, sources: [ghidra, research] }
+  - { name: PhysicsManager_objectOfId, va: 0x1434ee250, signature: "void*(void* manager, const u32* bodyId)", note: "Returns manager->owners[(id >> 16) & 0xff].table[id & 0xffff]. The parent or component pointer registered for the body. Read by SurfaceTouch_classifyBody, ray hit resolver, and capsule queries.", confidence: hypothesis, sources: [ghidra] }
+  - { name: PhysicsManager_setParentOfId, va: 0x1434f82f0, signature: "void(void* manager, const u32* bodyId, void* parent)", note: "Sets manager->owners[(id >> 16) & 0xff].table[id & 0xffff] = parent, resizing the table if needed. Called by PhysicsEntityFactory_createBody.", confidence: hypothesis, sources: [ghidra] }
+  - { name: PhysicsManager_ownerByIndex, va: 0x1434ee7e0, signature: "void*(void* manager, u32 ownerIndex)", note: "manager +0xf0 [ownerIndex * 8]. Called by PamOBBCollision_enable to get owner from rigidData +0x2a.", confidence: hypothesis, sources: [ghidra] }
+  - { name: hknpSphereShape_create, va: 0x143f6c460, signature: "void*(const hkVector4* origin, float radius)", note: "Creates an hknpSphereShape (vtable 0x141d4f348, size 0x80). Called by PhysicsEntityFactory_createBody for shape type 2.", confidence: hypothesis, sources: [ghidra] }
+  - { name: hknpCapsuleShape_create, va: 0x143f6b310, signature: "void*(const hkVector4* vertexA, const hkVector4* vertexB, float radius)", note: "Creates an hknpCapsuleShape (vtable 0x141d4f448, size 0x1b0). Called by PhysicsEntityFactory_createBody for shape type 3 with endpoints (0, 0, +/- 0.5h).", confidence: hypothesis, sources: [ghidra] }
+  - { name: PamOBBCollisionEntity_getType, va: 0x143965ab0, signature: "void*(void* self)", note: "Returns TI_PamOBBCollisionEntity (0x142858650). 0x143965ab9 is the this - 0x30 thunk used in the subobject vtable 0x141c4e258.", confidence: hypothesis, sources: [ghidra] }
   - { name: PhysicsEntityFactory_createBody, va: 0x143516450, signature: "void(void* factory, u32* outId, PhysicsCreationInfo* info, void* rigidData, void* desc)", note: "What PhysicsEntityFactory_create (a 32-byte stub) jumps to. Reads rigidData +0xd4, +0xd8, +0xdc..+0xe4 and info +0xc0 (the physics owner) / +0xc8 (parent); keeps neither rigidData nor desc.", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_destroy, va: 0x1434eba50, signature: "void(void* owner, u32* id, const u32* args)", note: "The barrier's deinit (PamOBBCollision_deinit) passes {realm, 1}: the owner's object (table +0x130) is destroyed.", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_enable, va: 0x1434e90f0, confidence: hypothesis, sources: [mecmp] }
@@ -188,12 +313,65 @@ functions:
     confidence: confirmed
     sources: [ghidra, user]
 
+  - name: CharacterPhysicsBody_init
+    va: 0x1434e4400
+    signature: "void*(void* self, void* world, void* physicsData)"
+    note: "Pure research (to be confirmed in game). Initializes fb::CharacterPhysicsBody (vtable 0x141bab5e0, secondary 0x141bab8b8) and constructs hknpCharacterProxy (size 0x130). Derives initial proxy up-vector from world gravity at world+0x80 (negated and normalized). Sets contactTolerance 0.1, keepDistance 0.05, maxCharacterSpeedForSolver 10.0, layer 14, and maxSlope from data+0x44 (default 45 deg)."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: CharacterPhysicsBody_updateSupport
+    va: 0x1434fc450
+    signature: "void(void* self, u32 stepIndex, u32 substep)"
+    note: "Pure research (to be confirmed in game). Pre-simulation character support update. Passes down-direction (-m_upVector at self+0x120) to hknpCharacterProxy::checkSupport (0x143f60710). Stores ground info at self+0x108 (state at +1: 0 unsupported, 1 supported, 2 sliding). Adjusts body velocity/momentum if sliding."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: hknpCharacterProxy_ctor
+    va: 0x143f601d0
+    signature: "void*(void* proxy, const void* cinfo)"
+    note: "Pure research (to be confirmed in game). Constructs hknpCharacterProxy (vtable 0x141d53348, size 0x130). Precomputes m_cosMaxSlope at +0x120 via sin(maxSlope + pi/2) = cos(maxSlope) (approx 0.7071 for 45 deg). Stores normalized m_up at +0xd0. Registers proxy into world+0x4a8 with tag hknpCharacterProxy."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: hknpCharacterProxy_checkSupport
+    va: 0x143f60710
+    signature: "void(void* proxy, const hkVector4* downDir, hkpSurfaceInfo* groundInfo, void* collector)"
+    note: "Pure research (to be confirmed in game). Evaluates support manifolds against down-direction. If contact normal n satisfies cos^2(theta_max) <= 1 - (n . downDir)^2, ground is sliding (state 2). Otherwise ground is walkable (state 1). If no contacts or threshold fails, free fall (state 0)."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: GroupRigidBody_getInstanceTransform
+    va: 0x1434eda80
+    signature: "void(void* self, LinearTransform* out, u32 partIndex)"
+    note: "Pure research (to be confirmed in game). Gets the transform of a static model group part from the group's hknpStaticCompoundShape. Reads part map at self+0x110[partIndex*4], shape at self+0x58, and calls hknpShapeInstance_buildTransform (0x143f50740)."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: hknpShapeInstance_buildTransform
+    va: 0x143f50740
+    signature: "void(const void* instance, LinearTransform* out)"
+    note: "Pure research (to be confirmed in game). Builds a 64-byte LinearTransform from an hknpShapeInstance (stride 0x80) by multiplying rotation matrix columns (+0x00, +0x10, +0x20) by scale (+0x40)."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: hknpWorld_allocate
+    va: 0x1434d0ff0
+    signature: "void*()"
+    note: "Pure research (to be confirmed in game). Allocates 0x5a0 bytes aligned to 0x10 for hknpWorld via hkMemoryRouter::alignedAlloc (0x143cd0cf0). Called by PhysicsWorld_create."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: hknpWorld_ctor
+    va: 0x143f3e820
+    signature: "void*(void* world, const void* cinfo)"
+    note: "Pure research (to be confirmed in game). Constructs hknpWorld (vtable 0x141d51418, size 0x5a0). Initializes broadphase, island manager, body manager (+0x10), and motions (+0xe0)."
+    confidence: hypothesis
+    sources: [ghidra, research]
 constants:
   - { name: PhysicsBoxDesc_vtable, value: 0x141b41a00, confidence: inferred, sources: [ghidra], note: "The description object a barrier hands PhysicsEntityFactory_create (its local at PamOBBCollision_enableClient): vtable[0]() = 1 (a box), kind +0x14 = 2, layer +0x1c, half extents +0x20." }
   - { name: GameWorld_PhysicsManager, value: 0x50, confidence: inferred, sources: [ghidra], note: "A game world's physics manager (PhysicsManager_Owners at its +0xf0)." }
   - { name: OBBCollision_WorldTransform, value: 0x50, confidence: inferred, sources: [ghidra], note: "A barrier's world transform, resolved when it is enabled." }
   - { name: OBBCollision_BodyId, value: 0x90, confidence: inferred, sources: [ghidra], note: "u32 body id (-1: none yet)." }
   - { name: OBBCollision_Enabled, value: 0x95, confidence: inferred, sources: [ghidra] }
+  - { name: PamOBBCollision_SubobjectVtable, value: 0x141c4e258, confidence: hypothesis, sources: [ghidra], note: "Vtable for PamOBBCollisionEntity + 0x30. Slot +0x18 is this - 0x30 thunk (0x143965ab9) returning TI_PamOBBCollisionEntity; slot +0x20 returns entity (0x143334f70); slot +0x28 is ray filter returning 1 (0x142fcd470)." }
+  - { name: PamOBBCollisionData_Climb, value: 0x90, confidence: hypothesis, sources: [ghidra], note: "Byte flag in PamOBBCollisionEntityData (+0x90). Bit 2 (0x04) in SurfaceTouch_classifyBody." }
+  - { name: PamOBBCollisionData_Vault, value: 0x91, confidence: hypothesis, sources: [ghidra], note: "Byte flag in PamOBBCollisionEntityData (+0x91). Bit 1 (0x02) in SurfaceTouch_classifyBody." }
+  - { name: PamOBBCollisionData_Stand, value: 0x92, confidence: hypothesis, sources: [ghidra], note: "Byte flag in PamOBBCollisionEntityData (+0x92). Bit 3 (0x08) in SurfaceTouch_classifyBody." }
+  - { name: PamOBBCollisionData_Wallrun, value: 0x93, confidence: hypothesis, sources: [ghidra], note: "Byte flag in PamOBBCollisionEntityData (+0x93). Bit 4 (0x10) in SurfaceTouch_classifyBody." }
   - { name: World_PhysicsManager, value: 0x50 }
   - { name: PhysicsManager_Holder, value: 0xf0 }
   - { name: PhysicsHolder_Physics, value: 0x18 }
@@ -226,20 +404,45 @@ constants:
   - { name: RigidBody_vf_setTransform, value: 0x178, confidence: inferred, sources: [research], note: "void(RigidBody*, const LinearTransform*, bool teleport): hknpWorld setBodyTransform (0x1434f21e0)." }
   # Static model groups: one GroupRigidBody (Havok hknpStaticCompoundShape) for all copies of all
   # members; research 2026-10-20 (0x1434eda80, 0x1434f2020, 0x14318fbc0, 0x143193690).
-  - { name: GroupRigidBody_BodyIndex, value: 0x50, confidence: inferred, sources: [research], note: "i32 Havok body index (hknpWorld bodies, 0x90 each)." }
-  - { name: GroupRigidBody_Shape, value: 0x58, confidence: inferred, sources: [research], note: "hknpStaticCompoundShape* of the group." }
-  - { name: GroupRigidBody_PartToInstance, value: 0x110, confidence: inferred, sources: [research], note: "Array of 4-byte entries; the low i16 of entry [part] is the compound instance index (0x1434eda80)." }
-  - { name: CompoundShape_Tree, value: 0xc0, confidence: inferred, sources: [ghidra], note: "Instance tree: a Havok static tree with 6-byte compressed nodes (box update 0x143e99090). Nodes: bytes 0..2 per axis min = parent min + (b>>4)^2*step, max = parent max - (b&15)^2*step, step = parent size * HavokAabb6Step; byte 3 bit 7 = inner node (left child = next node, right = index + ((b3&0x7f)<<16 | u16 +4) * 2); a leaf's u16 +4 is its instance. Confirmed by the outline (2026-10-20) once tested." }
-  - { name: CompoundTree_Nodes, value: 0x10, confidence: inferred, sources: [ghidra] }
-  - { name: CompoundTree_NodeCount, value: 0x18, confidence: inferred, sources: [ghidra] }
-  - { name: CompoundTree_Min, value: 0x20, confidence: inferred, sources: [ghidra], note: "The root's box (the compound's domain): min +0x20, max +0x30." }
-  - { name: CompoundTree_Max, value: 0x30, confidence: inferred, sources: [ghidra] }
-  - { name: CompoundShape_Instances, value: 0x60, confidence: inferred, sources: [research], note: "hknpShapeInstance array (0x80 each): rotation rows +0x00/+0x10/+0x20 (unit), translation +0x30, scale +0x40, shape +0x50 (0x143f50740 builds the scaled transform)." }
-  - { name: ShapeInstance_Size, value: 0x80, confidence: inferred, sources: [research] }
-  - { name: ShapeInstance_Scale, value: 0x40, confidence: inferred, sources: [research] }
+  - { name: GroupRigidBody_BodyIndex, value: 0x50, confidence: hypothesis, sources: [ghidra, research], note: "i32 Havok body index (hknpWorld bodies, 0x90 each)." }
+  - { name: GroupRigidBody_Shape, value: 0x58, confidence: hypothesis, sources: [ghidra, research], note: "hknpStaticCompoundShape* of the group." }
+  - { name: GroupRigidBody_PartToInstance, value: 0x110, confidence: hypothesis, sources: [ghidra, research], note: "Array of 4-byte entries; the low i16 of entry [part] is the compound instance index (0x1434eda80)." }
+  - { name: CompoundShape_Tree, value: 0xc0, confidence: hypothesis, sources: [ghidra, research], note: "Instance tree: a Havok static tree with 6-byte compressed nodes (box update 0x143e99090). Nodes: bytes 0..2 per axis min = parent min + (b>>4)^2*step, max = parent max - (b&15)^2*step, step = parent size * HavokAabb6Step; byte 3 bit 7 = inner node (left child = next node, right = index + ((b3&0x7f)<<16 | u16 +4) * 2); a leaf's u16 +4 is its instance. Confirmed in Ghidra decompilation." }
+  - { name: CompoundTree_Nodes, value: 0x10, confidence: hypothesis, sources: [ghidra, research] }
+  - { name: CompoundTree_NodeCount, value: 0x18, confidence: hypothesis, sources: [ghidra, research] }
+  - { name: CompoundTree_Min, value: 0x20, confidence: hypothesis, sources: [ghidra, research], note: "The root's box (the compound's domain): min +0x20, max +0x30." }
+  - { name: CompoundTree_Max, value: 0x30, confidence: hypothesis, sources: [ghidra, research] }
+  - { name: CompoundShape_Instances, value: 0x60, confidence: hypothesis, sources: [ghidra, research], note: "hknpShapeInstance array (0x80 each): rotation rows +0x00/+0x10/+0x20 (unit), translation +0x30, scale +0x40, shape +0x50 (0x143f50740 builds the scaled transform)." }
+  - { name: ShapeInstance_Size, value: 0x80, confidence: hypothesis, sources: [ghidra, research] }
+  - { name: ShapeInstance_Scale, value: 0x40, confidence: hypothesis, sources: [ghidra, research] }
+  - { name: HavokWorld_Vtable, value: 0x141d51418, confidence: hypothesis, sources: [ghidra], note: "hknpWorld primary vtable." }
+  - { name: HavokWorld_Size, value: 0x5a0, confidence: hypothesis, sources: [ghidra], note: "Size in bytes of hknpWorld, allocated at 0x1434d0ff0." }
+  - { name: HavokWorld_Capacity, value: 0x28, confidence: hypothesis, sources: [ghidra], note: "u32 total allocated body capacity slots." }
+  - { name: HavokWorld_CapacityMask, value: 0x2c, confidence: hypothesis, sources: [ghidra], note: "u32 capacity bitmask (0x3fffffff)." }
+  - { name: HavokWorld_UsedCount, value: 0x68, confidence: hypothesis, sources: [ghidra], note: "u32 live/used active body count, read by GridNode's freePlaces." }
+  - { name: HavokWorld_BodyStride, value: 0x90, confidence: hypothesis, sources: [ghidra], note: "Stride of hknpBody in hknpWorld+0x20 array." }
+  - { name: HavokWorld_MotionStride, value: 0x80, confidence: hypothesis, sources: [ghidra], note: "Stride of hknpMotion in hknpWorld+0xe0 array." }
+  - { name: hknpBodyFlag_Static, value: 0x1, confidence: hypothesis, sources: [ghidra], note: "Bit 0: static rigid body (motion id 0)." }
+  - { name: hknpBodyFlag_Dynamic, value: 0x2, confidence: hypothesis, sources: [ghidra], note: "Bit 1: dynamic rigid body simulated by solver." }
+  - { name: hknpBodyFlag_Keyframed, value: 0x4, confidence: hypothesis, sources: [ghidra], note: "Bit 2: keyframed kinematic body (infinite mass, animated/moved directly)." }
+  - { name: hknpBodyFlag_Active, value: 0x8, confidence: hypothesis, sources: [ghidra], note: "Bit 3: awake in active simulation island. Cleared when asleep." }
+  - { name: hknpBodyFlag_TransformDirty, value: 0x400, confidence: hypothesis, sources: [ghidra], note: "Bit 10: transform or velocity changed; recompute broadphase AABB." }
   - { name: ClientStaticModelGroup_Members, value: 0xe0, confidence: inferred, sources: [research], note: "Array of render blocks, one per member (0x130 each); count is the i32 at +0xec." }
   - { name: ClientStaticModelGroup_MemberCount, value: 0xec, confidence: inferred, sources: [research] }
   - { name: GroupMemberBlock_Size, value: 0x130, confidence: inferred, sources: [research], note: "+0x18 StaticModelGroupMemberData*, +0x20 physics component, +0xc8 render objects (or null: asked from the component, vtable +0x210), +0x120 active (u8)." }
   - { name: GroupMemberBlock_Member, value: 0x18, confidence: inferred, sources: [research] }
   - { name: GroupMemberBlock_Active, value: 0x120, confidence: inferred, sources: [research] }
   - { name: SpatialEntity_vf_transformChanged, value: 0xe0, confidence: inferred, sources: [research], note: "Called by SpatialEntity_setTransform when the entity's NotifyTransform flag is set; the client static model group's (0x143193690) re-places every member's render objects from InstanceTransforms or, when there are none, from the physics part transforms." }
+  - { name: CharacterPhysicsBody_vtable, value: 0x141bab5e0, confidence: hypothesis, sources: [ghidra], note: "fb::CharacterPhysicsBody primary vtable." }
+  - { name: CharacterPhysicsBody_Proxy, value: 0x50, confidence: hypothesis, sources: [ghidra], note: "hknpCharacterProxy* within fb::CharacterPhysicsBody." }
+  - { name: CharacterPhysicsBody_BodyId, value: 0xd0, confidence: hypothesis, sources: [ghidra], note: "Havok body ID within fb::CharacterPhysicsBody." }
+  - { name: CharacterPhysicsBody_SupportInfo, value: 0x108, confidence: hypothesis, sources: [ghidra], note: "hkpSurfaceInfo within fb::CharacterPhysicsBody; supported state byte at +0x1." }
+  - { name: CharacterPhysicsBody_UpVector, value: 0x120, confidence: hypothesis, sources: [ghidra], note: "Character up vector (Vector4: x, y, z, w); negated to form the down-direction passed to checkSupport." }
+  - { name: CharacterProxy_vtable, value: 0x141d53348, confidence: hypothesis, sources: [ghidra], note: "hknpCharacterProxy primary vtable." }
+  - { name: CharacterProxy_Size, value: 0x130, confidence: hypothesis, sources: [ghidra], note: "Allocation size in bytes for hknpCharacterProxy." }
+  - { name: CharacterProxy_World, value: 0x30, confidence: hypothesis, sources: [ghidra], note: "hknpWorld* within hknpCharacterProxy." }
+  - { name: CharacterProxy_UpVector, value: 0xd0, confidence: hypothesis, sources: [ghidra], note: "Normalized m_up (Vector4) within hknpCharacterProxy." }
+  - { name: CharacterProxy_CosMaxSlope, value: 0x120, confidence: hypothesis, sources: [ghidra], note: "float cos(maxSlopeAngle) within hknpCharacterProxy (0.7071 for 45 deg)." }
+  - { name: CharacterSupport_Unsupported, value: 0, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 0: mid-air / free fall." }
+  - { name: CharacterSupport_Supported, value: 1, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 1: walkable ground (<= 45 deg)." }
+  - { name: CharacterSupport_Sliding, value: 2, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 2: steep slope (> 45 deg)." }

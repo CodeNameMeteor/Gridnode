@@ -1,8 +1,13 @@
 # Rendering: render devices (DX11 / DX12), shader database, meshes, textures, debug drawing.
 # Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
 defaults: { confidence: hypothesis, sources: [ghidra] }
-
 globals:
+  - name: g_visualEnvironmentManager
+    va: 0x142568cd8
+    type: "void*"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Global singleton managing active visual environment contexts, mutex, and per-frame blend."
   - name: GameWorlds
     va: 0x1424a9b98
     type: "void*"
@@ -80,8 +85,19 @@ globals:
     note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
     confidence: confirmed
     sources: [reflected]
-
 functions:
+  - name: VisualEnvironmentManager_update
+    va: 0x143705b30
+    signature: "void(void* manager, void* updateContext)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Per-frame visual environment update under VE mutex. Iterates contexts at +0x2358/+0x2360 and invokes VisualEnvironmentContext_blend."
+  - name: VisualEnvironmentContext_blend
+    va: 0x143703d60
+    signature: "void(void* context, void* updateContext)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Multi-layer visual environment blend function (7,487 bytes) combining sun, tonemapping, color correction, sky, wind, and post-process parameters."
   - name: VisibilitySystem_update
     va: 0x14357b970
     signature: "void(void* system, u32 handle, const f32* sphere)"
@@ -254,10 +270,10 @@ functions:
     sources: [ghidra]
   - name: MeshSetSection_initShadersFromDeclaration
     va: 0x14354b140
-    signature: "void(i64, u64, void*)"
-    note: "Named in Ghidra as MeshSetSection_initShadersFromDeclaration; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* lod, void* renderDevice, void* section)"
+    note: "Initializes 18 vertex declaration permutations for a mesh section from the GeometryDeclarationDesc at section +0x4c. Populates section's declaration table."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, research]
   - name: MeshSetFactory_finishLoad
     va: 0x14354b800
     signature: "void(u64, void*, void*, u64, void*)"
@@ -266,10 +282,10 @@ functions:
     sources: [ghidra]
   - name: MeshLod_createGpuBuffers
     va: 0x14354fe00
-    signature: "void(void* self, u64, i64, void*)"
-    note: "Named in Ghidra as MeshLod_createGpuBuffers; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* lod, void* renderDevice, void* geometryBuffer, void* optionalStream)"
+    note: "Creates Direct3D 11 vertex and index buffers via render device slot 21 (0xa8). Populates MeshLodGpuRecord at lod +0x9c and asserts status flag lod +0x50 |= 0x20000000 (Resident/Ready)."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, research]
   - name: MeshSetFactory_prepareLoad
     va: 0x143551870
     signature: "i32(u64, void*, void*)"
@@ -285,9 +301,27 @@ functions:
   - name: MeshLod_destroy
     va: 0x143554e50
     signature: "void(void* self)"
-    note: "Named in Ghidra as MeshLod_destroy; signature from the decompiler (2026-10-30), the name is not checked yet."
+    note: "Releases Direct3D 11 vertex and index buffer COM interfaces in MeshLodGpuRecord at lod +0x9c and clears status flag lod +0x50 &= ~0x20000000."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, research]
+  - name: GraphicsPlatform_createOrGetVertexDeclaration
+    va: 0x1435b8f30
+    signature: "void*(void* platform, void* alloc, u64 nameHash, GeometryDeclarationDesc* desc)"
+    note: "Looks up or creates an ID3D11InputLayout / VertexDeclaration from a 0x54-byte GeometryDeclarationDesc. Caches declarations in an eastl::map at platform +0xb0 keyed by the 32-bit declaration hash."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: RigidMeshEntity_ctor
+    va: 0x14370b400
+    signature: "void*(void* self, void* renderWorld, void* memberData, LinearTransform* world, u16 param5, u32 flags, u8 param7)"
+    note: "Constructs a RigidMeshEntity static model render object (vtable 0x141bf72c8). Sets up transform at +0x10, culling sphere at +0x50, local mesh box via +0x60."
+    confidence: hypothesis
+    sources: [ghidra, research]
+  - name: MeshEntityBase_ctor
+    va: 0x14375f930
+    signature: "void(void* self, const char* name, void* memberData, LinearTransform* world, void* resource, u16 param6, u32 flags, u8 param8)"
+    note: "Base constructor for static mesh render objects. Reads local bounding box from *(**(self + 0x60) + 0x20) (min xyz, pad, max xyz) and calculates world bounding sphere at +0x50."
+    confidence: hypothesis
+    sources: [ghidra, research]
   - name: RenderSystem_ctor
     va: 0x143567280
     signature: "void*(void* self, u64)"
@@ -589,7 +623,6 @@ functions:
     note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
     confidence: inferred
     sources: [ghidra, user]
-
 constants:
   - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
   - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
@@ -601,3 +634,133 @@ constants:
   - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
   - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
   - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }
+structs:
+  - name: WorldRenderer
+    size: 0x3c2000
+    opaque: true
+    members:
+      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0xb30 bytes)." }
+  - name: VisualEnvironmentState
+    size: 0xb30
+    members:
+      - { offset: 0x000, name: sunColor, type: "f32[3]", note: "Outdoor light sun RGB color." }
+      - { offset: 0x060, name: skyColor, type: "f32[3]", note: "Sky ambient RGB color." }
+      - { offset: 0x070, name: groundColor, type: "f32[3]", note: "Ground bounce RGB color." }
+      - { offset: 0x084, name: sunRotationX, type: f32, note: "Sun elevation angle (pitch)." }
+      - { offset: 0x088, name: sunRotationY, type: f32, note: "Sun azimuth angle (yaw)." }
+      - { offset: 0x094, name: sunIntensity, type: f32, note: "Sun illuminance intensity." }
+      - { offset: 0x118, name: sunEnable, type: u8, note: "Sun light enable flag." }
+      - { offset: 0x1d0, name: bloomScale, type: f32, note: "Tonemap bloom scale factor." }
+      - { offset: 0x264, name: exposureValue, type: f32, note: "Target exposure value (EV)." }
+      - { offset: 0x268, name: exposureCompensation, type: f32, note: "Exposure compensation EV offset." }
+      - { offset: 0x330, name: colorBrightness, type: "f32[3]", note: "Color grading RGB brightness multiplier." }
+      - { offset: 0x340, name: colorContrast, type: "f32[3]", note: "Color grading RGB contrast." }
+      - { offset: 0x350, name: colorSaturation, type: "f32[3]", note: "Color grading RGB saturation." }
+      - { offset: 0x364, name: colorHue, type: f32, note: "Color grading hue offset." }
+      - { offset: 0x6e4, name: windDirection, type: f32, note: "Wind direction in radians." }
+      - { offset: 0x6e8, name: windStrength, type: f32, note: "Wind speed / force." }
+      - { offset: 0xa54, name: dofFocusDistance, type: f32, note: "Depth of field focus plane distance (meters)." }
+      - { offset: 0xa58, name: dofBlurFactor, type: f32, note: "Depth of field blur intensity." }
+      - { offset: 0xaa8, name: dofEnable, type: u8, note: "Depth of field enable flag." }
+      - { offset: 0xac0, name: vignetteColor, type: "f32[3]", note: "Vignette RGB color." }
+      - { offset: 0xad4, name: vignetteScale, type: f32, note: "Vignette radial scale." }
+      - { offset: 0xae4, name: vignetteEnable, type: u8, note: "Vignette enable flag." }
+      - { offset: 0xb00, name: filmGrainColorScale, type: "f32[3]", note: "Film grain RGB noise scale." }
+      - { offset: 0xb28, name: filmGrainEnable, type: u8, note: "Film grain enable flag." }
+  - name: VertexElementDesc
+    size: 0x04
+    align: 1
+    members:
+      - { offset: 0x00, name: usage, type: u8, note: "Vertex element semantic (1=Pos, 6=Norm, 7=Tan, 27=UV0)." }
+      - { offset: 0x01, name: format, type: u8, note: "Element format (1=R10G10B10A2, 3=Float3, 12=Half2)." }
+      - { offset: 0x02, name: offset, type: u8, note: "Byte offset of element in vertex stream." }
+      - { offset: 0x03, name: stream, type: u8, note: "Stream buffer index (typically 0)." }
+  - name: GeometryDeclarationDesc
+    size: 0x54
+    align: 4
+    members:
+      - { offset: 0x00, name: elements, type: "VertexElementDesc[16]", note: "Array of 16 vertex element descriptors." }
+      - { offset: 0x50, name: elementCount, type: u8, note: "Number of active vertex elements." }
+      - { offset: 0x51, name: streamCount, type: u8, note: "Number of vertex buffer streams (typically 1)." }
+  - name: MeshLodGpuRecord
+    size: 0x48
+    members:
+      - { offset: 0x00, name: renderDevice, type: "void*", note: "Render device pointer." }
+      - { offset: 0x08, name: vertexBuffer, type: "void*", note: "Direct3D 11 vertex buffer (ID3D11Buffer*)." }
+      - { offset: 0x10, name: indexBuffer, type: "void*", note: "Direct3D 11 index buffer (ID3D11Buffer*)." }
+      - { offset: 0x18, name: rawVertexData, type: "u8*", note: "Pointer to CPU raw vertex buffer." }
+      - { offset: 0x20, name: rawIndexData, type: "u8*", note: "Pointer to CPU raw index buffer." }
+      - { offset: 0x30, name: rawMorphData, type: "u8*", note: "Pointer to CPU raw morph data." }
+      - { offset: 0x38, name: morphBuffer, type: "void*", note: "Direct3D 11 morph target buffer." }
+      - { offset: 0x40, name: bufferGroupHandle, type: "void*", note: "Internal buffer group handle." }
+  - name: MeshSetSectionRecord
+    size: 0x90
+    members:
+      - { offset: 0x00, name: declarations, type: "void*[18]", note: "18 shader permutation / vertex declaration pointers." }
+  - name: MeshSetSection
+    size: 0x130
+    members:
+      - { offset: 0x00, name: sectionRecord, type: "MeshSetSectionRecord*", note: "Pointer to 18-permutation declaration table." }
+      - { offset: 0x4c, name: geometryDesc, type: GeometryDeclarationDesc, note: "84-byte vertex declaration descriptor." }
+  - name: MeshLod
+    size: 0xa8
+    align: 8
+    members:
+      - { offset: 0x00, name: meshSet, type: "void*", note: "Owner MeshSet resource pointer." }
+      - { offset: 0x08, name: sectionCount, type: u32, note: "Number of sections in this LOD." }
+      - { offset: 0x0c, name: sections, type: "void*", note: "Pointer to array of MeshSetSection records." }
+      - { offset: 0x50, name: statusFlags, type: u32, note: "Bit 0x20000000 = GPU buffers resident and ready." }
+      - { offset: 0x54, name: indexFormat, type: u32, note: "Index buffer format: 2 = 16-bit uint, 4 = 32-bit uint." }
+      - { offset: 0x58, name: indexCount, type: u32, note: "Total number of indices." }
+      - { offset: 0x5c, name: indexOffset, type: u32, note: "Byte offset of index buffer from geometry start (equals vertex buffer byte size)." }
+      - { offset: 0x60, name: vertexCount, type: u32, note: "Total number of vertices in stream 0." }
+      - { offset: 0x74, name: geometryDataOffset, type: u32, note: "Offset to raw vertex data from inline buffer base." }
+      - { offset: 0x9c, name: gpuRecord, type: "MeshLodGpuRecord*", note: "Pointer to runtime GPU buffer handles container." }
+  - name: MeshSetResource
+    size: 0x90
+    members:
+      - { offset: 0x20, name: lodPointers, type: "void*[8]", note: "Pointers to MeshLod structures for each LOD level." }
+      - { offset: 0x88, name: flags, type: u32, note: "Bit 0 = isStreamed (0 = static in-memory mesh, 1 = streamed)." }
+      - { offset: 0x8c, name: lodCount, type: u16, note: "Number of LOD levels." }
+      - { offset: 0x8e, name: totalSections, type: u16, note: "Total section count across all LODs." }
+hooks:
+  - name: WorldRenderer_renderView
+    kind: vtable-slot
+    vtable: 0x141bfac00
+    slot: 0x141bfaca8
+    original: 0x14373e5d0
+    signature: "void(void* worldRenderer, void* context)"
+    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to shader constants upload. Hook point for overriding visual environment state without flicker."
+classes:
+  - name: ClientStaticModelGroupEntity
+    vtable: 0x141afbe90
+    size: 0x108
+    realm: client
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Client entity managing hardware-instanced static mesh members and visibility streaming registration."
+  - name: ServerStaticModelGroupEntity
+    vtable: 0x141b5e3a0
+    size: 0xc0
+    realm: server
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Server entity managing static model group replication, network IDs, and physics health components."
+  - name: StaticModelGroupEntityData
+    vtable: 0x141b73f40
+    size: 0xb0
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected entity data defining multi-instance static model groups (MemberDatas at +0x90)."
+  - name: RigidMeshAsset
+    vtable: 0x141bbdab0
+    size: 0x78
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected mesh asset holding MeshSetResource (+0x20) and Materials array (+0x60)."
+  - name: MeshMaterial
+    vtable: 0x141bbdae0
+    size: 0x70
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Reflected material holding SurfaceShaderInstanceDataStruct (+0x10) and tessellation/displacement parameters."

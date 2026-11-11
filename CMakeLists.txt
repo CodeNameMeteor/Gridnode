@@ -247,4 +247,11 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_link_libraries(trainer PRIVATE gn_imgui)
   set_target_properties(trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
+  # claim-lab: the one mod for trying research claims in game before they become SDK/API (one file per topic in experiments/)
+  file(GLOB CLAIM_LAB_SOURCES CONFIGURE_DEPENDS examples/claim-lab/*.cpp examples/claim-lab/experiments/*.cpp)
+  add_library(claim_lab SHARED ${CLAIM_LAB_SOURCES})
+  target_include_directories(claim_lab PRIVATE sdk/include examples/claim-lab)
+  target_link_libraries(claim_lab PRIVATE gn_imgui gn_engine)
+  set_target_properties(claim_lab PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
+                                             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
 endif()

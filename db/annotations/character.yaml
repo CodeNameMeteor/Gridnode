@@ -75,6 +75,7 @@ classes:
       - { offset: 0x6c, name: movedAmount, type: f32, note: "0 standing; 7.78 and 3.63 while moving (a speed or a distance since the last stop: not checked in Ghidra)." }
       - { offset: 0x70, name: movedAmount2, type: f32, note: "Changes with +0x6c (0.198 with 7.78, 0.089 with 3.63); not checked in Ghidra." }
 
+
 structs:
   - name: CustomizeRequest
     size: 0x20
@@ -120,10 +121,10 @@ functions:
     sources: [ghidra]
   - name: ServerCharacterEntity_applyCustomizeData
     va: 0x14336c860
-    signature: "void(i64, void*)"
-    note: "Named in Ghidra as ServerCharacterEntity_applyCustomizeData; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(i64 a0, CustomizeRequest* request)"
+    note: "Pure research (to be confirmed in game). Applies CustomizeCharacterData visual unlocks to ServerCharacterCustomizationComponent, dirtying replication state for client streaming."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: ServerTeleportEntity_clampTargetAboveGround
     va: 0x143381370
     signature: "void(void* self, void*)"

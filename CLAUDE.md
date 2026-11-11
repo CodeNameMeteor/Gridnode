@@ -4,7 +4,7 @@ GridNode is an open-source modding SDK for Mirror's Edge Catalyst (PC, Frostbite
 Pamplona). It loads mods from `mods/` and gives them reflection by name (~9,988 engine types), entity
 callbacks, ticks, hooks, a world API and an ImGui overlay, plus research tools (inspector, recorder,
 Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, next steps; older history in `progress-archive.md`), then
-[docs/handover.md](docs/handover.md) and [docs/PLAN.md](docs/PLAN.md). Related project: `../mecmp`
+[docs/handover.md](docs/handover.md) and [docs/PLAN.md](docs/PLAN.md); a workflow stage (`.workflow/runs/<topic>/`) skips these and reads only what its role file names. Related project: `../mecmp`
 (a separate mod; do not edit it from here).
 
 ## Rules (from the user; keep them)
@@ -16,6 +16,8 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
   cheating with the trainer: it never opts in, blocks Dash / TT uploads. PC only, one EA app build.
 - **Never commit game data or user output:** image dumps (`bin/dumps/*.exe`), the reflected dump
   (`db/reflected/`, `gridnode-reflected.json`), FBX game meshes, `event-names.txt`, logs, recordings.
+- **Annotations only from verified findings:** Gemini or other-agent claims are hypotheses until confirmed in
+  Ghidra; run `validate` after. Local multi-model workflow (not in git): `.workflow/README.md`, `AGENTS.md`.
 - **Commit and push only when the user asks**, even if a hook says otherwise. Commits end with the
   attribution lines the session gives.
 - The user tests in game and sends logs and recordings. Say plainly what is untested.
@@ -63,20 +65,19 @@ The cloud container cross-compiles with MinGW; build folders live in `/tmp` and 
 cmake -S . -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++-posix -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc-posix \
   -DCMAKE_BUILD_TYPE=Release -DGRIDNODE_BUILD_TESTS=OFF
-cmake --build /tmp/claude-0/bw                      # gridnode.dll
+cmake --build /tmp/claude-0/bw      # gridnode.dll; -DGRIDNODE_PLAYER_BUILD=ON checks the player build
 cmake -S . -B /tmp/claude-0/hosttest -G Ninja && cmake --build /tmp/claude-0/hosttest && (cd /tmp/claude-0/hosttest && ctest)
 cd tools/gen && python3 -m unittest tests.test_gen  # Python tools
 python3 tools/gen/gridnode.py validate              # after any annotation change
 python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as CI builds it
 ```
 
-Add `-DGRIDNODE_PLAYER_BUILD=ON` to check the player build (no recorder).
-
 ## Conventions
 
 - Never hand-edit `engine.hpp`: edit `db/annotations/` (it is generated at build time).
 - A change to `api.h` means regenerating the Rust bindings (`gridnode.py rust`) and updating `docs/modding.md`.
-- The build check (`sdk/src/build.cpp`) keeps GridNode passive on an unexpected game exe.
+- The build check (`sdk/src/build.cpp`) keeps GridNode passive on an unexpected game exe. CI builds with MinGW:
+  an MSVC-only intrinsic (`_InterlockedOr8`, ...) needs a GCC branch, as in `patches.cpp` (`#if defined(_MSC_VER)`).
 - C++17, 4-space indent, no tabs, K&R braces; `#pragma once`, then a short `//` comment on the
   header's purpose, then includes (std first). Namespaces `gn::<module>`; functions and variables
   `camelCase`; constants `kPascalCase`. Fixed-width ints, `std::string`, RAII; no raw `new`/`delete`;
@@ -110,8 +111,7 @@ first for Ghidra's Go To; `--ghidra-names EXPORT` adds the user's Ghidra names. 
 `level`, then `object` lines (the object table) and one `frames` line (frame -> function start).
 Hashed names show as hex; `db/annotations/events.yaml` (ours) and `recordings/event-names.txt`
 (game-derived: never commit) name them.
-For raw lines, filter with a short `python -c` by `kind` and time range, never print the whole file.
-Record findings in `db/annotations/` and `docs/progress.md`.
+For raw lines, filter with a short `python -c` by `kind` and time range, never print the whole file. Record findings in `db/annotations/` and `docs/progress.md`.
 
 ## The user's PC
 
@@ -145,5 +145,6 @@ The game loads `D:\Dev\GridNode\bin\gridnode.dll`; recordings are in `bin\record
   game a pointer into GridNode (a hook, a vtable copy, a listener, a transform) needs a way back in it.
 - Function detours (`patches.cpp`, `gn::x64`) keep their slot in GridNode's memory: the hook table writes
   it through `isDetourSlot`, and the image dump skips it.
+- After a game update: `gridnode.py verify-image` lists the broken annotations; re-fingerprint, then check in Ghidra.
 - Spawners are found by their data in a bus; the game's echo must stay last in the spawner lists
   (see `docs/research/replay-ghosts.md`).

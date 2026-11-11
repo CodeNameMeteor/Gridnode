@@ -52,6 +52,25 @@ classes:
       - { offset: 0x80, name: recordingSize, type: u32 }
       - { offset: 0x88, name: recording, type: "u8*", note: "The downloaded recording, from the entity's arena." }
 
+  - name: PamClientEchoCustomizationManagerEntity
+    confidence: hypothesis
+    realm: client
+    vtable: 0x141c73c18
+    sources: [ghidra]
+    note: "Manages runner echo visual customizations and shaders."
+
+  - name: PamReplayPlayerComponentData
+    confidence: hypothesis
+    size: 0x90
+    sources: [ghidra]
+    note: "Data asset defining replay player component parameters, default speed 1.0f at +0x88."
+
+  - name: PamReplayRecordingComponentData
+    confidence: hypothesis
+    size: 0x90
+    sources: [ghidra]
+    note: "Data asset defining replay recording component parameters."
+
   - name: PamClientReplayRecordingComponent
     realm: client
     members:
@@ -59,6 +78,36 @@ classes:
       - { offset: 0x50, name: animatable, type: "void*", note: "Its ClientAntAnimatableEntity (PamClientReplayRecordingComponent_init).", confidence: inferred, sources: [ghidra] }
 
 structs:
+  - name: PamEchoCustomizationData
+    confidence: hypothesis
+    size: 0x28
+    sources: [ghidra]
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: nameSid, type: "void*", note: "Localization SID string for the echo name." }
+      - { confidence: hypothesis, offset: 0x08, name: descriptionSid, type: "void*", note: "Localization SID string for description." }
+      - { confidence: hypothesis, offset: 0x10, name: textureId, type: "void*", note: "Texture identifier." }
+      - { confidence: hypothesis, offset: 0x18, name: customizationData, type: "void*", note: "Pointer to customization asset." }
+      - { confidence: hypothesis, offset: 0x20, name: customizationHash, type: u32, note: "Unique 32-bit hash identifying the echo variation." }
+
+  - name: PamEchoGhostRecord
+    confidence: hypothesis
+    size: 0x18
+    sources: [ghidra]
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: personaId, type: u64, note: "Pamplona backend player persona ID." }
+      - { confidence: hypothesis, offset: 0x08, name: timestampValue, type: u64, note: "Server recording timestamp." }
+      - { confidence: hypothesis, offset: 0x10, name: variation, type: u32, note: "Echo customization variation ID." }
+
+  - name: PamReplayHeader
+    confidence: hypothesis
+    size: 0x0c
+    align: 4
+    sources: [ghidra]
+    note: "Bitstream file header for replay version 5 (verified in ReplayPlayback_ReadRecordingHeader and ReplaySetup_WriteHeader)."
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: version, type: u32, note: "Constant 5 (0x20 bits)." }
+      - { confidence: hypothesis, offset: 0x04, name: skeletonChecksum, type: u32, note: "DJB2 hash seeded with 5381 across bone IDs, translation flags, and quantization bit lengths (10, 11)." }
+      - { confidence: hypothesis, offset: 0x08, name: numBones, type: u32, note: "Number of tracked skeleton bones." }
   - name: ReplayRecorder
     size: 0xf0
     opaque: true
@@ -110,6 +159,60 @@ constants:
   - { name: MaxReplayBones, value: 32 }
 
 functions:
+  - name: GhostProjectionShader_init
+    va: 0x143944740
+    signature: "void*(void* self, void* a2, void* a3, void* a4)"
+    note: "Initializes the runner ghost hologram material by loading 'Shaders/SpecialUseCase/GhostProjectionVSFAsset'."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: GhostProjectionShader_dtor
+    va: 0x143945a90
+    signature: "void*(void* self, u32 flags)"
+    note: "Virtual destructor releasing the GhostProjectionVSFAsset."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamClientEchoCustomizationManagerEntity_register
+    va: 0x143a46b60
+    signature: "u64(void* entity)"
+    note: "Registers PamClientEchoCustomizationManagerEntity in the component manager."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamGatewayBackendSetRunnersRouteReplay
+    va: 0x143a0c890
+    signature: "void(void* backend, void* request)"
+    note: "Dispatches PamplonaAuthenticated.setRunnersRouteReplay HTTP request with challengeId, runId, and uploadTicket."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamGatewayBackendGetPlayerGhosts
+    va: 0x1439f98d0
+    signature: "void(void* backend, void* request)"
+    note: "Queries Pamplona.getPlayerGhosts HTTP endpoint with array of persona IDs."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamGatewayBackendSetPlayerGhost
+    va: 0x143a0c450
+    signature: "void(void* backend, void* request)"
+    note: "Uploads ghost variation and timestamp to PamplonaAuthenticated.setPlayerGhost HTTP endpoint."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamGatewayBackendParsePlayerGhost
+    va: 0x1439b6950
+    signature: "bool(void* jsonDoc, PamEchoGhostRecord* outRecord)"
+    note: "Parses Pamplona ghost JSON response: /personaId, /ghostData/timestamp/timestampValue, /ghostData/customization/variation."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamReplayPlayerComponentData_create
+    va: 0x143a95c40
+    signature: "void*(void* a1, void* a2, char a3)"
+    note: "Creates PamReplayPlayerComponentData instance (0x90 bytes), setting default speed 1.0f at +0x88."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PamReplayRecordingComponentData_create
+    va: 0x143a94580
+    signature: "void*(void* a1, void* a2, char a3)"
+    note: "Creates PamReplayRecordingComponentData instance (0x90 bytes)."
+    confidence: hypothesis
+    sources: [ghidra]
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: PamClientReplayPlayerComponent_ctor
     va: 0x143944860

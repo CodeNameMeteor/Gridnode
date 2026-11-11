@@ -28,10 +28,10 @@ functions:
     sources: [ghidra]
   - name: VoiceOverSystem_cancelConversation
     va: 0x143042720
-    signature: "void(u64, u64)"
-    note: "Named in Ghidra as VoiceOverSystem_cancelConversation; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* voSystem, u32 handle)"
+    note: "Pure research (to be confirmed in game). Cancels active conversation by handle, flushing pending playback queues."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: VoiceOverSystem_setPronunciation
     va: 0x143046760
     signature: "void(void* self, i64, u32)"
@@ -40,10 +40,10 @@ functions:
     sources: [ghidra]
   - name: VoiceOverSystem_setSources
     va: 0x1430467f0
-    signature: "void(void* self, i64, void*, i32, u32)"
-    note: "Named in Ghidra as VoiceOverSystem_setSources; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* voSystem, void* conversationInfo, const void** sourceEntities, i32 start, u32 count)"
+    note: "Pure research (to be confirmed in game). Binds conversation audio emitter to character entity transforms (e.g. PamClientCharacterEntity) for dynamic 3D positioning."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: VoiceOverSystem_setTakeControls
     va: 0x143046940
     signature: "void(void* self, i64, void*, i32, u32)"
@@ -52,10 +52,10 @@ functions:
     sources: [ghidra]
   - name: VoiceOverSystem_submitConversation
     va: 0x1430477f0
-    signature: "void(void* self, void*, u16, void*)"
-    note: "Named in Ghidra as VoiceOverSystem_submitConversation; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* voSystem, void* conversationInfo, u16 realm, u32* outHandle)"
+    note: "Pure research (to be confirmed in game). Submits conversation for audio playback (*0x1423e3150). Realm = EntityBus_getLevel(bus) + 0x90. Active handles stored in tree at voSystem+0x15e20."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: fb_VoiceOverConversationEntity_VoiceOverConversationEntity_onEvent
     va: 0x1432bc760
     signature: "void(VoiceOverConversationEntity* self, i64)"
@@ -75,9 +75,32 @@ functions:
     confidence: hypothesis
     sources: [ghidra]
 
+  - name: Voice_setParameter
+    va: 0x14301da40
+    signature: "void(void* voice, u32 key, float value)"
+    note: "Slot 3 of Voice vtable (0x141acfad0). Passes key (EDX) and float (XMM2) to SoundGraphInstance_setParameter (0x1430060b0), marks voice dirty in SoundManager (0x1423e29b8). Called by SoundEntity (0x14303d231); to be confirmed in game."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Voice_updateVelocity
+    va: 0x143021f60
+    signature: "void(void* voice, const float* pos, float dt)"
+    note: "Slot 16 of Voice vtable (0x141acfad0). Reads State3D (+0x28), calls State3D_update (0x143021cc8); to be confirmed in game."
+    confidence: inferred
+    sources: [ghidra]
+  - name: State3D_update
+    va: 0x143021cc8
+    signature: "void(void* state3d, const float* pos, float dt)"
+    note: "Differentiates position over dt, computes linear velocity into state3d+0x40, speed at +0x8c, stores position history; to be confirmed in game."
+    confidence: inferred
+    sources: [ghidra]
 constants:
   - { name: SoundSystem_vf_createVoice, value: 0x40, confidence: confirmed, sources: [ghidra], note: "SoundEntity_onEvent calls it with the SoundEntityData's Sound (+0x18)." }
   - { name: Voice_vf_event, value: 0x0, confidence: confirmed, sources: [ghidra], note: "void(voice, u32 event hash)." }
   - { name: Voice_vf_release, value: 0x48, confidence: confirmed, sources: [ghidra], note: "Stops and lets it go (SoundEntity's stop event)." }
   - { name: Voice_vf_isPlaying, value: 0x58, confidence: confirmed, sources: [ghidra], note: "bool(voice)." }
   - { name: Voice_vf_setTransform, value: 0x68, confidence: confirmed, sources: [research, ghidra], note: "void(voice, const LinearTransform*): copied into its 3D state (+0x28) when it has one (0x14301dc30)." }
+  - { name: Voice_vf_setAssetParameter, value: 0x10, confidence: inferred, sources: [ghidra], note: "void(voice, u32 key, void* asset): forwards to 0x143006180; to be confirmed in game." }
+  - { name: Voice_vf_setParameter, value: 0x18, confidence: inferred, sources: [ghidra], note: "void(voice, u32 key, float val): passes EDX and XMM2 to 0x1430060b0, marks dirty via 0x143018bb0; to be confirmed in game." }
+  - { name: Voice_vf_clearVelocity, value: 0x78, confidence: inferred, sources: [ghidra], note: "void(voice): zeroes velocity fields in State3D (+0x28); to be confirmed in game." }
+  - { name: Voice_vf_updateVelocity, value: 0x80, confidence: inferred, sources: [ghidra], note: "void(voice, const float* pos, float dt): calls State3D_update (0x143021cc8); to be confirmed in game." }
+  - { name: Voice_vf_setDistanceScale, value: 0x90, confidence: inferred, sources: [ghidra], note: "void(voice, float scale): writes to State3D+0xb0 (0x14301d7c0); to be confirmed in game." }

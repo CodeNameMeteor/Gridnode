@@ -21,7 +21,10 @@ structs:
     members:
       - { offset: 0x80, name: fovYDegrees, type: f32, note: "Final vertical FOV, including the player's FOV setting." }
       - { offset: 0x90, name: transform, type: LinearTransform, note: "right, up, forward, position. Looks along MINUS forward (MECMP). Copies at +0xd0, +0x120, +0x160, +0x1140." }
+      - { confidence: hypothesis, offset: 0x120, name: viewTransform, type: LinearTransform, note: "Camera view transform matrix constructed each frame in ClientCameraViewManager_frameUpdate." }
+      - { confidence: hypothesis, offset: 0x160, name: renderTransform, type: LinearTransform, note: "Camera render transform matrix copied to render pipeline." }
       - { offset: 0x208, name: activeCamera, type: "CameraObject*" }
+      - { confidence: hypothesis, offset: 0x10f0, name: worldBasisMatrix, type: LinearTransform, note: "Identity world basis matrix combined with camera modifiers/shakes in 0x14327e850; multiplied with raw head transform in FPSCamera_computeTransforms." }
       - { offset: 0x1b8e, name: updating, type: u8, note: "postSimUpdate does nothing while 0.", confidence: inferred, sources: [research] }
       - { offset: 0x1b90, name: postUpdateListeners, type: "void*", note: "Singly linked list of {vtable, next}; after the active camera's update (vtable +0x60) each node's vtable[0](node, updateInfo) is called (ClientCameraViewManager_postSimUpdate).", confidence: inferred, sources: [research] }
   - name: CameraObject
@@ -42,6 +45,9 @@ functions:
   - { name: Camera_setTransforms, va: 0x14332bc40, signature: "void(CameraObject* camera, void* transforms)", note: "Writes the camera's two transforms (+0x10, +0x50); called from FPSCamera_update.", confidence: inferred, sources: [ghidra] }
   - { name: ClientCameraViewManagers_frameUpdateAll, va: 0x14327b940, note: "Each frame, each view manager's frame update; called from ClientWorld_tickFrame.", confidence: inferred, sources: [ghidra] }
   - { name: FPSCamera_computeTransforms, va: 0x14327fb80, signature: "void(void* camera, void* info, LinearTransform* out)", note: "FPSCamera vtable +0x70 (slot 0x141b18ec8). Writes two transforms (camera, camera mesh) that FPSCamera's update (+0x68) stores at camera +0x10/+0x50. MECMP's third person moves both.", confidence: inferred, sources: [mecmp, ghidra] }
+  - { name: FreeCamera_computeTransforms, va: 0x14332d780, signature: "void(void* camera, void* info, void* out)", note: "FreeCamera vtable +0x70 (slot 0x141b18ce8): copies transform (+0x10..+0x9f) to output.", confidence: inferred, sources: [ghidra] }
+  - { name: FreeCamera_setTransforms, va: 0x14332bbd0, signature: "void(void* camera, void* transforms)", note: "Writes FreeCamera's two transforms (+0x10, +0x50) and zeroes velocity (+0x90).", confidence: inferred, sources: [ghidra] }
+  - { name: ClientCameraViewManager_updateModifiers, va: 0x14327e850, signature: "void(void* self, LinearTransform* outMatrix, f32 deltaSec, f32 unused)", note: "Iterates active camera modifiers/shakes tree (+0x220) and computes worldBasisMatrix at +0x10f0 (starts at identity Y-up).", confidence: inferred, sources: [ghidra] }
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: CameraSettingsBlend_setTarget
     va: 0x1431f5b80

@@ -12,10 +12,10 @@ globals:
     sources: [ghidra]
   - name: g_ownPresenceUser
     va: 0x14257cc68
-    type: "u64"
-    note: "Labelled in Ghidra as g_ownPresenceUser."
+    type: "void*"
+    note: "Pointer to local player's presence user object. Holds OnlineId { u64 id; char name[32] } at +0x30."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
 
 functions:
   - name: gatewayBackend_handleMessage
@@ -23,13 +23,12 @@ functions:
     signature: "void(void* backend, void* message, u8 locked)"
     note: "Switches on the message type id (+0xc) and runs the request: uploads, downloads, presence (see the hooks below for the upload ids)."
     confidence: inferred
-  # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: OnlineId_copyConstruct
     va: 0x1432f8cd0
-    signature: "void*(void* self, void*)"
-    note: "Named in Ghidra as OnlineId_copyConstruct; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void*(void* dst, const void* src)"
+    note: "Copy constructs an OnlineId (0x28 bytes: +0x00 u64 id, +0x08 char name[32])."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: NamedChallengeStats_onFinished
     va: 0x1439deb10
     signature: "void(void* dashState, void* challengeData, void* times, u32 runId)"
@@ -68,40 +67,40 @@ functions:
     sources: [ghidra]
   - name: PamClientPresenceInfoManagerEntity_factory
     va: 0x143a35310
-    signature: "i64(void*, u64, u64, u8)"
-    note: "Named in Ghidra as PamClientPresenceInfoManagerEntity_factory; checked in the decompiler (2026-10-30): checks TI_PamClientPresenceInfoManagerEntity."
-    confidence: inferred
-    sources: [ghidra]
+    signature: "i64(void* creator, u64 a2, u64 a3, u8 a4)"
+    note: "Entity factory for PamClientPresenceInfoManagerEntity; allocates 0x60 bytes and calls ctor."
+    confidence: hypothesis
+    sources: [ghidra, mecmp]
   - name: PamClientPresenceInfoManagerEntity_ctor
     va: 0x143a38de0
-    signature: "void*(void* self, u64, u64, u64)"
-    note: "Named in Ghidra as PamClientPresenceInfoManagerEntity_ctor; checked in the decompiler (2026-10-30): sets the PamClientPresenceInfoManagerEntity vtable."
-    confidence: inferred
-    sources: [ghidra]
+    signature: "void*(void* self, void* a1, void* a2, void* a3)"
+    note: "Constructs PamClientPresenceInfoManagerEntity (vtable 0x141c74be8), queries PamSocialPlaySettings +0x20 for slot count, initializes slot vector at +0x50 / +0x58."
+    confidence: hypothesis
+    sources: [ghidra, mecmp]
   - name: PresenceInfoManager_onSlotPermissions
     va: 0x143a4aa00
-    signature: "void(void* self, i8, i64, void*)"
-    note: "Named in Ghidra as PresenceInfoManager_onSlotPermissions; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* self, i8 allowed, i64 slotIdx, void* context)"
+    note: "Callback handling gateway permission/privacy response for a slot. Sets shown flag (+0x00) if user privacy permits."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: PresenceInfoManager_publishOwnWorldPosition
     va: 0x143a4dad0
     signature: "void(void* self)"
-    note: "Named in Ghidra as PresenceInfoManager_publishOwnWorldPosition; checked in the decompiler (2026-10-30): its strings ('worldPosition')."
-    confidence: inferred
-    sources: [ghidra]
+    note: "Serializes local player worldPosition [x, y, z] to JSON and queues an upload message on ClientMessageManager."
+    confidence: hypothesis
+    sources: [ghidra, mecmp]
   - name: PresenceInfoManager_requestSlotPermissions
     va: 0x143a4ddd0
     signature: "void(void* self)"
-    note: "Named in Ghidra as PresenceInfoManager_requestSlotPermissions; signature from the decompiler (2026-10-30), the name is not checked yet."
+    note: "Sends permissions query to gateway backend to verify privacy settings for active marker slots."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: PresenceInfoManager_update
     va: 0x143a50b80
-    signature: "void(void* self, void*, u64, u64)"
-    note: "Named in Ghidra as PresenceInfoManager_update; signature from the decompiler (2026-10-30), the name is not checked yet."
+    signature: "void(void* self, void* updateInfo, u64 a3, u64 a4)"
+    note: "Per-frame update of slots: updates position matrix at entity +0x38, name at +0x30, online ID at +0x40, and shown flag at +0x50."
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, mecmp]
   - name: ChallengeMarker_start
     va: 0x143a57770
     signature: "void(void* self)"

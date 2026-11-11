@@ -28,3 +28,23 @@ events:
     hash: 0x18c33d9a
     sent_to: [PamCityAlertTelemetryEventEntity]
     note: "Sent when Faith reaches a safehouse during a city alert (docs/research/city-alert.md)."
+  - name: ShowObjective
+    confidence: hypothesis
+    hash: 0xd0488c09
+    sent_to: [ServerObjectiveEntity]
+    note: "Activates and begins tracking an objective (ServerObjectiveEntity vf4)."
+  - name: HideObjective
+    confidence: hypothesis
+    hash: 0x23ccf4aa
+    sent_to: [ServerObjectiveEntity]
+    note: "Deactivates an active objective (ServerObjectiveEntity vf4)."
+  - name: Success
+    confidence: hypothesis
+    hash: 0x7f3e7106
+    sent_to: [ServerObjectiveEntity]
+    note: "Signals objective condition met (ServerObjectiveEntity vf4)."
+  - name: OnSuccess
+    confidence: hypothesis
+    hash: 0xbb06a967
+    sent_to: [ServerObjectiveEntity]
+    note: "Broadcast when objective succeeds, notifying telemetry and level flow."
