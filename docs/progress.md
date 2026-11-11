@@ -37,6 +37,14 @@ Done:
   docs, the inspector's tooltip and read-only grey-out.
 - **5 step 1**: `tools/assets` (`gridnode.py assets check / list / extract`), synthetic tests only.
 
+Game-tested 2026-11-11 (user's run): the reserve is made (`64 KB kept near the game's code`, 1 try); detour
+entries pause the game 1.2 to 25.6 ms (were 99 to 132 ms); `hook_virtual` on setVisible fires; `gn::Field`
+TimeScale, Faith's components, the data folder line, the type view and the read-only note work; a non-mod DLL is
+skipped from the file; reload and unload of detour-demo and a full unload are clean. Fixed after: class hooks were
+missing from the Hooks list (now listed, and logged when taken out); `assets check` stopped at the first
+catalogue without NyanNyanNyanNyan (`Data\Win32\gameconfigurations\anchorinstallpackage\cas.cat`): such
+catalogues are now listed with their first 48 bytes and the rest read on.
+
 Not done (next): 2.1 step 2 (`hooks_begin` / `hooks_commit`), 2.3 the entity index, 3.2 the mod context
 (open question: `gn_mod_load2` or the manifest), 3.6 the `unverified` namespace (open question: hide
 hypothesis items from mods, or move them), moving GridNode's three internal "every subclass" pools onto

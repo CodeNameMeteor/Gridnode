@@ -114,6 +114,21 @@ class Store(unittest.TestCase):
             with self.assertRaisesRegex(store.StoreError, "no known catalogue layout"):
                 store.read_catalogue(p)
 
+    def test_odd_catalogue_is_listed_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_install(d)
+            odd = os.path.join(d, "Data", "Win32", "other")
+            os.makedirs(odd)
+            with open(os.path.join(odd, "cas.cat"), "wb") as f:
+                f.write(b"\x00\x01something else")
+            s = store.Store(os.path.join(d, "Data") + '\\"')  # as PowerShell passes "...\Data\"
+            self.assertEqual(len(s.catalogues), 1)
+            self.assertEqual(len(s.problems), 1)
+            self.assertIn("00 01 73", s.problems[0])
+            r, text = Cli().run_cli("check", "--data", os.path.join(d, "Data"))
+            self.assertEqual(r, 1)
+            self.assertIn("bundles: 1", text)  # the rest still read
+
     def test_install(self):
         with tempfile.TemporaryDirectory() as d:
             files = make_install(d)

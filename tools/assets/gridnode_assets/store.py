@@ -60,7 +60,8 @@ def read_catalogue(path: str) -> Catalogue:
     with open(path, "rb") as f:
         data = f.read()
     if not data.startswith(MAGIC):
-        raise StoreError(f"{path}: not a catalogue (no NyanNyanNyanNyan)")
+        raise StoreError(f"{path}: not a catalogue as described (no NyanNyanNyanNyan); {len(data)} bytes, "
+                         f"starting {data[:48].hex(' ')}")
     folder = os.path.dirname(os.path.abspath(path))
     # Two or three counts: entries, patch entries (and one more in some builds). The right layout is
     # the one whose tables fill the file exactly.
@@ -224,7 +225,10 @@ class Store:
     """Every catalogue under a data root (data_path in game), and the superbundles."""
 
     def __init__(self, root: str):
+        # PowerShell passes "C:\...\Data\" with the quote kept: the backslash escaped it.
+        root = root.strip().strip('"').rstrip("\\/") or root
         self.root = os.path.abspath(root)
+        self.problems: list[str] = []  # catalogues that did not read: listed, the rest still read
         if not os.path.isdir(self.root):
             raise StoreError(f"{root}: not a folder (give the game's Data folder, or gridnode.log's 'game data from')")
         self.catalogues: list[Catalogue] = []
@@ -232,7 +236,11 @@ class Store:
         for src in self._sources():
             for dirpath, _dirs, files in os.walk(src):
                 if "cas.cat" in files:
-                    cat = read_catalogue(os.path.join(dirpath, "cas.cat"))
+                    try:
+                        cat = read_catalogue(os.path.join(dirpath, "cas.cat"))
+                    except (StoreError, OSError) as e:
+                        self.problems.append(str(e))
+                        continue
                     self.catalogues.append(cat)
                     for e in cat.entries:
                         self.by_sha1.setdefault(e.sha1, e)  # Patch before Update before Data

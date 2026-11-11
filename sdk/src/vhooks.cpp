@@ -35,6 +35,7 @@ std::mutex g_m;                                    // adding and removing
 std::array<std::atomic<vhook::Set*>, kMaxSets> g_sets{}; // (written under g_m, read anywhere)
 std::atomic<size_t> g_count{0};
 std::vector<std::unique_ptr<vhook::Set>> g_owned; // (g_m)
+std::vector<std::string> g_classOf;               // (g_m) by handle - 1: the class asked for, for the Hooks list
 
 // The type a vtable's objects have: an "object" whose vtable is vt, asked the way objects are.
 const Type* typeOfVtable(uintptr_t vt) {
@@ -121,10 +122,12 @@ int hookVirtual(const char* mod, const Type* type, uint32_t offset, void* detour
         set->remove(hooks());
         GN_LOG("[%s] hook_virtual: %llu class hooks already; refused", mod, static_cast<unsigned long long>(kMaxSets));
         g_owned.push_back(std::move(set)); // the table may still point at it if a removal was refused
+        g_classOf.push_back(type->name);
         return GN_ERR_FULL;
     }
     g_sets[i].store(set.get());
     g_owned.push_back(std::move(set));
+    g_classOf.push_back(type->name + (subclasses ? " (and subclasses)" : ""));
     g_count.store(i + 1);
     *outHandle = static_cast<uint32_t>(i + 1);
     return GN_OK;
@@ -151,11 +154,26 @@ int hookVirtualRemove(uint32_t handle) {
     return set.hookedCount() ? GN_ERR_SLOT : GN_OK; // some stay: another mod's hook on top
 }
 
+std::vector<VirtualHookInfo> virtualHookList() {
+    std::lock_guard<std::mutex> lock(g_m);
+    std::vector<VirtualHookInfo> out;
+    for (size_t i = 0; i < g_count.load(); ++i) {
+        const vhook::Set* s = g_sets[i].load();
+        if (s && s->hookedCount()) out.push_back({s->owner(), g_classOf[i], s->offset(), s->hookedCount(), s->vtableCount()});
+    }
+    return out;
+}
+
 void forgetVirtualHooks(const CodeRange& r) {
     // The hook table entries went with forgetHooks; the sets whose detour is in r are only bookkeeping now.
     std::lock_guard<std::mutex> lock(g_m);
-    for (const auto& s : g_owned)
-        if (r.has(reinterpret_cast<void*>(static_cast<uintptr_t>(s->detour())))) s->remove(hooks()); // recounts what stays
+    for (size_t i = 0; i < g_owned.size(); ++i) {
+        vhook::Set& s = *g_owned[i];
+        if (!r.has(reinterpret_cast<void*>(static_cast<uintptr_t>(s.detour()))) || !s.hookedCount()) continue;
+        s.remove(hooks()); // recounts what stays
+        GN_LOG("[%s] virtual %s+0x%x taken out%s", s.owner().c_str(), g_classOf[i].c_str(), s.offset(),
+               s.hookedCount() ? " (some slots stay: another mod's hook is on top)" : "");
+    }
 }
 
 } // namespace gn::host

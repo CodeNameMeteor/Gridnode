@@ -46,7 +46,9 @@ def cmd_check(a) -> int:
     entries = sum(len(c.entries) for c in s.catalogues)
     patches = sum(len(c.patches) for c in s.catalogues)
     layouts = Counter(c.counts_layout for c in s.catalogues)
-    print(f"catalogues: {len(s.catalogues)}, {entries} entries, {patches} patch entries "
+    for p in s.problems:
+        print("catalogue problem:", p, file=sys.stderr)
+    print(f"catalogues: {len(s.catalogues)} read, {len(s.problems)} not, {entries} entries, {patches} patch entries "
           f"(counts after the magic: {dict(layouts)}), {len(s.by_sha1)} distinct SHA-1s")
     problems: list[str] = []
     nb = 0
@@ -63,8 +65,9 @@ def cmd_check(a) -> int:
     unknown = [k for k in codecs if k.startswith("unknown")]
     for p in problems[:20]:
         print("problem:", p, file=sys.stderr)
-    if problems or unknown:
-        print(f"check: {len(problems)} superbundle(s) did not read, {len(unknown)} unknown codec(s)", file=sys.stderr)
+    if problems or unknown or s.problems:
+        print(f"check: {len(s.problems)} catalogue(s) and {len(problems)} superbundle(s) did not read, {len(unknown)} unknown codec(s)",
+              file=sys.stderr)
         return 1
     print("check: passed")
     return 0

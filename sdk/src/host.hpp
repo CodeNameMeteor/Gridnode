@@ -100,6 +100,12 @@ int typeVirtualFind(const reflect::Type* type, const char* name, uint32_t* outOf
 int hookVirtual(const char* mod, const reflect::Type* type, uint32_t offset, void* detour, uint32_t flags, uint32_t* outHandle);
 void* hookOriginal(uint32_t handle, const void* self);
 int hookVirtualRemove(uint32_t handle);
+struct VirtualHookInfo {
+    std::string mod, cls;
+    uint32_t offset;
+    size_t hooked, vtables;
+};
+std::vector<VirtualHookInfo> virtualHookList(); // the class hooks still in, for the Hooks list
 int entityComponent(void* entity, const gn_type* type, void** out);
 int entityComponents(void* entity, gn_entity_each_fn fn, void* user);
 std::string dataPath(bool* fromArgument); // UTF-8, ends in a backslash

@@ -613,6 +613,9 @@ void drawMain() {
                 for (const hook::Entry& e : chain) who += (who.empty() ? "" : " < ") + e.owner;
                 ImGui::BulletText("function %llx detoured by %s", static_cast<unsigned long long>(fn), who.c_str());
             }
+            for (const VirtualHookInfo& v : virtualHookList()) // hook_virtual (API 36)
+                ImGui::BulletText("%s: virtual %s+0x%x, in %llu of %llu vtables", v.mod.c_str(), v.cls.c_str(), v.offset,
+                                  static_cast<unsigned long long>(v.hooked), static_cast<unsigned long long>(v.vtables));
             ImGui::Text("Server ticks: %llu", static_cast<unsigned long long>(server().ticks()));
             ImGui::Text("Client ticks: %llu", static_cast<unsigned long long>(client().ticks()));
         }
