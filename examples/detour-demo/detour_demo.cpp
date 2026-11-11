@@ -8,17 +8,26 @@
 //   - a function from another mod (gn::importFn): the trainer's god mode, read through its export
 //   - a button that crashes the game on purpose, to see the crash notes in gridnode.log
 //   - declared settings (API 17): no UI code for them here, GridNode draws them (Mod settings)
+//   - API 36: a class's virtual hooked by name (gn::VirtualHook on Faith's setVisible, with its
+//     subclasses), a field handle (gn::Field), any entity's components, the game's data folder, and
+//     a view of Faith's class in the inspector (gn::ui::typeView)
 // Its window is in the GridNode menu (INSERT).
+
+// It runs on any GridNode from API 17 (declared settings) on: the API 36 calls are checked with gn::has.
+#define GN_MOD_MIN_API 17
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
+#include <string>
+#include <vector>
 
 #include "gridnode/engine.hpp"
 #include "gridnode/ui.hpp"
 
 namespace f = gn::engine::function;
 
-GN_MOD_INFO_DEPS("detour-demo", "Detour demo", "1.0.0", "GridNode", "Counts calls to two game functions through function detours",
+GN_MOD_INFO_DEPS("detour-demo", "Detour demo", "1.1.0", "GridNode", "Counts calls to two game functions through function detours",
                  "?mec-trainer");
 
 namespace {
@@ -47,6 +56,20 @@ void post(void* busPeer, void* source, uint32_t id, void* a4) {
     g_post(busPeer, source, id, a4);
 }
 
+
+// API 36. setVisible is annotated on PamClientCharacterEntity (vtable +0x3d8): found by name.
+gn::VirtualHook<void(void* self, bool visible)> g_setVisible;
+std::atomic<uint64_t> g_setVisibleCalls{0};
+std::atomic<int> g_lastVisible{-1};
+void setVisible(void* self, bool visible) {
+    g_setVisibleCalls.fetch_add(1, std::memory_order_relaxed);
+    g_lastVisible.store(visible ? 1 : 0, std::memory_order_relaxed);
+    if (auto original = g_setVisible.original(self)) original(self, visible);
+}
+const gn::Field<float> kTimeScale("GameTimeSettings", "TimeScale");
+std::mutex g_compM;
+std::vector<std::string> g_components; // (g_compM) Faith's components, read on the client thread
+bool g_virtualHooked = false;
 
 using GodMode = int (*)();
 GodMode g_trainerGod = nullptr;
@@ -77,6 +100,27 @@ GN_MOD("detour-demo") {
         gn::log("the MEC trainer is not loaded");
     }
     gn::log("detours: fireEvent %s / %s, postEvent %s", g_hooked[0] ? "ok" : "FAILED", g_hooked[1] ? "ok" : "FAILED", g_hooked[2] ? "ok" : "FAILED");
+    // API 36 (optional: this mod still loads on an older GridNode without them).
+    g_virtualHooked = g_setVisible.install("PamClientCharacterEntity", "setVisible", &setVisible);
+    gn::log("hook_virtual PamClientCharacterEntity::setVisible: %s; data folder: %s", g_virtualHooked ? "ok" : "FAILED",
+            gn::dataPath().c_str());
+    gn::onClientTick([](float) { // components are read on the entity's realm thread
+        static int every = 0;
+        if (++every % 30) return;
+        std::vector<std::string> names;
+        if (void* faith = gn::localClientCharacter())
+            gn::entityComponents(faith, [&](void* c, gn::Type t) {
+                char line[160];
+                snprintf(line, sizeof(line), "%s  %p", t.name(), c);
+                names.push_back(line);
+            });
+        std::lock_guard<std::mutex> lock(g_compM);
+        g_components = std::move(names);
+    });
+    gn::ui::typeView("PamClientCharacterEntity", [](void* object, gn::Type type) {
+        ImGui::Text("detour-demo's view of a %s at %p", type.name(), object);
+        ImGui::Text("setVisible calls (all characters): %llu, last %d", static_cast<unsigned long long>(g_setVisibleCalls.load()), g_lastVisible.load());
+    });
     gn::ui::onDraw([](bool menuOpen) {
         if (!menuOpen || !g_window.on()) return;
         static auto last = std::chrono::steady_clock::now();
@@ -98,6 +142,16 @@ GN_MOD("detour-demo") {
                     unit, static_cast<unsigned long long>(g_firesB.load()));
         ImGui::Text("EntityBus_postEvent: %llu calls (%.0f%s)%s", static_cast<unsigned long long>(g_posts.load()), postRate * k, unit,
                     g_countPostsOn ? "" : " (not counting)");
+        if (ImGui::CollapsingHeader("API 36", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("setVisible (hook_virtual): %s, %llu calls, last visible=%d", g_virtualHooked ? "hooked" : "NOT hooked",
+                        static_cast<unsigned long long>(g_setVisibleCalls.load()), g_lastVisible.load());
+            gn::Object settings = gn::settings("GameTimeSettings");
+            ImGui::Text("GameTimeSettings.TimeScale (gn::Field, +0x%x): %.3f", kTimeScale.offset(), kTimeScale.get(settings.ptr()));
+            ImGui::Text("Data folder: %s", gn::dataPath().c_str());
+            std::lock_guard<std::mutex> lock(g_compM);
+            ImGui::Text("Faith's components (entity_components): %d", static_cast<int>(g_components.size()));
+            for (const std::string& c : g_components) ImGui::BulletText("%s", c.c_str());
+        }
         if (g_trainerGod) ImGui::Text("Trainer god mode (through its export): %s", g_trainerGod() ? "on" : "off");
         else ImGui::TextDisabled("The MEC trainer is not loaded (or does not offer godMode).");
         if (ImGui::Button("Unload this mod")) gn::unloadSelf();

@@ -70,6 +70,14 @@ struct UiListener {
 };
 std::mutex g_uiM;
 std::vector<UiListener> g_ui; // guarded by g_uiM
+// Mods' views of a class in the inspector (ui_type_view, API 36).
+struct TypeView {
+    std::string mod;
+    const reflect::Type* cls;
+    gn_type_view_fn fn;
+    void* user;
+};
+std::vector<TypeView> g_typeViews; // guarded by g_uiM
 
 // ---- keys ------------------------------------------------------------------------------------
 struct KeyName { const char* name; int vk; };
@@ -956,6 +964,44 @@ int check(const char* mod, const char* version, size_t io, size_t style, size_t 
     return same ? GN_OK : GN_ERR_MISMATCH;
 }
 
+int typeView(const std::string& mod, const char* className, gn_type_view_fn fn, void* user) {
+    if (!fn || !className) return GN_ERR_ARGUMENT;
+    const reflect::Type* cls = registry().find(className);
+    if (!cls) return GN_ERR_NOT_FOUND;
+    if (!g_settings.enabled) return GN_ERR_UNAVAILABLE;
+    std::lock_guard<std::mutex> lock(g_uiM);
+    g_typeViews.push_back({mod, cls, fn, user});
+    return GN_OK;
+}
+
+void drawTypeViews(uintptr_t object, const reflect::Type* type) {
+    std::vector<TypeView> vs;
+    {
+        std::lock_guard<std::mutex> lock(g_uiM);
+        for (const TypeView& v : g_typeViews)
+            if (registry().isKindOf(type, v.cls)) vs.push_back(v);
+    }
+    for (size_t i = 0; i < vs.size(); ++i) {
+        const TypeView& v = vs[i];
+        char label[160];
+        snprintf(label, sizeof(label), "%s: %s###typeview%llu", v.mod.c_str(), v.cls->name.c_str(), static_cast<unsigned long long>(i));
+        if (!ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)) continue;
+        ImGuiErrorRecoveryState state;
+        ImGui::ErrorRecoveryStoreState(&state);
+        ImGui::PushID(static_cast<int>(i));
+        try {
+            modcall::Scope scope(v.fn);
+            v.fn(reinterpret_cast<void*>(object), reinterpret_cast<const gn_type*>(type), v.user);
+        } catch (...) {
+            static int said = 0;
+            if (said++ < 10) GN_LOG("ui: %s's type view threw; ignored", v.mod.c_str());
+        }
+        ImGui::ErrorRecoveryTryToRecoverState(&state);
+        ImGui::SetCurrentContext(g_imgui.load());
+        ImGui::PopID();
+    }
+}
+
 int onUi(const std::string& mod, gn_ui_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
     if (!g_settings.enabled) return GN_ERR_UNAVAILABLE;
@@ -1019,6 +1065,8 @@ bool install(const Settings& s) {
 void forgetUi(const CodeRange& r) {
     std::lock_guard<std::mutex> lock(g_uiM);
     g_ui.erase(std::remove_if(g_ui.begin(), g_ui.end(), [&](const UiListener& l) { return r.has(reinterpret_cast<void*>(l.fn)); }), g_ui.end());
+    g_typeViews.erase(std::remove_if(g_typeViews.begin(), g_typeViews.end(), [&](const TypeView& v) { return r.has(reinterpret_cast<void*>(v.fn)); }),
+                      g_typeViews.end());
 }
 
 uint64_t frameCount() { return g_frames.load(std::memory_order_relaxed); }

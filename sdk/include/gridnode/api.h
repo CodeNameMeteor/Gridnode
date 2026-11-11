@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 36 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder */
+#define GN_API_VERSION 36 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -118,6 +118,7 @@ typedef void (*gn_level_fn)(const char* level, int loaded, void* user);
 /* Every frame on the render thread, between Dear ImGui's NewFrame and Render. menu_open: the
  * GridNode menu (INSERT) is open, so the mouse and keyboard belong to the overlay. */
 typedef void (*gn_ui_fn)(int menu_open, void* user);
+typedef void (*gn_type_view_fn)(void* object, const gn_type* type, void* user);
 
 /* The console's output for one command line (client thread). */
 typedef void (*gn_console_fn)(const char* output, void* user);
@@ -1187,6 +1188,14 @@ typedef struct gn_api {
      * (Frosty's Mod Manager points it at its ModData folder), else the install's Data folder. GN_ERR_FULL when
      * size is too small. Any thread. */
     int (*data_path)(char* out, size_t size);
+
+    /* ---- a mod's view of a class in the inspector ------------------------------------------------------------
+     * ui_type_view: when the inspector shows an object of the class (or a subclass), fn(object, type, user) draws in
+     * a collapsible section above the field list, on the render thread, in the same Dear ImGui frame as on_ui (bind
+     * the context the same way: gn::ui::typeView does). Gone when the mod is unloaded. GN_ERR_NOT_FOUND: no such
+     * class; GN_ERR_UNAVAILABLE: the overlay is off. Developer builds only draw it (the player build has no
+     * inspector). */
+    int (*ui_type_view)(const char* mod, const char* class_name, gn_type_view_fn fn, void* user);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

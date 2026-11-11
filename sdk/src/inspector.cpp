@@ -505,6 +505,7 @@ void objectView() {
     ImGui::Separator();
     if (ImGui::BeginChild("obj", ImVec2(0, 0))) {
         g_editOwner = {own ? cur.ptr : 0, own}; // writes check it is still this object when they happen
+        if (own) ui::drawTypeViews(cur.ptr, own); // mods' views of this class (ui_type_view), above the fields
         if (type) fieldsOf(cur.ptr, type, 0);
         if (ImGui::CollapsingHeader("Memory")) hexView(cur.ptr);
     }

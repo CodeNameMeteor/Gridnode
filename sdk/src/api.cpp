@@ -590,6 +590,7 @@ const gn_api* api() {
         a.entity_component = entityComponent;
         a.entity_components = entityComponents;
         a.data_path = dataPathCopy;
+        a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

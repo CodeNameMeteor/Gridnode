@@ -468,6 +468,8 @@ struct Settings {
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);
+int typeView(const std::string& mod, const char* className, gn_type_view_fn fn, void* user); // ui_type_view
+void drawTypeViews(uintptr_t object, const reflect::Type* type);                              // the inspector, render thread
 void forgetUi(const CodeRange& r);
 uint64_t frameCount(); // frames drawn so far
 bool release(); // a full unload: the overlay closed, Present, ResizeBuffers and the window procedure back; false if one could not be

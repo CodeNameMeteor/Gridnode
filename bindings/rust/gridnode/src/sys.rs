@@ -65,6 +65,7 @@ pub type gn_task_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_created_fn = Option<unsafe extern "C" fn(entity: *mut c_void, creation_info: *mut c_void, user: *mut c_void)>;
 pub type gn_level_fn = Option<unsafe extern "C" fn(level: *const c_char, loaded: c_int, user: *mut c_void)>;
 pub type gn_ui_fn = Option<unsafe extern "C" fn(menu_open: c_int, user: *mut c_void)>;
+pub type gn_type_view_fn = Option<unsafe extern "C" fn(object: *mut c_void, type_: *const gn_type, user: *mut c_void)>;
 pub type gn_console_fn = Option<unsafe extern "C" fn(output: *const c_char, user: *mut c_void)>;
 pub type gn_message_fn = Option<unsafe extern "C" fn(message: *const c_void, info: *const gn_message_info, user: *mut c_void)>;
 pub type gn_entity_each_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, user: *mut c_void)>;
@@ -515,6 +516,7 @@ pub struct gn_api {
     pub entity_component: Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, out: *mut *mut c_void) -> c_int>,
     pub entity_components: Option<unsafe extern "C" fn(entity: *mut c_void, fn_: gn_entity_each_fn, user: *mut c_void) -> c_int>,
     pub data_path: Option<unsafe extern "C" fn(out: *mut c_char, size: usize) -> c_int>,
+    pub ui_type_view: Option<unsafe extern "C" fn(mod_: *const c_char, class_name: *const c_char, fn_: gn_type_view_fn, user: *mut c_void) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -544,4 +546,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1352);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1360);
