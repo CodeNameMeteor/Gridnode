@@ -51,11 +51,52 @@ still claims: the character proxy numbers (contact tolerance 0.1, keep distance 
 formula `min_child = min_parent + (b >> 4)^2 * step`, `max_child = max_parent - (b & 15)^2 * step` with
 `step = (parent.max - parent.min) / 226` is the one already in the annotations.
 
+## Confirmed from Ghidra decompilation (still to be double checked in game)
+
+The character proxy numbers, formulas, and gravity analysis have now been verified in Ghidra and mathematically proven (see [character-controller-proxy.md](character-controller-proxy.md) and `db/annotations/physics.yaml`):
+- **Character proxy creation (`0x1434e4400`) & `hknpCharacterProxy_ctor` (`0x143f601d0`)**:
+  - `CharacterPhysicsBody` (vtable `0x141bab5e0`), proxy at `+0x50`, support info at `+0x108`, up-vector at `+0x120`.
+  - `hknpCharacterProxy` (vtable `0x141d53348`, size `0x130`).
+  - Contact tolerance `0.1f` (`0x3dcccccd` at `cinfo + 0x48`).
+  - Keep distance `0.05f` (`0x3d4ccccd` at `cinfo + 0x74`).
+  - Max solver speed `10.0f` (`0x41200000` at `cinfo + 0x78`).
+  - Collision layer `14` (`Character` layer at `cinfo + 0x70`).
+  - Max slope angle read from `CharacterPhysicsData + 0x44` (default 45 degrees, converted to radians).
+  - Proxy precomputes $\cos(\theta_{\text{max}}) \approx 0.70710678$ at `proxy + 0x120` using $\sin(\theta + \pi/2)$.
+  - Up-vector derived from world gravity at `world + 0x80`: $\hat{u} = \text{normalize}(-\vec{g}_{\text{world}})$, stored at `cinfo + 0x50` and written to `proxy + 0xd0` and `body + 0x120`.
+- **Support check (`0x143f60710`) & caller (`0x1434fc450`)**:
+  - `0x1434fc450` reads `body + 0x120`, negates it to obtain downward direction $\hat{d} = -\hat{u}$, and calls `checkSupport(proxy, downDir, supportInfo, collector)`.
+  - Evaluates contact normal $\hat{n}$: if $\cos^2(\theta_{\text{max}}) \le 1 - (\hat{n} \cdot \hat{d})^2 = \sin^2(\alpha)$, the slope is sliding (state 2). If $\le 45^\circ$, ground is supported (state 1). No contacts = unsupported (state 0).
+- **The gravity trick & dynamic behavior**:
+  - The proxy up-vector does **not** follow gravity dynamically. Calling `set_gravity` (API 21) updates `hknpWorld + 0x4c0`, but leaves `body + 0x120` and `proxy + 0xd0` pointing $(0, 1, 0)$. Contacts with walls evaluate as sliding/unsupported.
+  - To walk on walls/ceilings, a mod must simultaneously update `world + 0x4c0`, `body + 0x120`, and `proxy + 0xd0`.
+  - What breaks: Camera orientation hardcodes world Y-up (causing inversion and gimbal lock singularities); ANT two-bone foot IK casts downward along $(0, -1, 0)$ and misses the wall; movement controller fall threshold $v_y < -5.0 \text{ m/s}$ triggers fall states during vertical wall runs.
+
+- **`hknpWorld` allocation (`0x1434d0ff0`), vtable & size**:
+  - Size is exactly `0x5a0` (1440 bytes), allocated aligned to `0x10` via `hkMemoryRouter::alignedAlloc` (`0x143cd0cf0`).
+  - Primary vtable is `0x141d51418` (`hknpWorld::vftable`).
+  - `+0x10`: `m_bodyManager` (embedded object, size `0x90`, initialized in `0x143f5da50`).
+  - `+0x20`: `m_bodies` (`hknpBody*` array, stride `0x90` / 144 bytes).
+  - `+0x28`: `m_bodyCapacity` (total allocated slots, e.g. 16,384 + 1).
+  - `+0x2c`: `m_bodyCapacityMask` (`0x3fffffff`).
+  - `+0x68`: `m_numBodiesUsed` (live/active body count, read by GridNode's `freePlaces`).
+  - `+0xe0`: `m_motions` (`hknpMotion*` array, stride `0x80` / 128 bytes).
+  - `+0x4c0`: `m_gravity` (`hkVector4`).
+- **Static compound shape, `GroupRigidBody` & 6-byte AABB tree**:
+  - `GroupRigidBody` (`0x1434eda80`): `GroupRigidBody_getInstanceTransform` takes `(GroupRigidBody* self, LinearTransform* out, uint32_t partIndex)`. It reads part instance index from `self + 0x110 + partIndex * 4`, retrieves `hknpStaticCompoundShape*` from `self + 0x58`, and delegates to `hknpShapeInstance_buildTransform` (`0x143f50740`).
+  - `hknpShapeInstance` at `compound + 0x60`: stride is `0x80` (128 bytes). `0x143f50740` multiplies rotation matrix columns (`+0x00`, `+0x10`, `+0x20`) by scale (`+0x40`) and translation (`+0x30`) to output a 64-byte `LinearTransform`.
+  - AABB tree at `compound + 0xc0`: 6-byte compressed nodes (`m_nodes` at `+0x10`, count at `+0x18`, root min at `+0x20`, root max at `+0x30`).
+  - Node formula confirmed in `0x143e99090`: instruction `mulps xmm6, [0x1425a8e10]` where `0x1425a8e10` holds four floats equal to $0.0044247787 \equiv \frac{1}{226}$. Formula: $\text{step} = (\text{parent.max} - \text{parent.min}) / 226$; $\text{child.min} = \text{parent.min} + (b \gg 4)^2 \times \text{step}$; $\text{child.max} = \text{parent.max} - (b \ \& \ 15)^2 \times \text{step}$. Byte 3 bit 7 = inner node flag (right child offset $= (((b_3 \ \& \ \text{0x7f}) \ll 16) \ | \ u_{16}) \times 2$); for leaf nodes, bytes 4..5 are `int16_t` instance index into `m_instances`.
+- **`hknpBody` flags bitfield at `+0x58`**:
+  - Bit 0 (`0x0001`): `IS_STATIC` (motion ID 0, set in `0x143f5e54a`).
+  - Bit 1 (`0x0002`): `IS_DYNAMIC` (simulated rigid body, set in `0x143f5e6e3`).
+  - Bit 2 (`0x0004`): `IS_KEYFRAMED` (kinematic body moved by game code, set in `0x143f3c41a` when mass = 0, cleared in `0x143f3c680`).
+  - Bit 3 (`0x0008`): `IS_ACTIVE` (awake in simulation island, set in `0x143f5f076`, cleared in `0x143f5f21a` when asleep).
+  - Bit 10 (`0x0400`): `TRANSFORM_DIRTY` / `AABB_DIRTY` (set in `0x143f3ce7f`, `0x143f41c7f`, `0x143f423a2` to trigger broadphase AABB update).
+  - Immovable body test: Frostbite checks `test byte ptr [body + 0x58], 5` (testing Static `0x1` | Keyframed `0x4`).
+
 ## Not checked (open for research)
 
-- `hknpCharacterProxy` (vtable `0x141d53348`; its slots still need a proper read) and the numbers listed above. A gravity trick (Faith walking on
-  a tilted gravity) would be the test; `set_gravity` (API 21) already changes the value.
-- `hknpWorld` vtable `0x141d51418` and size `0x5a0`, its count and capacity fields (`+0x28`, `+0x2c`: ours reads the used count at `+0x68`); `hknpStaticCompoundShape` instance array (`+0x60`, stride 0x80) and tree (`+0xc0`).
-- `GroupRigidBody` at `0x1434eda80` (it is a 117-byte function: probably a small constructor or getter, not the class).
+All previously unverified claims regarding `hknpWorld` size `0x5a0`, capacity fields, static compound shape 6-byte AABB trees, `GroupRigidBody`, and body flags have now been decompiled and confirmed. Detailed technical documentation lives in [havok-world-internals.md](havok-world-internals.md).
 
 Sources: `havok_physics_engine_reversing_reference.md` and `havok-reference.md` (attached to the session, not committed).
