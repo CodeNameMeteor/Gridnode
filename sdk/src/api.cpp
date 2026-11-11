@@ -11,6 +11,7 @@
 #include <set>
 #include <string>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -109,12 +110,18 @@ uint64_t apiRva(uint64_t va) { return mem::rva(va); }
 struct CallTick {
     gn_tick_fn fn;
     void* user;
-    void operator()(float dt) const { fn(dt, user); }
+    void operator()(float dt) const {
+        modcall::Scope scope(fn);
+        fn(dt, user);
+    }
 };
 struct CallTask {
     gn_task_fn fn;
     void* user;
-    void operator()() const { fn(user); }
+    void operator()() const {
+        modcall::Scope scope(fn);
+        fn(user);
+    }
 };
 
 int apiOnServerTick(gn_tick_fn fn, void* user) {
@@ -271,7 +278,10 @@ int consoleRunFor(const char* mod, const char* line, gn_console_fn fn, void* use
     client().post([who, l, fn, user] {
         const std::string out = consoleRun(l);
         // Queued, then its mod unloaded: its callback is gone with it (the command still ran).
-        if (fn && modCodeLive(reinterpret_cast<const void*>(fn))) fn(out.c_str(), user);
+        if (fn && modCodeLive(reinterpret_cast<const void*>(fn))) {
+            modcall::Scope scope(fn);
+            fn(out.c_str(), user);
+        }
     });
     return GN_OK;
 }
@@ -317,10 +327,10 @@ namespace {
 // The mod is the one whose code called: the return address is in its image (a direct call through
 // the table, so never inlined into the mod's caller).
 #if defined(_MSC_VER)
-#define GN_CALLER _ReturnAddress()
+#define GN_CALLER callerOf(_ReturnAddress())
 #define GN_NOINLINE __declspec(noinline)
 #else
-#define GN_CALLER __builtin_return_address(0)
+#define GN_CALLER callerOf(__builtin_return_address(0))
 #define GN_NOINLINE __attribute__((noinline))
 #endif
 GN_NOINLINE int apiCameraSet(const gn_transform* t, uint32_t flags) { return layouts::cameraSet(GN_CALLER, t, flags); }
@@ -351,7 +361,7 @@ int apiLocalize(const char* id, char* out, uint32_t cap) {
 int apiUiPauseState(int32_t* menus, int32_t* full) {
     if (!menus || !full) return GN_ERR_ARGUMENT;
     const uintptr_t ui = mem::readOr<uintptr_t>(mem::rva(e::global::PamUISystemInstance));
-    if (!ui || mem::readOr<uintptr_t>(ui) != mem::rva(0x141cb63b0ull)) return GN_ERR_UNAVAILABLE;
+    if (!ui || mem::readOr<uintptr_t>(ui) != mem::rva(e::cls::PamUISystem::vtable)) return GN_ERR_UNAVAILABLE;
     const uintptr_t ctrl = mem::readOr<uintptr_t>(ui + 0x8c8); // a pointer, not an inline struct
     if (ctrl < 0x10000) return GN_ERR_UNAVAILABLE;
     int32_t pair[2] = {};
@@ -366,15 +376,15 @@ namespace {
 // The mod is the one whose code called: the return address is in its image (a direct call through
 // the table, so never inlined into the mod's caller).
 #if defined(_MSC_VER)
-__declspec(noinline) int apiModUnload() { return modUnloadAt(_ReturnAddress()); }
+__declspec(noinline) int apiModUnload() { return modUnloadAt(callerOf(_ReturnAddress())); }
 #else
-__attribute__((noinline)) int apiModUnload() { return modUnloadAt(__builtin_return_address(0)); }
+__attribute__((noinline)) int apiModUnload() { return modUnloadAt(callerOf(__builtin_return_address(0))); }
 #endif
 #if defined(_MSC_VER)
-#define GN_CALLER _ReturnAddress()
+#define GN_CALLER callerOf(_ReturnAddress())
 #define GN_NOINLINE __declspec(noinline)
 #else
-#define GN_CALLER __builtin_return_address(0)
+#define GN_CALLER callerOf(__builtin_return_address(0))
 #define GN_NOINLINE __attribute__((noinline))
 #endif
 // A patch belongs to the code that made it (undone when that mod is unloaded).

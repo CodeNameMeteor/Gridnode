@@ -778,7 +778,7 @@ void fillGroupUpdate(const GroupProp& g, uintptr_t obj, uint8_t* update) {
         if (mem::read(obj + 0x10, t, sizeof(t))) {
             const uintptr_t src = (mem::readOr<uint16_t>(asset + 10) & 0x100) ? asset - 0x10 : 0;
             alignas(16) uint8_t out[16] = {};
-            reinterpret_cast<void (*)(uint8_t*, uintptr_t, float*)>(mem::rva(0x143b722e0))(out, src, t);
+            reinterpret_cast<void (*)(uint8_t*, uintptr_t, float*)>(mem::rva(e::function::StaticModelGroup_placementHash))(out, src, t);
             memcpy(hash.data(), out, 16);
             have = true;
             std::lock_guard<std::mutex> lock(g_origM);
@@ -2575,7 +2575,7 @@ bool destroyEntity(uintptr_t ent, const reflect::Type* type, const char* realm) 
     // disable, destroy the body) and magropes (0x143175390, the small entities' deinit); their +0x30 is
     // the empty stub.
     const bool spatial = deinit == mem::rva(e::function::SpatialEntity_deinit) && destroy == mem::rva(e::function::SpatialEntity_destroy);
-    const bool special = deinit == mem::rva(0x143335b30) || deinit == mem::rva(0x143175390);
+    const bool special = deinit == mem::rva(e::function::PamOBBCollision_deinit) || deinit == mem::rva(0x143175390);
     if ((!spatial && !special) || !delOk) {
         GN_LOG("layouts: destroy: %s entity %llx (%s) is not a spatial entity this knows how to destroy", realm,
                static_cast<unsigned long long>(ent), type ? type->name.c_str() : "?");
@@ -4233,7 +4233,7 @@ double g_barScanAt = -10.0;
 
 bool barrierKnown(uintptr_t ent) { // the class whose layout this was read off
     const uintptr_t vt = mem::readOr<uintptr_t>(ent);
-    return vt && mem::readOr<uintptr_t>(vt + 0x88) == mem::rva(0x143335b30);
+    return vt && mem::readOr<uintptr_t>(vt + 0x88) == mem::rva(e::function::PamOBBCollision_deinit);
 }
 
 void scanBarriers() {

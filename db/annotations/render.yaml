@@ -318,7 +318,7 @@ functions:
     sources: [ghidra, research]
   - name: MeshEntityBase_ctor
     va: 0x14375f930
-    signature: "void(void* self, const char* name, void* memberData, LinearTransform* world, void* resource, u16 param6, u32 flags, u8 param8)"
+    signature: "void(void* self, const i8* name, void* memberData, LinearTransform* world, void* resource, u16 param6, u32 flags, u8 param8)"
     note: "Base constructor for static mesh render objects. Reads local bounding box from *(**(self + 0x60) + 0x20) (min xyz, pad, max xyz) and calculates world bounding sphere at +0x50."
     confidence: hypothesis
     sources: [ghidra, research]

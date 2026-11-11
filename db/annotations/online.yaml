@@ -45,7 +45,7 @@ functions:
     sources: [ghidra, recording]
   - name: DashStats_find
     va: 0x1439d9750
-    signature: "void**(void* map, void** out, const char** key)"
+    signature: "void**(void* map, void** out, const i8** key)"
     note: "Finds a stat in a DashState best map (hash of the name, case-insensitive); out[0] is the node (value at +0x10) or the map's end (*(map +8)[*(u32*)(map +0x10)])."
     confidence: inferred
   - name: PamServerNamedChallengeEntity_finish

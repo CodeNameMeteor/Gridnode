@@ -55,9 +55,8 @@ classes:
   - name: PamClientEchoCustomizationManagerEntity
     confidence: hypothesis
     realm: client
-    vtable: 0x141c73c18
     sources: [ghidra]
-    note: "Manages runner echo visual customizations and shaders."
+    note: "Manages runner echo visual customizations and shaders. The vtable once annotated here (0x141c73c18) is not the reflected one (0x141c73c48, which is used); whether it is a secondary table is open."
 
   - name: PamReplayPlayerComponentData
     confidence: hypothesis
@@ -78,7 +77,7 @@ classes:
       - { offset: 0x50, name: animatable, type: "void*", note: "Its ClientAntAnimatableEntity (PamClientReplayRecordingComponent_init).", confidence: inferred, sources: [ghidra] }
 
 structs:
-  - name: PamEchoCustomizationData
+  - name: PamEchoCustomizationDataLayout
     confidence: hypothesis
     size: 0x28
     sources: [ghidra]
@@ -203,13 +202,13 @@ functions:
     sources: [ghidra]
   - name: PamReplayPlayerComponentData_create
     va: 0x143a95c40
-    signature: "void*(void* a1, void* a2, char a3)"
+    signature: "void*(void* a1, void* a2, i8 a3)"
     note: "Creates PamReplayPlayerComponentData instance (0x90 bytes), setting default speed 1.0f at +0x88."
     confidence: hypothesis
     sources: [ghidra]
   - name: PamReplayRecordingComponentData_create
     va: 0x143a94580
-    signature: "void*(void* a1, void* a2, char a3)"
+    signature: "void*(void* a1, void* a2, i8 a3)"
     note: "Creates PamReplayRecordingComponentData instance (0x90 bytes)."
     confidence: hypothesis
     sources: [ghidra]

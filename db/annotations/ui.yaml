@@ -23,15 +23,6 @@ classes:
       - { confidence: hypothesis, offset: 0x50, name: slotsBegin, type: "PresenceSlot*", note: "Vector begin pointer to slot array (0x50 bytes per slot)." }
       - { confidence: hypothesis, offset: 0x58, name: slotsEnd, type: "PresenceSlot*", note: "Vector end pointer to slot array." }
 
-  - name: PresenceInfoManagerPool
-    confidence: hypothesis
-    realm: client
-    vtable: 0x141c74bb8
-    note: "Container managing all active PamClientPresenceInfoManagerEntity instances in the client world."
-    members:
-      - { confidence: hypothesis, offset: 0x28, name: entriesBegin, type: "PresencePoolEntry*", note: "Vector begin pointer to pool entries (0x10 bytes per entry)." }
-      - { confidence: hypothesis, offset: 0x30, name: entriesEnd, type: "PresencePoolEntry*", note: "Vector end pointer to pool entries." }
-
   - name: PamClientPresenceInfoEntity
     confidence: hypothesis
     realm: client
@@ -58,7 +49,7 @@ classes:
     vtable: 0x141c7ec70
     note: "Server entity managing named challenges (dashes, deliveries, GridNodes). Holds challenge data at +0x80."
     members:
-      - { confidence: hypothesis, offset: 0x80, name: challengeData, type: "PamNamedChallengeData*" }
+      - { confidence: hypothesis, offset: 0x80, name: challengeData, type: "PamNamedChallengeDataLayout*" }
 
   - name: PamServerChallengeMarkerEntity
     confidence: hypothesis
@@ -66,24 +57,31 @@ classes:
     vtable: 0x141c7e3e8
     note: "Server entity managing player-authored time trials (UGC) and ReachThis markers."
     members:
-      - { confidence: hypothesis, offset: 0x28, name: data, type: "PamChallengeMarkerEntityData*" }
+      - { confidence: hypothesis, offset: 0x28, name: data, type: "PamChallengeMarkerEntityDataLayout*" }
       - { confidence: hypothesis, offset: 0x80, name: contentId, type: "u8[24]" }
-      - { confidence: hypothesis, offset: 0xb8, name: name, type: "const char*" }
+      - { confidence: hypothesis, offset: 0xb8, name: name, type: "const i8*" }
 
   - name: PamUIPauseEntityData
     confidence: hypothesis
     realm: client
     size: 0x20
-    members:
-      - { confidence: hypothesis, offset: 0x18, name: postponePauseUntilScreenIsFadedIn, type: u8, note: "When 1, UIPauseController_request only increments pauseRequestsA (soft pause). When 0, increments pauseRequestsB (hard pause immediately)." }
 
 structs:
+  - name: PresenceInfoManagerPool
+    confidence: hypothesis
+    size: 0x38
+    opaque: true
+    note: "Container managing all active PamClientPresenceInfoManagerEntity instances in the client world (vtable 0x141c74bb8). Not a reflected class, so a struct; at least 0x38 bytes."
+    members:
+      - { confidence: hypothesis, offset: 0x28, name: entriesBegin, type: "PresencePoolEntry*", note: "Vector begin pointer to pool entries (0x10 bytes per entry)." }
+      - { confidence: hypothesis, offset: 0x30, name: entriesEnd, type: "PresencePoolEntry*", note: "Vector end pointer to pool entries." }
+
   - name: OnlineId
     confidence: hypothesis
     size: 0x28
     members:
       - { confidence: hypothesis, offset: 0x00, name: id, type: u64, note: "EA Nucleus / Origin persona account ID." }
-      - { confidence: hypothesis, offset: 0x08, name: name, type: "char[32]", note: "Null-terminated player display name." }
+      - { confidence: hypothesis, offset: 0x08, name: name, type: "i8[32]", note: "Null-terminated player display name." }
 
   - name: PresenceSlot
     confidence: hypothesis
@@ -105,15 +103,15 @@ structs:
       - { confidence: hypothesis, offset: 0x0a, name: timer, type: u16, note: "Remaining ticks until next update." }
       - { confidence: hypothesis, offset: 0x0c, name: accumulatedTime, type: f32, note: "Accumulated delta time in seconds." }
 
-  - name: PamNamedChallengeData
+  - name: PamNamedChallengeDataLayout
     confidence: hypothesis
     size: 0xa0
     members:
-      - { confidence: hypothesis, offset: 0x10, name: sid, type: "const char*", note: "Localization ID string key, e.g. 'ID_NC_THEVIEW02'." }
-      - { confidence: hypothesis, offset: 0x58, name: mainStatCode, type: "const char*", note: "Stat code key, e.g. 'ch_rrt_tv2_time' (dashes start with 'ch_rrt_')." }
+      - { confidence: hypothesis, offset: 0x10, name: sid, type: "const i8*", note: "Localization ID string key, e.g. 'ID_NC_THEVIEW02'." }
+      - { confidence: hypothesis, offset: 0x58, name: mainStatCode, type: "const i8*", note: "Stat code key, e.g. 'ch_rrt_tv2_time' (dashes start with 'ch_rrt_')." }
       - { confidence: hypothesis, offset: 0x98, name: contentId, type: u32, note: "Unique challenge ID." }
 
-  - name: PamChallengeMarkerEntityData
+  - name: PamChallengeMarkerEntityDataLayout
     confidence: hypothesis
     size: 0x70
     members:
@@ -221,7 +219,7 @@ functions:
     note: "Creator for PamClientUIPauseEntity (0x38 bytes, vtable 0x141cbd4a8). Holds pointer to PamUIPauseEntityData at +0x28, active state at +0x30."
   - name: localize
     va: 0x1436a8d40
-    signature: "bool(char* out, u32 capacity, const char* sid, void* args)"
+    signature: "bool(i8* out, u32 capacity, const i8* sid, void* args)"
     confidence: hypothesis
     sources: [mecmp, ghidra]
     note: "Resolves a localization ID (e.g. 'ID_NC_THEVIEW02') into a localized display string (e.g. 'The View'). Calls string singleton 0x1436a96d0."

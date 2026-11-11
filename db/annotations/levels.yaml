@@ -5,8 +5,7 @@ defaults: { confidence: hypothesis, sources: [ghidra] }
 classes:
   - name: ZoneStreamerEntity
     realm: any
-    vtable: 0x141cfe4c0
-    note: "Controls zone streaming within a district sublevel. Evaluates focus positions to load and unload zones."
+    note: "Controls zone streaming within a district sublevel. Evaluates focus positions to load and unload zones. The vtable once annotated here (0x141cfe4c0) is not one of the class's reflected vtables (0x141c6e2e8, 0x141cfe290); the reflected ones are used. Whether 0x141cfe4c0 is a secondary table is open."
     members:
       - { offset: 0x268, name: classLink, type: "void*", note: "Node in ClassInfo per-world list." }
       - { offset: 0x280, name: focusManager, type: "void*", note: "ZoneStreamerFocusManager at +0x280." }
@@ -119,7 +118,7 @@ functions:
     sources: [ghidra]
   - name: ClassInfo_firstInWorld
     va: 0x143164d50
-    signature: "void*(const ClassInfo* type, const GameWorld* world)"
+    signature: "void*(const TypeInfo* type, const void* world)"
     note: "The first entity node of a class in a world: type + (world +0x28 + 6) * 0x10 (GameWorld_ClassListIndex). No null check of world."
     confidence: inferred
     sources: [ghidra]

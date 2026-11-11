@@ -4,6 +4,8 @@
   gridnode engine --out FILE                  write gridnode/engine.hpp (annotations only)
   gridnode types --reflected FILE --out FILE  write gridnode/generated/types.hpp
   gridnode setup --dump FILE                  install your dump and generate types.hpp
+  gridnode check --dump FILE                  before a push that touches annotations: validate against
+                                              the dump, generate types.hpp and compile its layout checks
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
   gridnode fingerprint IMAGE [--write] [--mecmp DIR] [--add NAME]
                                               fingerprint bytes from a dump of the game (GridNode and MECMP)
@@ -68,6 +70,41 @@ def _load(ann_dir: str, reflected_path: str | None, quiet=False):
     return db, r, p
 
 
+def _check(a) -> int:
+    """validate --reflected, types, and a compile of tests/types_compile_test.cpp: what CI cannot do
+    without a dump (2026-11-11: 67 errors against a real dump while CI passed)."""
+    import subprocess
+    import tempfile
+
+    dump = _find(a.dump, "dump (make one with gridnode.dll, see docs/dump-format.md)")
+    db, r, p = _load(a.annotations, dump)
+    print(f"validate: {len(p.errors)} errors, {len(p.warnings)} warnings (checked against the dump)")
+    if p.errors:
+        return 1
+    with tempfile.TemporaryDirectory() as d:
+        gen = os.path.join(d, "gridnode")
+        _write(os.path.join(gen, "engine.hpp"), emit_engine.emit(db))
+        _write(os.path.join(gen, "generated", "types.hpp"), emit_types.emit(db, r))
+        print(f"types.hpp: {len(r.types)} types")
+        cxx = a.cxx or next((c for c in ("c++", "g++", "clang++", "cl") if shutil.which(c)), None)
+        if not cxx:
+            print("check: no C++ compiler found (give one with --cxx); types.hpp was not compiled", file=sys.stderr)
+            return 1
+        src = os.path.join(ROOT, "tests", "types_compile_test.cpp")
+        incs = [d, os.path.join(ROOT, "sdk", "include")]
+        if os.path.basename(cxx).lower() in ("cl", "cl.exe"):
+            cmd = [cxx, "/nologo", "/std:c++17", "/bigobj", "/Zs", src] + [f"/I{i}" for i in incs]
+        else:
+            cmd = [cxx, "-std=c++17", "-fsyntax-only", src] + [x for i in incs for x in ("-I", i)]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode:
+            print(res.stdout[-4000:] + res.stderr[-4000:], file=sys.stderr)
+            print("check: types.hpp does not compile", file=sys.stderr)
+            return 1
+    print("check: passed (validate, types.hpp, its layout checks)")
+    return 0
+
+
 def _write(path: str, text: str):
     """Writes only when the content changed, so builds do not redo work."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -114,6 +151,10 @@ def _main(argv=None) -> int:
 
     s = sub.add_parser("setup", help="install your dump into db/reflected and generate types.hpp")
     s.add_argument("--dump", required=True, help="gridnode-reflected.json written by gridnode.dll")
+
+    ck = sub.add_parser("check", help="validate against a dump, generate types.hpp and compile it (before a push)")
+    ck.add_argument("--dump", required=True, help="gridnode-reflected.json written by gridnode.dll")
+    ck.add_argument("--cxx", help="C++ compiler (default: c++, g++, clang++ or cl from PATH)")
 
     vi = sub.add_parser("verify-image", help="check the annotations against a PE dump of the game")
     vi.add_argument("image")
@@ -349,6 +390,9 @@ def _main(argv=None) -> int:
               f"{len(db.functions)} functions, {len(db.hooks)} hooks, {len(db.events)} events ({n} items): "
               f"{len(p.errors)} errors, {len(p.warnings)} warnings" + (" (checked against the dump)" if r else ""))
         return 1 if p.errors or (a.strict and p.warnings) else 0
+
+    if a.cmd == "check":
+        return _check(a)
 
     if a.cmd == "engine":
         db, _, p = _load(a.annotations, None, quiet=True)

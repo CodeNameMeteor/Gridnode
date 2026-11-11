@@ -14,12 +14,12 @@ globals:
 functions:
   - name: ant_TypeRegistry_getTypeByName
     va: 0x142c2d4b0
-    signature: "void*(void* registry, const char* name)"
+    signature: "void*(void* registry, const i8* name)"
     note: "Binary search of the registry's name map (sorted 16-byte entries {u32 FNV-1 hash, pad, Schema*}) for ant_hashString_fnv1(name); returns the Schema (its first word is the type's layout) or null. GridNode's ant_types.cpp does the same."
     confidence: confirmed
   - name: ant_TypeRegistry_registerType
     va: 0x142c352b0
-    signature: "void*(void* registry, const char* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
+    signature: "void*(void* registry, const i8* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
     note: "Hashes the name (unique), makes a 0x10-byte Schema {layout, factory} with ant_registerSchema, adds it to the name map (registry +0x00) and the id map (registry +0x28, keyed by the layout's CRC at +0x1c)."
     confidence: confirmed
   - name: ant_TypeRegistry_getRegistry
@@ -29,22 +29,22 @@ functions:
     confidence: confirmed
   - name: ant_registerSchema
     va: 0x142c0c3c0
-    signature: "void(void* schema, const char* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
+    signature: "void(void* schema, const i8* name, const AntFieldDescriptor* fields, u32 count, void* factory, bool pack)"
     note: "Prepends __guid (-3), __name (-2) and __base (-1) to the fields and builds the layout (ant_createClassLayout)."
     confidence: confirmed
   - name: ant_createClassLayout
     va: 0x142fb0d60
-    signature: "void*(void* allocator, const char* name, const AntFieldDescriptor* fields, u32 count)"
+    signature: "void*(void* allocator, const i8* name, const AntFieldDescriptor* fields, u32 count)"
     note: "Allocates the layout (size from 0x142fb0980) and fills it (ant_buildClassLayout)."
     confidence: confirmed
   - name: ant_buildClassLayout
     va: 0x142fb0f00
-    signature: "void*(void* layout, const char* name, const AntFieldDescriptor* fields, u32 count, bool pack, u32 alignment)"
+    signature: "void*(void* layout, const i8* name, const AntFieldDescriptor* fields, u32 count, bool pack, u32 alignment)"
     note: "Header: +0 min index, +4 max index, +8 data size, +0xc alignment, +0x10 string table offset, +0x14 its size, +0x18 pack flag, +0x1c CRC-32 (the type id). Records of 0x20 bytes from +0x20 (0x142fb1880): +0 field type id, +4 element size, +8 offset in the data, +0xc name offset, +0x10 count, +0x12 flags, +0x14 alignment, +0x18 the field type's layout. The string table starts with a 0, then the type's name."
     confidence: confirmed
   - name: ant_layoutFields
     va: 0x142fb1880
-    signature: "void(void* layout, const char* name, const AntFieldDescriptor* fields, u32 count, bool pack)"
+    signature: "void(void* layout, const i8* name, const AntFieldDescriptor* fields, u32 count, bool pack)"
     note: "Fills the field records and assigns offsets by alignment (packed when the flag is set: offsets are not in declaration order) and writes the names."
     confidence: confirmed
   - name: ant_computeSchemaCrc32
@@ -54,12 +54,12 @@ functions:
     confidence: confirmed
   - name: ant_initFieldDescriptor
     va: 0x142faf9e0
-    signature: "AntFieldDescriptor*(AntFieldDescriptor* out, i32 index, const char* name, const void* typeLayout, u32 flags, u32 count)"
+    signature: "AntFieldDescriptor*(AntFieldDescriptor* out, i32 index, const i8* name, const void* typeLayout, u32 flags, u32 count)"
     note: "The 0x20-byte descriptor: +0 index, +4 count (at least 1), +8 name, +0x10 type layout, +0x18 flags. (The handbook called +4 alignment and +0x18 offset: the layout pass uses them as count and flags.)"
     confidence: confirmed
   - name: ant_hashString_fnv1
     va: 0x143fbc460
-    signature: "u32(const char* s, u32 seed, i32 mode)"
+    signature: "u32(const i8* s, u32 seed, i32 mode)"
     note: "FNV-1 (h = h x 0x1000193 ^ c), seed 0x811c9dc5 for type names; mode 1 / 2 map each byte through a table first (case folding)."
     confidence: confirmed
   - name: ant_crc32
@@ -644,7 +644,7 @@ functions:
     sources: [ghidra]
   - name: ant_TypeRegistry_unregisterType
     va: 0x142c3d380
-    signature: "void(void* registry, const char* name)"
+    signature: "void(void* registry, const i8* name)"
     note: "Takes a type out of the registry (its name map and its id map)."
     sources: [ghidra]
   - name: ant_freeClassLayout
@@ -659,6 +659,20 @@ functions:
     sources: [ghidra]
   - name: ant_StringTable_addString
     va: 0x142c13fe0
-    signature: "u32(void* stringTable, const char* str)"
+    signature: "u32(void* stringTable, const i8* str)"
     note: "Adds a string to an ANT string table and returns its offset; called from ant_SkeletonHierarchy_buildTree."
     sources: [ghidra]
+
+structs:
+  - name: AntFieldDescriptor
+    size: 0x20
+    opaque: true
+    note: "What ant_initFieldDescriptor fills and the layout calls take an array of."
+    confidence: confirmed
+    sources: [ghidra]
+    members:
+      - { offset: 0x00, name: index, type: i32 }
+      - { offset: 0x04, name: count, type: u32, note: "At least 1." }
+      - { offset: 0x08, name: name, type: "const i8*" }
+      - { offset: 0x10, name: typeLayout, type: "const void*" }
+      - { offset: 0x18, name: flags, type: u32 }

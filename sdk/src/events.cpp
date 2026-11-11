@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "gridnode/mod_call.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -77,6 +78,7 @@ void deliver(void* peer, void* event) {
         if (!typed) t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(peer)), typed = true;
         if (l.cls && (!t || !registry().isKindOf(t, l.cls))) continue;
         try {
+            modcall::Scope scope(l.fn);
             l.fn(peer, reinterpret_cast<const gn_type*>(t), id, l.user);
         } catch (...) {
             static std::atomic<int> said{0};
@@ -234,7 +236,7 @@ uint32_t idOf(const char* event) {
 // entity's realm thread (flags +0x18 bit 0: the server realm), at its next tick. The slot holds the
 // game's onEvent, or our wrapper of it once events are wrapped.
 bool send(uintptr_t entity, const reflect::Type* type, uint32_t id) {
-    constexpr uint64_t kEntityEventVtable = 0x141a4a8b0;
+    constexpr uint64_t kEntityEventVtable = e::global::EntityEvent_vtable;
     const uintptr_t vt = mem::readOr<uintptr_t>(entity);
     if (!vt || !mem::readOr<uintptr_t>(vt + kOnEventSlot)) return false;
     auto deliver = [entity, type, id] {

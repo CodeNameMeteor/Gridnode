@@ -63,7 +63,7 @@ structs:
       - { confidence: hypothesis, offset: 0x08, name: category, type: u32 }
       - { confidence: hypothesis, offset: 0x0c, name: typeId, type: u32 }
       - { confidence: hypothesis, offset: 0x10, name: realm, type: u32 }
-  - name: PamSocialPlayNamedChallengeFinishedMessage
+  - name: PamSocialPlayNamedChallengeFinishedMessageLayout
     confidence: hypothesis
     size: 0x68
     members:
@@ -73,17 +73,17 @@ structs:
       - { confidence: hypothesis, offset: 0x54, name: hadRecord, type: u8, note: "Boolean indicating if a previous record existed." }
       - { confidence: hypothesis, offset: 0x58, name: value, type: i64, note: "Time/score value in centiseconds (10 ms units)." }
       - { confidence: hypothesis, offset: 0x60, name: newRecord, type: u8, note: "Boolean indicating whether this run achieved a new record." }
-  - name: PamSocialPlayNamedChallengeStartedMessage
+  - name: PamSocialPlayNamedChallengeStartedMessageLayout
     confidence: hypothesis
     size: 0x50
     members:
       - { confidence: hypothesis, offset: 0x48, name: contentId, type: u32, note: "Unique challenge ID." }
-  - name: PamSocialPlayNamedChallengeCancelledMessage
+  - name: PamSocialPlayNamedChallengeCancelledMessageLayout
     confidence: hypothesis
     size: 0x50
     members:
       - { confidence: hypothesis, offset: 0x48, name: contentId, type: u32, note: "Unique challenge ID." }
-  - name: PamSocialPlayChallengeFinishedMessage
+  - name: PamSocialPlayChallengeFinishedMessageLayout
     confidence: hypothesis
     size: 0x78
     members:

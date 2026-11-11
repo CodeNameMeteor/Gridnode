@@ -157,6 +157,23 @@ class Errors(unittest.TestCase):
                 properties: [ { name: Visible, hash: 0x12345678 } ]
             """, "does not match djb2-xor")
 
+    def test_c_type_names_without_a_dump(self):
+        text = """
+            functions:
+              - { name: f, va: 0x140001000, signature: "void(const char* s, float x, int32_t n)" }
+            structs:
+              - name: S
+                size: 0x8
+                members: [ { offset: 0x0, name: x, type: float } ]
+            """
+        with tempfile.TemporaryDirectory() as d:
+            write_annotations(d, text)
+            db, p = annotations.load(d)
+        p.extend(validate.check(db, None))
+        joined = " ".join(p.errors)
+        for name, want in (("char", "i8"), ("float", "f32"), ("int32_t", "i32")):
+            self.assertIn(f"unknown type {name!r}: write {want!r}", joined)
+
     def test_bad_event_hash(self):
         self.assertError("""
             events:
