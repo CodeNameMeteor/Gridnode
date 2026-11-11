@@ -54,10 +54,21 @@ entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is
 7,680 bytes (4,430 stored) starting `CE D1 B2 0F`, the EBX version 2 magic. Next: step 2, EBX to YAML,
 tested on the user's files.
 
-Not done (next): 2.1 step 2 (`hooks_begin` / `hooks_commit`), 2.3 the entity index, 3.2 the mod context
-(open question: `gn_mod_load2` or the manifest), 3.6 the `unverified` namespace (open question: hide
-hypothesis items from mods, or move them), moving GridNode's three internal "every subclass" pools onto
-`hook_virtual` (after it is proven in game), parts 5.2 to 5.6.
+Second round (API 37, the user's choices of 2026-11-11; untested in game):
+- **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one
+  pause; the loader wraps every `gn_mod_load`, so all mods get it without a rebuild.
+- **3.2**: `gn_mod_load2(api, self)` (preferred when exported; `GN_MOD` exports both) and 20 `_m` calls;
+  `mod.hpp` uses them when the host has them. Tick listeners are named after their mod.
+- **3.6**: hypotheses in `unverified` namespaces in `engine.hpp`. `NamedChallengeFinish_statsCall` promoted
+  (patch_call checks it every run). The other 24 GridNode uses are named `unverified::` with a note per file
+  (assets.cpp, bodies.cpp, layouts.cpp, sounds.cpp): those notes are the list to confirm in Ghidra.
+  `gridnode.py unverified-check` (CI).
+- **2.3**: `EntityIndex` (host-tested): by address and per class; destruction removes at once; the dead set
+  is only for entities made before GridNode; pruning every second as a backstop; `entities_of_class` and
+  `entities_near` read the matching classes' lists only. Not done: the spatial grid for `entities_near`.
+
+Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
+grid, parts 5.2 to 5.6 (a separate PR).
 
 In-game test (developer build, all mods from this build in `bin\mods`):
 1. Start the game, inject, load a level. `gridnode.log`: the first `patches:` lines say `64 KB kept near the

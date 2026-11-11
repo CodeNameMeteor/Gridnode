@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "gridnode/engine.hpp"
+#include "gridnode/entity_index.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "host.hpp"
@@ -39,16 +40,14 @@ using reflect::Category;
 using reflect::Type;
 
 // ---- tracked entities -------------------------------------------------------------------------
-struct Tracked {
-    uintptr_t ptr;
-    const Type* type;
-};
-std::mutex g_m;
-std::vector<Tracked> g_entities; // guarded by g_m; appended by game threads, pruned by the render thread
-std::unordered_map<uintptr_t, size_t> g_index; // guarded by g_m: pointer -> its entry (memory is reused)
-constexpr size_t kMaxTracked = 400000;
-size_t g_pruneAt = 0;   // pruning thread
-std::unordered_map<uintptr_t, uint64_t> g_dead; // guarded by g_m: addresses of entities found dead (until reused) -> when marked
+// The live entities seen created, by address and by class (gridnode/entity_index.hpp, plan 2.3): added
+// by the creator hook, removed by the destructor hook the moment one goes.
+EntityIndex<Type> g_live(400000);
+size_t g_pruneAt = 0; // pruning thread
+std::mutex g_m;       // the dead set below
+// Addresses of entities destroyed that were not in the index (made before GridNode loaded: alive() takes
+// those on their type alone) or found dead by the backstop prune, until the address is reused.
+std::unordered_map<uintptr_t, uint64_t> g_dead; // guarded by g_m: address -> when marked
 std::deque<std::pair<uintptr_t, uint64_t>> g_deadOrder; // guarded by g_m: oldest first (entries already erased are skipped)
 uint64_t g_deadSeq = 0;                                  // guarded by g_m
 constexpr size_t kMaxDead = 200000;
@@ -76,61 +75,30 @@ void markDeadLocked(uintptr_t p) {
     }
 }
 bool g_started = false; // GridNode's thread, before the UI exists
-size_t g_dropped = 0;   // guarded by g_m
 
 const Type* typeOf(uintptr_t p) { return p ? registry().typeOf(mem::ProcessMemory(), p) : nullptr; }
 
 void onEntity(void* entity, void*, void*) {
     const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
-    const Type* t = typeOf(p);
+    const Type* t = registry().typeOfLive(entity); // just made by the game
     if (!t) return;
-    std::lock_guard<std::mutex> lock(g_m);
-    g_dead.erase(p); // a new entity at that address (before the cap: else it would stay hidden)
-    const auto it = g_index.find(p);
-    if (it != g_index.end()) { // the address was reused by a new entity
-        g_entities[it->second].type = t;
-        return;
-    }
-    if (g_entities.size() >= kMaxTracked) {
-        ++g_dropped;
-        return;
-    }
-    g_index.emplace(p, g_entities.size());
-    g_entities.push_back({p, t});
-}
-
-// A slice of the list: entries whose object no longer has its type are dropped, their addresses
-// remembered as dead.
-void prune() {
-    constexpr size_t kPerFrame = 4000;
-    std::vector<std::pair<size_t, Tracked>> slice;
     {
         std::lock_guard<std::mutex> lock(g_m);
-        if (g_pruneAt >= g_entities.size()) g_pruneAt = 0;
-        const size_t end = std::min(g_entities.size(), g_pruneAt + kPerFrame);
-        for (size_t i = g_pruneAt; i < end; ++i) slice.push_back({i, g_entities[i]});
-        g_pruneAt = end;
+        g_dead.erase(p); // a new entity at that address
     }
-    std::vector<std::pair<size_t, Tracked>> dead;
-    for (const auto& s : slice)
-        if (typeOf(s.second.ptr) != s.second.type) dead.push_back(s);
-    if (dead.empty()) return;
-    std::lock_guard<std::mutex> lock(g_m);
-    // Descending, so a swap from the end never moves an entry we still have to remove. Appends only
-    // add at the end, and only this thread removes, so the indices below are still ours.
-    for (auto it = dead.rbegin(); it != dead.rend(); ++it) {
-        const size_t i = it->first;
-        // Still the same entry (not re-created at the same address since we looked)?
-        if (i >= g_entities.size() || g_entities[i].ptr != it->second.ptr || g_entities[i].type != it->second.type) continue;
-        g_index.erase(g_entities[i].ptr);
-        markDeadLocked(g_entities[i].ptr);
-        if (i + 1 != g_entities.size()) {
-            g_entities[i] = g_entities.back();
-            g_index[g_entities[i].ptr] = i;
+    g_live.add(p, t); // replaces a destroyed one at the same address
+}
+
+// The backstop: a slice of the index; entities whose object no longer has its type (a class whose
+// destructor could not be wrapped) are taken out and remembered as dead.
+void prune() {
+    constexpr size_t kPerStep = 4000;
+    const auto slice = g_live.slice(g_pruneAt, kPerStep);
+    for (const auto& [p, t] : slice)
+        if (typeOf(p) != t && g_live.removeIf(p, t)) {
+            std::lock_guard<std::mutex> lock(g_m);
+            markDeadLocked(p);
         }
-        g_entities.pop_back();
-    }
-    if (g_pruneAt > g_entities.size()) g_pruneAt = g_entities.size();
 }
 
 // ---- helpers ---------------------------------------------------------------------------------
@@ -524,13 +492,8 @@ const Type* g_selClass = nullptr;
 void refreshCounts() {
     if (GetTickCount() - g_countsAt < 500) return;
     g_countsAt = GetTickCount();
-    std::map<const Type*, size_t> m;
-    {
-        std::lock_guard<std::mutex> lock(g_m);
-        for (const Tracked& t : g_entities) ++m[t.type];
-    }
     g_counts.clear();
-    for (const auto& kv : m) g_counts.push_back({kv.first, kv.second});
+    for (const auto& [t, n] : g_live.counts()) g_counts.push_back({t, n}); // the class lists' sizes
     std::sort(g_counts.begin(), g_counts.end(), [](const ClassCount& a, const ClassCount& b) { return a.type->name < b.type->name; });
 }
 
@@ -539,12 +502,7 @@ void entitiesTab() {
     static char filter[96] = "";
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##ef", "filter classes", filter, sizeof(filter));
-    size_t total = 0, dropped = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_m);
-        total = g_entities.size();
-        dropped = g_dropped;
-    }
+    const size_t total = g_live.size(), dropped = g_live.dropped();
     ImGui::TextDisabled("%llu live entities in %llu classes%s", static_cast<unsigned long long>(total),
                        static_cast<unsigned long long>(g_counts.size()), dropped ? " (list full)" : "");
     const float h = ImGui::GetContentRegionAvail().y;
@@ -560,10 +518,9 @@ void entitiesTab() {
     if (ImGui::BeginChild("instances", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
         if (g_selClass) {
             std::vector<uintptr_t> ptrs;
-            {
-                std::lock_guard<std::mutex> lock(g_m);
-                for (const Tracked& t : g_entities)
-                    if (t.type == g_selClass && ptrs.size() < 1000) ptrs.push_back(t.ptr);
+            for (const auto& [p, t] : g_live.ofClasses([](const Type* t) { return t == g_selClass; })) {
+                if (ptrs.size() >= 1000) break;
+                ptrs.push_back(p);
             }
             ImGuiListClipper clip;
             clip.Begin(int(ptrs.size()));
@@ -1197,45 +1154,28 @@ void drawConsole(bool* open) {
     ImGui::End();
 }
 
-std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() {
-    std::lock_guard<std::mutex> lock(g_m);
-    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
-    out.reserve(g_entities.size());
-    for (const Tracked& t : g_entities) out.push_back({t.ptr, t.type});
-    return out;
-}
+std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked() { return g_live.all(); }
 
+// The class's lists and its subclasses' only (class ids are a range): not a walk over every entity.
 std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base) {
-    // In blocks, letting go of the lock between them: game threads take it for every entity they
-    // create (review, 2026-11-03). An entry moved by pruning meanwhile may be missed or seen twice.
-    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
-    if (!base) return out;
-    constexpr size_t kBlock = 8192;
-    for (size_t at = 0;; at += kBlock) {
-        std::lock_guard<std::mutex> lock(g_m);
-        if (at >= g_entities.size()) break;
-        const size_t end = std::min(g_entities.size(), at + kBlock);
-        for (size_t i = at; i < end; ++i)
-            if (g_entities[i].type && registry().isKindOf(g_entities[i].type, base)) out.push_back({g_entities[i].ptr, g_entities[i].type});
-    }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    return out;
+    if (!base) return {};
+    return g_live.ofClasses([base](const Type* t) { return registry().isKindOf(t, base); });
 }
 
 bool alive(uintptr_t p, const reflect::Type* type) {
     if (!p || !type) return false;
+    if (const Type* known = g_live.find(p)) return known == type && typeOf(p) == type;
     {
         std::lock_guard<std::mutex> lock(g_m);
         if (g_dead.count(p)) return false;
     }
-    return typeOf(p) == type;
+    return typeOf(p) == type; // made before GridNode loaded: its type is all there is to go by
 }
 
 void markDead(uintptr_t p) {
-    if (!p) return;
+    if (!p || g_live.remove(p)) return; // gone from the index at once
     std::lock_guard<std::mutex> lock(g_m);
-    markDeadLocked(p); // its tracked entry is dropped by the pruning thread once the memory changes
+    markDeadLocked(p); // one made before GridNode loaded
 }
 
 void start() {
@@ -1247,12 +1187,10 @@ void start() {
         while (!unloading()) {
             // Each check is a kernel read: 4,000 every 15 ms was ~260,000 a second. Once the destructor
             // hooks are seen marking entities dead, pruning is only a backstop (review, 2026-11-03).
-            Sleep(destroyedCount() ? 250 : 15);
+            Sleep(destroyedCount() ? 1000 : 15);
             prune();
         }
     }).detach();
-    g_entities.reserve(65536);
-    g_index.reserve(65536);
     onCreated("gridnode", "Entity", &onEntity, nullptr);
     hookDestructors(); // dead the moment they are destroyed (pruning stays as the backstop)
 }

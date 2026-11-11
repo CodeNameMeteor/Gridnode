@@ -970,10 +970,11 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
     int n = 0;
     const float r2 = radius * radius;
     static const reflect::Type* spatial = registry().find("SpatialEntity");
-    for (const auto& [p, t] : inspector::tracked()) {
+    if (!spatial) return 0;
+    // Only objects with a place (most entities are logic): the spatial classes' lists of the index, not
+    // a copy of every entity (up to 400,000, plan 2.3).
+    for (const auto& [p, t] : inspector::trackedOf(spatial)) {
         gn_transform at{};
-        // Only objects with a place (most entities are logic): their type first, then memory reads.
-        if (!t || !spatial || !registry().isKindOf(t, spatial)) continue;
         if (!inspector::alive(p, t) || !entityTransform(reinterpret_cast<void*>(p), at)) continue;
         const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
         const float d2 = dx * dx + dy * dy + dz * dz;

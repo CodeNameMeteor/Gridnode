@@ -24,7 +24,7 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 36 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 37 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
@@ -46,7 +46,7 @@ The default is the header's own version, so a mod that does not set it behaves a
 `gn::has` themselves and return false (or nothing) on an older GridNode.
 
 **What is stable.** Everything up to API 28 was used in game by the MEC trainer or the examples and is stable.
-These are newer and **experimental** (tested lightly, or not at all, and may change before they settle): API 36 (not yet run in game), the visual
+These are newer and **experimental** (tested lightly, or not at all, and may change before they settle): API 36 and 37, the visual
 environment and timelines (API 29), streaming focus points (30), `raycastFiltered` (33), standalone collision boxes
 (`boxBackendNative`, 34), and the ANT live objects and Faith's last 15 seconds (26 and 27). `localize` (31), `menuOpen` / `pauseRequests` (32) and the mixer's groups (`busVolume`, `duck`, 35) work in game. [Known issues](known-issues.md)
 lists the limits.
@@ -270,6 +270,16 @@ call the game's function through `original`. `gn::patchBytes(va, expected, bytes
 to 64 bytes that must be `expected` now. Patches are listed in the GridNode menu's Hooks section and
 undone when the mod is unloaded (or GridNode is). Prefer a pointer swap where there is one. Rust:
 `patch_call`, `patch_bytes`.
+
+**Detours written together (API 37).** Every detour stops the game's threads for a moment while its
+jump is written. GridNode writes all the detours a mod makes in `gn_mod_load` in one stop, when
+`gn_mod_load` returns: a mod's detours take effect then, not at each `hookFunction`. Elsewhere, put
+several between `gn::api().hooks_begin()` and `hooks_commit()` for the same.
+
+**The mod's handle (API 37).** `GN_MOD` exports `gn_mod_load2` as well: GridNode gives the mod a handle,
+and the `gn::` calls that need to know which mod is calling (camera, patches, boxes, sounds, settings,
+exports) use it, so nothing is lost when the compiler turns a call into a jump. A mod rebuilt with this
+header gets it without changes; a C or Rust mod can export `gn_mod_load2` and call the `_m` functions.
 
 Any function of the game can be detoured, not only one a pointer or a call site leads to (API 16):
 

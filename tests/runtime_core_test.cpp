@@ -16,6 +16,7 @@
 #include "gridnode/config.hpp"
 #include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
+#include "gridnode/entity_index.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
 #include "gridnode/mod_call.hpp"
@@ -824,6 +825,38 @@ void testVirtualHooks() {
     CHECK(part.remove(t) == 1 && mem[kBase + kSlot] == 0xA0);
 }
 
+void testEntityIndex() {
+    struct T {
+        int id;
+    };
+    const T base{1}, sub{2}, other{3};
+    EntityIndex<T> ix(4);
+    CHECK(ix.add(0x100, &base) && ix.add(0x200, &sub) && ix.add(0x300, &other) && ix.add(0x400, &sub));
+    CHECK(!ix.add(0x500, &base) && ix.dropped() == 1); // full
+    CHECK(ix.find(0x200) == &sub && ix.find(0x999) == nullptr);
+    // By class: only the classes picked are read.
+    auto subs = ix.ofClasses([&](const T* t) { return t == &sub; });
+    std::sort(subs.begin(), subs.end());
+    CHECK(subs.size() == 2 && subs[0].first == 0x200 && subs[1].first == 0x400);
+    // Destroyed: gone from both lists at once; the moved entries keep working.
+    CHECK(ix.remove(0x200) && !ix.remove(0x200));
+    CHECK(ix.ofClasses([&](const T* t) { return t == &sub; }).size() == 1 && ix.find(0x400) == &sub);
+    CHECK(ix.remove(0x100) && ix.size() == 2);
+    // An address reused by a new entity of another class.
+    CHECK(ix.add(0x300, &base) && ix.find(0x300) == &base && ix.ofClasses([&](const T* t) { return t == &other; }).empty());
+    // removeIf only when it is still that entity.
+    CHECK(!ix.removeIf(0x300, &other) && ix.removeIf(0x300, &base));
+    // Counts and the walk in steps see every entity once.
+    for (uintptr_t p = 0x1000; p < 0x1003; ++p) ix.add(p, &other);
+    size_t total = 0;
+    for (const auto& [t, n] : ix.counts()) total += n;
+    CHECK(total == ix.size() && ix.size() == 4);
+    size_t from = 0, seen = 0;
+    do seen += ix.slice(from, 3).size();
+    while (from != 0);
+    CHECK(seen == 4 && ix.all().size() == 4);
+}
+
 void testNearAlloc() {
     constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
     auto run = [&](FakeSpace& s, bool down, uint64_t from) {
@@ -875,6 +908,7 @@ int main() {
     testNearAlloc();
     testModCall();
     testVirtualHooks();
+    testEntityIndex();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();
