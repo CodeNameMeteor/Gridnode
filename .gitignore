@@ -34,3 +34,15 @@ __pycache__/
 target/
 Cargo.lock
 db/ghidra-inbox.yaml
+
+# Local multi-model workflow (never commit)
+.workflow/
+.claude/
+.gemini/
+.mcp.json
+AGENTS.md
+GEMINI.md
+examples/_probes/
+# claim-lab topic experiments are local test code (they use APIs not merged yet); only the template is shared
+examples/claim-lab/experiments/*.cpp
+!examples/claim-lab/experiments/example_events.cpp
