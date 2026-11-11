@@ -50,6 +50,7 @@ jobs:
       - name: gridnode-gen tests and annotation check
         run: |
           python3 -m unittest discover -s tools/gen/tests -t tools/gen -v
+          python3 -m unittest discover -s tools/assets/tests -t tools/assets -v
           python3 tools/gen/gridnode.py validate --strict
       - name: Rust bindings are up to date, and a Rust mod works through the C ABI
         run: |

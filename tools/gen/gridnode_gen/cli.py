@@ -22,6 +22,7 @@
 gridnode package --player --build DIR       the players' zip (player build, injector, MEC trainer)
   gridnode new-mod NAME [--rust] [--sdk DIR]  a mod from the template (templates/gridnode_mod.py new)
   gridnode pack-mod DLL [--file F ...]        a mod's zip for others (templates/gridnode_mod.py pack)
+  gridnode assets check|list|extract ...      the game's data files, read where they are (tools/assets)
 """
 
 from __future__ import annotations
@@ -122,6 +123,11 @@ def _write(path: str, text: str):
 
 
 def main(argv=None) -> int:
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args[:1] == ["assets"]:  # the game's data files (tools/assets), with their own options
+        sys.path.insert(0, os.path.join(ROOT, "tools", "assets"))
+        from gridnode_assets.cli import main as assets_main
+        return assets_main(args[1:])
     try:
         return _main(argv)
     except UserError as e:

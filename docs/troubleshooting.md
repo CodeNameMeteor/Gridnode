@@ -47,3 +47,4 @@ is in `gridnode.prev.log`.
 | Keys stop working after reloading mods | Look for lines about hotkeys in the log and send it; unloading and loading the mod from the Mods list puts its keys back. |
 | A Dash or time trial time is not uploaded | The MEC trainer blocks uploads while it is loaded ([GridNode and online play](online.md)). |
 | The game is slow with GridNode | A developer build tracks every entity for the inspector; `inspector=0` in `[ui]`, or the player build, costs less. |
+| GridNode with Frosty mods | Frosty's Mod Manager starts the game with `-dataPath` pointing at its ModData folder; GridNode loads as a DLL and reads nothing from the data folder, so the two should work together (not yet tested). The log's `startup: game data from ...` line says which data the game runs on. To check: launch through the Mod Manager with one texture mod, inject GridNode, and see both the texture and GridNode's menu. |

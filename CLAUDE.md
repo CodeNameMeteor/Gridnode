@@ -36,7 +36,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
-| `tools/gen/` | `gridnode.py`: validate, generators, `setup`, `docs`, Ghidra export/import, fingerprints |
+| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract` (the game's data store, read in place) |
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
@@ -59,7 +59,7 @@ Release`, `ctest --test-dir build -C Release`. First-time headers: `python tools
 setup --dump <gridnode-reflected.json>`.
 
 The cloud container cross-compiles with MinGW; build folders live in `/tmp` and may be gone. If
-`x86_64-w64-mingw32-g++-posix` is missing: `apt-get install -y g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix`.
+`x86_64-w64-mingw32-g++-posix` is missing: `apt-get update && apt-get install -y g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix`.
 
 ```text
 cmake -S . -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
@@ -67,8 +67,8 @@ cmake -S . -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_BUILD_TYPE=Release -DGRIDNODE_BUILD_TESTS=OFF
 cmake --build /tmp/claude-0/bw      # gridnode.dll; -DGRIDNODE_PLAYER_BUILD=ON checks the player build
 cmake -S . -B /tmp/claude-0/hosttest -G Ninja && cmake --build /tmp/claude-0/hosttest && (cd /tmp/claude-0/hosttest && ctest)
-cd tools/gen && python3 -m unittest tests.test_gen  # Python tools
-python3 tools/gen/gridnode.py validate              # after any annotation change
+cd tools/gen && python3 -m unittest tests.test_gen  # Python tools (and tools/assets: python3 -m unittest tests.test_store)
+python3 tools/gen/gridnode.py validate              # after any annotation change; `check --dump D.json` before pushing it
 python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as CI builds it
 ```
 

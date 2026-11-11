@@ -46,3 +46,7 @@ something goes wrong; report anything not listed here with `gridnode.log`.
 
 Features marked "untested" in `docs/progress.md` were built from the game's code but not yet tried
 in game; they are listed in the release notes of the release they came in.
+
+API 36 (class hooks by name, any entity's components, the data folder, type views) and the fixes of
+2026-11-11 (the near-image reserve, detour writes, thread listing) have not run in game yet
+([progress](progress.md) has the test).
