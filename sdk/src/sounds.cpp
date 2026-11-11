@@ -345,7 +345,12 @@ void publish(float dt) {
         uint8_t f = 0;
         // Atomic: the mixer's update changes other bits of this byte (0x02..0x20) and a plain read-modify-write
         // could lose one (0x04, "snapshot went away", would leave a stale target). The address was read first.
-        if (mem::read(flags, f)) _InterlockedOr8(reinterpret_cast<volatile char*>(flags), 0x08);
+        if (!mem::read(flags, f)) continue;
+#if defined(_MSC_VER)
+        _InterlockedOr8(reinterpret_cast<volatile char*>(flags), 0x08);
+#else
+        __atomic_fetch_or(reinterpret_cast<volatile uint8_t*>(flags), uint8_t{0x08}, __ATOMIC_SEQ_CST); // MinGW has no _InterlockedOr8
+#endif
     }
 }
 
