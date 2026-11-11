@@ -77,7 +77,7 @@ bool decode(const uint8_t* p, size_t avail, Insn& out) {
     if (i < avail && (p[i] & 0xf0) == 0x40) rexW = (p[i++] & 8) != 0;
     if (i >= avail) return false;
     const uint8_t op = p[i++];
-    const size_t immZ = opsize ? 2 : 4;
+    const size_t immZ = opsize && !rexW ? 2 : 4; // REX.W wins over 0x66: a 4-byte immediate (sign-extended)
     size_t imm = 0;
     bool modrm = false;
     int ripAt = -1;

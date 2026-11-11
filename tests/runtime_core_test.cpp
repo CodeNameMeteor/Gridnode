@@ -18,7 +18,9 @@
 #include "gridnode/dispatch.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/mod_order.hpp"
+#include "gridnode/near_alloc.hpp"
 #include "gridnode/pe_file.hpp"
 #include "gridnode/projection.hpp"
 #include "gridnode/reflect/registry.hpp"
@@ -718,9 +720,109 @@ void testMixOffsets() {
     m.set("a", 1, audio::kGroups, 0.5f);
 }
 
+// A fake address space answering as VirtualQuery does: a free region is described from the queried
+// page upwards only.
+struct FakeSpace {
+    struct Block {
+        uint64_t begin, end;
+        bool free;
+        uint64_t allocBase;
+    };
+    std::vector<Block> blocks; // sorted, covering everything that is asked about
+    std::vector<uint64_t> tried;
+    bool query(uint64_t a, nearmem::Region& r) const {
+        for (const Block& b : blocks)
+            if (a >= b.begin && a < b.end) {
+                r.base = a & ~uint64_t(0xfff);
+                r.size = b.end - r.base;
+                r.free = b.free;
+                r.allocationBase = b.free ? 0 : b.allocBase;
+                return true;
+            }
+        return false;
+    }
+    // An allocation works anywhere wholly inside one free block.
+    bool take(uint64_t a, uint64_t size) {
+        tried.push_back(a);
+        for (const Block& b : blocks)
+            if (b.free && a >= b.begin && a + size <= b.end) return true;
+        return false;
+    }
+};
+
+void modCallbackA(void*) {}
+void modCallbackB(void*) {}
+
+void testModCall() {
+    const char own[16] = {};  // stands in for gridnode.dll's code
+    const char other[16] = {}; // a mod's code
+    const auto inOwn = [&](const void* p) { return p >= own && p < own + sizeof(own); };
+    CHECK(modcall::current() == nullptr);
+    CHECK(modcall::resolve(own + 4, inOwn) == own + 4); // no mod callback running: as it is
+    {
+        modcall::Scope a(&modCallbackA);
+        CHECK(modcall::resolve(own + 4, inOwn) == reinterpret_cast<const void*>(&modCallbackA)); // a tail call
+        CHECK(modcall::resolve(other, inOwn) == other); // the mod's own return address wins
+        {
+            modcall::Scope b(&modCallbackB); // a callback inside a callback (entities_near's fn)
+            CHECK(modcall::resolve(own, inOwn) == reinterpret_cast<const void*>(&modCallbackB));
+        }
+        CHECK(modcall::current() == reinterpret_cast<const void*>(&modCallbackA));
+    }
+    CHECK(modcall::current() == nullptr);
+    std::thread([&] { CHECK(modcall::current() == nullptr); }).join(); // per thread
+}
+
+void testNearAlloc() {
+    constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
+    auto run = [&](FakeSpace& s, bool down, uint64_t from) {
+        const nearmem::Query q = [&](uint64_t a, nearmem::Region& r) { return s.query(a, r); };
+        const nearmem::TryAt t = [&](uint64_t a) { return s.take(a, kSize); };
+        int calls = 0;
+        const nearmem::Stop stop = [&] { return ++calls > 100000; };
+        return down ? nearmem::searchDown(q, from, from - 0x7ff00000, kSize, kGran, 8, t, stop)
+                    : nearmem::searchUp(q, from, from + 0x7ff00000, kSize, kGran, 8, t, stop);
+    };
+    { // A 64 KB gap just below the image, then taken memory below it (one allocation of many regions).
+        FakeSpace s;
+        s.blocks = {{0x0, kImage - 0x30000, false, 0x0}, {kImage - 0x30000, kImage - 0x20000, false, kImage - 0x30000},
+                    {kImage - 0x20000, kImage - 0x10000, true, 0}, {kImage - 0x10000, kImage, false, kImage - 0x10000}};
+        // From the page below the image, as patchesReserve asks: the gap's start is found.
+        CHECK(run(s, true, kImage - 0x1000) == kImage - 0x20000);
+        CHECK(s.tried.size() == 1);
+    }
+    { // A gap exactly one page long below the image: never tried, the walk goes on below it.
+        FakeSpace s;
+        s.blocks = {{0x0, 0x100000000, false, 0x0}, {0x100000000, 0x100100000, true, 0},
+                    {0x100100000, kImage - 0x1000, false, 0x100100000}, {kImage - 0x1000, kImage, true, 0}};
+        CHECK(run(s, true, kImage) == 0x100100000 - kSize); // the highest fit in the large free block
+        for (uint64_t a : s.tried) CHECK(a < kImage - 0x1000);
+    }
+    { // No gap at all: nothing tried, and the walk ends.
+        FakeSpace s;
+        s.blocks = {{0x0, kImage, false, 0x0}};
+        CHECK(run(s, true, kImage) == 0);
+        CHECK(s.tried.empty());
+    }
+    { // A gap only above the image: down finds nothing, up finds its first aligned address.
+        FakeSpace s;
+        s.blocks = {{0x0, kImage + 0x4000000, false, 0x0}, {kImage + 0x4000000, kImage + 0x4000000 + 0x200000, true, 0},
+                    {kImage + 0x4000000 + 0x200000, 0x7fffffffffff, false, kImage + 0x4000000 + 0x200000}};
+        CHECK(run(s, true, kImage) == 0);
+        CHECK(run(s, false, kImage + 0x1000000) == kImage + 0x4000000);
+    }
+    { // Free memory whose top is taken part-way into the request: the candidate below the taken part.
+        FakeSpace s;
+        s.blocks = {{0x0, 0x130000000, false, 0x0}, {0x130000000, kImage - 0x8000, true, 0}, {kImage - 0x8000, kImage, false, kImage - 0x8000}};
+        CHECK(run(s, true, kImage) == kImage - 0x8000 - kSize - 0x8000); // aligned down below the taken 32 KB
+    }
+}
+
 } // namespace
 
 int main() {
+    testNearAlloc();
+    testModCall();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();

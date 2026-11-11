@@ -8,7 +8,6 @@
 // be on its way through it), so it is never reused.
 
 #include <windows.h>
-#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cstring>
@@ -19,8 +18,10 @@
 
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/near_alloc.hpp"
 #include "gridnode/x64.hpp"
 #include "host.hpp"
+#include "threads.hpp"
 
 namespace gn::host {
 namespace {
@@ -31,6 +32,7 @@ struct Patch {
     std::vector<uint8_t> original, patched;
     uintptr_t owner = 0; // an address in the code of whoever made it (a mod's image, or GridNode's)
     std::string what;
+    bool whole = false;  // starts on an instruction (patch_bytes): written paused when it spans more than one
 };
 std::mutex g_m;
 std::vector<Patch> g_patches; // (g_m)
@@ -44,54 +46,34 @@ QueryThreadFn g_queryThread = nullptr; // NtQueryInformationThread, looked up be
 // paused section (thread contexts, VirtualProtect, a memcpy, FlushInstructionCache) takes no lock
 // and so never waits on a paused thread (review, 2026-11-03).
 //
-// A thread started between the snapshot and the pauses would run on: once every thread in the
-// snapshot is paused no new one can be started (only a running thread starts one), so a second
-// snapshot then finds any that slipped through, and they are paused too (review, 2026-11-04). The
-// snapshot takes no heap lock (toolhelp maps its own section), and the vectors were reserved first.
+// A thread started between the listing and the pauses would run on: once every thread listed is
+// paused no new one can be started (only a running thread starts one), so a second listing then
+// finds any that slipped through, and they are paused too (review, 2026-11-04). The listing
+// (threads.cpp: NtGetNextThread, this process only) takes no heap lock, and the vectors were
+// reserved first. It replaced two system-wide toolhelp snapshots per pause (2026-11-11).
 void pauseOthers(std::vector<HANDLE>& out) {
-    constexpr size_t kSpare = 64; // threads that may appear between snapshots
+    constexpr DWORD kAccess = THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT;
     if (!g_queryThread) // before any pause (GetProcAddress may take the loader lock)
         g_queryThread = reinterpret_cast<QueryThreadFn>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread")));
-    std::vector<DWORD> ids, seen;
-    const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
-    auto snapshot = [&](std::vector<DWORD>& into) {
-        into.clear();
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap == INVALID_HANDLE_VALUE) return;
-        THREADENTRY32 te{};
-        te.dwSize = sizeof(te);
-        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
-            if (te.th32OwnerProcessID == pid && te.th32ThreadID != me && into.size() < into.capacity()) into.push_back(te.th32ThreadID);
-        CloseHandle(snap);
-    };
-    ids.reserve(4096);
-    snapshot(ids);
-    seen.reserve(ids.size() + kSpare);
-    std::vector<HANDLE> opened;
-    opened.reserve(ids.size() + kSpare);
-    for (DWORD id : ids)
-        if (HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, id)) opened.push_back(h);
+    threadsPrepare();
+    std::vector<ThreadHandle> ts;
+    ts.reserve(4096);
+    openOtherThreads(ts, kAccess);
     out.clear();
-    out.reserve(opened.capacity());
-    for (HANDLE h : opened) {
-        if (SuspendThread(h) != DWORD(-1)) out.push_back(h); // reserved: no allocation
-        else CloseHandle(h);
-    }
-    // With the others paused: anything new since the first snapshot (a few rounds: one that slipped
-    // through may have started another before it was paused).
-    for (int round = 0; round < 4; ++round) {
-        seen.resize(0);
-        snapshot(seen);
+    out.reserve(ts.capacity());
+    size_t done = 0;
+    const auto suspendNew = [&] { // reserved: no allocation
         bool any = false;
-        for (DWORD id : seen) {
-            if (std::find(ids.begin(), ids.end(), id) != ids.end() || ids.size() >= ids.capacity() || out.size() >= out.capacity()) continue;
-            ids.push_back(id);
-            HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, id);
-            if (!h) continue;
-            if (SuspendThread(h) != DWORD(-1)) out.push_back(h), any = true;
-            else CloseHandle(h);
+        for (; done < ts.size(); ++done) {
+            if (SuspendThread(ts[done].h) != DWORD(-1)) out.push_back(ts[done].h), any = true;
+            else CloseHandle(ts[done].h);
         }
-        if (!any) break;
+        return any;
+    };
+    suspendNew();
+    // With the others paused: anything new since the first listing (a few rounds: one that slipped
+    // through may have started another before it was paused).
+    for (int round = 0; round < 4 && openOtherThreads(ts, kAccess) && suspendNew(); ++round) {
     }
 }
 
@@ -151,15 +133,26 @@ bool anyThreadIn(const std::vector<HANDLE>& hs, uintptr_t at, size_t n, bool ret
     return false;
 }
 
+// Whether the code at `at` is more than one instruction over n bytes (or cannot be decoded): such
+// bytes are written with the threads paused, even when one store would do.
+bool spansInstructions(uintptr_t at, size_t n) {
+    uint8_t code[16] = {};
+    x64::Insn in;
+    if (!mem::read(at, code, sizeof(code)) || !x64::decode(code, sizeof(code), in)) return true;
+    return in.length < n;
+}
+
 // Writes code a thread may be running: in one store when the bytes fit in an aligned 8 or 16 bytes;
 // otherwise with every other thread paused and none about to run them (patch_bytes over 16 bytes, or
 // across a 16-byte boundary), so no thread ever runs half old, half new code (review, 2026-11-03).
-// othersPaused: the caller paused them already (a detour's entry).
-bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused = false) {
+// othersPaused: the caller paused them already (a detour's entry). paused: always the paused path
+// (bytes over more than one instruction: one store is atomic, but a thread stopped between two of
+// the old instructions would go on in the middle of the new ones, review 2026-11-11).
+bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused = false, bool paused = false) {
     DWORD prot = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(at), n, PAGE_EXECUTE_READWRITE, &prot)) return false;
     const uintptr_t q = at & ~uintptr_t(7);
-    if (at + n <= q + 8) {
+    if (!paused && at + n <= q + 8) {
         volatile LONG64* p = reinterpret_cast<volatile LONG64*>(q);
         LONG64 old = *p;
         for (;;) {
@@ -169,7 +162,7 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused =
             if (seen == old) break;
             old = seen;
         }
-    } else if (const uintptr_t o = at & ~uintptr_t(15); at + n <= o + 16) {
+    } else if (const uintptr_t o = at & ~uintptr_t(15); !paused && at + n <= o + 16) {
         // A detour's 5-byte jump at a function entry not inside one aligned 8 bytes: one 16-byte store.
         alignas(16) uint8_t now[16];
         for (;;) {
@@ -260,37 +253,26 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable, size_t size = 0x10
     // From the site outwards, the near side first: a site below the image (a page made earlier) looks
     // down first, then up. Each direction has half the time: walking up from the image can pass
     // thousands of the game's regions without a free one (2 s and no try at all, 2026-11-03), and the
-    // free space just below the image was never reached.
-    uint8_t* found = nullptr;
+    // free space just below the image was never reached. The walks are in near_alloc.hpp (tested on
+    // the host); the downward one asks about each candidate itself (2026-11-10: it took every free
+    // block to be one page long, so the 64 KB reserve was never made).
     const uintptr_t imageBase = mem::moduleBase(), imageEnd = imageBase + mem::imageSize();
-    MEMORY_BASIC_INFORMATION mbi{};
+    const nearmem::Query query = [](uint64_t a, nearmem::Region& r) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi))) return false;
+        r.base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+        r.size = mbi.RegionSize;
+        r.free = mbi.State == MEM_FREE;
+        r.allocationBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase);
+        return true;
+    };
+    uint8_t* found = nullptr;
+    const nearmem::TryAt take = [&](uint64_t a) { return (found = tryAt(static_cast<uintptr_t>(a))) != nullptr; };
     const auto up = [&](uintptr_t from, ULONGLONG until) {
-        for (uintptr_t a = from; !found && !out() && GetTickCount64() < until && a < hi && VirtualQuery(reinterpret_cast<void*>(a), &mbi, sizeof(mbi));) {
-            const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
-            if (mbi.State == MEM_FREE) {
-                const uintptr_t to = std::min(e, hi);
-                uintptr_t x = (std::max(b, a) + gran - 1) & ~(gran - 1);
-                for (int i = 0; !found && i < kTriesPerRegion && x + size <= to && !out(); ++i, x += gran) found = tryAt(x);
-            }
-            if (e <= a) break;
-            a = e;
-        }
+        if (!found) nearmem::searchUp(query, from, hi, size, gran, kTriesPerRegion, take, [&] { return out() || GetTickCount64() >= until; });
     };
     const auto down = [&](uintptr_t from, ULONGLONG until) {
-        for (uintptr_t a = from; !found && !out() && GetTickCount64() < until && a > lo && VirtualQuery(reinterpret_cast<void*>(a - 1), &mbi, sizeof(mbi));) {
-            const uintptr_t b = reinterpret_cast<uintptr_t>(mbi.BaseAddress), e = b + mbi.RegionSize;
-            if (mbi.State == MEM_FREE) {
-                const uintptr_t lowest = std::max(b, lo), to = std::min(e, a);
-                uintptr_t x = to >= size ? (to - size) & ~(gran - 1) : 0; // the highest addresses, nearest the site
-                for (int i = 0; !found && i < kTriesPerRegion && x >= lowest && x + size <= to && !out(); ++i, x -= gran) found = tryAt(x);
-            }
-            // A taken region: on to its whole allocation's start. One reservation made of many small
-            // regions (pages of different states) took the whole second page by page, at startup
-            // (2026-11-04: no try at all, and a page there was free 0.3 s later).
-            const uintptr_t base = mbi.State == MEM_FREE ? b : std::min(b, reinterpret_cast<uintptr_t>(mbi.AllocationBase));
-            if (base >= a || base == 0) break;
-            a = base;
-        }
+        if (!found) nearmem::searchDown(query, from, lo, size, gran, kTriesPerRegion, take, [&] { return out() || GetTickCount64() >= until; });
     };
     const ULONGLONG half = start + kMaxSearchMs / 2, all = start + kMaxSearchMs;
     if (site < imageBase) {
@@ -369,6 +351,11 @@ bool codeWrite(uint8_t* dst, const uint8_t* src, size_t n) {
     }
     std::vector<HANDLE> paused;
     pauseOthers(paused);
+    for (HANDLE h : paused) { // SuspendThread only asks: a thread is stopped once its context can be read
+        alignas(16) CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL;
+        GetThreadContext(h, &ctx);
+    }
     DWORD old = 0, tmp = 0;
     const bool ok = VirtualProtect(g_thunkPage, 0x1000, PAGE_READWRITE, &old) != 0;
     if (ok) memcpy(dst, src, n);
@@ -412,7 +399,7 @@ bool overlaps(uintptr_t at, size_t n) { return overlapping(at, n) != nullptr; } 
 // `original` then holds what was there before.
 // (g_m held)
 int addLocked(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what,
-              const uint8_t* written = nullptr) {
+              const uint8_t* written = nullptr, bool whole = false) {
     if (unloading()) return GN_ERR_UNAVAILABLE;
     if (const Patch* other = overlapping(at, n)) {
         // Name the other one: two mods patching the same code is a conflict to report with both.
@@ -420,9 +407,9 @@ int addLocked(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uin
                other->what.c_str());
         return GN_ERR_SLOT;
     }
-    Patch p{mod, at, std::vector<uint8_t>(n), std::vector<uint8_t>(bytes, bytes + n), owner, what};
+    Patch p{mod, at, std::vector<uint8_t>(n), std::vector<uint8_t>(bytes, bytes + n), owner, what, whole};
     if (written) memcpy(p.original.data(), written, n);
-    else if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n)) {
+    else if (!mem::read(at, p.original.data(), n) || !writeCode(at, bytes, n, false, whole && spansInstructions(at, n))) {
         GN_LOG("[%s] patch at %llx: the code could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(at)),
                static_cast<unsigned long>(GetLastError()));
         return GN_ERR_ARGUMENT;
@@ -432,9 +419,9 @@ int addLocked(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uin
     return GN_OK;
 }
 
-int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what) {
+int add(const char* mod, uintptr_t at, const uint8_t* bytes, size_t n, uintptr_t owner, const std::string& what, bool whole = false) {
     std::lock_guard<std::mutex> lock(g_m);
-    return addLocked(mod, at, bytes, n, owner, what);
+    return addLocked(mod, at, bytes, n, owner, what, nullptr, whole);
 }
 
 bool undo(const Patch& p) {
@@ -443,7 +430,8 @@ bool undo(const Patch& p) {
         GN_LOG("[%s] patch at %llx was changed since; left as it is", p.mod.c_str(), static_cast<unsigned long long>(mem::va(p.at)));
         return false;
     }
-    return writeCode(p.at, p.original.data(), p.original.size());
+    // The bytes now there are what a thread may be stopped in.
+    return writeCode(p.at, p.original.data(), p.original.size(), false, p.whole && spansInstructions(p.at, p.patched.size()));
 }
 
 } // namespace
@@ -458,7 +446,7 @@ int patchBytes(const char* mod, uint64_t va, const void* expected, const void* b
         GN_LOG("[%s] patch at %llx: the bytes there are not the expected ones (another game build?)", mod, static_cast<unsigned long long>(va));
         return GN_ERR_SLOT;
     }
-    return add(mod, at, static_cast<const uint8_t*>(bytes), size, reinterpret_cast<uintptr_t>(caller), "bytes");
+    return add(mod, at, static_cast<const uint8_t*>(bytes), size, reinterpret_cast<uintptr_t>(caller), "bytes", true);
 }
 
 int patchCall(const char* mod, uint64_t siteVa, uint64_t expectedTargetVa, void* detour, void** original, const void* caller) {
@@ -610,15 +598,26 @@ int detourSlot(const char* mod, uintptr_t fn, Detour& out) {
         return GN_ERR_SLOT;
     }
     int moved = 0;
-    if (!writeEntry(fn, entry, copied, starts, room, moved)) {
+    // One instruction of 5 bytes or more at the entry: the jump replaces only it, no thread can be
+    // half way through it, and one store is enough (writeCode pauses only when the 5 bytes cross a
+    // 16-byte line). Three of the seven detours in gridnode.prev.log (2026-11-10) were this case.
+    const size_t firstLength = starts.size() > 1 ? starts[1].first : copied;
+    const bool single = firstLength >= 5;
+    LARGE_INTEGER t0{}, t1{}, freq{};
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    const bool entryWritten = single ? writeCode(fn, entry, 5) : writeEntry(fn, entry, copied, starts, room, moved);
+    QueryPerformanceCounter(&t1);
+    const double pauseMs = freq.QuadPart ? double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(freq.QuadPart) : 0.0;
+    if (!entryWritten) {
         GN_LOG("[%s] hook_function %llx: the entry could not be written (error %lu)", mod, static_cast<unsigned long long>(mem::va(fn)),
                static_cast<unsigned long>(GetLastError()));
         giveBack();
         return GN_ERR_SLOT;
     }
-    char what[96];
-    snprintf(what, sizeof(what), "detour entry (%llu bytes moved%s)", static_cast<unsigned long long>(copied),
-             moved ? ", a thread moved into the trampoline" : "");
+    char what[128];
+    snprintf(what, sizeof(what), "detour entry (%llu bytes moved, %s %.1f ms%s)", static_cast<unsigned long long>(copied),
+             single ? "one instruction, written in" : "threads paused for", pauseMs, moved ? ", a thread moved into the trampoline" : "");
     // Listed, undone at a full unload. Cannot fail here (checked above, under the same lock); if it
     // ever does, the entry goes back at once rather than stay unlisted.
     if (addLocked("GridNode", fn, entry, 5, reinterpret_cast<uintptr_t>(&detourSlot), what, code) != GN_OK) {
