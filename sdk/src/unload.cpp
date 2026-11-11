@@ -66,6 +66,7 @@ bool unloadEverything() {
     faithRelease();
     messagesRelease();
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below
+    forgetAudioMix(CodeRange{}); // offsets to 0 and a recompute while the hook is still in; the hook goes with the rest below
     waitTicks(3, 3000);
     // Collision boxes leave the world at its next physics update, while the flush hook is still in.
     if (!bodiesRelease(2000)) GN_LOG("unload: collision boxes still in the physics world (no physics update ran); they stay");

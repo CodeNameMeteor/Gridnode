@@ -363,6 +363,17 @@ inline int boxState(uint32_t box) { return api().box_state(box); } // 1 in the w
 // factory instead of a borrowed record. Needs a live barrier to copy the setup from (else they wait).
 inline bool boxBackendNative(bool native) { return api().box_backend(native ? 1 : 0) == GN_OK; }
 
+// ---- the mixer's groups (API 35, stable) -----------------------------------------------------
+// bus: "master", "music", "sfx", "dialogue", "ambience", "ui" or a mix group's own name. Gains are linear 0..1; the
+// game's own value (the player's slider, pause mixes) stays underneath. See api.h.
+// The game's gain now (linear), or -1 when it cannot be read.
+inline float busVolume(const char* bus) {
+    float g = -1.f;
+    return api().bus_volume_get(bus, &g) == GN_OK ? g : -1.f;
+}
+inline bool busVolume(const char* bus, float gain) { return api().bus_volume_set(modName(), bus, gain) == GN_OK; }
+inline bool duck(const char* bus, float gain, float seconds) { return api().bus_duck(modName(), bus, gain, seconds) == GN_OK; }
+
 // ---- sounds (API 19) ----------------------------------------------------------------------------
 // A loaded sound asset played at pos (event null: its default start). 0 on failure. Client thread.
 inline uint32_t soundPlay(const char* assetPath, const Vec3* pos = nullptr, const char* event = nullptr) {

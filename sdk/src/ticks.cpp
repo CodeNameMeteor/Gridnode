@@ -67,6 +67,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     guarded("world", [] { worldClientTick(); });
     guarded("client messages", [] { messagesClientTick(); });
     guarded("faith", [] { faithClientTick(); });
+    guarded("audio mix", [&] { audioMixTick(dtOf(updateInfo)); });
     guarded("movement events", [] { movementEventsClientTick(); });
     guarded("layouts (client)", [] { layouts::clientTick(); });
     guarded("ant types", [] { antTick(); });

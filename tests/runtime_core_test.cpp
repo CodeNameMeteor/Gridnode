@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "gridnode/ant_types.hpp"
+#include "gridnode/audio_mix.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
@@ -662,6 +664,60 @@ void testFieldDiff() {
     CHECK(floats.first == "1.5" && floats.second == "-471.033");
 }
 
+// Mixer offsets (audio_mix.hpp): sets add across mods, ducks ramp and the deepest wins, unload drops a mod's.
+void testMixOffsets() {
+    audio::MixOffsets m;
+    float out[audio::kGroups];
+    CHECK(m.step(0.f, out).empty());
+    CHECK(out[4] == 0.f);
+
+    m.set("a", 0x10, 4, 0.5f);
+    m.set("b", 0x20, 4, 0.5f);
+    std::vector<int> ch = m.step(0.f, out);
+    CHECK(ch.size() == 1 && ch[0] == 4);
+    CHECK(std::fabs(out[4] - 2.f * audio::gainToDb(0.5f)) < 1e-4f); // two mods add in dB
+    m.set("a", 0x10, 4, 1.f);                                       // 1 = no change: removed
+    m.step(0.f, out);
+    CHECK(std::fabs(out[4] - audio::gainToDb(0.5f)) < 1e-4f);
+    CHECK(audio::gainToDb(0.f) == audio::kFloorDb && audio::gainToDb(-1.f) == audio::kFloorDb && audio::gainToDb(2.f) == 0.f);
+
+    // Duck: attack 0.1 s, hold, release 0.5 s; linear in gain, so halfway down is gain 0.625.
+    audio::MixOffsets d;
+    d.duck("a", 0x10, 7, 0.25f, 1.f);
+    d.step(0.05f, out);
+    CHECK(std::fabs(out[7] - audio::gainToDb(0.625f)) < 1e-3f);
+    d.step(0.05f, out);
+    CHECK(std::fabs(out[7] - audio::gainToDb(0.25f)) < 1e-3f);
+    d.step(0.5f, out); // held
+    CHECK(std::fabs(out[7] - audio::gainToDb(0.25f)) < 1e-3f);
+    d.step(0.6f, out); // t = 1.2: 0.1 s into the 0.5 s release (the hold ends at 1.1)
+    CHECK(out[7] > audio::gainToDb(0.25f) && out[7] < 0.f);
+    CHECK(d.any());
+    ch = d.step(0.5f, out); // over: back to 0, and the group is reported
+    CHECK(out[7] == 0.f && !d.any());
+    CHECK(!ch.empty() && ch.back() == 7);
+    CHECK(d.step(0.1f, out).empty());
+
+    // Ducks on one group do not add (the deepest wins); a set adds under them.
+    audio::MixOffsets e;
+    e.duck("a", 0x10, 3, 0.5f, 5.f);
+    e.duck("b", 0x20, 3, 0.25f, 5.f);
+    e.set("a", 0x10, 3, 0.5f);
+    e.step(0.2f, out);
+    CHECK(std::fabs(out[3] - (audio::gainToDb(0.25f) + audio::gainToDb(0.5f))) < 1e-3f);
+
+    // A mod unloaded: its set and duck go, the other's stay; the groups come back for a recompute.
+    const std::vector<int> gone = e.forget([](uintptr_t tag) { return tag == 0x10; });
+    CHECK(!gone.empty());
+    e.step(0.f, out);
+    CHECK(std::fabs(out[3] - audio::gainToDb(0.25f)) < 1e-3f);
+    e.forget([](uintptr_t) { return true; });
+    e.step(0.f, out);
+    CHECK(out[3] == 0.f && !e.any());
+    m.set("a", 1, -1, 0.5f); // out-of-range groups are ignored
+    m.set("a", 1, audio::kGroups, 0.5f);
+}
+
 } // namespace
 
 int main() {
@@ -677,6 +733,7 @@ int main() {
     testMovementEvents();
     testProjection();
     testEventHash();
+    testMixOffsets();
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
