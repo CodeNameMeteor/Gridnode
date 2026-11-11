@@ -6,9 +6,9 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <cstring>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,8 +43,10 @@ const Type* typeOfVtable(uintptr_t vt) {
 }
 
 // The runtime vtables of `type` (and its subclasses), each checked by its slot 0: a vtable the walker
-// found only as a candidate may belong to a sibling sharing getType.
-std::vector<uint64_t> vtablesOf(const Type* type, bool subclasses) {
+// found only as a candidate may belong to a sibling sharing getType. A vtable whose slot at `offset`
+// holds a getType accessor is left out: the offset is past its end, in the next vtable, and hooking
+// that class's slot 0 would make its objects unknown.
+std::vector<uint64_t> vtablesOf(const Type* type, bool subclasses, uint32_t offset, size_t* pastEnd) {
     std::vector<uint64_t> out;
     for (const Type& t : registry().data().types) {
         if (t.category != reflect::Category::Class) continue;
@@ -53,6 +55,10 @@ std::vector<uint64_t> vtablesOf(const Type* type, bool subclasses) {
             const uintptr_t vt = mem::rva(va);
             const Type* got = typeOfVtable(vt);
             if (!got || (subclasses ? !registry().isKindOf(got, type) : got != type)) continue;
+            if (typeOfVtable(vt + offset)) {
+                ++*pastEnd;
+                continue;
+            }
             out.push_back(vt);
         }
     }
@@ -91,10 +97,13 @@ int hookVirtual(const char* mod, const Type* type, uint32_t offset, void* detour
     if (offset == 0) return GN_ERR_SLOT;
     if (unloading()) return GN_ERR_UNAVAILABLE;
     const bool subclasses = (flags & GN_HOOK_SUBCLASSES) != 0;
-    std::vector<uint64_t> vts = vtablesOf(type, subclasses);
+    size_t pastEnd = 0;
+    std::vector<uint64_t> vts = vtablesOf(type, subclasses, offset, &pastEnd);
+    if (pastEnd) GN_LOG("[%s] hook_virtual %s+0x%x: past the end of %llu vtable(s): those are left alone", mod, type->name.c_str(), offset,
+                        static_cast<unsigned long long>(pastEnd));
     if (vts.empty()) {
-        GN_LOG("[%s] hook_virtual %s+0x%x: the class has no vtable GridNode knows", mod, type->name.c_str(), offset);
-        return GN_ERR_NOT_FOUND;
+        GN_LOG("[%s] hook_virtual %s+0x%x: no vtable of the class GridNode knows has that slot", mod, type->name.c_str(), offset);
+        return pastEnd ? GN_ERR_SLOT : GN_ERR_NOT_FOUND;
     }
     auto set = std::make_unique<vhook::Set>(mod, std::move(vts), offset, reinterpret_cast<uint64_t>(detour));
     std::string why;

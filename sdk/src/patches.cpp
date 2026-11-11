@@ -276,7 +276,9 @@ uint8_t* allocNear(uintptr_t site, bool exec, bool& writable, size_t size = 0x10
     };
     const ULONGLONG half = start + kMaxSearchMs / 2, all = start + kMaxSearchMs;
     if (site < imageBase) {
-        down(site, half);
+        // From the end of the granule holding the site: the reserve asks for the page below the image,
+        // and the 64 KB just under the image would otherwise never be a candidate.
+        down(std::min<uintptr_t>((site + gran) & ~(gran - 1), imageBase), half);
         up(site, all);
     } else {
         up(std::max(site, imageEnd), half);

@@ -1164,7 +1164,7 @@ typedef struct gn_api {
      *   no single original: hook_original(handle, self) gives the one for that object (by its vtable). Offset 0
      *   is refused (GN_ERR_SLOT): slot 0 is getType, which GridNode reads to know every object's class.
      *   GN_ERR_NOT_FOUND: no vtable known for the class; GN_ERR_SLOT: no slot could be hooked (not game code
-     *   there). Taken out when the mod is unloaded, or with hook_virtual_remove. Any thread.
+     *   there, or the offset is past the end of every vtable: a slot holding a class's getType is never hooked). Taken out when the mod is unloaded, or with hook_virtual_remove. Any thread.
      * hook_original: null for an object whose vtable this hook is not in. A plain load of self's vtable: call it
      *   only with the object the game called the detour with. */
     int (*type_vtable_count)(const gn_type* type);

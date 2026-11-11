@@ -12,6 +12,7 @@
 // Callbacks are std::function-like lambdas; GridNode keeps them while the mod is loaded.
 
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -972,9 +973,9 @@ public:
     Field(const char* className, const char* fieldName) : class_(className), field_(fieldName) {}
     // Found, with the size of T: get/set can work.
     bool valid() const { return resolve(); }
-    uint32_t offset() const { return resolve() ? offset_ : 0; }
+    uint32_t offset() const { return resolve() ? offset_.load(std::memory_order_relaxed) : 0; }
     bool get(const void* object, T& out) const {
-        return object && resolve() && api().read(static_cast<const char*>(object) + offset_, &out, sizeof(T)) == GN_OK;
+        return object && resolve() && api().read(static_cast<const char*>(object) + offset(), &out, sizeof(T)) == GN_OK;
     }
     T get(const void* object) const { return getOr(object, T{}); }
     T getOr(const void* object, T fallback) const {
@@ -982,32 +983,36 @@ public:
         return get(object, v) ? v : fallback;
     }
     bool set(void* object, const T& value) const {
-        return object && resolve() && api().write(static_cast<char*>(object) + offset_, &value, sizeof(T)) == GN_OK;
+        return object && resolve() && api().write(static_cast<char*>(object) + offset(), &value, sizeof(T)) == GN_OK;
     }
     T getLive(const void* object) const {
         T v{};
-        if (object && resolve()) memcpy(&v, static_cast<const char*>(object) + offset_, sizeof(T));
+        if (object && resolve()) memcpy(&v, static_cast<const char*>(object) + offset(), sizeof(T));
         return v;
     }
     bool setLive(void* object, const T& value) const {
         if (!object || !resolve()) return false;
-        memcpy(static_cast<char*>(object) + offset_, &value, sizeof(T));
+        memcpy(static_cast<char*>(object) + offset(), &value, sizeof(T));
         return true;
     }
 
 private:
     bool resolve() const {
-        if (state_ == 0 && detail::apiPtr()) { // found by any thread: the same answer each time
+        int st = state_.load(std::memory_order_acquire);
+        if (st == 0 && detail::apiPtr()) { // any thread may find it first: the same answer each time
             gn_field f;
             const Type t = Type::find(class_);
-            state_ = t && t.field(field_, f) && f.size == sizeof(T) ? (offset_ = f.offset, 1) : -1;
+            const bool ok = t && t.field(field_, f) && f.size == sizeof(T);
+            if (ok) offset_.store(f.offset, std::memory_order_relaxed);
+            st = ok ? 1 : -1;
+            state_.store(st, std::memory_order_release);
         }
-        return state_ > 0;
+        return st > 0;
     }
     const char* class_;
     const char* field_;
-    mutable uint32_t offset_ = 0;
-    mutable int state_ = 0; // 0 not looked up, 1 found, -1 not (or a different size)
+    mutable std::atomic<uint32_t> offset_{0};
+    mutable std::atomic<int> state_{0}; // 0 not looked up, 1 found, -1 not (or a different size)
 };
 
 // ---- any entity's components, the data folder (API 36) ----------------------------------------------
