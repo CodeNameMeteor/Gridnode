@@ -56,12 +56,33 @@ class Catalogue:
     counts_layout: int  # how many u32 counts followed the magic
 
 
+def unwrap(data: bytes) -> bytes:
+    """A file's content without the signed header some files carry (00 d1 ce 0x, 0x22C bytes: every
+    cas.cat and .toc of the user's install, 2026-11-11). When the content behind it does not read as
+    plain, it may be XORed with the 257-byte key at 0x128 (each byte with key[i % 257] ^ 0x7B):
+    unwrap_xor tries that."""
+    return data[TOC_HEADER:] if data[:4] in TOC_HEADER_MAGICS and len(data) >= TOC_HEADER else data
+
+
+def unwrap_xor(data: bytes) -> bytes:
+    key = data[0x128:0x128 + 257]
+    body = data[TOC_HEADER:]
+    if len(key) < 257:
+        return body
+    return bytes(b ^ key[i % 257] ^ 0x7B for i, b in enumerate(body))
+
+
 def read_catalogue(path: str) -> Catalogue:
     with open(path, "rb") as f:
-        data = f.read()
+        raw = f.read()
+    data = unwrap(raw)
+    if not data.startswith(MAGIC) and raw[:4] in TOC_HEADER_MAGICS:
+        x = unwrap_xor(raw)
+        if x.startswith(MAGIC):
+            data = x
     if not data.startswith(MAGIC):
-        raise StoreError(f"{path}: not a catalogue as described (no NyanNyanNyanNyan); {len(data)} bytes, "
-                         f"starting {data[:48].hex(' ')}")
+        raise StoreError(f"{path}: not a catalogue as described (no NyanNyanNyanNyan, plain or behind the header); {len(raw)} bytes, "
+                         f"starting {raw[:48].hex(' ')}; after the header {raw[TOC_HEADER:TOC_HEADER + 48].hex(' ')}")
     folder = os.path.dirname(os.path.abspath(path))
     # Two or three counts: entries, patch entries (and one more in some builds). The right layout is
     # the one whose tables fill the file exactly.
@@ -154,9 +175,8 @@ def decompress_payload(data: bytes, where: str = "payload") -> bytes:
 def read_toc(path: str):
     with open(path, "rb") as f:
         data = f.read()
-    start = TOC_HEADER if data[:4] in TOC_HEADER_MAGICS else 0
     try:
-        return tree.parse(data, start)
+        return tree.parse(unwrap(data))
     except tree.FormatError as e:
         raise StoreError(f"{path}: {e}") from e
 

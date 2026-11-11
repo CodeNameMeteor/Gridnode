@@ -43,7 +43,11 @@ TimeScale, Faith's components, the data folder line, the type view and the read-
 skipped from the file; reload and unload of detour-demo and a full unload are clean. Fixed after: class hooks were
 missing from the Hooks list (now listed, and logged when taken out); `assets check` stopped at the first
 catalogue without NyanNyanNyanNyan (`Data\Win32\gameconfigurations\anchorinstallpackage\cas.cat`): such
-catalogues are now listed with their first 48 bytes and the rest read on.
+catalogues are now listed with their first 48 bytes and the rest read on. The second run (2026-11-11): every
+`.toc` and `.sb` read (24 superbundles, 622 bundles; 151,832 ebx, 74,646 res, 101,056 chunk entries), so the tree
+format is confirmed; every `cas.cat` starts with the signed header `00 d1 ce 01` (as the tocs do): the reader
+now skips it (and tries the XOR form when the magic is not behind it). The class hook was taken out at both
+unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`).
 
 Not done (next): 2.1 step 2 (`hooks_begin` / `hooks_commit`), 2.3 the entity index, 3.2 the mod context
 (open question: `gn_mod_load2` or the manifest), 3.6 the `unverified` namespace (open question: hide

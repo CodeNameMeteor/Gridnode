@@ -54,7 +54,7 @@ def make_install(root: str, *, counts: int = 2, codec: int = 0x02) -> dict[str, 
     for e in entries:
         cat += store.ENTRY.pack(*e)
     with open(os.path.join(win, "cas.cat"), "wb") as f:
-        f.write(cat)
+        f.write(b"\x00\xd1\xce\x01" + os.urandom(store.TOC_HEADER - 4) + cat)  # signed, as the user's install
     names = list(files)
     body = tree.encode({
         "ebx": [{"name": names[0], "sha1": hashlib.sha1(files[names[0]]).digest(), "size": entries[0][2], "originalSize": len(files[names[0]])}],
@@ -105,6 +105,17 @@ class Store(unittest.TestCase):
                 make_install(d, counts=counts)
                 cat = store.read_catalogue(os.path.join(d, "Data", "Win32", "cas.cat"))
                 self.assertEqual((len(cat.entries), cat.counts_layout), (2, counts))
+
+    def test_xored_catalogue(self):
+        with tempfile.TemporaryDirectory() as d:
+            head = bytearray(os.urandom(store.TOC_HEADER))
+            head[:4] = b"\x00\xd1\xce\x00"
+            key = head[0x128:0x128 + 257]
+            body = store.MAGIC + struct.pack("<II", 0, 0)
+            p = os.path.join(d, "cas.cat")
+            with open(p, "wb") as f:
+                f.write(bytes(head) + bytes(b ^ key[i % 257] ^ 0x7B for i, b in enumerate(body)))
+            self.assertEqual(len(store.read_catalogue(p).entries), 0)
 
     def test_catalogue_that_fits_no_layout(self):
         with tempfile.TemporaryDirectory() as d:
