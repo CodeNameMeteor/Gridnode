@@ -11,9 +11,114 @@ classes:
   - name: PamClientPresenceInfoManagerEntity
     realm: client
     vtable: 0x141c74be8
-    note: Friend markers on the map.
+    note: "Friend markers and player presence on the 2D world map and HUD friend radar. Holds a fixed slot array."
+    members:
+      - { confidence: hypothesis, offset: 0x20, name: levelContext, type: "void*", note: "Level context pointer, passed to EntityBus_getLevel." }
+      - { confidence: hypothesis, offset: 0x28, name: managerData, type: "void*", note: "Manager entity data asset (+0x18 holds PF_PresenceInfo Blueprint*)." }
+      - { confidence: hypothesis, offset: 0x39, name: isPaused, type: u8, note: "Pause or disable flag." }
+      - { confidence: hypothesis, offset: 0x3c, name: updateInterval, type: f32, note: "Online presence query interval (default 10.0s)." }
+      - { confidence: hypothesis, offset: 0x40, name: updateTimer, type: f32, note: "Timer counting down to next online position publication." }
+      - { confidence: hypothesis, offset: 0x44, name: permissionsTimer, type: f32, note: "Timer counting down to next privacy/permissions query." }
+      - { confidence: hypothesis, offset: 0x48, name: settings, type: "void*", note: "PamSocialPlaySettings* (+0x20 specifies max slot capacity)." }
+      - { confidence: hypothesis, offset: 0x50, name: slotsBegin, type: "PresenceSlot*", note: "Vector begin pointer to slot array (0x50 bytes per slot)." }
+      - { confidence: hypothesis, offset: 0x58, name: slotsEnd, type: "PresenceSlot*", note: "Vector end pointer to slot array." }
+
+  - name: PresenceInfoManagerPool
+    confidence: hypothesis
+    realm: client
+    vtable: 0x141c74bb8
+    note: "Container managing all active PamClientPresenceInfoManagerEntity instances in the client world."
+    members:
+      - { confidence: hypothesis, offset: 0x28, name: entriesBegin, type: "PresencePoolEntry*", note: "Vector begin pointer to pool entries (0x10 bytes per entry)." }
+      - { confidence: hypothesis, offset: 0x30, name: entriesEnd, type: "PresencePoolEntry*", note: "Vector end pointer to pool entries." }
+
+  - name: PamClientPresenceInfoEntity
+    confidence: hypothesis
+    realm: client
+    vtable: 0x141c74ac0
+    note: "Spawned per active slot from PF_PresenceInfo prefab. Drives map marker, transform, and visibility."
+    members:
+      - { confidence: hypothesis, offset: 0x30, name: nameProperty, type: "void*", note: "Property connector for player display name (TI_LocalizedString, 0xbf943de7)." }
+      - { confidence: hypothesis, offset: 0x38, name: transformProperty, type: "void*", note: "Property connector for 4x4 matrix world position (TI_LinearTransform, 0x7f30d4fe)." }
+      - { confidence: hypothesis, offset: 0x40, name: onlineIdProperty, type: "void*", note: "Property connector for online account ID (TI_PamOnlineIdData, 0xbb211b07)." }
+      - { confidence: hypothesis, offset: 0x48, name: validProperty, type: "void*", note: "Property connector for valid boolean state (TI_Boolean, 0x0d6ef4f3)." }
+      - { confidence: hypothesis, offset: 0x50, name: shownProperty, type: "void*", note: "Property connector for shown/visible boolean state (TI_Boolean, 0xcacba3e1)." }
+
+  - name: PamClientUIPauseEntity
+    confidence: hypothesis
+    realm: client
+    vtable: 0x141cbd4a8
+    members:
+      - { confidence: hypothesis, offset: 0x28, name: data, type: "PamUIPauseEntityData*" }
+      - { confidence: hypothesis, offset: 0x30, name: active, type: u8 }
+
+  - name: PamServerNamedChallengeEntity
+    confidence: hypothesis
+    realm: server
+    vtable: 0x141c7ec70
+    note: "Server entity managing named challenges (dashes, deliveries, GridNodes). Holds challenge data at +0x80."
+    members:
+      - { confidence: hypothesis, offset: 0x80, name: challengeData, type: "PamNamedChallengeData*" }
+
+  - name: PamServerChallengeMarkerEntity
+    confidence: hypothesis
+    realm: server
+    vtable: 0x141c7e3e8
+    note: "Server entity managing player-authored time trials (UGC) and ReachThis markers."
+    members:
+      - { confidence: hypothesis, offset: 0x28, name: data, type: "PamChallengeMarkerEntityData*" }
+      - { confidence: hypothesis, offset: 0x80, name: contentId, type: "u8[24]" }
+      - { confidence: hypothesis, offset: 0xb8, name: name, type: "const char*" }
+
+  - name: PamUIPauseEntityData
+    confidence: hypothesis
+    realm: client
+    size: 0x20
+    members:
+      - { confidence: hypothesis, offset: 0x18, name: postponePauseUntilScreenIsFadedIn, type: u8, note: "When 1, UIPauseController_request only increments pauseRequestsA (soft pause). When 0, increments pauseRequestsB (hard pause immediately)." }
 
 structs:
+  - name: OnlineId
+    confidence: hypothesis
+    size: 0x28
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: id, type: u64, note: "EA Nucleus / Origin persona account ID." }
+      - { confidence: hypothesis, offset: 0x08, name: name, type: "char[32]", note: "Null-terminated player display name." }
+
+  - name: PresenceSlot
+    confidence: hypothesis
+    size: 0x50
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: shown, type: u8, note: "1 = marker visible on map and radar, 0 = hidden. Set from privacy check or mod override." }
+      - { confidence: hypothesis, offset: 0x04, name: priority, type: i32, note: "Slot priority. Friends use 0; mods use 1000 to prevent eviction." }
+      - { confidence: hypothesis, offset: 0x08, name: onlineId, type: "OnlineId", note: "Online account identifier." }
+      - { confidence: hypothesis, offset: 0x30, name: worldPos, type: "Vec4", note: "Marker 3D position (x, y, z, w). Must be 16-byte aligned for MOVAPS." }
+      - { confidence: hypothesis, offset: 0x40, name: blueprintInstance, type: "void*", note: "Spawned instance of PF_PresenceInfo blueprint." }
+      - { confidence: hypothesis, offset: 0x48, name: presenceInfoEntityHandle, type: "void*", note: "Handle / ref-counted pointer to PamClientPresenceInfoEntity." }
+
+  - name: PresencePoolEntry
+    confidence: hypothesis
+    size: 0x10
+    members:
+      - { confidence: hypothesis, offset: 0x00, name: manager, type: "PamClientPresenceInfoManagerEntity*", note: "Active presence manager entity for level." }
+      - { confidence: hypothesis, offset: 0x08, name: interval, type: u16, note: "Update interval in ticks." }
+      - { confidence: hypothesis, offset: 0x0a, name: timer, type: u16, note: "Remaining ticks until next update." }
+      - { confidence: hypothesis, offset: 0x0c, name: accumulatedTime, type: f32, note: "Accumulated delta time in seconds." }
+
+  - name: PamNamedChallengeData
+    confidence: hypothesis
+    size: 0xa0
+    members:
+      - { confidence: hypothesis, offset: 0x10, name: sid, type: "const char*", note: "Localization ID string key, e.g. 'ID_NC_THEVIEW02'." }
+      - { confidence: hypothesis, offset: 0x58, name: mainStatCode, type: "const char*", note: "Stat code key, e.g. 'ch_rrt_tv2_time' (dashes start with 'ch_rrt_')." }
+      - { confidence: hypothesis, offset: 0x98, name: contentId, type: u32, note: "Unique challenge ID." }
+
+  - name: PamChallengeMarkerEntityData
+    confidence: hypothesis
+    size: 0x70
+    members:
+      - { confidence: hypothesis, offset: 0x68, name: checkpointOrder, type: i32, note: "0 for ReachThis / Beat L.E. (unannounced); != 0 for sequential or open timed runs." }
+      - { confidence: hypothesis, offset: 0x6c, name: time, type: f32, note: "Target or author time in seconds." }
   - name: UIPauseController
     size: 0x10
     opaque: true
@@ -28,6 +133,12 @@ globals:
     confidence: inferred
     sources: [ghidra]
     note: "The PamUISystem (0x9e0 bytes), read by the getter at 0x143269ae0 (mov rax, [rip+..]; ret); zeroed by the UI system's destructor. Checked in Ghidra 2026-11-06."
+  - name: TI_PamUIPauseEntityData
+    va: 0x142887770
+    type: "void*"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "TypeInfo for PamUIPauseEntityData."
 
 hooks:
   - name: PamUISystem_update
@@ -42,6 +153,7 @@ hooks:
     slot: 0x141c74bc8
     original: 0x143a4bb30
     signature: "void(void* pool, void* updateInfo)"
+    note: "Per-frame update of friend marker manager pool (vf1). Dispatches to active level PamClientPresenceInfoManagerEntity instances. Hook point for injecting custom player markers."
   - name: PamClientPresenceInfoManagerEntity_create
     kind: creator-slot
     slot: 0x141c74cb8
@@ -71,7 +183,59 @@ functions:
     va: 0x143b16ae0
     signature: "void(UIPauseController* controller)"
     confidence: inferred
+  - name: UIPauseController_request
+    va: 0x143b16210
+    signature: "void(UIPauseController* controller, i8 on, i8 full)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Increments (on != 0) or decrements (on == 0) pauseRequestsA (+0x08). If full != 0, likewise increments or decrements pauseRequestsB (+0x0c). Called exclusively by PamClientUIPauseEntity."
+  - name: UIPauseController_isPaused
+    va: 0x143b12830
+    signature: "bool(UIPauseController* controller)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Returns true if pauseRequestsA > 0 and (timescale < 1e-6 or pauseRequestsB > 0). Read by UI update 0x143b173e0."
+  - name: PlayerView_getTimescale
+    va: 0x1432a8710
+    signature: "f32(void* subview)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Returns max(subview + 0x64, +0x8c, +0x3c): the effective simulation timescale factor (1.0 normal, 0.0 frozen). Evaluated by UIPauseController_applyToClient."
+  - name: PlayerView_getSubview
+    va: 0x1432a8d80
+    signature: "void*(u32 playerIndex)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Returns player subview timing context for playerIndex (0 for local player)."
+  - name: PamClientUIPauseEntity_onEvent
+    va: 0x143b3ac80
+    signature: "void(void* entity, void* eventData)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Event handler for PamClientUIPauseEntity (vf4). Event 0x0dd8ddf7 calls pause (0x143b40460); event 0xc44b5c3c calls unpause (0x143b41900). Both evaluate full = (data->postponeUntilFadedIn == 0)."
+  - name: PamClientUIPauseEntity_create
+    va: 0x143b35850
+    signature: "void*(void* creator, EntityCreationInfo* ci, void* a3, void* a4)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Creator for PamClientUIPauseEntity (0x38 bytes, vtable 0x141cbd4a8). Holds pointer to PamUIPauseEntityData at +0x28, active state at +0x30."
+  - name: localize
+    va: 0x1436a8d40
+    signature: "bool(char* out, u32 capacity, const char* sid, void* args)"
+    confidence: hypothesis
+    sources: [mecmp, ghidra]
+    note: "Resolves a localization ID (e.g. 'ID_NC_THEVIEW02') into a localized display string (e.g. 'The View'). Calls string singleton 0x1436a96d0."
   - name: PresenceInfoManager_assignSlot
     va: 0x143a405e0
     signature: "void*(void* manager, void* onlineId, const f32* position, i32 priority)"
-    note: Returns the marker slot. position is a Vec4.
+    confidence: confirmed
+    sources: [mecmp, ghidra]
+    note: "Assigns or updates a presence slot (0x50 bytes) for an OnlineId with priority and 16-byte aligned Vec4 world position. Spawns PF_PresenceInfo blueprint on first use."
+
+constants:
+  - { name: Event_UIPause_On, value: 0x0dd8ddf7, confidence: hypothesis, sources: [ghidra], note: "Event triggering PamClientUIPauseEntity pause (0x143b40460)." }
+  - { name: Event_UIPause_Off, value: 0xc44b5c3c, confidence: hypothesis, sources: [ghidra], note: "Event triggering PamClientUIPauseEntity unpause (0x143b41900)." }
+  - { name: MessageCategory_PamplonaGamePaused, value: 0x0dc84585, confidence: hypothesis, sources: [ghidra] }
+  - { name: MessageType_PamplonaGamePaused, value: 0xbbc34556, confidence: hypothesis, sources: [ghidra], note: "Broadcast when game pause changes. Payload bool isPaused at offset +0x48." }
+  - { name: MessageCategory_ClientMetricsPause, value: 0xd65bfe6b, confidence: hypothesis, sources: [ghidra] }
+  - { name: MessageType_ClientMetricsPause, value: 0x3e6ab63c, confidence: hypothesis, sources: [ghidra], note: "Broadcast to metrics when game pause changes. Payload bool isPaused at +0x30." }

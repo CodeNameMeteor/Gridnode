@@ -175,9 +175,9 @@ functions:
   - name: ClientEntity_spawnIntoBus
     va: 0x1431c44b0
     signature: "void*(EntityCreationInfo* ci, void* parentBus)"
-    confidence: inferred
-    sources: [research]
-    note: "Client counterpart of entityCreator_spawnIntoBus: creates the entity for ci->data (+0xd0). Used by the client static model group for destroyed parts."
+    confidence: hypothesis
+    sources: [ghidra, research, gridnode]
+    note: "Client counterpart of entityCreator_spawnIntoBus: creates the entity for ci->data (+0xd0). Used by the client static model group for destroyed parts. Confirmed in Ghidra decompilation."
   - name: Blueprint_instantiate
     va: 0x14335e390
     signature: "void(void* result, EntityCreationInfo* ci, void* blueprint, void* referenceData, u64 a5)"
@@ -232,9 +232,17 @@ functions:
     note: >-
       Named in Ghidra as entityCreator_spawnIntoBus. Returns the created entity (0 while
       entity spawning is disabled). ci->data's vtable +0x28 (realm) gives the creator, whose
-      vtable +8 creates; the data's own Transform is combined with ci->transform (0x143167120).
+      vtable +8 creates; the data's own Transform is combined with ci->transform (0x143167120). Confirmed in Ghidra decompilation.
     confidence: hypothesis
-    sources: [ghidra]
+    sources: [ghidra, research, gridnode]
+  - name: entityCreator_spawnEntityWithContext
+    va: 0x143167120
+    signature: "void*(EntityCreationInfo* ci, void* propertyContext)"
+    note: >-
+      Pure research (to be confirmed in game). Core entity instantiation engine called by entityCreator_spawnIntoBus and ClientEntity_spawnIntoBus.
+      Resolves creator via ci->data vtable slot +0x28 (vtable[5]), applies ci->transform and propertyContext transforms, and calls creator vtable slot +8.
+    confidence: hypothesis
+    sources: [ghidra, research]
   - name: fb_Blueprint_instantiateImpl
     va: 0x14335e400
     signature: "u64(u64, void*, u64, void*, u64)"
@@ -457,3 +465,13 @@ globals:
     va: 0x1425476c0
     type: bool
     note: "Read by Blueprint_instantiate and entityCreator_spawnIntoBus, written by 0x14335e810 / 0x14335ea10. Named g_entitySpawningEnabled in the user's Ghidra."
+
+constants:
+  - { name: StaticModelEntityData_Size, value: 0xe0, confidence: hypothesis, sources: [research, gridnode], note: "Size in bytes of StaticModelEntityData." }
+  - { name: StaticModelEntityData_Flags, value: 0x10, confidence: hypothesis, sources: [research, gridnode], note: "DataBusPeer.Flags at +0x10." }
+  - { name: StaticModelEntityData_Transform, value: 0x20, confidence: hypothesis, sources: [research, gridnode], note: "LinearTransform at +0x20 (64 bytes)." }
+  - { name: StaticModelEntityData_PhysicsData, value: 0x80, confidence: hypothesis, sources: [research, gridnode], note: "PhysicsEntityData* at +0x80." }
+  - { name: StaticModelEntityData_Mesh, value: 0x98, confidence: hypothesis, sources: [research, gridnode], note: "MeshAsset* at +0x98." }
+  - { name: MeshAsset_Size, value: 0x78, confidence: hypothesis, sources: [research, gridnode], note: "Size in bytes of MeshAsset / RigidMeshAsset." }
+  - { name: MeshAsset_Name, value: 0x10, confidence: hypothesis, sources: [research, gridnode], note: "CString path at Asset +0x10." }
+  - { name: MeshAsset_Materials, value: 0x60, confidence: hypothesis, sources: [research, gridnode], note: "MeshMaterial* array at +0x60." }

@@ -2,7 +2,121 @@
 # Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
+classes:
+  - name: ZoneStreamerEntity
+    realm: any
+    vtable: 0x141cfe4c0
+    note: "Controls zone streaming within a district sublevel. Evaluates focus positions to load and unload zones."
+    members:
+      - { offset: 0x268, name: classLink, type: "void*", note: "Node in ClassInfo per-world list." }
+      - { offset: 0x280, name: focusManager, type: "void*", note: "ZoneStreamerFocusManager at +0x280." }
+      - { offset: 0x2a8, name: focusPositions, type: "void*", note: "Evaluated position and direction array (stride 0x20 per focus point)." }
+      - { offset: 0x2c8, name: focusCount, type: u32, note: "Number of active focus records." }
+      - { offset: 0x2d8, name: gridData, type: "void*", note: "Grid partition and zone AABB boundary data passed to ZoneStreamer_findZone." }
+
+  - name: ZoneStreamerFocusEntity
+    realm: any
+    vtable: 0x141cfe460
+    note: "Game entity providing a focus point to a ZoneStreamerEntity. In vanilla levels, strictly parented to the player character (Faith)."
+    members:
+      - { offset: 0x30, name: streamer, type: "ZoneStreamerEntity*" }
+      - { offset: 0x40, name: focusInterfaceVtable, type: "void*", note: "Focus interface vtable 0x141cfe528; slot 0 is ZoneStreamerFocusPoint_get (0x143c7f9a0)." }
+      - { offset: 0x48, name: focusManager, type: "void*", note: "Cached pointer to streamer + 0x280." }
+      - { offset: 0x50, name: enabled, type: u8, note: "1 when active/registered, 0 when disabled." }
+
+  - name: PamClientMissionEntity
+    realm: client
+    vtable: 0x141c6b180
+    note: "Client mission entity tracking active level mission state and replicating from server."
+    members:
+      - { offset: 0x28, name: missionData, type: "void*", note: "Mission blueprint data." }
+      - { offset: 0x58, name: isStarted, type: u8, note: "1 when mission is active." }
+      - { offset: 0x59, name: isPaused, type: u8, note: "1 when mission is paused." }
+      - { offset: 0x5a, name: isInDistrict, type: u8, note: "1 when player is within mission district." }
+      - { offset: 0x5b, name: isCompleted, type: u8, note: "1 when mission has been completed." }
+      - { offset: 0x68, name: missionIdProperty, type: "void*", note: "Property connector for mission ID (0x46f8e52e)." }
+
+  - name: PamServerMissionManagerEntity
+    realm: server
+    vtable: 0x141c7add0
+    note: "Server entity managing mission lifecycle, start/stop/restart, and checkpoint state transitions."
+    members:
+      - { offset: 0x40, name: activeMission, type: "void*", note: "Currently active mission entity." }
+      - { offset: 0x58, name: statusProperty, type: "void*", note: "Mission status output property." }
+      - { offset: 0x60, name: checkpointTransformProperty, type: "void*", note: "Last checkpoint transform output property (0xd9db5473)." }
+
+  - name: PamServerCheckpointEntity
+    realm: server
+    vtable: 0x141c7e750
+    note: "Server checkpoint entity that stores Faith's respawn transform and triggers progression save."
+    members:
+      - { offset: 0x60, name: isEnabled, type: u8, note: "1 when checkpoint is enabled." }
+      - { offset: 0x61, name: isTriggered, type: u8, note: "1 when checkpoint has been passed/triggered." }
+      - { offset: 0x62, name: isInDistrict, type: u8, note: "1 when checkpoint is in the active district." }
+      - { offset: 0x63, name: isSilent, type: u8, note: "Silent checkpoint flag (no UI notification)." }
+      - { offset: 0x64, name: isRespawnHere, type: u8, note: "1 if Faith respawns at this transform on level reload." }
+      - { offset: 0x70, name: checkpointIndex, type: u32, note: "Checkpoint sequence index." }
+      - { offset: 0x80, name: spawnTransform, type: LinearTransform, note: "World transform where Faith respawns (0x87525469)." }
+      - { offset: 0xc0, name: triggerRadius, type: f32, note: "Trigger volume radius (0x4ddbe821)." }
+      - { offset: 0xd0, name: triggerTransform, type: LinearTransform, note: "Trigger volume orientation and position (0xae496a36)." }
+
+  - name: ServerObjectiveEntity
+    realm: server
+    vtable: 0x141b4eaa8
+    note: "Server objective entity managing objective activation, timer progress, and success/failure conditions."
+    members:
+      - { offset: 0x28, name: objectiveData, type: "void*", note: "ObjectiveEntityData pointer." }
+      - { offset: 0xa0, name: netState, type: "void*", note: "Network replication state interface." }
+      - { offset: 0xe0, name: timer, type: f32, note: "Objective duration / timer (-1.0f when unstarted)." }
+      - { offset: 0xec, name: isCompleted, type: u8, note: "1 when objective condition has been satisfied." }
+      - { offset: 0xed, name: isActive, type: u8, note: "1 when objective is currently running." }
+      - { offset: 0xf0, name: parentObjective, type: "void*", note: "Parent tactical objective in composite objectives." }
+
+  - name: ClientObjectiveEntity
+    realm: client
+    vtable: 0x141b2a308
+    note: "Client objective entity displaying objective markers on HUD and receiving network updates from server."
+    members:
+      - { offset: 0x18, name: flags, type: u32, note: "Bit 7 (0x80) controls client active/visible display." }
+      - { offset: 0x30, name: netInterfaceVtable, type: "void*", note: "Client network state interface (0x141b2a3c0)." }
+
+structs:
+  - name: ZoneStreamerFocusRecord
+    size: 0x18
+    members:
+      - { offset: 0x00, name: key, type: u64 }
+      - { offset: 0x08, name: focusInterface, type: "void*" }
+      - { offset: 0x10, name: currentZoneIndex, type: i32, note: "Currently loaded zone index for this focus point (-1 if none)." }
+      - { offset: 0x14, name: flags, type: u32, note: "Bit 0: removed flag." }
+
 functions:
+  - name: ServerLevel_reloadLastCheckpoint
+    va: 0x143341d40
+    signature: "void(void* levelContext, u32 unk1, u8 unk2)"
+    note: "Queues ServerLevelRestartMessage to reload the level to the last checkpoint transform."
+    confidence: inferred
+    sources: [ghidra]
+
+  - name: PamServerCheckpointEntity_setTransformAndIndex
+    va: 0x143a860b0
+    signature: "void(void* self, void* p2, u32 index, LinearTransform* trans)"
+    note: "Sets checkpoint spawn transform (+0x80) and index (+0x70) on PamServerCheckpointEntity."
+    confidence: inferred
+    sources: [ghidra]
+
+  - name: ServerObjectiveEntity_setSuccess
+    va: 0x14338d310
+    signature: "void(void* self)"
+    note: "Marks ServerObjectiveEntity complete, fires OnSuccess (0xbb06a967), and notifies metrics."
+    confidence: inferred
+    sources: [ghidra]
+
+  - name: PamServerMissionManagerEntity_startMission
+    va: 0x143a77640
+    signature: "void(void* mission, u32 unk)"
+    note: "Starts PamServerMissionEntity from PamServerMissionManagerEntity."
+    confidence: inferred
+    sources: [ghidra]
   - name: ClassInfo_firstInWorld
     va: 0x143164d50
     signature: "void*(const ClassInfo* type, const GameWorld* world)"
@@ -27,6 +141,48 @@ functions:
     note: "Per frame: focus positions (0x143c81850: each record's focus->vtable[0] into +0x2a8), each one's zone (0x143c82060), dropping removed records (0x143c7f570), zone loads and unloads."
     confidence: inferred
     sources: [ghidra]
+  - name: ZoneStreamer_findZone
+    va: 0x143c7fc80
+    signature: "i32(void* gridData, const f32* pos, u8 testHeight)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Evaluates whether pos (x, y, z) falls inside any streaming zone in gridData. Returns zone index or -1 if outside."
+  - name: ZoneStreamer_loadZone
+    va: 0x143c810d0
+    signature: "void(void* streamer, i32 zoneIndex, void* record, u8 a4)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Requests streaming load of zoneIndex for the specified focus record."
+  - name: ZoneStreamer_unloadZone
+    va: 0x143c81240
+    signature: "void(void* streamer, i32 zoneIndex, void* record, u8 a4)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Requests streaming unload of zoneIndex when a focus point moves out of its bounds."
+  - name: ZoneStreamerFocusEntity_create
+    va: 0x143c7f0c0
+    signature: "void*(void* creator, void* creationInfo)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Creator factory for ZoneStreamerFocusEntity (0x58 bytes, vtable 0x141cfe460)."
+  - name: ZoneStreamerFocusEntity_onEvent
+    va: 0x143c7f420
+    signature: "void(void* entity, void* event)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Event handler for ZoneStreamerFocusEntity. Responds to Enable (0x8ba423e4) by calling ZoneStreamerFocus_add and Disable (0xf90216b1) by calling ZoneStreamerFocus_remove."
+  - name: ZoneStreamerFocusEntity_init
+    va: 0x143c803f0
+    signature: "void(void* entity)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Initializes ZoneStreamerFocusEntity, connects to streamer at +0x30, caches focusManager at +0x48, and registers focus if enabled."
+  - name: ZoneStreamerFocusPoint_get
+    va: 0x143c7f9a0
+    signature: "void(void* focusInterface, u64 key, f32* out)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Focus interface slot 0 (vtable 0x141cfe528). Reads world transform of entity (+0x20) and writes position (float4) and direction (float4) to out (0x20 bytes)."
   - name: ServerSubLevelEntity_onEvent
     va: 0x14335efb0
     signature: "void(void* subLevel, void* event)"
@@ -354,6 +510,11 @@ constants:
   - { name: FocusRecord_Size, value: 0x18, confidence: inferred, sources: [ghidra] }
   - { name: FocusRecord_Focus, value: 0x8, confidence: inferred, sources: [ghidra], note: "The focus object: vtable[0](focus, record[0], out 0x20 bytes: position float4, direction float4)." }
   - { name: FocusRecord_Flags, value: 0x14, confidence: inferred, sources: [ghidra] }
+  - { name: Event_ZoneStreamerFocus_Enable, value: 0x8ba423e4, confidence: hypothesis, sources: [ghidra], note: "Event triggering ZoneStreamerFocusEntity enable (calls ZoneStreamerFocus_add)." }
+  - { name: Event_ZoneStreamerFocus_Disable, value: 0xf90216b1, confidence: hypothesis, sources: [ghidra], note: "Event triggering ZoneStreamerFocusEntity disable (calls ZoneStreamerFocus_remove)." }
+  - { name: ZoneStreamer_FocusArray, value: 0x2a8, confidence: hypothesis, sources: [ghidra], note: "Evaluated position and direction array (stride 0x20 per record)." }
+  - { name: ZoneStreamer_FocusCount, value: 0x2c8, confidence: hypothesis, sources: [ghidra], note: "Count of active focus records." }
+  - { name: ZoneStreamer_GridData, value: 0x2d8, confidence: hypothesis, sources: [ghidra], note: "Pointer to zone grid partition and AABB bounds." }
   - { name: EntityBus_Owner, value: 0x0, confidence: inferred, sources: [ghidra], note: "Set by the bus base init (0x14313ffe0)." }
   - { name: EntityBus_Parent, value: 0x8, confidence: inferred, sources: [ghidra], note: "The parent bus (holds a reference, +0x30). An object is usually on a blueprint's or layer's bus inside its sublevel's: walk up to find the sublevel." }
   - { name: EntityBus_FirstChild, value: 0x28, confidence: inferred, sources: [ghidra], note: "Children are linked through +0x18 (prev) and +0x20 (next)." }

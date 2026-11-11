@@ -10,6 +10,19 @@ globals:
     note: "An EntityEvent is {vtable 0x141a4a8b0, u32 id (+8), u32 0 (+0xc)}, as EntityBus_postEvent builds one; delivered to an entity's onEvent (vtable +0x20)."
 
 classes:
+  - name: TimelineEntity
+    realm: any
+    vtable: 0x141beab28
+    confidence: hypothesis
+    sources: [ghidra, reflected]
+    note: "Entity driving animated tracks and property curves over time (doors, lifts, sun, exposure). Size 0x490."
+    members:
+      - { confidence: hypothesis, offset: 0x30, name: startTimeProperty, type: "void*", note: "Property connection for timeline start time." }
+      - { confidence: hypothesis, offset: 0x40, name: endTimeProperty, type: "void*", note: "Property connection for timeline end time." }
+      - { confidence: hypothesis, offset: 0x50, name: playbackSpeedProperty, type: "void*", note: "Property connection for playback speed multiplier." }
+      - { confidence: hypothesis, offset: 0x60, name: externalTimeProperty, type: "void*", note: "If non-null, external clock drives timeline; Timeline_SetTime returns early unless force == true." }
+      - { confidence: hypothesis, offset: 0x98, name: currentTime, type: f32, note: "Current playback position in seconds." }
+      - { confidence: hypothesis, offset: 0xb0, name: timeOutputProperty, type: "void*", note: "Output property connector broadcasting current time (0xa4fabb19)." }
   - name: ComponentEntity
     realm: any
     confidence: inferred
@@ -47,6 +60,24 @@ structs:
       - { offset: 0x0a, name: selectB, type: u8 }
 
 functions:
+  - name: Timeline_setTime
+    va: 0x143691120
+    signature: "void(TimelineEntity* timeline, f32 time, bool force)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Sets current playback time of TimelineEntity. If force is false and externalTime (+0x60) is non-zero, returns without modifying time."
+  - name: TimelineEntity_create
+    va: 0x14368c060
+    signature: "TimelineEntity*(void* creator, void* a2, void* a3, u8 a4)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Factory function allocating 0x490 bytes and constructing TimelineEntity."
+  - name: TimelineEntity_ctor
+    va: 0x14368d590
+    signature: "TimelineEntity*(TimelineEntity* self, void* entityBus, void* data)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor initializing vtable 0x141beab28, property connectors, and track evaluation tables."
   # Entity events (from the first recording, 2026-10-20; docs/research/recording-teleport.md).
   - name: EntityBus_fireEvent
     va: 0x14314e4a0

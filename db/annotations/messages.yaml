@@ -56,6 +56,40 @@ structs:
     members:
       - { offset: 0x0, name: vtable, type: "void*" }
 
+  - name: PamSocialPlayMessage
+    confidence: hypothesis
+    size: 0x48
+    members:
+      - { confidence: hypothesis, offset: 0x08, name: category, type: u32 }
+      - { confidence: hypothesis, offset: 0x0c, name: typeId, type: u32 }
+      - { confidence: hypothesis, offset: 0x10, name: realm, type: u32 }
+  - name: PamSocialPlayNamedChallengeFinishedMessage
+    confidence: hypothesis
+    size: 0x68
+    members:
+      - { confidence: hypothesis, offset: 0x48, name: contentId, type: u32, note: "Unique challenge ID." }
+      - { confidence: hypothesis, offset: 0x4c, name: index, type: u32, note: "Stat set index; 0 is personal best record." }
+      - { confidence: hypothesis, offset: 0x50, name: delta, type: i32, note: "Time difference in centiseconds compared to record (negative if faster)." }
+      - { confidence: hypothesis, offset: 0x54, name: hadRecord, type: u8, note: "Boolean indicating if a previous record existed." }
+      - { confidence: hypothesis, offset: 0x58, name: value, type: i64, note: "Time/score value in centiseconds (10 ms units)." }
+      - { confidence: hypothesis, offset: 0x60, name: newRecord, type: u8, note: "Boolean indicating whether this run achieved a new record." }
+  - name: PamSocialPlayNamedChallengeStartedMessage
+    confidence: hypothesis
+    size: 0x50
+    members:
+      - { confidence: hypothesis, offset: 0x48, name: contentId, type: u32, note: "Unique challenge ID." }
+  - name: PamSocialPlayNamedChallengeCancelledMessage
+    confidence: hypothesis
+    size: 0x50
+    members:
+      - { confidence: hypothesis, offset: 0x48, name: contentId, type: u32, note: "Unique challenge ID." }
+  - name: PamSocialPlayChallengeFinishedMessage
+    confidence: hypothesis
+    size: 0x78
+    members:
+      - { confidence: hypothesis, offset: 0x48, name: guid, type: "u8[24]", note: "PamSharedContentId 24-byte identifier." }
+      - { confidence: hypothesis, offset: 0x60, name: time, type: u32, note: "Run time in centiseconds (10 ms units)." }
+
 functions:
   - name: MessageManager_registerListener
     va: 0x142a3ad40
@@ -111,3 +145,100 @@ functions:
     note: "Named in Ghidra as CharacterToComponentsOnTeleportedMessage_ctor; checked in the decompiler (2026-10-30): sets the CharacterToComponentsOnTeleportedMessage vtable."
     confidence: inferred
     sources: [ghidra]
+  - name: PamSocialPlayMessage_ctor
+    va: 0x143474ae0
+    signature: "Message*(Message* message, u32 category, u32 typeId, u32 realm)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Base constructor for all PamSocialPlay*Message classes (category 0x54776fc6). Sets vtable 0x141b94668."
+  - name: PamSocialPlayNamedChallengeFinishedMessage_ctor
+    va: 0x144733a30
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayNamedChallengeFinishedMessage (typeId 0xd71d027f). Sets vtable 0x141c38eb0."
+  - name: PamSocialPlayNamedChallengeStartedMessage_ctor
+    va: 0x144733a90
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayNamedChallengeStartedMessage (typeId 0xc164590c). Sets vtable 0x141c38dc0."
+  - name: PamSocialPlayNamedChallengeCancelledMessage_ctor
+    va: 0x1447339e0
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayNamedChallengeCancelledMessage (typeId 0x9a9a27c6). Sets vtable 0x141c38e10."
+  - name: PamSocialPlayChallengeFinishedMessage_ctor
+    va: 0x144733550
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayChallengeFinishedMessage (player time trial finish, typeId 0x9b35497c). Sets vtable 0x141c38cd0."
+  - name: PamSocialPlayStartChallengeMessage_ctor
+    va: 0x144734060
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayStartChallengeMessage (typeId 0x1cca484e). Sets vtable 0x141c39408."
+  - name: PamSocialPlayRestartChallengeMessage_ctor
+    va: 0x144733f10
+    signature: "void*(void* message)"
+    confidence: hypothesis
+    sources: [ghidra]
+    note: "Constructor for PamSocialPlayRestartChallengeMessage (typeId 0x72f865f9). Sets vtable 0x141c39458."
+
+constants:
+  - { name: MessageCategory_SocialPlay, value: 0x54776fc6, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_NamedChallengeStarted, value: 0xc164590c, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_NamedChallengeFinished, value: 0xd71d027f, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_NamedChallengeCancelled, value: 0x9a9a27c6, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_NamedChallengeActivated, value: 0xb7633230, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_NamedChallengeTeleport, value: 0x606b598c, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_NamedChallengeStatsUploaded, value: 0xa64f89ee, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_NamedChallengeBookmarkStatusRequest, value: 0xa78a38f4, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_NamedChallengeBookmarkStatusResult, value: 0xe6fd16cc, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_NamedChallengeUploadReplay, value: 0x955f5cbd, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_ChallengeFinished, value: 0x9b35497c, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_StartChallenge, value: 0x1cca484e, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_RestartChallenge, value: 0x72f865f9, confidence: hypothesis, sources: [mecmp, ghidra] }
+  - { name: SocialPlay_DownloadSharedContent, value: 0x924d6bd9, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_FetchSharedContents, value: 0xd089d3e2, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_PinSharedContent, value: 0xfc61a69a, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_UnpinSharedContent, value: 0x5a464701, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_RemoveSharedContent, value: 0x9a0dfb2b, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_SocialTeleport, value: 0x33d42557, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_OnShowMap, value: 0x855bb873, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_OnHideMap, value: 0x5b61f030, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_FriendsList, value: 0x68f236ee, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_BlockedUsers, value: 0x052d5907, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_BlockedListUpdated, value: 0xe7d40012, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_PermissionRequest, value: 0xa3118cf7, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_PermissionResponse, value: 0xf1c3cee5, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_Control, value: 0xfc74c3ca, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_EchoCustomizationChanged, value: 0x85ebbf13, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_InventoryChanged, value: 0xaa327a65, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_RunnerKitOpened, value: 0xa390e6be, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_UgcFilterOptionChanged, value: 0x1846085d, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_MapMarkerUpdates, value: 0x320071b1, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_FireEvent, value: 0x36154959, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_RequestHackableBillboardLeader, value: 0x57d92a5d, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_RefreshHackableBillboardLeaderCache, value: 0x82ad8c5d, confidence: hypothesis, sources: [ghidra] }
+  - { name: SocialPlay_HackableBillboardsLeader, value: 0xf33d51ff, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamProgression_MissionUpdated, value: 0x3c8db41e, confidence: hypothesis, sources: [ghidra] }
+  - { name: ServerMetrics_ObjectiveSuccess, value: 0x60291090, confidence: hypothesis, sources: [ghidra] }
+  - { name: ServerRound_Reset, value: 0x4bb8de5c, confidence: hypothesis, sources: [ghidra] }
+  - { name: ServerLevel_Restart, value: 0xf8429a0e, confidence: hypothesis, sources: [ghidra] }
+  - { name: MessageCategory_PamReplay, value: 0x1ae2c48a, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamReplay_RecordingStarted, value: 0xfc271a2d, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamReplay_RecordingStopped, value: 0x05b266e5, confidence: hypothesis, sources: [ghidra] }
+  - { name: MessageCategory_PamGatewayBackend, value: 0x3010e025, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_GetRunnersRouteReplayUrlRequest, value: 0x333b9deb, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_GetRunnersRouteReplayUrlResponse, value: 0xe9f41379, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_SetRunnersRouteReplay, value: 0x4da365e5, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_GetPlayerGhostsRequest, value: 0x1221d60e, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_GetPlayerGhostsResponse, value: 0x4c5fc0bc, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_SetPlayerGhostRequest, value: 0xaa067849, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_SetPlayerGhostResponse, value: 0xeb81635b, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_UploadReplayRequestBase, value: 0xb70b72ba, confidence: hypothesis, sources: [ghidra] }
+  - { name: PamGatewayBackend_UploadReplayResult, value: 0x087e89f7, confidence: hypothesis, sources: [ghidra] }

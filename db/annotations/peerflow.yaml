@@ -1,0 +1,25 @@
+# PamServerPeerFlowGameEntity: a server entity that picks 3 random moves and times the player (docs: none yet).
+defaults: { confidence: confirmed, sources: [ghidra] }
+
+functions:
+  - name: PamServerPeerFlowGameEntity_getType
+    va: 0x143a85240
+    signature: "void*(void* self)"
+    note: "Vtable slot 0 of 0x141c7ef78: returns TI_PamServerPeerFlowGameEntity (0x142864d60). Never hook it (Registry::typeOf). Checked in Ghidra 2026-11-10."
+  - name: PamServerPeerFlowGameEntity_onEvent
+    va: 0x143a84370
+    note: "Vtable slot 4 (+0x20) of 0x141c7ef78. On event 0xdc0efa5 while +0x42 is 0: sets active (+0x42), resets +0x3c (from data +0x38), +0x44, +0x40/+0x41, picks 3 random move indices (RNG seed 0x24ce + 2 * n), registers the MessageListener (this+0x30) for category 0xc67d277b realm 0xff, adds itself to the bus, tells the first live player's game state status 0."
+  - name: PamServerPeerFlowGameEntity_tick
+    va: 0x143a903a0
+    note: "Non-virtual per-tick update, rcx = entity, rdx = float* deltaTime (called from the bus tick 0x143a8b530 at 30 Hz steps). Counts +0x3c down; sets +0x40 at < 0; a received move (+0x48) matching one of the 3 slots bumps +0x44, resets the timer and reports status 1; on finish or 5 s after timeout: unregisters the listener, leaves the bus, fires event 0x5f7a2f17, reports status 2, clears +0x42. Entry bytes 55 56 57 41 54 41 55 41 56 41 57 48 8d 6c 24 d9."
+  - name: PamServerPeerFlowGameEntity_onMoveMessage
+    va: 0x143a8a8e0
+    note: "MessageListener callback (slot 0 of vtable 0x141c7f030, listener at entity+0x30): for message typeId 0x702bb5f4 (field +0xc) stores the move at message +0x4c into entity +0x4c and sets entity +0x48 (move received)."
+
+constants:
+  - { name: PamServerPeerFlowGameEntity_Size, value: 0xd0, note: "Allocated in 0x143a7b6b0; constructor 0x143a7e130; primary vtable 0x141c7ef78, MessageListener vtable 0x141c7f030 at +0x30." }
+  - { name: PamServerPeerFlowGameEntity_Timer, value: 0x3c, note: "f32 seconds left; reset from the entity data's +0x38." }
+  - { name: PamServerPeerFlowGameEntity_TimedOut, value: 0x40, note: "bool; +0x41 is a second flag the finish check reads." }
+  - { name: PamServerPeerFlowGameEntity_Active, value: 0x42, note: "bool; the start event is ignored while set." }
+  - { name: PamServerPeerFlowGameEntity_Matched, value: 0x44, note: "i32 count of moves matched this run." }
+  - { name: PamServerPeerFlowGameEntity_MoveReceived, value: 0x48, note: "bool set by the message callback, cleared by the tick; the received move is at +0x4c." }

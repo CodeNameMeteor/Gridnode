@@ -24,26 +24,38 @@ functions:
   - name: getCompartment
     va: 0x142abad00
     signature: "void*(u16 id)"
-    confidence: inferred
-    sources: [ghidra, gridnode]
-    note: "The compartment of resource group id: ResourceGroups[id] +0x68, returned through a thunk (jmp [0x1447d2ab8]); null if the group does not exist. 0 is the static compartment. Not the group itself: Partition_findByName on a group crashed (2026-10-20). Named getStaticCompartment in the user's Ghidra."
+    confidence: hypothesis
+    sources: [ghidra, gridnode, research]
+    note: "The compartment of resource group id: ResourceGroups[id] +0x68, returned through a thunk (jmp [0x1447d2ab8]); null if the group does not exist. 0 is the static compartment. Confirmed in Ghidra decompilation."
   - name: Partition_findByName
     va: 0x142aeb310
     signature: "void*(void* compartment, const i8* path)"
-    confidence: inferred
-    sources: [ghidra, gridnode]
-    note: "Case-insensitive (djb2-xor of the lower-cased path; map at compartment +0x158, locked by +0xc0). Null if the partition is not loaded. Callers: initScriptsAndSystemSettings (settings partition), 0x1432bd0e0 (sound)."
+    confidence: hypothesis
+    sources: [ghidra, gridnode, research]
+    note: "Case-insensitive (djb2-xor of the lower-cased path via 0x142aeb940; map at compartment +0x158, locked by +0xc0). Null if the partition is not loaded. Confirmed in Ghidra decompilation."
   - name: Partition_primaryInstance
     va: 0x142aec640
     signature: "void*(void* partition)"
-    confidence: inferred
-    sources: [ghidra, gridnode]
-    note: "**(partition + 0x20): the partition's first (primary) instance, e.g. the Blueprint of a blueprint asset. Named resourceGroup_entryObject in the user's Ghidra."
+    confidence: hypothesis
+    sources: [ghidra, gridnode, research]
+    note: "**(partition + 0x20): the partition's first (primary) instance, e.g. the Blueprint of a blueprint asset or the RigidMeshAsset of a mesh asset. Confirmed in Ghidra decompilation."
+  - name: Partition_findByGuid
+    va: 0x142aeb230
+    signature: "void*(void* partitionPlus8, const void* guid)"
+    confidence: hypothesis
+    sources: [ghidra, research]
+    note: "Searches a partition's instance array by 16-byte asset GUID. Called with partition + 8."
+  - name: PartitionMap_find
+    va: 0x142aeb940
+    signature: "void*(void* partitionMap, void* outNodePair, const i8* path)"
+    confidence: hypothesis
+    sources: [ghidra, research]
+    note: "Lowercase DJB2-XOR hash lookup in compartment +0x158 bucket array. Returns found node or end bucket node."
   - name: DataContainer_release
     va: 0x142a91cd0
     signature: "u32(void* container)"
-    confidence: inferred
-    sources: [ghidra, gridnode]
+    confidence: hypothesis
+    sources: [ghidra, gridnode, research]
     note: "Drops a reference (u16 at +8, atomic); destroys the container at zero. The matching add is a locked increment of +8."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: sha1Init
@@ -667,3 +679,22 @@ functions:
 
 constants:
   - { name: ResourceGroup_Count, value: 0xbbd, note: "Also the 'none' id." }
+
+structs:
+  - name: Partition
+    size: 0x30
+    note: In-memory partition container holding reflected DataContainers and blueprints.
+    members:
+      - { offset: 0x00, name: vtable, type: "void*", note: "Partition vtable pointer." }
+      - { offset: 0x08, name: partitionGuid, type: "u8[16]", note: "16-byte asset partition GUID." }
+      - { offset: 0x18, name: name, type: "const i8*", note: "Partition resource name string." }
+      - { offset: 0x20, name: instances, type: "void**", note: "Array of reflected DataContainer pointers in the partition." }
+      - { offset: 0x28, name: instanceCount, type: "u16", note: "Count of instances stored in the partition." }
+
+  - name: PartitionMapNode
+    size: 0x18
+    note: Singly linked bucket node in compartment hash map (+0x158).
+    members:
+      - { offset: 0x00, name: path, type: "const i8*", note: "Lowercase hashed resource path string." }
+      - { offset: 0x08, name: partition, type: "Partition*", note: "Loaded Partition pointer." }
+      - { offset: 0x10, name: next, type: "PartitionMapNode*", note: "Next bucket node in the singly linked list." }
