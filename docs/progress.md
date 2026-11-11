@@ -52,10 +52,11 @@ In-game test (developer build, all mods from this build in `bin\mods`):
 4. Inspector → Shortcuts → Faith (client): a `detour-demo: PamClientCharacterEntity` section above the fields.
 5. Inspector → Types → `PamCharacterEntityData` → default instance: `PamUseRunnersGhostShader` is blue with a
    tooltip and greyed out.
-6. Mods → Reload detour-demo, then Unload it: the log says the virtual hook was taken out; the inspector
-   section goes; no crash.
-7. Move a mod that is not a mod (any DLL without `gn_mod_load`) into `mods\`: the log says `does not export
-   gn_mod_load; skipped`, and its DllMain does not run.
+6. Mods → Reload detour-demo, then Unload it: the log's `hooked virtual PamClientCharacterEntity+0x3d8 in N
+   of M vtables` line comes back after the reload; after the unload the Hooks list no longer names
+   detour-demo, the inspector section goes, and nothing crashes.
+7. Put an empty file named `notamod.dll` in `mods\` and restart: the log says `notamod.dll does not export
+   gn_mod_load; skipped` (it is no longer loaded to find out). Delete it after.
 8. With the game closed, from the repo: `python tools/gen/gridnode.py assets check --data "<the Data folder
    from step 1>"`. Send the whole output (catalogue layout, bundle count, codecs found).
 Send: `gridnode.log`, the numbers from step 2, the output of step 8.
