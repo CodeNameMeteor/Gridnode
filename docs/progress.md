@@ -49,8 +49,10 @@ format is confirmed; every `cas.cat` starts with the signed header `00 d1 ce 01`
 now skips it (and tries the XOR form when the magic is not behind it). The class hook was taken out at both
 unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`). Third run: `assets check`
 passes: 11 catalogues (two counts after the magic, 115,276 entries, no patch entries in Data), every bundle
-entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is done; extracting needs
-`pip install lz4`.
+entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is done (extracting needs
+`pip install lz4`): `assets extract gameplay/movement/climbing/ladders/pf_climbladder_768_nobrackets` gave
+7,680 bytes (4,430 stored) starting `CE D1 B2 0F`, the EBX version 2 magic. Next: step 2, EBX to YAML,
+tested on the user's files.
 
 Not done (next): 2.1 step 2 (`hooks_begin` / `hooks_commit`), 2.3 the entity index, 3.2 the mod context
 (open question: `gn_mod_load2` or the manifest), 3.6 the `unverified` namespace (open question: hide
