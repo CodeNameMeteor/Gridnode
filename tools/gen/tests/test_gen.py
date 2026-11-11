@@ -35,6 +35,29 @@ def write_annotations(d: str, text: str):
         f.write(textwrap.dedent(text))
 
 
+class Unverified(unittest.TestCase):
+    def test_engine_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_annotations(d, """
+                functions:
+                  - { name: sure, va: 0x140001000 }
+                  - { name: guess, va: 0x140002000, confidence: hypothesis }
+                """)
+            db, p = annotations.load(d)
+        text = emit_engine.emit(db)
+        self.assertIn("inline constexpr uint64_t sure = 0x140001000;", text)
+        self.assertRegex(text, r"namespace unverified \{[^}]*guess = 0x140002000")
+
+    def test_code_needs_a_note(self):
+        from gridnode_gen import unverified_check
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.cpp"), "w") as f:
+                f.write("// unverified: Known (a feature)\nint x = e::function::unverified::Known;\nint y = e::function::unverified::Other;\n")
+            problems = unverified_check.check(d)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("unverified::Other", problems[0])
+
+
 class TypeList(unittest.TestCase):
     def test_link_sites(self):
         import struct

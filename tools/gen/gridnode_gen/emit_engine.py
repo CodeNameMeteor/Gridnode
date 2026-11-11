@@ -22,6 +22,24 @@ def _comment(meta: Meta | None, extra: str = "") -> str:
     return ("  // " + " ".join(parts)) if parts else ""
 
 
+def _hyp(meta: Meta | None) -> bool:
+    return meta is not None and meta.confidence == "hypothesis"
+
+
+def _split(items, write, w):
+    """Confirmed and inferred items as they are; hypothesis items in a nested `unverified` namespace
+    (plan 3.6): a mod may still use them but has to say so, and GridNode's own code may not (CI)."""
+    sure = [x for x in items if not _hyp(x.meta)]
+    unsure = [x for x in items if _hyp(x.meta)]
+    for x in sure:
+        write(x)
+    if unsure:
+        w("namespace unverified { // hypotheses: not confirmed in Ghidra or in game\n")
+        for x in unsure:
+            write(x)
+        w("} // namespace unverified\n")
+
+
 def _cstr(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -37,20 +55,19 @@ def emit(db: Database) -> str:
 
     w("// ---- Globals -------------------------------------------------------------------------------\n")
     w("namespace global {\n")
-    for g in sorted(db.globals.values(), key=lambda g: g.name):
-        w(f"inline constexpr uint64_t {g.name} = {g.va:#x};{_comment(g.meta, str(g.type))}\n")
+    _split(sorted(db.globals.values(), key=lambda g: g.name),
+           lambda g: w(f"inline constexpr uint64_t {g.name} = {g.va:#x};{_comment(g.meta, str(g.type))}\n"), w)
     w("} // namespace global\n\n")
 
     w("// ---- Functions -----------------------------------------------------------------------------\n")
     w("namespace function {\n")
-    for f in sorted(db.functions.values(), key=lambda f: f.name):
-        w(f"inline constexpr uint64_t {f.name} = {f.va:#x};{_comment(f.meta, _sig_text(f.signature))}\n")
+    _split(sorted(db.functions.values(), key=lambda f: f.name),
+           lambda f: w(f"inline constexpr uint64_t {f.name} = {f.va:#x};{_comment(f.meta, _sig_text(f.signature))}\n"), w)
     w("} // namespace function\n\n")
 
     w("// ---- Code sites (addresses of instructions) ------------------------------------------------\n")
     w("namespace code {\n")
-    for c in sorted(db.code.values(), key=lambda c: c.name):
-        w(f"inline constexpr uint64_t {c.name} = {c.va:#x};{_comment(c.meta)}\n")
+    _split(sorted(db.code.values(), key=lambda c: c.name), lambda c: w(f"inline constexpr uint64_t {c.name} = {c.va:#x};{_comment(c.meta)}\n"), w)
     w("} // namespace code\n\n")
 
     w("// ---- Hook points: pointers GridNode may swap (never code) ---------------------------------\n")
@@ -59,10 +76,11 @@ def emit(db: Database) -> str:
     w("struct Point {\n    const char* name;\n    Kind kind;\n    uint64_t slot;     // the pointer that is swapped\n"
       "    uint64_t original; // what it holds in this build\n};\n")
     kinds = {"vtable-slot": "Kind::VtableSlot", "creator-slot": "Kind::CreatorSlot", "pointer": "Kind::Pointer"}
-    for h in sorted(db.hooks.values(), key=lambda h: h.name):
+    def hook(h):
         sig = _sig_text(h.signature) if h.signature else ""
         w(f"inline constexpr Point {h.name}{{{_cstr(h.name)}, {kinds[h.kind]}, {h.slot:#x}, {h.original:#x}}};"
           f"{_comment(h.meta, sig)}\n")
+    _split(sorted(db.hooks.values(), key=lambda h: h.name), hook, w)
     w("} // namespace hook\n\n")
 
     w("// ---- Runtime classes: members and virtual functions reflection does not describe -----------\n")
@@ -72,22 +90,22 @@ def emit(db: Database) -> str:
     for c in sorted(db.classes.values(), key=lambda c: c.name):
         w(f"namespace {c.name} {{{_comment(c.meta, 'realm: ' + c.realm)}\n")
         if c.vtable is not None:
-            w(f"inline constexpr uint64_t vtable = {c.vtable:#x};\n")
+            vt = f"inline constexpr uint64_t vtable = {c.vtable:#x};\n"
+            w(f"namespace unverified {{\n{vt}}} // namespace unverified\n" if _hyp(c.meta) else vt)
         if c.members:
             w("namespace off {\n")
-            for m in sorted(c.members, key=lambda m: m.offset):
-                w(f"inline constexpr uint32_t {m.name} = {m.offset:#x};{_comment(m.meta, str(m.type))}\n")
+            _split(sorted(c.members, key=lambda m: m.offset),
+                   lambda m: w(f"inline constexpr uint32_t {m.name} = {m.offset:#x};{_comment(m.meta, str(m.type))}\n"), w)
             w("} // namespace off\n")
         if c.virtuals:
             w("namespace vf {\n")
-            for v in sorted(c.virtuals, key=lambda v: v.offset):
-                w(f"inline constexpr uint32_t {v.name} = {v.offset:#x};{_comment(v.meta, _sig_text(v.signature))}\n")
+            _split(sorted(c.virtuals, key=lambda v: v.offset),
+                   lambda v: w(f"inline constexpr uint32_t {v.name} = {v.offset:#x};{_comment(v.meta, _sig_text(v.signature))}\n"), w)
             w("} // namespace vf\n")
             vas = [v for v in c.virtuals if v.va is not None]
             if vas:
                 w("namespace va {\n")
-                for v in sorted(vas, key=lambda v: v.offset):
-                    w(f"inline constexpr uint64_t {v.name} = {v.va:#x};\n")
+                _split(sorted(vas, key=lambda v: v.offset), lambda v: w(f"inline constexpr uint64_t {v.name} = {v.va:#x};\n"), w)
                 w("} // namespace va\n")
         w(f"}} // namespace {c.name}\n")
     w("} // namespace cls\n\n")
@@ -96,11 +114,12 @@ def emit(db: Database) -> str:
     w("namespace st {\n")
     for s in sorted(db.structs.values(), key=lambda s: s.name):
         w(f"namespace {s.name} {{{_comment(s.meta)}\n")
-        w(f"inline constexpr uint32_t size = {s.size:#x};{'  // only the members below are known' if s.opaque else ''}\n")
+        size = f"inline constexpr uint32_t size = {s.size:#x};{'  // only the members below are known' if s.opaque else ''}\n"
+        w(f"namespace unverified {{\n{size}}} // namespace unverified\n" if _hyp(s.meta) else size)
         if s.members:
             w("namespace off {\n")
-            for m in sorted(s.members, key=lambda m: m.offset):
-                w(f"inline constexpr uint32_t {m.name} = {m.offset:#x};{_comment(m.meta, str(m.type))}\n")
+            _split(sorted(s.members, key=lambda m: m.offset),
+                   lambda m: w(f"inline constexpr uint32_t {m.name} = {m.offset:#x};{_comment(m.meta, str(m.type))}\n"), w)
             w("} // namespace off\n")
         w(f"}} // namespace {s.name}\n")
     w("} // namespace st\n\n")
@@ -184,11 +203,12 @@ def emit(db: Database) -> str:
 
     w("// ---- Constants ------------------------------------------------------------------------------\n")
     w("namespace constant {\n")
-    for c in sorted(db.constants.values(), key=lambda c: c.name):
+    def const(c):
         if isinstance(c.value, str):
             w(f"inline constexpr const char* {c.name} = {_cstr(c.value)};{_comment(c.meta)}\n")
         else:
             w(f"inline constexpr uint64_t {c.name} = {c.value:#x};{_comment(c.meta)}\n")
+    _split(sorted(db.constants.values(), key=lambda c: c.name), const, w)
     w("} // namespace constant\n\n")
 
     w("// ---- Build fingerprint (checked by gn::build::check before anything is touched) -------------\n")

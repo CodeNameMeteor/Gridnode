@@ -59,6 +59,13 @@ write is not recorded: nothing undoes it when the mod or GridNode unloads (the l
 `gn::patchBytes` for code. `gridnode/engine.hpp` names the addresses we
 know (`gn::engine::function::...`, `global::...`, `constant::...`).
 
+**Hypotheses are marked (API 37's engine.hpp).** An annotation that is only a hypothesis (not yet confirmed
+in Ghidra or in game) is in a nested `unverified` namespace: `gn::engine::function::unverified::Name`,
+`cls::<Class>::off::unverified::member`, and so on. A mod may use one, but it has to write `unverified::`,
+so the guess is visible in its code. When an item is confirmed it moves out, and the mod's code stops
+compiling until the `unverified::` is taken out of it. A mod built against an older `engine.hpp` that named
+a hypothesis without it needs that one word added.
+
 ## Manifest and other mods (API 16)
 
 A mod can say who it is and what it needs. GridNode reads it before calling `gn_mod_load`:

@@ -74,7 +74,8 @@ python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as 
 
 ## Conventions
 
-- Never hand-edit `engine.hpp`: edit `db/annotations/` (it is generated at build time).
+- Never hand-edit `engine.hpp`: edit `db/annotations/` (it is generated at build time). Hypotheses are in
+  `unverified::`; sdk/src names one only with a `// unverified:` note (`gridnode.py unverified-check`, CI).
 - A change to `api.h` means regenerating the Rust bindings (`gridnode.py rust`) and updating `docs/modding.md`.
 - The build check (`sdk/src/build.cpp`) keeps GridNode passive on an unexpected game exe. CI builds with MinGW:
   an MSVC-only intrinsic (`_InterlockedOr8`, ...) needs a GCC branch, as in `patches.cpp` (`#if defined(_MSC_VER)`).
@@ -83,8 +84,7 @@ python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as 
   `camelCase`; constants `kPascalCase`. Fixed-width ints, `std::string`, RAII; no raw `new`/`delete`;
   no exceptions across the hook or injection boundary. File-local helpers in an anonymous namespace.
 - Comments say why (engine quirks, offsets, constraints), not what. Keep existing comments and docs.
-- Fix the root cause, keep diffs small, don't reformat code you aren't changing. Logic that does not
-  need the game gets a host-side test in `tests/` (or `tools/gen/tests/` for Python).
+- Fix the root cause, keep diffs small, don't reformat code you aren't changing; host-side tests in `tests/` (Python: `tools/*/tests/`).
 - Rust: `rustfmt` defaults; unsafe FFI in `sys.rs`, the safe layer in `lib.rs`. Python: PEP 8, type
   hints where cheap.
 

@@ -4,6 +4,7 @@
   gridnode engine --out FILE                  write gridnode/engine.hpp (annotations only)
   gridnode types --reflected FILE --out FILE  write gridnode/generated/types.hpp
   gridnode setup --dump FILE                  install your dump and generate types.hpp
+  gridnode unverified-check                   GridNode's code names hypothesis items only with a note (CI)
   gridnode check --dump FILE                  before a push that touches annotations: validate against
                                               the dump, generate types.hpp and compile its layout checks
   gridnode verify-image FILE                  check the annotations against a PE dump of the game
@@ -157,6 +158,8 @@ def _main(argv=None) -> int:
 
     s = sub.add_parser("setup", help="install your dump into db/reflected and generate types.hpp")
     s.add_argument("--dump", required=True, help="gridnode-reflected.json written by gridnode.dll")
+
+    sub.add_parser("unverified-check", help="sdk/src names hypothesis items (unverified::) only with a note")
 
     ck = sub.add_parser("check", help="validate against a dump, generate types.hpp and compile it (before a push)")
     ck.add_argument("--dump", required=True, help="gridnode-reflected.json written by gridnode.dll")
@@ -399,6 +402,14 @@ def _main(argv=None) -> int:
 
     if a.cmd == "check":
         return _check(a)
+
+    if a.cmd == "unverified-check":
+        from . import unverified_check
+        problems = unverified_check.check(os.path.join(ROOT, "sdk", "src"))
+        for p in problems:
+            print("error:", p, file=sys.stderr)
+        print(f"unverified-check: {len(problems)} use(s) of a hypothesis without a note")
+        return 1 if problems else 0
 
     if a.cmd == "engine":
         db, _, p = _load(a.annotations, None, quiet=True)

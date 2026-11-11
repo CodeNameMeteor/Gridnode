@@ -37,6 +37,11 @@
 #include "vtable_count.hpp"
 #include "imgui.h"
 
+// unverified: entityCreator_spawnIntoBus, ClientEntity_spawnIntoBus (spawning in the Layout editor);
+// GroupRigidBody_Shape, GroupRigidBody_PartToInstance, CompoundShape_Instances, CompoundShape_Tree,
+// CompoundTree_Nodes, CompoundTree_NodeCount, CompoundTree_Min, CompoundTree_Max, ShapeInstance_Size,
+// HavokAabb6Step (a group prop's collision box). Hypotheses in db/annotations: confirm, then mark them.
+
 namespace gn::host::layouts {
 void clearRopeMoves();
 bool nudgeSpecial(int dir, float scale); // a selected barrier or magrope (defined with them)
@@ -633,14 +638,14 @@ uintptr_t groupBodyOf(uintptr_t entity) {
 // The compound instance of `part` in a group body (0 if unknown).
 uintptr_t groupInstance(uintptr_t body, uint32_t part, int* indexOut = nullptr) {
     namespace c = e::constant;
-    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
-    const uintptr_t map = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_PartToInstance) : 0;
-    const uintptr_t instances = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Instances) : 0;
+    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::unverified::GroupRigidBody_Shape) : 0;
+    const uintptr_t map = body ? mem::readOr<uintptr_t>(body + c::unverified::GroupRigidBody_PartToInstance) : 0;
+    const uintptr_t instances = shape ? mem::readOr<uintptr_t>(shape + c::unverified::CompoundShape_Instances) : 0;
     if (!map || !instances || part > 0xffff) return 0;
     const int16_t index = mem::readOr<int16_t>(map + part * 4u, -1);
     if (index < 0) return 0;
     if (indexOut) *indexOut = index;
-    return instances + static_cast<uintptr_t>(index) * c::ShapeInstance_Size;
+    return instances + static_cast<uintptr_t>(index) * c::unverified::ShapeInstance_Size;
 }
 
 // An instance's transform (scale folded into the rows, as the game's 0x143f50740 does).
@@ -925,8 +930,8 @@ bool pickGroupProp(uintptr_t serverGroup, uintptr_t body, uint32_t part, GroupPr
         g.clientBody = groupBodyOf(g.clientGroup);
         memberOf(g.clientGroup, g.part, g.member, g.copy, g.block);
     }
-    const uintptr_t shape = mem::readOr<uintptr_t>(body + e::constant::GroupRigidBody_Shape);
-    const uintptr_t clientShape = g.clientBody ? mem::readOr<uintptr_t>(g.clientBody + e::constant::GroupRigidBody_Shape) : 0;
+    const uintptr_t shape = mem::readOr<uintptr_t>(body + e::constant::unverified::GroupRigidBody_Shape);
+    const uintptr_t clientShape = g.clientBody ? mem::readOr<uintptr_t>(g.clientBody + e::constant::unverified::GroupRigidBody_Shape) : 0;
     GN_LOG("layouts: group part %u = instance %d at (%.2f, %.2f, %.2f), group at (%.2f, %.2f, %.2f); shape %llx (client %llx, %s), client group %llx, "
            "member %llx copy %u%s",
            g.part, index, world.trans[0], world.trans[1], world.trans[2], G.trans[0], G.trans[1], G.trans[2], static_cast<unsigned long long>(shape),
@@ -1030,7 +1035,7 @@ uintptr_t spawnServer(uintptr_t data, uintptr_t bus, const gn_transform& at) {
     alignas(16) gn_transform t = at;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ServerEntityCreationInfo_ctor))(ci, data, bus, &t);
-    const uintptr_t entity = reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::entityCreator_spawnIntoBus))(ci, 0);
+    const uintptr_t entity = reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::unverified::entityCreator_spawnIntoBus))(ci, 0);
     if (!entity) return 0;
     alignas(16) uint8_t init[0x40] = {};
     reinterpret_cast<void (*)(uint8_t*, uint64_t, uint64_t)>(mem::rva(e::function::ServerEntityInitInfo_ctor))(init, 0, 0);
@@ -1044,7 +1049,7 @@ uintptr_t spawnClient(uintptr_t data, uintptr_t bus, const gn_transform& at) {
     alignas(16) gn_transform t = at;
     t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
     reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ClientEntityCreationInfo_ctor))(ci, data, bus, &t);
-    const uintptr_t result[1] = {reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::ClientEntity_spawnIntoBus))(ci, 0)};
+    const uintptr_t result[1] = {reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::unverified::ClientEntity_spawnIntoBus))(ci, 0)};
     const uintptr_t entity = result[0];
     if (!entity) return 0;
     alignas(16) uint8_t init[0x40] = {};
@@ -5410,12 +5415,12 @@ uintptr_t selectionData(const Selected& s) {
 // space (the world: groups sit at the origin).
 bool instanceWorldBox(uintptr_t body, int instance, float* mn, float* mx) {
     namespace c = e::constant;
-    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::GroupRigidBody_Shape) : 0;
-    const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::CompoundShape_Tree) : 0;
-    const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::CompoundTree_Nodes) : 0;
-    const int32_t count = tree ? mem::readOr<int32_t>(tree + c::CompoundTree_NodeCount) : 0;
+    const uintptr_t shape = body ? mem::readOr<uintptr_t>(body + c::unverified::GroupRigidBody_Shape) : 0;
+    const uintptr_t tree = shape ? mem::readOr<uintptr_t>(shape + c::unverified::CompoundShape_Tree) : 0;
+    const uintptr_t nodes = tree ? mem::readOr<uintptr_t>(tree + c::unverified::CompoundTree_Nodes) : 0;
+    const int32_t count = tree ? mem::readOr<int32_t>(tree + c::unverified::CompoundTree_NodeCount) : 0;
     if (!nodes || count <= 0 || count > 4000000 || instance < 0) return false;
-    float k = mem::readOr<float>(mem::rva(e::global::HavokAabb6Step), 0.f);
+    float k = mem::readOr<float>(mem::rva(e::global::unverified::HavokAabb6Step), 0.f);
     if (!(k > 0.f && k < 0.05f)) k = 1.f / 226.f;
     struct Item {
         int32_t index;
@@ -5424,7 +5429,7 @@ bool instanceWorldBox(uintptr_t body, int instance, float* mn, float* mx) {
     Item stack[96];
     int n = 0;
     stack[n].index = 0;
-    if (!mem::read(tree + c::CompoundTree_Min, stack[n].mn, sizeof(float) * 3) || !mem::read(tree + c::CompoundTree_Max, stack[n].mx, sizeof(float) * 3))
+    if (!mem::read(tree + c::unverified::CompoundTree_Min, stack[n].mn, sizeof(float) * 3) || !mem::read(tree + c::unverified::CompoundTree_Max, stack[n].mx, sizeof(float) * 3))
         return false;
     ++n;
     auto child = [&](const Item& parent, int32_t index, Item& out) {

@@ -31,6 +31,10 @@
 #include "gridnode/reflect/registry.hpp"
 #include "host.hpp"
 
+// unverified: PhysicsCreationInfo_ctor, PhysicsEntityFactory_create, RigidBody_enable, RigidBody_disable,
+// RigidBody_registerSpatial, RigidBody_unregisterSpatial (the native box backend, box_backend(1), API 34:
+// experimental, not yet run in game).
+
 namespace gn::host {
 namespace {
 
@@ -431,17 +435,17 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     memcpy(desc + 0x1c, &layer, 4);
     memcpy(desc + 0x20, b.half, 12);
     alignas(16) uint8_t info[0x100] = {};
-    reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
+    reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::unverified::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
     uint32_t id = kNoBody;
-    const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::PhysicsEntityFactory_create))(
+    const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::unverified::PhysicsEntityFactory_create))(
         c.factory, &id, info, c.rigid, desc);
     if (made) id = *made;
     if (id == kNoBody || id == 0xffffffffu) return false;
     nativePlace(b, c.owner, id);
     if (!b.ntf) return false;
     uint32_t t1 = id, t2 = id;
-    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_enable))(c.owner, &t1);
-    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_registerSpatial))(c.owner, &t2);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_enable))(c.owner, &t1);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_registerSpatial))(c.owner, &t2);
     b.nid = id;
     b.parent = c.ent;
     return true;
@@ -452,8 +456,8 @@ void nativeDestroy(uintptr_t gw, uint32_t id) {
     const uintptr_t owner = nativeOwner(gw, id);
     if (!owner) return;
     uint32_t a = id, d = id, k = id;
-    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_unregisterSpatial))(owner, &a);
-    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_disable))(owner, &d);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_unregisterSpatial))(owner, &a);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_disable))(owner, &d);
     const uint32_t args[2] = {0, 1}; // {realm, 1}
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, const uint32_t*)>(mem::rva(e::function::RigidBody_destroy))(owner, &k, args);
 }

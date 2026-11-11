@@ -23,6 +23,8 @@
 #include "gridnode/mem.hpp"
 #include "host.hpp"
 
+// unverified: g_soundSystem (sound_play, API 19): a hypothesis in db/annotations; confirm in Ghidra.
+
 namespace gn::host {
 namespace {
 
@@ -84,7 +86,7 @@ int soundPlay(const char* mod, const char* path, const char* event, const float*
     if (!path || !out || (pos && !finite3(pos))) return GN_ERR_ARGUMENT;
     if (!isClientThread()) return GN_ERR_THREAD;
     if (!build::codeMatches("SoundSystem_createVoice")) return GN_ERR_UNAVAILABLE;
-    const uintptr_t system = mem::readOr<uintptr_t>(mem::rva(e::global::g_soundSystem));
+    const uintptr_t system = mem::readOr<uintptr_t>(mem::rva(e::global::unverified::g_soundSystem));
     if (!system) return GN_ERR_UNAVAILABLE;
     void* asset = assetFind(path, nullptr);
     if (!asset) return GN_ERR_NOT_FOUND;
