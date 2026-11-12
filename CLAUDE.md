@@ -36,7 +36,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
-| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check/ebx-build/deps/fbmod-info/fbmod-build` (the game's data store, read in place; EBX to and from lossless YAML; what an asset needs; Frosty mods) |
+| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check/ebx-build/deps/usage/fbmod-info/fbmod-build` (the game's data store, read in place; EBX to and from lossless YAML; what an asset needs; Frosty mods) |
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
