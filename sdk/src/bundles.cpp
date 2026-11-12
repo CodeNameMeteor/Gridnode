@@ -38,6 +38,7 @@ struct Bundle {
     std::vector<uint32_t> parents;  // loaded first, released with it (bundle-parents.txt)
     std::vector<std::array<uint64_t, 2>> held; // loaded bundles sharing its files, held while it is (server thread)
     uint32_t child = 0;             // a parent loaded for this bundle: not the mod's own handle
+    std::chrono::steady_clock::time_point asked{}; // when the game was asked (Loading)
 };
 
 struct Prefab {
@@ -47,6 +48,11 @@ struct Prefab {
     uint64_t level = 0;
     std::vector<uintptr_t> server, client;  // the entities it made, in each realm
     enum State { Queued, Live, Failed, Destroyed } state = Queued;
+    // A movement blocker made here (no asset): a barrier's data and a one-object blueprint built in our
+    // memory (blockerSpawn).
+    bool blocker = false;
+    float half[3] = {};
+    uint8_t cant = 0;
 };
 
 // A released bundle's game handle, given back only after a delay: its prefabs' entities are destroyed by
@@ -133,6 +139,16 @@ void readParents() {
         g_parents[line.substr(0, a)] = std::move(row);
     }
     GN_LOG("bundles: %u sublevel bundles' parents known", static_cast<unsigned>(g_parents.size()));
+}
+
+// In bundle-parents.txt as a child or a parent. Only sublevel bundles are listed, so a miss is a hint.
+bool knownBundle(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    const std::string key = lowerName(name);
+    if (g_parents.count(key)) return true;
+    for (const auto& kv : g_parents)
+        if (kv.second.parent == key) return true;
+    return false;
 }
 
 // What to load before `name`, outermost first (as gridnode_assets.parents.chain), without the running level's own
@@ -347,6 +363,7 @@ void requestOnServer(uint32_t h, bool parentsReady = false) {
     b->held = held;
     if (!held.empty()) GN_LOG("bundles: %s: holding %u loaded bundles that share its files", b->name.c_str(), static_cast<unsigned>(held.size()));
     b->state = game[0] ? Bundle::Loading : Bundle::Failed;
+    b->asked = std::chrono::steady_clock::now();
     GN_LOG("bundles: load %s: %s", b->name.c_str(), game[0] ? "asked" : "refused by the game");
 }
 
@@ -400,6 +417,12 @@ void pollOnServer() {
         } else if (state < 0 || state >= 4) {
             b.state = Bundle::Failed;
             GN_LOG("bundles: %s failed (group state %d)", b.name.c_str(), state);
+        } else if (b.asked.time_since_epoch().count() && std::chrono::steady_clock::now() - b.asked > std::chrono::seconds(30)) {
+            // The game takes any name and never says no: a misspelt one (sp_madincity, 2026-11-12) stayed
+            // loading for good. Real bundles were ready in under a second.
+            b.state = Bundle::Failed;
+            GN_LOG("bundles: %s not ready after 30 s (group state %d): is the name right?%s", b.name.c_str(), state,
+                   knownBundle(b.name) ? "" : " It is not in assets\\bundle-parents.txt");
         }
     }
 }
@@ -419,6 +442,33 @@ void* blueprintOf(const char* asset) {
     if (!found) return nullptr;
     assetRelease(found);
     return found;
+}
+
+// A spawner in the prefab, or in a blueprint it references (depth 8): its type name, else empty.
+// A spawner's client half is made from the server's network data (ClientSpawnEntity_createFromNetwork);
+// spawned this way it has none, and the client thread crashed reading 0 (pf_placemstub, 2026-11-12).
+// Offsets from the reflected types: PrefabBlueprint.Objects +0x40, ReferenceObjectData.Blueprint +0x18;
+// an engine array's count is the u32 at -4 from its data pointer.
+std::string spawnerIn(uintptr_t blueprint, int depth = 0) {
+    static const reflect::Type* prefabType = registry().find("PrefabBlueprint");
+    static const reflect::Type* refType = registry().find("ReferenceObjectData");
+    static const reflect::Type* spawnType = registry().find("SpawnReferenceObjectData");
+    if (!blueprint || depth > 8 || !prefabType || !refType || !spawnType) return {};
+    const reflect::Type* bt = registry().typeOf(mem::ProcessMemory(), blueprint);
+    if (!bt || !registry().isKindOf(bt, prefabType)) return {};
+    const uintptr_t objects = mem::readOr<uintptr_t>(blueprint + 0x40);
+    const uint32_t count = objects ? mem::readOr<uint32_t>(objects - 4) : 0;
+    for (uint32_t i = 0; i < count && i < 4096; ++i) {
+        const uintptr_t o = mem::readOr<uintptr_t>(objects + 8ull * i);
+        const reflect::Type* ot = o ? registry().typeOf(mem::ProcessMemory(), o) : nullptr;
+        if (!ot) continue;
+        if (registry().isKindOf(ot, spawnType)) return ot->name;
+        if (registry().isKindOf(ot, refType)) {
+            std::string inner = spawnerIn(mem::readOr<uintptr_t>(o + 0x18), depth + 1);
+            if (!inner.empty()) return inner;
+        }
+    }
+    return {};
 }
 
 // One realm's half (as the engine's own blueprint spawner, 0x1438fce60 / 0x1438fcbe0): creation info
@@ -471,16 +521,116 @@ void spawnClientHalf(uint32_t h, void* blueprint, gn_transform at, uint64_t leve
     GN_LOG("bundles: prefab %u: client %s, %u entities", h, bus ? "spawned" : "skipped (no bus from Faith on the client)", static_cast<unsigned>(made.size()));
 }
 
+// ---- movement blockers made at runtime (claim-lab runtime-data, game-tested 2026-11-12) ----------------
+// A PamOBBCollisionEntityData and an ObjectBlueprint (Object at +0x40) built by the types' own create
+// functions in memory that is never freed (the entities read their data while they live, and a level
+// end does not tell us when they are gone; each is 0x100 bytes). Copied from a loaded barrier's data:
+// the realm flags, layer and material, and its first PhysicsBodies element (copied too, in a one-element
+// array of ours, so the template's part of the level may stream out). Then ours: the world transform in
+// the data's Transform (+0x20; PamOBBCollision_enable resolves it there, not from the creation info),
+// HalfExtents (+0x60), Enabled (+0x80: the init enables it) and CantStand.. CantWallrun (+0x90..0x93).
+void* keptObject(const reflect::Type* type) {
+    if (!type || !type->createFn || !type->size) return nullptr;
+    void* mem = _aligned_malloc(type->size, 16);
+    if (!mem) return nullptr;
+    std::memset(mem, 0, type->size);
+    using CreateFn = void* (*)(void* mem, void* arena, bool guidPrefix);
+    void* obj = reinterpret_cast<CreateFn>(type->createFn)(mem, nullptr, false);
+    if (!obj) {
+        _aligned_free(mem);
+        return nullptr;
+    }
+    *reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(obj) + 0x08) = 1; // our reference: never released to 0
+    return obj;
+}
+
+// A loaded barrier's data to copy from (server thread): any server PamOBBCollisionEntity with a body element.
+uintptr_t blockerTemplate() {
+    static const reflect::Type* pamData = registry().find("PamOBBCollisionEntityData");
+    static const reflect::Type* obb = registry().find("PamOBBCollisionEntity");
+    if (!pamData || !obb) return 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || !registry().isKindOf(t, obb) || !inspector::alive(p, t)) continue;
+        if (!(mem::readOr<uint32_t>(p + 0x18) & 1)) continue; // server ones
+        const uintptr_t data = mem::readOr<uintptr_t>(p + 0x28);
+        if (!data || registry().typeOf(mem::ProcessMemory(), data) != pamData) continue;
+        const uintptr_t bodies = mem::readOr<uintptr_t>(data + 0x70);
+        if (bodies && mem::readOr<uint32_t>(bodies - 4) >= 1 && mem::readOr<uintptr_t>(bodies)) return data;
+    }
+    return 0;
+}
+
+void* makeBlocker(const gn_transform& at, const float* half, uint8_t cant) {
+    static const reflect::Type* dataType = registry().find("PamOBBCollisionEntityData");
+    static const reflect::Type* bpType = registry().find("ObjectBlueprint");
+    const uintptr_t tpl = blockerTemplate();
+    if (!tpl) {
+        GN_LOG("bundles: blocker not made: no barrier is loaded to copy its physics settings from");
+        return nullptr;
+    }
+    const uintptr_t tplBody = mem::readOr<uintptr_t>(mem::readOr<uintptr_t>(tpl + 0x70));
+    const reflect::Type* bodyType = tplBody ? registry().typeOf(mem::ProcessMemory(), tplBody) : nullptr;
+    if (!dataType || !bpType || !bodyType || !bodyType->size || dataType->size < 0x94 || bpType->size < 0x48) {
+        GN_LOG("bundles: blocker not made: the barrier types are not as expected");
+        return nullptr;
+    }
+    void* data = keptObject(dataType);
+    void* bp = keptObject(bpType);
+    void* body = _aligned_malloc(bodyType->size, 16);
+    void* array = _aligned_malloc(16, 16);
+    if (!data || !bp || !body || !array) {
+        GN_LOG("bundles: blocker not made: out of memory");
+        return nullptr; // what was made is left: a few hundred bytes, never handed to the game
+    }
+    uint8_t* d = static_cast<uint8_t*>(data);
+    mem::read(tpl + 0x10, d + 0x10, dataType->size - 0x10); // after the header (vtable, refcount, flags)
+    mem::read(tplBody, body, bodyType->size);
+    *reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(body) + 0x08) = 1;
+    // The array: its header at -8 (the count at -4), then the one element.
+    uint8_t* a = static_cast<uint8_t*>(array);
+    mem::read(mem::readOr<uintptr_t>(tpl + 0x70) - 8, a, 8);
+    *reinterpret_cast<uint32_t*>(a + 4) = 1;
+    *reinterpret_cast<void**>(a + 8) = body;
+    *reinterpret_cast<void**>(d + 0x70) = a + 8;
+    gn_transform t = at;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    std::memcpy(d + 0x20, &t, sizeof(t));
+    for (int k = 0; k < 3; ++k) reinterpret_cast<float*>(d + 0x60)[k] = std::max(half[k], 0.01f);
+    reinterpret_cast<float*>(d + 0x60)[3] = 0.f;
+    d[0x80] = 1;
+    for (int k = 0; k < 4; ++k) d[0x90 + k] = (cant >> k) & 1;
+    *reinterpret_cast<void**>(static_cast<uint8_t*>(bp) + 0x40) = data;
+    return bp;
+}
+
 void spawnOnServer(uint32_t h, std::string asset, gn_transform at) {
     uint64_t level = 0;
+    bool blocker = false;
+    float half[3] = {};
+    uint8_t cant = 0;
     {
         std::lock_guard<std::mutex> lock(g_m);
         Prefab* p = prefabOf(h);
         if (!p || p->state != Prefab::Queued) return;
         level = p->level;
+        blocker = p->blocker, cant = p->cant;
+        std::memcpy(half, p->half, sizeof(half));
     }
     if (level != g_level.load()) return;
-    void* blueprint = blueprintOf(asset.c_str());
+    void* blueprint = blocker ? makeBlocker(at, half, cant) : blueprintOf(asset.c_str());
+    if (!blueprint && blocker) {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (Prefab* p = prefabOf(h)) p->state = Prefab::Failed;
+        return;
+    }
+    const std::string spawner = blueprint && !blocker ? spawnerIn(reinterpret_cast<uintptr_t>(blueprint)) : std::string();
+    if (!spawner.empty()) {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (Prefab* p = prefabOf(h)) p->state = Prefab::Failed;
+        GN_LOG("bundles: prefab %u: %s not spawned: it holds a spawner (%s), whose client half needs the server's network data", h,
+               asset.c_str(), spawner.c_str());
+        return;
+    }
     const uintptr_t bus = blueprint ? rootBus(localServerCharacter(), "server") : 0;
     std::vector<uintptr_t> made;
     if (bus) made = spawnHalf(true, blueprint, bus, at);
@@ -658,6 +808,28 @@ int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, u
     const std::string name = asset;
     const gn_transform t = *at;
     server().post([h, name, t] { spawnOnServer(h, name, t); });
+    return GN_OK;
+}
+
+int blockerSpawn(const void* caller, const gn_transform* at, const float* half, uint8_t cant, uint32_t* handle) {
+    if (!at || !half || !handle || !finite(*at)) return GN_ERR_ARGUMENT;
+    for (int k = 0; k < 3; ++k)
+        if (!std::isfinite(half[k]) || half[k] <= 0.f || half[k] > 500.f) return GN_ERR_ARGUMENT;
+    start();
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_prefabs.size() >= 256) return GN_ERR_FULL;
+    Prefab p;
+    p.handle = g_next++;
+    p.owner = reinterpret_cast<uintptr_t>(caller);
+    p.level = g_level.load();
+    p.blocker = true;
+    std::memcpy(p.half, half, sizeof(p.half));
+    p.cant = cant;
+    *handle = p.handle;
+    const uint32_t h = p.handle;
+    g_prefabs.push_back(std::move(p));
+    const gn_transform t = *at;
+    server().post([h, t] { spawnOnServer(h, "movement blocker", t); });
     return GN_OK;
 }
 

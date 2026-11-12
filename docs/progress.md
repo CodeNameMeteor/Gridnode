@@ -20,7 +20,21 @@ place any object from any area without that area streaming in.
   dropped at level end; a mod's released and destroyed when it unloads. Game-tested
   with the claim lab's `bundle-api` (load, spawn, destroy, release, checkpoint reload, teleport with the parent
   held, mod unload). Parents load automatically from `assets bundle-parents`' table; the layout editor places
-  prefabs from any area (`PlacedPrefab` edits, saved in the layout). Both untested in game.
+  prefabs from any area (`PlacedPrefab` edits, saved in the layout). Game-tested 2026-11-12: a magrope placed
+  from the editor, kept after a teleport away and back. A misspelt bundle name stays loading in the game for
+  good: GridNode now gives up after 30 s. A prefab holding a spawner (`SpawnReferenceObjectData`, e.g.
+  `pf_placemstub`) is refused: its client half needs the server's network data and crashed the client thread.
+- A movement blocker made at runtime (claim-lab `runtime-data`, game-tested 2026-11-12): a
+  `PamOBBCollisionEntityData` and an `ObjectBlueprint` built in our memory with the types' create functions,
+  spawned on both realms. It blocks Faith, honours the Cant flags and shows in the volume overlay. The world
+  place goes in the data's `Transform` (+0x20): `PamOBBCollision_enable` resolves it there, and an identity
+  put the body at the world origin. Next: this in the layout editor (place, resize, choose the type), then
+  dash start / finish volumes the same way.
+- Layout editor (game-tested 2026-11-12): **Movement blockers** places that blocker at the crosshair (size,
+  can't stand / climb / vault / wallrun; `PlacedBlocker` edits, saved). Placed prefabs and blockers show as
+  boxes while the free camera flies, are picked by a click or their row, and move with the move keys (spawned
+  again there when the keys rest). `bundles.cpp` `blockerSpawn` builds the data (internal, not in the API).
+- Mods menu: **Reload all** reloads the reloadable mods and loads mod DLLs added since startup (untested in game).
 
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
 The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the

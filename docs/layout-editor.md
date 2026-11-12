@@ -149,10 +149,24 @@ python tools/gen/gridnode.py assets bundle-parents --data "<the game's Data fold
 
 It writes `assets/prefabs.txt` and `assets/bundle-parents.txt` next to gridnode.dll. Type part of a name in
 **Find**, pick one (or type an asset and its bundle yourself), and press **Place at the crosshair**. The list
-of placed prefabs shows what each is doing (loading its bundle, placed); type a position or a turn and press
-Enter to move one (it is spawned again there), or **Remove** it. They are saved with the layout and come
-back when it loads, and after a checkpoint or level reload. A prefab whose logic expects links from the level
-(a dash's start and finish) does nothing on its own yet.
+of placed prefabs shows what each is doing (loading its bundle, placed), or **Remove** it. They are saved
+with the layout and come back when it loads, and after a checkpoint or level reload. A prefab whose logic
+expects links from the level (a dash's start and finish) does nothing on its own yet, and one that holds a
+spawner (a character) is refused: its client half needs the server's data.
+
+## Movement blockers (experimental)
+
+Under **Movement blockers**, set a size and what Faith can't do on it (stand, climb, vault, wallrun), and
+press **Place a blocker at the crosshair**: an invisible wall stands on what the crosshair points at. GridNode
+makes it (it needs one barrier of the level loaded to copy its physics settings from). Saved with the layout.
+
+## Moving placed prefabs and blockers
+
+Placed prefabs (blue boxes) and blockers (pink boxes, their real size) show while you fly the free camera. A new
+one is selected at once; click one in the world while flying, or its row in the list, to select it (yellow). The move keys
+then move and turn it, as any object (Shift: 4 steps, Ctrl: a quarter). It is drawn at the new place at once
+and spawned again there when the keys rest. The selected one's row also takes a typed position and turn, and
+a blocker's size and flags. Undo does not cover them yet.
 
 ## Teleport
 

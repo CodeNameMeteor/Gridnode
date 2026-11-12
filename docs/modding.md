@@ -136,6 +136,10 @@ for itself (API 15): `gn::unloadSelf()` (Rust `unload_self()`) unloads the mod t
 current callback has returned, for an "Unload" button in its own window; false for a mod without
 `GN_MOD_UNLOAD`. `gn::unloadGridNode()` (Rust `unload_gridnode()`) unloads everything, as below.
 
+**Reload all** at the top of the Mods list reloads every mod with `GN_MOD_UNLOAD` and loads any mod DLL
+put in `mods\` (or `mods\<name>\<name>.dll`) since the game started, without a restart. A new mod whose
+dependency is not loaded yet is not started (its row says why). Mods without `GN_MOD_UNLOAD` stay as they are.
+
 Before the mod's DLL is freed, GridNode pauses the game's other threads and looks for one still in
 its code (a detour whose original runs for a long time, or a thread the mod started): if one stays
 for a few seconds, the mod is taken out but kept in memory, and Unload tries again.

@@ -92,6 +92,7 @@ void modReload(const std::string& file);             // any thread: done on Grid
 void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
+void modReloadAll();                                 // any thread: every reloadable mod reloaded, new DLLs in mods\ loaded
 // API 36 (vhooks.cpp, world.cpp): classes' vtables and virtuals by name, hooks on a class's virtual,
 // any entity's components, the game's data folder.
 int typeVtableCount(const reflect::Type* type);
@@ -358,6 +359,9 @@ int bundleLoad(const void* caller, const char* name, uint32_t* handle);
 int bundleState(uint32_t handle, uint32_t* ready);
 int bundleRelease(uint32_t handle);
 int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
+// A movement blocker (a barrier box made in memory, no asset): half sizes in metres, cant bits 0..3 =
+// can't stand, climb, vault, wallrun. A prefab handle (prefabState / prefabDestroy). Not in the API yet.
+int blockerSpawn(const void* caller, const gn_transform* at, const float* half, uint8_t cant, uint32_t* handle);
 int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities);
 int prefabDestroy(uint32_t handle);
 void forgetBundles(const CodeRange& r); // a mod unloading: its prefabs destroyed, its bundles released

@@ -465,6 +465,9 @@ void drawMain() {
         if (g_settings.devInfo) ImGui::Checkbox("Dear ImGui metrics", &g_showMetrics);
         if (g_settings.inspector || g_settings.console || g_settings.editor || g_settings.recorder || g_settings.devInfo) ImGui::Separator();
         if (ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::SmallButton("Reload all")) modReloadAll();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Reloads every mod that can be reloaded, and loads mods put in the mods folder since the game started.");
             const std::vector<ModInfo> mods = modList();
             const size_t online = static_cast<size_t>(std::count_if(mods.begin(), mods.end(), [](const ModInfo& m) { return !m.online.empty(); }));
             if (online)
