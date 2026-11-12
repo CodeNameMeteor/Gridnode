@@ -54,3 +54,29 @@ entities find them (0x143c7d800): each game world (`GameWorlds`, 0x1424a9b98: [0
 [1] server) has an index (+0x28) into every ClassInfo's per-world entity lists, whose first node is
 at ClassInfo + (index + 6) * 0x10 (0x143164d50); a ZoneStreamerEntity's node is at +0x268, and a
 node's first field is the next node.
+
+## Loading a bundle at runtime (game-tested 2026-11-12)
+
+Worked out with the `bundle-load` claim-lab experiment (`.workflow/runs/bundle-load/`), from a mod, mid-level:
+
+- Streaming runs on the **server thread**. Districts stream in as sublevels (`Levels/SP/SP_MainCity/Anchor`,
+  `AnchorArea3`, ...) through `SubLevelManager_requestBundle` (0x1432f38f0) with parent compartment 0 (request
+  +0x18). Zones stream as many small bundles (`Ground_ZS_ZS_15`, `CentralCityProps_ZS_ZS_445`) whose request carries
+  their region's compartment, so they go with it.
+- A mod can do the same: a copy of a sublevel request with another name, on the server thread, loaded
+  `AnchorArea3` (about 9 MB) in 0.16 s with Faith elsewhere. While loading, the game holds one extra reference and
+  drops it about 2 s after the bundle is ready.
+- A group's state goes 0, 1, then 3 (ready); 4 was never seen. Releasing the last reference
+  (`BundleHandle_release`, 0x1432f4880) unloads it: the group object is reused for another bundle a moment later.
+  Releasing while it loads (state 1) also works.
+- A group's +0x0c is the sublevel manager's own id, **not** a resource group: `getCompartment(+0x0c)` is null. The
+  resource group id comes from `ResourceManager_registerBundleGroup` (0x142abc370), called with the bundle's name
+  during the load; it returns the id (13 for `AnchorArea3`, kind 1). `getCompartment(id)` then gives the
+  compartment, and `Partition_findByName` finds the bundle's assets in it (`objects/props/missionitem/magrope/
+  pf_magrope_pullup`, `levels/sp/sp_maincity/anchorarea3`); they are not in compartment 0.
+- The handles the game copies and drops every frame (thousands a minute, count 2 to 2) are noise: log only a
+  count of 1 or 0.
+
+Not done yet: spawning an object from a loaded bundle (plan step 3). The layout editor spawns only static model
+data copied from a live entity; a prefab such as `pf_magrope_pullup` needs a blueprint spawn, which is its own
+research topic.

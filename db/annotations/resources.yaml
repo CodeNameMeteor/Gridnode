@@ -307,8 +307,8 @@ functions:
   - name: ResourceManager_registerBundleGroup
     va: 0x142abc370
     signature: "u32(i64, void*, u16, i32, u64, u8, u32)"
-    note: "Named in Ghidra as ResourceManager_registerBundleGroup; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
+    note: "(resourceManager, bundleName, a2, kind, allocator, a5, id or -1): makes a resource group for a bundle and returns its id (kind 1: ids 4..0x7d3; kind 2: 0x7d5..0xbbc), keyed by the lower-cased name's djb2-xor in a map at +0x5df8. Seen in game 2026-11-12: called on the server thread while a sublevel bundle loads; getCompartment(returned id) finds that bundle's partitions (docs/research/zone-streaming.md)."
+    confidence: inferred
     sources: [ghidra]
   - name: resourceGroup_unregisterId
     va: 0x142abe090
