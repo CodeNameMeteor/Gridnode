@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 37 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls) */
+#define GN_API_VERSION 38 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1238,6 +1238,51 @@ typedef struct gn_api {
     int (*time_of_day_hold_m)(gn_mod* self, float seconds);
     int (*visual_env_set_m)(gn_mod* self, uint32_t offset, const void* data, uint32_t size);
     int (*streaming_focus_add_m)(gn_mod* self, const float pos[3], uint32_t* handle);
+
+    /* ==== GN_API_VERSION 38 =================================================================== */
+
+    /* ---- loading bundles and spawning prefabs (experimental) -----------------------------------------
+     * bundle_load asks the game to load a bundle by name, as a district streaming in does (the names
+     * `gridnode.py assets list` shows without "Win32/", e.g. "Levels/SP/SP_MainCity/AnchorArea3"), so its
+     * assets can be used where Faith is, with that area never streamed in. It returns at once with a
+     * handle; the load runs on the server thread (a district: about 0.2 s). bundle_state: GN_OK with
+     * *ready 0 (loading) or 1; GN_ERR_UNAVAILABLE when the game refused or the load failed;
+     * GN_ERR_NOT_FOUND for an unknown handle, or one gone with its level. bundle_release destroys the
+     * prefabs spawned from it first, then gives the bundle back 1.5 s later, once their entities are gone (the
+     * game unloads it about 2 s after that when nothing else holds it; a bundle_load of the same name before
+     * then keeps it). A level ending takes every bundle and prefab with it: their handles are then
+     * gone (GN_ERR_NOT_FOUND), not released. At most 64 bundles at a time (GN_ERR_FULL).
+     * The game loads a file once, so a bundle loaded while another one holding the same files is loaded uses
+     * that one's copies: AnchorArea3 loaded with Anchor up, then Anchor streamed out by a teleport, crashed the
+     * game in a spawned prefab (2026-11-12). GridNode holds the loaded bundles that share files with the one
+     * asked for, and gives them back with it. It knows which from assets\bundle-parents.txt next to
+     * gridnode.dll (`gridnode.py assets bundle-parents`, made from the player's own game files); without that
+     * file, hold them yourself (load them too).
+     *
+     * prefab_spawn spawns an asset's blueprint (a prefab or an object blueprint: "objects/props/
+     * missionitem/magrope/pf_magrope_pullup") from any loaded bundle at `at`, server half then client
+     * half, into the level's root bus, and starts its logic (it works: a spawned magrope can be used).
+     * bundle: one of the mod's bundle handles (it must be ready; releasing it destroys the prefab), or 0
+     * when the asset's bundle is loaded already (the game's own). Returns at once with a handle; the
+     * spawn runs on the server thread, the client half after it. prefab_state: GN_OK with *live 1 once
+     * both halves exist and some of its entities are alive, *entities how many are (0 once the game took it
+     * away, e.g. a checkpoint reload); GN_ERR_UNAVAILABLE when it could not be spawned
+     * (no loaded bundle has the asset, no Faith); GN_ERR_NOT_FOUND for an unknown handle. prefab_destroy
+     * asks the game to destroy its entities, as a spawner removing a character does. A checkpoint or level
+     * reload takes spawned prefabs away. At most 256 at a time (GN_ERR_FULL).
+     *
+     * Any thread. A mod's bundles are released and its prefabs destroyed when it unloads; GridNode's full
+     * unload leaves them to the level. The _m calls take the mod's handle (API 37). Tested in game through
+     * the claim lab (load, spawn, destroy, release); these calls themselves are untested until the user's
+     * run. */
+    int (*bundle_load)(const char* name, uint32_t* handle);
+    int (*bundle_state)(uint32_t handle, uint32_t* ready);
+    int (*bundle_release)(uint32_t handle);
+    int (*prefab_spawn)(const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
+    int (*prefab_state)(uint32_t handle, uint32_t* live, uint32_t* entities);
+    int (*prefab_destroy)(uint32_t handle);
+    int (*bundle_load_m)(gn_mod* self, const char* name, uint32_t* handle);
+    int (*prefab_spawn_m)(gn_mod* self, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

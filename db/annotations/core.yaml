@@ -32,6 +32,48 @@ functions:
     note: "Allocates from an arena, dispatching on its kind (+0x8; 1-11 are built-in allocators, others through vtable +0x8). 517 callers, the replay keyframe ring among them (align 16). Named in the user's Ghidra; checked 2026-10-29."
     confidence: inferred
     sources: [ghidra]
+  - name: Heap_ownerOf
+    va: 0x142a66510
+    signature: "void*(void* ptr, bool fallback)"
+    note: "The arena that owns ptr, from the page directory at 0x1421602f0 (index bits 30.. and 16..29). Unknown page: the global arena at 0x1423606d0 if fallback, else null. Array and CString builders allocate from the arena of the field they fill. Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Heap_free
+    va: 0x142a3a9e0
+    signature: "void(void* ptr)"
+    note: "Frees a game allocation: page directory lookup (0x142a6a970); known pool entry goes to poolFree, a page marked -1 goes to the large-block free (0x142a781c0), a null directory or page entry executes int3 (no fallback to the global arena). Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Array_grow
+    va: 0x142a846c0
+    signature: "void(void** array, void* insertAt, u32 count, void* fillValue)"
+    note: "Grows a RefArray of 8-byte elements by inserting count copies of *fillValue. Allocates 8 + cap*8 bytes, elements start at mem+8 and only the element count at ptr-4 is written (ptr-8 is never written); frees the old block as ptr-8 unless it is the empty sentinel 0x14236e3e0. Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Array_destruct
+    va: 0x142a83080
+    signature: "void(void** array)"
+    note: "Destroys a RefArray of DataContainer pointers: resizes to 0 (0x142a91ee0), then frees ptr-8 with Heap_free unless it is the empty sentinel 0x14236e3e0; ptr-8 is not read. Struct arrays (EntityBusData +0x38) run their own element destructor and free ptr-8 through 0x142a8be20. Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: RefArray_resize
+    va: 0x142a91ee0
+    signature: "void(void** array, u32 newCount)"
+    note: "RefArray of DataContainer pointers: shrinking calls DataContainer_release on each dropped element that is non-null and has (ptr & 3) == 0; growing calls Array_grow with null. Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: CString_assign
+    va: 0x142a40a90
+    signature: "void(i8** out, const i8* src, u32 len)"
+    note: "Sets a CString: length 0 gives the shared empty string 0x14215d04c, else allocates len+1 bytes (align 4) from Heap_ownerOf(out, 1) and copies. Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: CString_free
+    va: 0x142a3d730
+    signature: "void(i8** str)"
+    note: "Frees a CString unless it is the shared empty string 0x14215d04c: poolFree(Heap_ownerOf(*str, 1), *str). Checked in Ghidra (data-arrays)."
+    confidence: inferred
+    sources: [ghidra]
   - name: Heap_FreeChunk
     va: 0x142c7be80
     signature: "void(i64, i64)"

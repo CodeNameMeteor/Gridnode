@@ -251,6 +251,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetTimeOfDay(code);
     forgetVisualEnv(code);
     layouts::forgetStreamingFocus(code);
+    forgetBundles(code);
     return hooksOut;
 }
 
@@ -464,6 +465,60 @@ bool unload(Mod& m, bool all = false) {
     return true;
 }
 
+// The mod DLLs in g_folder, sorted: mods\*.dll, and a mod in its own folder (as a release zip unpacks):
+// mods\<name>\<name>.dll, its files beside it.
+std::vector<std::wstring> modFiles() {
+    std::vector<std::wstring> files;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((g_folder + L"*.dll").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) files.push_back(fd.cFileName);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    h = FindFirstFileW((g_folder + L"*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring d = fd.cFileName;
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || d.empty() || d[0] == L'.') continue;
+            const std::wstring dll = d + L"\\" + d + L".dll";
+            if (GetFileAttributesW((g_folder + dll).c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(dll);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+std::atomic<bool> g_reloadAllWanted{false};
+
+// The menu's Reload all (GridNode's thread): every loaded mod that can be reloaded is, and DLLs put in the
+// mods folder since the game started are loaded (their dependencies must be loaded or come first by name).
+// A mod without gn_mod_unload cannot be reloaded: it stays as it is.
+void reloadAll() {
+    const std::vector<std::wstring> files = modFiles();
+    std::lock_guard<std::mutex> lock(g_modsM);
+    int reloads = 0, added = 0, pinned = 0;
+    for (Mod& m : g_mods) {
+        if (!m.module) continue;
+        if (m.info.reloadable) m.reloadWanted = true, ++reloads;
+        else ++pinned;
+    }
+    for (const std::wstring& f : files) {
+        const std::string file = narrow(f);
+        if (std::any_of(g_mods.begin(), g_mods.end(), [&](const Mod& m) { return m.info.file == file; })) continue;
+        Mod m;
+        m.info.file = file;
+        m.path = g_folder + f;
+        m.loadWanted = true;
+        g_mods.push_back(std::move(m));
+        ++added;
+    }
+    GN_LOG("mods: reload all: %d reloaded, %d new loaded%s", reloads, added,
+           pinned ? (", " + std::to_string(pinned) + " kept as they are (no gn_mod_unload: a restart reloads them)").c_str() : "");
+}
+
 void reload(Mod& m) {
     GN_LOG("mods: reloading %s", m.info.file.c_str());
     if (!unload(m)) return;
@@ -563,7 +618,10 @@ void modAutoReload(const std::string& file, bool on) {
         if (m.info.file == file) m.info.autoReload = on;
 }
 
+void modReloadAll() { g_reloadAllWanted = true; }
+
 void pollMods() {
+    if (g_reloadAllWanted.exchange(false)) reloadAll();
     const ULONGLONG now = GetTickCount64();
     size_t count;
     {
@@ -619,8 +677,9 @@ void pollMods() {
             if (unload(work)) work.info.status = "unloaded (Load brings it back)";
         } else if (work.loadWanted) {
             work.loadWanted = false;
+            const bool fresh = work.info.id.empty(); // put in the folder since the game started (Reload all)
             load(work);
-            work.info.status = work.info.loaded ? "loaded again" : "load failed";
+            work.info.status = work.info.loaded ? (fresh ? "loaded (new)" : "loaded again") : "load failed";
         } else {
             reload(work);
         }
@@ -839,26 +898,7 @@ void loadMods(const std::wstring& folder) {
         while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    std::vector<std::wstring> files;
-    h = FindFirstFileW((g_folder + L"*.dll").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) files.push_back(fd.cFileName);
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
-    // A mod in its own folder (as a release zip unpacks): mods\<name>\<name>.dll, its files beside it.
-    h = FindFirstFileW((g_folder + L"*").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            const std::wstring d = fd.cFileName;
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || d.empty() || d[0] == L'.') continue;
-            const std::wstring dll = d + L"\\" + d + L".dll";
-            if (GetFileAttributesW((g_folder + dll).c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(dll);
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
-    std::sort(files.begin(), files.end());
+    const std::vector<std::wstring> files = modFiles();
     if (files.empty()) {
         GN_LOG("mods: none (no DLLs in %s or its folders)", narrow(g_folder).c_str());
         return;

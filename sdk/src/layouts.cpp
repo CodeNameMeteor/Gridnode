@@ -49,6 +49,7 @@ void specialSweep();                      // barrier and magrope edits (server t
 void unloadSpecial();
 void clearSpecialCopies();
 void clearSpecialSelection();
+bool pickPlaced(const float* ray); // a placed prefab or blocker (defined with the overlay)
 namespace {
 
 namespace e = gn::engine;
@@ -65,7 +66,16 @@ struct Edit {
     std::string source;
     std::string mesh;   // "Copy": the source's mesh (MeshAsset name): found by it when the source is not
     int copyId = -1;
+    // kind "PlacedPrefab": a blueprint from any part of the level, spawned from its bundle (API 38's
+    // bundles.cpp): its asset name and the bundle GridNode loads for it (with the bundle's parents).
+    std::string asset, bundle;
+    // kind "PlacedBlocker": a movement blocker GridNode makes (bundles.cpp blockerSpawn): its half size in
+    // metres along its right, up and forward rows, and cant bits 0..3 (stand, climb, vault, wallrun).
+    float half[3] = {1.f, 1.5f, 0.25f};
+    uint8_t cant = 0xf;
 };
+
+bool isPlaced(const Edit& ed) { return ed.kind == "PlacedPrefab" || ed.kind == "PlacedBlocker"; }
 
 // Where removed copies and hidden group copies go (entities cannot be destroyed yet): this far
 // below where they were, out of sight and out of reach (Frosty-Unity Pipeline uses the same).
@@ -76,6 +86,7 @@ std::string g_level;            // the level the edits are for (g_m)
 std::vector<Edit> g_edits;      // (g_m)
 bool g_dirty = false;           // unsaved changes (g_m)
 std::wstring g_dir;             // layouts folder
+std::wstring g_assetsDir;       // assets folder next to gridnode.dll (gridnode.py assets writes there)
 std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
 std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
 int g_nextCopyId = 0;           // (g_m)
@@ -448,6 +459,13 @@ bool save(const std::string& name) {
         o += "  - kind: " + oneLine(ed.kind) + "\n";
         if (!ed.source.empty()) o += "    source: " + oneLine(ed.source) + "\n";
         if (!ed.mesh.empty()) o += "    mesh: " + oneLine(ed.mesh) + "\n";
+        if (!ed.asset.empty()) o += "    asset: " + oneLine(ed.asset) + "\n";
+        if (!ed.bundle.empty()) o += "    bundle: " + oneLine(ed.bundle) + "\n";
+        if (ed.kind == "PlacedBlocker") {
+            const float size[3] = {ed.half[0] * 2.f, ed.half[1] * 2.f, ed.half[2] * 2.f};
+            o += "    size: " + fmtVec(size) + "\n";
+            o += "    cant: " + std::to_string(ed.cant & 0xf) + "\n";
+        }
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -521,6 +539,21 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
             cur.mesh = val;
             continue;
         }
+        if (key == "asset" || key == "bundle") {
+            (key == "asset" ? cur.asset : cur.bundle) = val;
+            continue;
+        }
+        if (key == "size") { // PlacedBlocker: the whole size; kept as half sizes
+            float size[3];
+            if (parseVec(val, size) && size[0] > 0.f && size[1] > 0.f && size[2] > 0.f && size[0] < 1000.f && size[1] < 1000.f && size[2] < 1000.f)
+                for (int k = 0; k < 3; ++k) cur.half[k] = size[k] * 0.5f;
+            else GN_LOG("layouts: %s line %d: cannot read size", level.c_str(), lineNo);
+            continue;
+        }
+        if (key == "cant") {
+            cur.cant = static_cast<uint8_t>(atoi(val.c_str()) & 0xf);
+            continue;
+        }
         if (key == "kind") cur.kind = val, ok = !val.empty();
         else if (key == "at") ok = parseVec(val, cur.at);
         else if (key == "right") ok = parseVec(val, cur.to.right);
@@ -540,7 +573,7 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     flush();
     fclose(f);
     for (Edit& ed : out) {
-        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") { // a copy has no level placement: putting it back removes it
+        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy" || isPlaced(ed)) { // a copy has no level placement: putting it back removes it
             ed.from = ed.to;
             ed.haveFrom = true;
             std::lock_guard<std::mutex> lock(g_m);
@@ -552,6 +585,13 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
     }
     out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [&](const Edit& ed) {
+                                 const bool bad = ed.kind == "PlacedPrefab" && (ed.asset.empty() || ed.bundle.empty());
+                                 if (bad) GN_LOG("layouts: %s: a placed prefab without its asset or bundle; skipped", level.c_str());
+                                 return bad;
+                             }),
+              out.end());
     // Values the game must never be given (nan / inf from a hand-edited file, a zero row).
     const size_t before = out.size();
     out.erase(std::remove_if(out.begin(), out.end(),
@@ -2182,7 +2222,8 @@ void selectCopy(const Spawned& sp, const gn_transform& now, bool add) {
 // `ray` (from, direction; 6 floats) or, if null, the camera's view.
 // With `add` (Shift held), what is picked joins the selection, or leaves it if it is already in.
 void pick(const float* ray = nullptr, bool add = false) {
-    clearSpecialSelection(); // picking an object leaves a barrier or magrope selection
+    if (ray && pickPlaced(ray)) return;
+    clearSpecialSelection(); // picking an object leaves a barrier, magrope or placed selection
     std::array<float, 6> given{};
     const bool haveRay = ray != nullptr;
     if (ray) memcpy(given.data(), ray, sizeof(float) * 6);
@@ -3233,6 +3274,400 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
     if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
 }
 
+// ---- prefabs from any part of the level (API 38: bundles.cpp) ----------------------------------------------
+// A "PlacedPrefab" edit is kept spawned while the layout has it: its bundle (and the bundle's parents) loaded,
+// the prefab spawned at the edit's place. Kept on the server thread every quarter second: the game takes
+// spawned prefabs away on a checkpoint or level reload, and they are spawned again.
+std::mutex g_pfM;
+std::unordered_map<int, uint32_t> g_pfLive;            // (g_pfM) copyId -> prefab handle
+std::unordered_map<std::string, uint32_t> g_pfBundles; // (g_pfM) bundle (lower case) -> bundle handle
+std::unordered_map<int, std::string> g_pfStatus;       // (g_pfM) copyId -> what it is doing (the editor's list)
+std::unordered_map<int, Edit> g_pfSpawned;             // (g_pfM) copyId -> the edit as it was last spawned
+std::unordered_map<int, DWORD> g_pfMovedAt;            // (g_pfM) copyId -> when the editor last moved it (GetTickCount)
+std::unordered_map<int, DWORD> g_pfTriedAt;            // (g_pfM) copyId -> a failed blocker's last try
+std::atomic<int> g_placedSel{-1};                      // the selected placed prefab or blocker (its copyId), or -1
+
+std::string lowerCopy(std::string v) {
+    for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return v;
+}
+
+// What a placed object was spawned as: moved, resized or with other flags, it is spawned again.
+bool sameSpawn(const Edit& a, const Edit& b) {
+    return memcmp(&a.to, &b.to, sizeof(a.to)) == 0 && memcmp(a.half, b.half, sizeof(a.half)) == 0 && a.cant == b.cant && a.asset == b.asset;
+}
+
+void prefabSync() {
+    std::vector<Edit> want;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (isPlaced(ed)) want.push_back(ed);
+    }
+    std::lock_guard<std::mutex> lock(g_pfM);
+    const DWORD now = GetTickCount();
+    // Objects no longer in the layout go first, then the bundles nothing needs.
+    for (auto it = g_pfLive.begin(); it != g_pfLive.end();) {
+        const bool kept = std::any_of(want.begin(), want.end(), [&](const Edit& ed) { return ed.copyId == it->first; });
+        if (kept) {
+            ++it;
+            continue;
+        }
+        prefabDestroy(it->second);
+        g_pfStatus.erase(it->first);
+        g_pfSpawned.erase(it->first);
+        it = g_pfLive.erase(it);
+    }
+    for (auto it = g_pfBundles.begin(); it != g_pfBundles.end();) {
+        const bool needed = std::any_of(want.begin(), want.end(), [&](const Edit& ed) { return !ed.bundle.empty() && lowerCopy(ed.bundle) == it->first; });
+        if (needed) {
+            ++it;
+            continue;
+        }
+        bundleRelease(it->second);
+        it = g_pfBundles.erase(it);
+    }
+    for (const Edit& ed : want) {
+        const bool blocker = ed.kind == "PlacedBlocker";
+        uint32_t bh = 0;
+        if (!blocker) {
+            uint32_t& slot = g_pfBundles[lowerCopy(ed.bundle)];
+            uint32_t ready = 0;
+            const int bs = slot ? bundleState(slot, &ready) : GN_ERR_NOT_FOUND;
+            if (bs == GN_ERR_NOT_FOUND) { // not asked yet, or gone with a level reload: ask (again)
+                slot = 0;
+                if (bundleLoad(nullptr, ed.bundle.c_str(), &slot) != GN_OK) slot = 0;
+                g_pfStatus[ed.copyId] = "loading its area";
+                continue;
+            }
+            if (bs != GN_OK) {
+                g_pfStatus[ed.copyId] = "its area did not load (see the log; is the bundle name right?)";
+                continue;
+            }
+            if (!ready) {
+                g_pfStatus[ed.copyId] = "loading its area";
+                continue;
+            }
+            bh = slot;
+        }
+        auto live = g_pfLive.find(ed.copyId);
+        if (live != g_pfLive.end()) {
+            uint32_t on = 0, n = 0;
+            const int ps = prefabState(live->second, &on, &n);
+            const auto was = g_pfSpawned.find(ed.copyId);
+            const bool changed = was == g_pfSpawned.end() || !sameSpawn(was->second, ed);
+            const auto moved = g_pfMovedAt.find(ed.copyId);
+            // Moved with the keys: spawned again once they rest (a third of a second), not on every press.
+            const bool settled = moved == g_pfMovedAt.end() || now - moved->second >= 300;
+            if (ps == GN_OK && on && (!changed || !settled)) {
+                g_pfStatus[ed.copyId] = changed ? "moving" : "placed, " + std::to_string(n) + " entities"; // from now on, none alive means taken away
+                continue;
+            }
+            if (ps == GN_OK && !on && !changed && g_pfStatus[ed.copyId] == "spawning") continue; // its halves are still being made
+            if (ps == GN_ERR_UNAVAILABLE && !changed) {
+                g_pfStatus[ed.copyId] = "could not be spawned (see the log)";
+                // A prefab: not tried again until it is moved or placed again. A blocker: again every
+                // 2 s (it needs a loaded barrier to copy from, and a layout loads early in a level).
+                if (!blocker) continue;
+                DWORD& tried = g_pfTriedAt[ed.copyId];
+                if (now - tried < 2000) continue;
+                tried = now;
+            }
+            prefabDestroy(live->second); // gone (the game took it away), or changed: spawned again below
+            g_pfLive.erase(live);
+        }
+        uint32_t ph = 0;
+        const int r = blocker ? blockerSpawn(nullptr, &ed.to, ed.half, ed.cant, &ph) : prefabSpawn(nullptr, ed.asset.c_str(), &ed.to, bh, &ph);
+        if (r == GN_OK) {
+            g_pfLive[ed.copyId] = ph;
+            g_pfSpawned[ed.copyId] = ed;
+            g_pfStatus[ed.copyId] = "spawning";
+        }
+    }
+}
+
+// The prefab list (gridnode.py assets bundle-parents writes it): asset, the bundle to load.
+struct PrefabChoice {
+    std::string asset, bundle;
+};
+std::vector<PrefabChoice> g_pfIndex; // render thread
+bool g_pfIndexRead = false;
+
+void readPrefabIndex() {
+    g_pfIndexRead = true;
+    g_pfIndex.clear();
+    FILE* f = _wfopen((g_assetsDir + L"prefabs.txt").c_str(), L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        const size_t tab = l.find('\t');
+        if (l.empty() || l[0] == '#' || tab == std::string::npos) continue;
+        g_pfIndex.push_back({l.substr(0, tab), l.substr(tab + 1)});
+    }
+    fclose(f);
+    GN_LOG("layouts: %llu prefabs can be placed (assets\\prefabs.txt)", static_cast<unsigned long long>(g_pfIndex.size()));
+}
+
+// Server thread: where the ray hits (or 10 m along it), upright, facing along the ray; a blocker stands on
+// what the ray hits. The new object is selected, so the move keys move it at once.
+void placeAt(Edit ed, std::array<float, 6> r) {
+    const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+    gn_ray_hit hit{};
+    alignas(16) gn_transform t{};
+    if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(t.trans, hit.position, sizeof(float) * 3);
+    else
+        for (int k = 0; k < 3; ++k) t.trans[k] = r[k] + r[3 + k] * 10.f;
+    if (ed.kind == "PlacedBlocker") t.trans[1] += ed.half[1];
+    float fwd[3] = {r[3], 0.f, r[5]};
+    if (std::fabs(fwd[0]) + std::fabs(fwd[2]) < 1e-4f) fwd[2] = 1.f;
+    normalize(fwd);
+    t.forward[0] = fwd[0], t.forward[2] = fwd[2];
+    t.up[1] = 1.f;
+    t.right[0] = fwd[2], t.right[2] = -fwd[0]; // up x forward
+    t.trans[3] = 1.f;
+    ed.to = ed.from = t;
+    ed.haveFrom = true;
+    memcpy(ed.at, t.trans, sizeof(ed.at));
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        ed.copyId = g_nextCopyId++;
+        g_edits.push_back(ed);
+        g_dirty = true;
+    }
+    clearSpecialSelection();
+    {
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_haveSel = false, g_extra.clear();
+    }
+    g_placedSel = ed.copyId;
+    const std::string what = ed.kind == "PlacedBlocker" ? "a movement blocker" : ed.asset;
+    GN_LOG("layouts: placed %s%s%s at (%.1f, %.1f, %.1f)", what.c_str(), ed.bundle.empty() ? "" : " (bundle ", ed.bundle.empty() ? "" : (ed.bundle + ")").c_str(),
+           t.trans[0], t.trans[1], t.trans[2]);
+    setStatus("Placed " + what + " (selected): the move keys move and turn it." + (ed.bundle.empty() ? "" : " Its area loads first (a second or two)."));
+}
+
+void placePrefab(const std::string& asset, const std::string& bundle, std::array<float, 6> r) {
+    Edit ed;
+    ed.kind = "PlacedPrefab";
+    ed.asset = asset;
+    ed.bundle = bundle;
+    placeAt(ed, r);
+}
+
+// A placed object moved (the keys, the boxes or a drag): the edit changes at once (drawn there), and
+// prefabSync spawns it again there once the moves rest.
+void movePlaced(int copyId, const gn_transform& to) {
+    if (!usableTransform(to)) return;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Edit& e : g_edits)
+            if (isPlaced(e) && e.copyId == copyId) {
+                e.to = e.from = to;
+                memcpy(e.at, to.trans, sizeof(e.at));
+                g_dirty = true;
+            }
+    }
+    std::lock_guard<std::mutex> lock(g_pfM);
+    g_pfMovedAt[copyId] = GetTickCount();
+}
+
+bool placedEdit(int copyId, Edit& out) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (const Edit& e : g_edits)
+        if (isPlaced(e) && e.copyId == copyId) {
+            out = e;
+            return true;
+        }
+    return false;
+}
+
+// The selected placed object's row of controls: where it is (type and Enter), its turn; a blocker's size
+// and flags (applied at once, spawned again when they rest).
+void drawPlacedControls(const Edit& ed) {
+    float pos[3] = {ed.to.trans[0], ed.to.trans[1], ed.to.trans[2]};
+    float yaw = std::atan2(ed.to.forward[0], ed.to.forward[2]) * 57.29578f;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    const bool movePos = ImGui::InputFloat3("##pos", pos, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
+    const bool turn = ImGui::InputFloat("turn##yaw", &yaw, 0.f, 0.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue);
+    if ((movePos || turn) && finite(pos, 3) && std::isfinite(yaw)) {
+        gn_transform t = ed.to;
+        memcpy(t.trans, pos, sizeof(pos));
+        if (turn) {
+            const float a = yaw / 57.29578f;
+            t.forward[0] = std::sin(a), t.forward[1] = 0.f, t.forward[2] = std::cos(a);
+            t.up[0] = 0.f, t.up[1] = 1.f, t.up[2] = 0.f;
+            t.right[0] = std::cos(a), t.right[1] = 0.f, t.right[2] = -std::sin(a);
+        }
+        movePlaced(ed.copyId, t);
+    }
+    if (ed.kind != "PlacedBlocker") return;
+    float size[3] = {ed.half[0] * 2.f, ed.half[1] * 2.f, ed.half[2] * 2.f};
+    bool cant[4];
+    for (int k = 0; k < 4; ++k) cant[k] = (ed.cant >> k) & 1;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    bool changed = ImGui::DragFloat3("size (m)##blk", size, 0.05f, 0.05f, 200.f, "%.2f");
+    ImGui::TextDisabled("width, height, depth");
+    changed |= ImGui::Checkbox("can't stand##blk", &cant[0]);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("climb##blk", &cant[1]);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("vault##blk", &cant[2]);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("wallrun##blk", &cant[3]);
+    if (changed && finite(size, 3)) {
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            for (Edit& e : g_edits)
+                if (e.kind == "PlacedBlocker" && e.copyId == ed.copyId) {
+                    for (int k = 0; k < 3; ++k) e.half[k] = std::clamp(size[k], 0.05f, 200.f) * 0.5f;
+                    e.cant = static_cast<uint8_t>((cant[0] ? 1 : 0) | (cant[1] ? 2 : 0) | (cant[2] ? 4 : 0) | (cant[3] ? 8 : 0));
+                    g_dirty = true;
+                }
+        }
+        std::lock_guard<std::mutex> lock(g_pfM);
+        g_pfMovedAt[ed.copyId] = GetTickCount();
+    }
+}
+
+// The placed objects of one kind: click a row to select it (then the move keys move it), Remove.
+void drawPlacedList(const char* kind) {
+    std::vector<Edit> placed;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == kind) placed.push_back(ed);
+    }
+    if (placed.empty()) return;
+    ImGui::Separator();
+    const int sel = g_placedSel.load();
+    for (const Edit& ed : placed) {
+        std::string status;
+        {
+            std::lock_guard<std::mutex> lock(g_pfM);
+            const auto it = g_pfStatus.find(ed.copyId);
+            status = it == g_pfStatus.end() ? "waiting" : it->second;
+        }
+        ImGui::PushID(ed.copyId);
+        std::string name = "movement blocker";
+        if (!ed.asset.empty()) {
+            const size_t slash = ed.asset.find_last_of('/');
+            name = slash == std::string::npos ? ed.asset : ed.asset.substr(slash + 1);
+        }
+        const float x = ImGui::GetCursorPosX();
+        if (ImGui::Selectable(name.c_str(), sel == ed.copyId, 0, ImVec2(ImGui::GetFontSize() * 14, 0.f))) {
+            clearSpecialSelection();
+            {
+                std::lock_guard<std::mutex> lock(g_selM);
+                g_haveSel = false, g_extra.clear();
+            }
+            g_placedSel = sel == ed.copyId ? -1 : ed.copyId;
+        }
+        ImGui::SameLine(x + ImGui::GetFontSize() * 14.5f);
+        ImGui::TextDisabled("%s", status.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& e) { return isPlaced(e) && e.copyId == ed.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+            if (g_placedSel == ed.copyId) g_placedSel = -1;
+        }
+        if (sel == ed.copyId) drawPlacedControls(ed);
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled("Click one here or in the world to select it; the move keys (arrows, up / down, turn) then move it, "
+                        "as any object. Save the layout to keep them.");
+}
+
+void drawBlockers() {
+    if (!ImGui::CollapsingHeader("Movement blockers (experimental)")) return;
+    static float size[3] = {2.f, 3.f, 0.5f};
+    static bool cant[4] = {true, true, true, true};
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("An invisible wall Faith cannot pass, of any size, made by GridNode (shown as a box while the editor is open). "
+                        "Saved with the layout.");
+    ImGui::PopTextWrapPos();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    ImGui::DragFloat3("size (m)##new", size, 0.05f, 0.05f, 200.f, "%.2f");
+    ImGui::Checkbox("can't stand##new", &cant[0]);
+    ImGui::SameLine();
+    ImGui::Checkbox("climb##new", &cant[1]);
+    ImGui::SameLine();
+    ImGui::Checkbox("vault##new", &cant[2]);
+    ImGui::SameLine();
+    ImGui::Checkbox("wallrun##new", &cant[3]);
+    if (ImGui::Button("Place a blocker at the crosshair")) {
+        float ray[6];
+        if (centreRay(ray) && finite(size, 3)) {
+            std::array<float, 6> r{};
+            memcpy(r.data(), ray, sizeof(ray));
+            Edit ed;
+            ed.kind = "PlacedBlocker";
+            for (int k = 0; k < 3; ++k) ed.half[k] = std::clamp(size[k], 0.05f, 200.f) * 0.5f;
+            ed.cant = static_cast<uint8_t>((cant[0] ? 1 : 0) | (cant[1] ? 2 : 0) | (cant[2] ? 4 : 0) | (cant[3] ? 8 : 0));
+            server().post([ed, r] { placeAt(ed, r); });
+        }
+    }
+    drawPlacedList("PlacedBlocker");
+}
+
+void drawPrefabs() {
+    if (!ImGui::CollapsingHeader("Prefabs from any part of the level (experimental)")) return;
+    if (!g_pfIndexRead) readPrefabIndex();
+    static char filter[128] = "magrope";
+    static char asset[256] = "";
+    static char bundle[256] = "";
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("Any prefab of the city, wherever you are: GridNode loads the part of the level it comes from "
+                        "(and that part's parents) and spawns it. Saved with the layout.");
+    if (g_pfIndex.empty())
+        ImGui::TextDisabled("No list yet: run  python tools/gen/gridnode.py assets bundle-parents --data <the game's Data folder>  "
+                            "(it writes assets\\prefabs.txt and assets\\bundle-parents.txt), then Reload the list. "
+                            "You can also type an asset and its bundle below.");
+    ImGui::PopTextWrapPos();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    ImGui::InputText("Find##pf", filter, sizeof(filter));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reload the list")) readPrefabIndex();
+    if (!g_pfIndex.empty() && ImGui::BeginChild("##pflist", ImVec2(0.f, ImGui::GetTextLineHeightWithSpacing() * 8), true)) {
+        const std::string f = lowerCopy(filter);
+        int shown = 0;
+        for (const PrefabChoice& c : g_pfIndex) {
+            if (!f.empty() && c.asset.find(f) == std::string::npos) continue;
+            if (++shown > 200) {
+                ImGui::TextDisabled("... more: type more of the name");
+                break;
+            }
+            if (ImGui::Selectable(c.asset.c_str(), c.asset == asset)) {
+                snprintf(asset, sizeof(asset), "%s", c.asset.c_str());
+                snprintf(bundle, sizeof(bundle), "%s", c.bundle.c_str());
+            }
+        }
+        if (!shown) ImGui::TextDisabled("Nothing matches.");
+    }
+    if (!g_pfIndex.empty()) ImGui::EndChild();
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
+    ImGui::InputText("Asset##pf", asset, sizeof(asset));
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
+    ImGui::InputText("Bundle##pf", bundle, sizeof(bundle));
+    ImGui::BeginDisabled(!asset[0] || !bundle[0]);
+    if (ImGui::Button("Place at the crosshair##pf")) {
+        float ray[6];
+        if (centreRay(ray)) {
+            std::array<float, 6> r{};
+            memcpy(r.data(), ray, sizeof(ray));
+            const std::string a = asset, b = bundle;
+            server().post([a, b, r] { placePrefab(a, b, r); });
+        }
+    }
+    ImGui::EndDisabled();
+    drawPlacedList("PlacedPrefab");
+}
+
 void drawLibrary() {
     loadLibrary();
     if (!ImGui::CollapsingHeader("Library")) return;
@@ -3353,6 +3788,7 @@ void upright(gn_transform& t) {
 // ---- host interface ----------------------------------------------------------------------------------
 void start(const std::wstring& dir) {
     g_dir = dir + L"layouts\\";
+    g_assetsDir = dir + L"assets\\";
     for (const char* cls : {"ServerStaticModelEntity", "ClientStaticModelEntity"})
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
@@ -3475,6 +3911,11 @@ void serverTick() {
         maintainSpawned();
         zoneFocusSync();
         specialSweep();
+    }
+    static DWORD lastPrefabs = 0;
+    if (now - lastPrefabs >= 250) {
+        lastPrefabs = now;
+        prefabSync();
     }
 }
 
@@ -4930,7 +5371,7 @@ void clearRopeMoves() {
     g_barOrig.clear();
 }
 
-void clearSpecialSelection() { g_barSel = 0, g_ropeSel = 0; }
+void clearSpecialSelection() { g_barSel = 0, g_ropeSel = 0, g_placedSel = -1; }
 
 void specialSweep() { specialSweepNow(); }
 
@@ -4974,6 +5415,16 @@ void unloadSpecial() {
 
 // The move keys on a selected barrier or magrope (shown): false when neither is selected.
 bool nudgeSpecial(int dir, float scale) {
+    if (const int placed = g_placedSel.load(); placed >= 0) { // a placed prefab or blocker: its edit moves, it is spawned again there
+        Edit ed;
+        if (!placedEdit(placed, ed)) {
+            g_placedSel = -1;
+            return false;
+        }
+        gn_transform t = ed.to;
+        if (nudgeTransform(t, dir, scale)) movePlaced(placed, t);
+        return true;
+    }
     if (!g_showBarriers || (!g_barSel && !g_ropeSel)) return false;
     if (g_ropeSel) {
         gn_transform t{};
@@ -5274,6 +5725,8 @@ void draw(bool* open) {
     else ImGui::TextDisabled("Copy an object (a building, a prop) to paste new ones of it anywhere in this level. Copies are saved with the layout.");
     ImGui::PopTextWrapPos();
     drawLibrary();
+    drawBlockers();
+    drawPrefabs();
     drawKeys();
     ImGui::End();
 }
@@ -6206,14 +6659,113 @@ bool pickBarrier(const float* ray) {
         if (along > 0.f && d2 <= r * r && along - std::sqrt(r * r - d2) < best) best = along - std::sqrt(r * r - d2), rope = m.ent;
     }
     if (rope) {
-        g_ropeSel = rope, g_barSel = 0;
+        g_ropeSel = rope, g_barSel = 0, g_placedSel = -1;
         GN_LOG("layouts: magrope %llx selected (%.1f m)", static_cast<unsigned long long>(rope), best);
         return true;
     }
     if (!hit) return false;
-    g_barSel = hit, g_ropeSel = 0;
+    g_barSel = hit, g_ropeSel = 0, g_placedSel = -1;
     GN_LOG("layouts: barrier %llx selected (%.1f m)", static_cast<unsigned long long>(hit), best);
     return true;
+}
+
+// The box a placed object is picked and drawn by, in its own frame: a blocker's size, a prefab a small box
+// about its origin (its parts are not known here).
+void placedBox(const Edit& ed, float* half) {
+    for (int k = 0; k < 3; ++k) half[k] = ed.kind == "PlacedBlocker" ? std::max(ed.half[k], 0.05f) : 0.4f;
+}
+
+// A click on a placed prefab or blocker selects it (before barriers and objects: a blocker is a barrier too).
+bool pickPlaced(const float* ray) {
+    if (!g_cam.active) return false; // picked only where they are drawn (drawPlaced)
+    std::vector<Edit> placed;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (isPlaced(ed)) placed.push_back(ed);
+    }
+    float best = 1e30f;
+    int hit = -1;
+    for (const Edit& ed : placed) {
+        float half[3];
+        placedBox(ed, half);
+        const float* rows[3] = {ed.to.right, ed.to.up, ed.to.forward};
+        float o[3], d[3];
+        for (int i = 0; i < 3; ++i) { // the ray in the box's frame (rows normalised: a scaled row would scale the box)
+            float r[3] = {rows[i][0], rows[i][1], rows[i][2]};
+            normalize(r);
+            const float q[3] = {ray[0] - ed.to.trans[0], ray[1] - ed.to.trans[1], ray[2] - ed.to.trans[2]};
+            o[i] = q[0] * r[0] + q[1] * r[1] + q[2] * r[2];
+            d[i] = ray[3] * r[0] + ray[4] * r[1] + ray[5] * r[2];
+        }
+        float t0 = 0.f, t1 = 1e30f;
+        bool ok = true;
+        for (int k = 0; k < 3 && ok; ++k) {
+            if (std::fabs(d[k]) < 1e-8f) {
+                ok = std::fabs(o[k]) <= half[k];
+                continue;
+            }
+            float a = (-half[k] - o[k]) / d[k], c = (half[k] - o[k]) / d[k];
+            if (a > c) std::swap(a, c);
+            t0 = std::max(t0, a), t1 = std::min(t1, c);
+            ok = t0 <= t1;
+        }
+        if (ok && t0 < best) best = t0, hit = ed.copyId;
+    }
+    if (hit < 0) return false;
+    clearSpecialSelection();
+    {
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_haveSel = false, g_extra.clear();
+    }
+    g_placedSel = hit;
+    setStatus("Selected a placed object: the move keys move and turn it (its row in the editor has its place and size).");
+    return true;
+}
+
+// Placed prefabs and blockers while the editor's free camera flies (render thread): a box each (a blocker's real size),
+// its axes, its name; the selected one yellow.
+void drawPlaced() {
+    if (!g_cam.active) return; // only while flying the free camera: on foot they were in the way (user, 2026-11-12)
+    std::vector<Edit> placed;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (isPlaced(ed)) placed.push_back(ed);
+    }
+    if (placed.empty()) return;
+    View v;
+    if (!currentView(v)) return;
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    const int sel = g_placedSel.load();
+    for (const Edit& ed : placed) {
+        float half[3];
+        placedBox(ed, half);
+        float rows[3][3];
+        const float* src[3] = {ed.to.right, ed.to.up, ed.to.forward};
+        for (int i = 0; i < 3; ++i) {
+            for (int k = 0; k < 3; ++k) rows[i][k] = src[i][k];
+            normalize(rows[i]);
+        }
+        float c[8][3];
+        for (int i = 0; i < 8; ++i)
+            for (int k = 0; k < 3; ++k)
+                c[i][k] = ed.to.trans[k] + ((i & 1) ? 1.f : -1.f) * half[0] * rows[0][k] + ((i & 2) ? 1.f : -1.f) * half[1] * rows[1][k] +
+                          ((i & 4) ? 1.f : -1.f) * half[2] * rows[2][k];
+        const bool isSel = ed.copyId == sel;
+        const ImU32 col = isSel ? IM_COL32(255, 255, 80, 255) : ed.kind == "PlacedBlocker" ? IM_COL32(255, 80, 200, 220) : IM_COL32(80, 200, 255, 220);
+        const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        for (const auto& e2 : edges) line3d(dl, v, c[e2[0]], c[e2[1]], col, isSel ? 2.5f : 1.5f);
+        float f[3]; // which way it faces
+        for (int k = 0; k < 3; ++k) f[k] = ed.to.trans[k] + rows[2][k] * (half[2] + 0.5f);
+        line3d(dl, v, ed.to.trans, f, IM_COL32(80, 120, 255, 255), 2.f);
+        if (depthOf(v, ed.to.trans) > kNear) {
+            const size_t slash = ed.asset.find_last_of('/');
+            const std::string name = ed.kind == "PlacedBlocker" ? "blocker" : slash == std::string::npos ? ed.asset : ed.asset.substr(slash + 1);
+            const ImVec2 at = project(v, ed.to.trans);
+            dl->AddText(ImVec2(at.x + 6.f, at.y - 18.f), col, name.c_str());
+        }
+    }
 }
 
 void snapshotView();
@@ -6232,6 +6784,7 @@ void frame(bool menuOpen, bool editor) {
     if (g_editorOn) {
         drawOutline();
         drawBarriers();
+        drawPlaced();
         gizmoFrame(menuOpen);
         keysFrame(menuOpen);
     }
@@ -6253,7 +6806,7 @@ void frame(bool menuOpen, bool editor) {
     if (g_editorOn && menuOpen && ImGui::GetFrameCount() - g_editorFrame <= 2 && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         !io.WantCaptureMouse && !g_gizmoHot) {
         float ray[6];
-        if (cursorRay(ray) && !pickBarrier(ray)) pick(ray, io.KeyShift);
+        if (cursorRay(ray) && !pickPlaced(ray) && !pickBarrier(ray)) pick(ray, io.KeyShift);
     }
 }
 

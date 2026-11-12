@@ -183,6 +183,7 @@ add_library(gridnode SHARED
   sdk/src/hotkeys.cpp
   sdk/src/events.cpp
   sdk/src/assets.cpp
+  sdk/src/bundles.cpp
   sdk/src/layouts.cpp
   $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>
     sdk/src/crash.cpp

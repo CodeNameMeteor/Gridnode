@@ -124,6 +124,14 @@ inline int visualEnvSet(uint32_t offset, const void* data, uint32_t size) {
 inline int streamingFocusAdd(const float* pos, uint32_t* handle) {
     return GN_M(streaming_focus_add_m) ? api().streaming_focus_add_m(self(), pos, handle) : api().streaming_focus_add(pos, handle);
 }
+inline int bundleLoad(const char* name, uint32_t* handle) {
+    if (GN_M(bundle_load_m)) return api().bundle_load_m(self(), name, handle);
+    return hostHas(&gn_api::bundle_load) ? api().bundle_load(name, handle) : GN_ERR_UNAVAILABLE;
+}
+inline int prefabSpawn(const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
+    if (GN_M(prefab_spawn_m)) return api().prefab_spawn_m(self(), asset, at, bundle, handle);
+    return hostHas(&gn_api::prefab_spawn) ? api().prefab_spawn(asset, at, bundle, handle) : GN_ERR_UNAVAILABLE;
+}
 #undef GN_M
 } // namespace m
 } // namespace detail
@@ -898,6 +906,33 @@ inline bool streamingFocusMove(uint32_t handle, const Vec3& pos) {
     return api().streaming_focus_move(handle, p) == GN_OK;
 }
 inline void streamingFocusRemove(uint32_t handle) { api().streaming_focus_remove(handle); }
+// Bundles and prefabs (API 38, experimental; see api.h). bundleLoad: the handle, 0 when refused; the load
+// runs on the server thread, so poll bundleReady. A level ending drops them (bundleReady and prefabLive are
+// then false for good). Released and destroyed when the mod unloads.
+inline uint32_t bundleLoad(const std::string& name) {
+    uint32_t h = 0;
+    return detail::m::bundleLoad(name.c_str(), &h) == GN_OK ? h : 0;
+}
+inline bool bundleReady(uint32_t bundle) {
+    uint32_t ready = 0;
+    return detail::hostHas(&gn_api::bundle_state) && api().bundle_state(bundle, &ready) == GN_OK && ready;
+}
+inline void bundleRelease(uint32_t bundle) {
+    if (detail::hostHas(&gn_api::bundle_release)) api().bundle_release(bundle);
+}
+// The asset's blueprint at `at` (bundle: one of ours, ready, or 0 for an asset already loaded). The handle,
+// 0 when refused; the spawn runs on the server thread, then the client's.
+inline uint32_t prefabSpawn(const std::string& asset, const Transform& at, uint32_t bundle = 0) {
+    uint32_t h = 0;
+    return detail::m::prefabSpawn(asset.c_str(), &at, bundle, &h) == GN_OK ? h : 0;
+}
+inline bool prefabLive(uint32_t prefab, uint32_t* entities = nullptr) {
+    uint32_t live = 0;
+    return detail::hostHas(&gn_api::prefab_state) && api().prefab_state(prefab, &live, entities) == GN_OK && live;
+}
+inline void prefabDestroy(uint32_t prefab) {
+    if (detail::hostHas(&gn_api::prefab_destroy)) api().prefab_destroy(prefab);
+}
 // The game's text for a string id in its current language (API 31); the id itself when there is none.
 inline std::string localize(const std::string& id) {
     char buf[512] = {};

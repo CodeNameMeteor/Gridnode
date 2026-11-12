@@ -16,8 +16,9 @@
 #include "gridnode/mem.hpp"
 #include "host.hpp"
 
-// unverified: Partition_findByName, getCompartment, DataContainer_release, ResourceGroup_Count (assets by
-// name, asset_find, API 7): hypotheses in db/annotations; confirm in Ghidra, then mark them confirmed.
+// unverified: ResourceGroup_Count (assets by name, asset_find, API 7): a hypothesis in db/annotations; confirm in
+// Ghidra, then mark it confirmed. (getCompartment and Partition_findByName are game-tested since 2026-11-12;
+// DataContainer_release checked in Ghidra by the runtime-data run.)
 
 namespace gn::host {
 namespace {
@@ -50,8 +51,8 @@ bool isDataContainer(uintptr_t p) {
 
 void* assetFind(const char* path, uint32_t* groupOut) {
     if (!path || !*path || !available()) return nullptr;
-    const auto compartment = reinterpret_cast<CompartmentFn>(mem::rva(e::function::unverified::getCompartment));
-    const auto find = reinterpret_cast<FindFn>(mem::rva(e::function::unverified::Partition_findByName));
+    const auto compartment = reinterpret_cast<CompartmentFn>(mem::rva(e::function::getCompartment));
+    const auto find = reinterpret_cast<FindFn>(mem::rva(e::function::Partition_findByName));
     const uintptr_t table = mem::rva(e::global::ResourceGroups);
     for (uint32_t id = 0; id < k::unverified::ResourceGroup_Count; ++id) {
         // Only groups that exist; the game's own getter gives the group's compartment (its +0x68).
@@ -88,7 +89,7 @@ void assetRelease(void* asset) {
         if (--it->second == 0) g_held.erase(it);
     }
     using ReleaseFn = uint32_t (*)(void*);
-    reinterpret_cast<ReleaseFn>(mem::rva(e::function::unverified::DataContainer_release))(asset);
+    reinterpret_cast<ReleaseFn>(mem::rva(e::function::DataContainer_release))(asset);
 }
 
 } // namespace gn::host

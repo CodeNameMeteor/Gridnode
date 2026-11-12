@@ -1,0 +1,880 @@
+// Loading the game's bundles at runtime and spawning prefabs from them (gn_api 38, experimental).
+// Worked out with the claim lab (.workflow/runs/bundle-load, prefab-spawn) and tested there in game on
+// 2026-11-12; docs/research/zone-streaming.md has the details.
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <fstream>
+#include <map>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "gridnode/engine.hpp"
+#include "gridnode/log.hpp"
+#include "gridnode/mem.hpp"
+#include "host.hpp"
+
+#include <windows.h>
+
+namespace gn::host {
+namespace {
+
+namespace e = gn::engine;
+
+struct Bundle {
+    uint32_t handle = 0;
+    std::string name;
+    uintptr_t owner = 0;  // the mod's code (a return address in it), or 0 for GridNode
+    uint64_t level = 0;   // g_level when made: a level ending frees it in the game
+    uint64_t game[2] = {0, 0};  // the game's handle: group pointer, compartment (server thread)
+    enum State { Queued, Loading, Ready, Failed } state = Queued;
+    std::vector<uint32_t> parents;  // loaded first, released with it (bundle-parents.txt)
+    std::vector<std::array<uint64_t, 2>> held; // loaded bundles sharing its files, held while it is (server thread)
+    uint32_t child = 0;             // a parent loaded for this bundle: not the mod's own handle
+    std::chrono::steady_clock::time_point asked{}; // when the game was asked (Loading)
+};
+
+struct Prefab {
+    uint32_t handle = 0;
+    uint32_t bundle = 0;  // 0: not tied to one of ours
+    uintptr_t owner = 0;
+    uint64_t level = 0;
+    std::vector<uintptr_t> server, client;  // the entities it made, in each realm
+    enum State { Queued, Live, Failed, Destroyed } state = Queued;
+    // A movement blocker made here (no asset): a barrier's data and a one-object blueprint built in our
+    // memory (blockerSpawn).
+    bool blocker = false;
+    float half[3] = {};
+    uint8_t cant = 0;
+};
+
+// A released bundle's game handle, given back only after a delay: its prefabs' entities are destroyed by
+// their owner later in the frame, and must be gone before the bundle's data is (a prefab's entities read
+// their data every frame). A bundle_load of the same name meanwhile takes the handle back instead of a
+// new request: a load just after a release found the group half unloaded and spawned from it, and the
+// game crashed in an entity transform update (2026-11-12).
+struct PendingRelease {
+    std::string name;
+    uint64_t game[2] = {0, 0};
+    std::vector<std::array<uint64_t, 2>> held;
+    uint64_t level = 0;
+    std::chrono::steady_clock::time_point at;
+};
+constexpr auto kReleaseDelay = std::chrono::milliseconds(1500);
+
+std::mutex g_m;
+std::vector<PendingRelease> g_pending; // (g_m)
+std::vector<Bundle> g_bundles;  // (g_m)
+std::vector<Prefab> g_prefabs;  // (g_m)
+uint32_t g_next = 1;            // (g_m) handles for both
+std::atomic<uint64_t> g_level{1};
+// The game keeps the name pointer it was asked with: names are never freed (one per bundle_load).
+std::deque<std::string> g_names;  // (g_m)
+std::once_flag g_once;
+
+// bundle-parents.txt (gridnode.py assets bundle-parents, next to gridnode.dll in assets\): child, parent,
+// preloads, lower case. Made from the user's game files, so it is not shipped; without it a mod names the
+// parents itself.
+struct ParentRow {
+    std::string parent;
+    std::vector<std::string> preload;
+    std::vector<std::string> shares; // bundles holding some of its files
+};
+std::map<std::string, ParentRow> g_parents; // read once (g_parentsOnce), then only read
+std::once_flag g_parentsOnce;
+
+std::string lowerName(std::string v) {
+    for (char& c : v) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v.rfind("win32/", 0) == 0) v.erase(0, 6);
+    return v;
+}
+
+std::wstring gridnodeFolder() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&gridnodeFolder), &self))
+        return {};
+    wchar_t path[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring p(path, n);
+    const size_t slash = p.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1);
+}
+
+void readParents() {
+    const std::wstring path = gridnodeFolder() + L"assets\\bundle-parents.txt";
+    std::ifstream f(path.c_str());
+    if (!f) {
+        GN_LOG("bundles: no assets\\bundle-parents.txt next to gridnode.dll (gridnode.py assets bundle-parents): a bundle's "
+               "parents are not loaded with it");
+        return;
+    }
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const size_t a = line.find('\t');
+        const size_t b = a == std::string::npos ? a : line.find('\t', a + 1);
+        if (b == std::string::npos) continue;
+        ParentRow row;
+        row.parent = line.substr(a + 1, b - a - 1);
+        const size_t c = line.find('\t', b + 1);
+        auto split = [&](size_t from, size_t to, std::vector<std::string>& out) {
+            for (size_t at = from; at < to;) {
+                size_t semi = line.find(';', at);
+                if (semi == std::string::npos || semi > to) semi = to;
+                if (semi > at) out.push_back(line.substr(at, semi - at));
+                at = semi + 1;
+            }
+        };
+        split(b + 1, c == std::string::npos ? line.size() : c, row.preload);
+        if (c != std::string::npos) split(c + 1, line.size(), row.shares);
+        g_parents[line.substr(0, a)] = std::move(row);
+    }
+    GN_LOG("bundles: %u sublevel bundles' parents known", static_cast<unsigned>(g_parents.size()));
+}
+
+// In bundle-parents.txt as a child or a parent. Only sublevel bundles are listed, so a miss is a hint.
+bool knownBundle(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    const std::string key = lowerName(name);
+    if (g_parents.count(key)) return true;
+    for (const auto& kv : g_parents)
+        if (kv.second.parent == key) return true;
+    return false;
+}
+
+// What to load before `name`, outermost first (as gridnode_assets.parents.chain), without the running level's own
+// bundle: the game holds that one, and the level is not a sublevel GridNode should ask for.
+std::vector<std::string> parentChain(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    std::vector<std::string> order;
+    std::string key = lowerName(name);
+    std::vector<std::string> seen{key};
+    const std::string level = lowerName(levelName());
+    for (int depth = 0; depth < 32; ++depth) {
+        const auto it = g_parents.find(key);
+        if (it == g_parents.end()) break;
+        std::vector<std::string> step = it->second.preload;
+        step.push_back(it->second.parent);
+        std::vector<std::string> add;
+        for (const std::string& p : step)
+            if (std::find(seen.begin(), seen.end(), p) == seen.end()) seen.push_back(p), add.push_back(p);
+        order.insert(order.begin(), add.begin(), add.end());
+        key = it->second.parent;
+    }
+    order.erase(std::remove(order.begin(), order.end(), level), order.end());
+    return order;
+}
+
+Bundle* bundleOf(uint32_t h) {
+    for (Bundle& b : g_bundles)
+        if (b.handle == h) return &b;
+    return nullptr;
+}
+Prefab* prefabOf(uint32_t h) {
+    for (Prefab& p : g_prefabs)
+        if (p.handle == h) return &p;
+    return nullptr;
+}
+
+bool sameName(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
+}
+
+bool plausible(uintptr_t p) {
+    uint64_t v = 0;
+    return p > 0x10000 && (p & 7) == 0 && p < 0x7ff000000000ull && mem::read(p, v);
+}
+
+// A bus: +0x00 owner (owner +0x38: the level), +0x08 parent bus, +0x28 first child, +0x30 refcount,
+// +0x38 data (FUN_14313ffe0). A bus is one when its owner's vtable is in the game.
+bool isBus(uintptr_t bus) {
+    if (!plausible(bus)) return false;
+    const uintptr_t owner = mem::readOr<uintptr_t>(bus);
+    return plausible(owner) && mem::inImage(mem::readOr<uintptr_t>(owner));
+}
+
+// The level's root bus, from Faith's: a spatial entity keeps its bus at +0x28 (+0x20 holds other data
+// there: 0x737 on the server Faith, which crashed the spawn), then up the parents (+0x08). The root bus
+// is where the claim lab's spawns survived teleports.
+uintptr_t rootBus(void* faith, const char* realm) {
+    uintptr_t bus = faith ? mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(faith) + 0x28) : 0;
+    if (!isBus(bus)) {
+        GN_LOG("bundles: %s: Faith %p has no bus at +0x28 (%llx)", realm, faith, static_cast<unsigned long long>(bus));
+        return 0;
+    }
+    // The chain is logged: which bus is the top decides what the prefab lives under (a teleport that
+    // streamed part of the city out crashed a prefab spawned under Faith's top bus, 2026-11-12).
+    std::string chain;
+    for (int depth = 0; depth < 64; ++depth) {
+        const uintptr_t data = mem::readOr<uintptr_t>(bus + 0x38);
+        const reflect::Type* t = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+        char b[160];
+        std::snprintf(b, sizeof(b), " %llx(%s, refs %d)", static_cast<unsigned long long>(bus), t ? t->name.c_str() : "?",
+                      mem::readOr<int32_t>(bus + 0x30));
+        chain += b;
+        const uintptr_t parent = mem::readOr<uintptr_t>(bus + 0x08);
+        if (!isBus(parent) || parent == bus) {
+            GN_LOG("bundles: %s bus chain from Faith:%s; top's parent %llx", realm, chain.c_str(), static_cast<unsigned long long>(parent));
+            break;
+        }
+        bus = parent;
+    }
+    return bus;
+}
+
+// The list a blueprint spawn fills (creation info +0xe8 points at it): +0x08 = first chunk; a chunk has
+// flags at +0 (bit 0: the last one), entries from +0x10; a full chunk ends at +0x1f0 with the next chunk
+// at +0x08; the last one holds its count (u32) at +0x08 (serverSpawned_initAll). Its chunks are the
+// game's (freed with EngineAllocator_free and the list as allocator by the game's own spawner); GridNode
+// leaves them, 0x1f0 bytes a spawn.
+struct EntityList {
+    uint64_t allocator = 0, first = 0, end = 0;
+    uint32_t count = 0, pad = 0;
+};
+
+std::vector<uintptr_t> entitiesOf(const EntityList& list) {
+    std::vector<uintptr_t> out;
+    uintptr_t chunk = list.first;
+    for (int guard = 0; chunk && guard < 4096; ++guard) {
+        const bool last = (mem::readOr<uint8_t>(chunk) & 1) != 0;
+        const uintptr_t end = last ? chunk + (static_cast<uintptr_t>(mem::readOr<uint32_t>(chunk + 8)) + 2) * 8 : chunk + 0x1f0;
+        for (uintptr_t p = chunk + 0x10; p < end; p += 8)
+            if (const uintptr_t ent = mem::readOr<uintptr_t>(p)) out.push_back(ent);
+        if (last) break;
+        chunk = mem::readOr<uintptr_t>(chunk + 8);
+    }
+    return out;
+}
+
+std::vector<std::string> sharesOf(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    const auto it = g_parents.find(lowerName(name));
+    return it == g_parents.end() ? std::vector<std::string>{} : it->second.shares;
+}
+
+// --- the game's side, each on its realm's thread ----------------------------------------------------
+
+// The game loads a file once: a bundle loaded while another bundle holding the same files is loaded uses that
+// bundle's copies, and its objects break when that bundle streams out (AnchorArea3 with Anchor: a teleport
+// crashed the game in a spawned prefab, 2026-11-12). So before asking for a bundle, the loaded bundles that
+// share its files (bundle-parents.txt, 4th column) are held too, by a reference of our own to their group.
+// The sublevel manager keeps its groups by name hash in a tree at +0x7250 (root +0x7260; node +0x00 right,
+// +0x08 left, +0x20 u32 hash, +0x28 group), under its lock at +0x79d0 (SubLevelManager_requestBundle). The
+// hash: djb2-xor of the lower-cased name, from 0x1505 (0x1432f0380).
+uint32_t nameHash(const std::string& n) {
+    uint32_t h = 0x1505;
+    for (const char ch : n) {
+        const uint8_t b = static_cast<uint8_t>(ch);
+        h = (static_cast<uint32_t>(b) + (static_cast<uint8_t>(b - 'A') < 26 ? 0x20u : 0u)) ^ (h * 33u);
+    }
+    return n.empty() ? 0 : h;
+}
+
+bool groupUsable(uintptr_t group) {
+    const int32_t state = mem::readOr<int32_t>(group + 0x08, -1);
+    const bool ready = state == 3 || (state == 2 && (mem::readOr<uint8_t>(group + 0x6c) & 1) == 0);
+    return ready && mem::readOr<int32_t>(group + 0x10) > 0 && (mem::readOr<uint8_t>(group + 0x6c) & 0x10) == 0;
+}
+
+// Server thread. A reference of our own to every loaded bundle in `names` (none is loaded by this).
+std::vector<std::array<uint64_t, 2>> holdLoaded(const std::vector<std::string>& names) {
+    std::vector<std::array<uint64_t, 2>> out;
+    if (names.empty()) return out;
+    const uintptr_t mgr = mem::rva(e::global::ServerSubLevelManager);
+    using LockFn = void (*)(uintptr_t);
+    using AssignFn = void* (*)(uint64_t* handle, const uint64_t* from);
+    reinterpret_cast<LockFn>(mem::rva(e::function::Lock_enter))(mgr + 0x79d0);
+    for (const std::string& n : names) {
+        const uint32_t h = nameHash(n);
+        uintptr_t node = mem::readOr<uintptr_t>(mgr + 0x7260), found = 0;
+        for (int guard = 0; node && guard < 64; ++guard) { // the first node with a key >= h
+            if (mem::readOr<uint32_t>(node + 0x20) < h) node = mem::readOr<uintptr_t>(node);
+            else found = node, node = mem::readOr<uintptr_t>(node + 8);
+        }
+        if (!found || mem::readOr<uint32_t>(found + 0x20) != h) continue;
+        const uintptr_t group = mem::readOr<uintptr_t>(found + 0x28);
+        if (!group || !groupUsable(group)) continue;
+        const uint64_t from[2] = {group, mem::readOr<uint16_t>(group + 0x0c)}; // its own compartment: no other call
+        std::array<uint64_t, 2> mine{0, 0};
+        reinterpret_cast<AssignFn>(mem::rva(e::function::BundleHandle_assign))(mine.data(), from);
+        if (mine[0]) out.push_back(mine);
+    }
+    reinterpret_cast<LockFn>(mem::rva(e::function::Lock_leave))(mgr + 0x79d0);
+    return out;
+}
+
+void destroyEntities(const std::vector<uintptr_t>& list, uint64_t level);
+
+using RequestFn = void* (*)(void* manager, uint64_t* handle, void* request);
+using RequestInitFn = void* (*)(void* request, const char* name, uint16_t compartment, int64_t a4);
+using ReleaseFn = int32_t (*)(uint64_t* handle, int32_t a2);
+using CiCtorFn = void (*)(void* ci, void* data, void* bus, const gn_transform* t);
+using ServerSpawnFn = void* (*)(void* result, void* ci, void* blueprint, void* ref, uint64_t bus);
+using ClientSpawnFn = void* (*)(void* result, void* ci, void* blueprint, uint64_t ref, uint64_t bus);
+
+// Server thread. As a district streaming in asks (0x143363c00): BundleRequest_init with parent
+// compartment 0, then +0x2a = 0xfe, +0x24 = 0, +0x28 = 1. The request is 0x50 bytes: +0x2c the heap
+// info (left at its default), +0x40 an empty string (nothing to free).
+void requestOnServer(uint32_t h, bool parentsReady = false) {
+    const char* name = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Bundle* b = bundleOf(h);
+        if (!b || b->state != Bundle::Queued || (!b->parents.empty() && !parentsReady)) return;
+        for (auto it = g_pending.begin(); it != g_pending.end(); ++it)
+            if (it->level == b->level && sameName(it->name, b->name)) {
+                b->game[0] = it->game[0], b->game[1] = it->game[1];
+                b->held = it->held;
+                b->state = Bundle::Loading; // pollOnServer sees it ready at once
+                g_pending.erase(it);
+                GN_LOG("bundles: load %s: taken back from a release not yet given to the game", b->name.c_str());
+                return;
+            }
+        g_names.push_back(b->name);
+        name = g_names.back().c_str();
+    }
+    std::vector<std::array<uint64_t, 2>> held = holdLoaded(sharesOf(name));
+    alignas(16) uint8_t req[0x60] = {};
+    reinterpret_cast<RequestInitFn>(mem::rva(e::function::BundleRequest_init))(req, name, 0, 0);
+    req[0x2a] = 0xfe;
+    std::memset(req + 0x24, 0, 4);
+    req[0x28] = 1;
+    uint64_t game[2] = {0, 0};
+    reinterpret_cast<RequestFn>(mem::rva(e::function::SubLevelManager_requestBundle))(reinterpret_cast<void*>(mem::rva(e::global::ServerSubLevelManager)),
+                                                                                    game, req);
+    std::lock_guard<std::mutex> lock(g_m);
+    Bundle* b = bundleOf(h);
+    if (!b) { // released while asked: give it straight back
+        if (game[0]) reinterpret_cast<ReleaseFn>(mem::rva(e::function::BundleHandle_release))(game, 0);
+        for (auto& g : held) reinterpret_cast<ReleaseFn>(mem::rva(e::function::BundleHandle_release))(g.data(), 0);
+        return;
+    }
+    b->game[0] = game[0], b->game[1] = game[1];
+    b->held = held;
+    if (!held.empty()) GN_LOG("bundles: %s: holding %u loaded bundles that share its files", b->name.c_str(), static_cast<unsigned>(held.size()));
+    b->state = game[0] ? Bundle::Loading : Bundle::Failed;
+    b->asked = std::chrono::steady_clock::now();
+    GN_LOG("bundles: load %s: %s", b->name.c_str(), game[0] ? "asked" : "refused by the game");
+}
+
+// Server thread, each tick: a group is ready at state 3 (or 2 with bit 0 of +0x6c clear); >= 4 is
+// not usable (BundleHandle_isReady).
+void releaseOnServer(uint64_t g0, uint64_t g1, uint64_t level);
+
+void pollOnServer() {
+    std::vector<PendingRelease> due;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = g_pending.begin(); it != g_pending.end();)
+            if (now >= it->at) due.push_back(*it), it = g_pending.erase(it);
+            else ++it;
+    }
+    for (const PendingRelease& r : due) {
+        releaseOnServer(r.game[0], r.game[1], r.level);
+        for (const auto& g : r.held) releaseOnServer(g[0], g[1], r.level); // after the bundle that used them
+    }
+    std::vector<uint32_t> start;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Bundle& b : g_bundles) {
+            if (b.state != Bundle::Queued || b.parents.empty()) continue;
+            bool all = true, failed = false;
+            for (uint32_t ph : b.parents) {
+                const Bundle* p = bundleOf(ph);
+                if (!p || p->state == Bundle::Failed) failed = true;
+                else if (p->state != Bundle::Ready) all = false;
+            }
+            if (failed) {
+                b.state = Bundle::Failed;
+                GN_LOG("bundles: %s not loaded: a parent failed", b.name.c_str());
+            } else if (all) {
+                b.parents.shrink_to_fit();
+                start.push_back(b.handle);
+            }
+        }
+    }
+    for (uint32_t h : start) requestOnServer(h, true);
+    std::lock_guard<std::mutex> lock(g_m);
+    for (Bundle& b : g_bundles) {
+        if (b.state != Bundle::Loading) continue;
+        const uintptr_t group = static_cast<uintptr_t>(b.game[0]);
+        const int32_t state = mem::readOr<int32_t>(group + 0x08, -1);
+        const bool ready = state == 3 || (state == 2 && (mem::readOr<uint8_t>(group + 0x6c) & 1) == 0);
+        if (ready) {
+            b.state = Bundle::Ready;
+            GN_LOG("bundles: %s ready", b.name.c_str());
+        } else if (state < 0 || state >= 4) {
+            b.state = Bundle::Failed;
+            GN_LOG("bundles: %s failed (group state %d)", b.name.c_str(), state);
+        } else if (b.asked.time_since_epoch().count() && std::chrono::steady_clock::now() - b.asked > std::chrono::seconds(30)) {
+            // The game takes any name and never says no: a misspelt one (sp_madincity, 2026-11-12) stayed
+            // loading for good. Real bundles were ready in under a second.
+            b.state = Bundle::Failed;
+            GN_LOG("bundles: %s not ready after 30 s (group state %d): is the name right?%s", b.name.c_str(), state,
+                   knownBundle(b.name) ? "" : " It is not in assets\\bundle-parents.txt");
+        }
+    }
+}
+
+// Server thread. The last reference unloads the bundle (the game held one more while loading, and
+// drops it about 2 s after it is ready).
+void releaseOnServer(uint64_t g0, uint64_t g1, uint64_t level) {
+    if (!g0 || level != g_level.load()) return; // a level since: the game freed the group with it
+    uint64_t game[2] = {g0, g1};
+    reinterpret_cast<ReleaseFn>(mem::rva(e::function::BundleHandle_release))(game, 0);
+}
+
+// The blueprint of an asset in any loaded resource group (asset_find's search), without a reference:
+// the bundle it came from keeps it while the prefab lives.
+void* blueprintOf(const char* asset) {
+    void* found = assetFind(asset, nullptr);
+    if (!found) return nullptr;
+    assetRelease(found);
+    return found;
+}
+
+// A spawner in the prefab, or in a blueprint it references (depth 8): its type name, else empty.
+// A spawner's client half is made from the server's network data (ClientSpawnEntity_createFromNetwork);
+// spawned this way it has none, and the client thread crashed reading 0 (pf_placemstub, 2026-11-12).
+// Offsets from the reflected types: PrefabBlueprint.Objects +0x40, ReferenceObjectData.Blueprint +0x18;
+// an engine array's count is the u32 at -4 from its data pointer.
+std::string spawnerIn(uintptr_t blueprint, int depth = 0) {
+    static const reflect::Type* prefabType = registry().find("PrefabBlueprint");
+    static const reflect::Type* refType = registry().find("ReferenceObjectData");
+    static const reflect::Type* spawnType = registry().find("SpawnReferenceObjectData");
+    if (!blueprint || depth > 8 || !prefabType || !refType || !spawnType) return {};
+    const reflect::Type* bt = registry().typeOf(mem::ProcessMemory(), blueprint);
+    if (!bt || !registry().isKindOf(bt, prefabType)) return {};
+    const uintptr_t objects = mem::readOr<uintptr_t>(blueprint + 0x40);
+    const uint32_t count = objects ? mem::readOr<uint32_t>(objects - 4) : 0;
+    for (uint32_t i = 0; i < count && i < 4096; ++i) {
+        const uintptr_t o = mem::readOr<uintptr_t>(objects + 8ull * i);
+        const reflect::Type* ot = o ? registry().typeOf(mem::ProcessMemory(), o) : nullptr;
+        if (!ot) continue;
+        if (registry().isKindOf(ot, spawnType)) return ot->name;
+        if (registry().isKindOf(ot, refType)) {
+            std::string inner = spawnerIn(mem::readOr<uintptr_t>(o + 0x18), depth + 1);
+            if (!inner.empty()) return inner;
+        }
+    }
+    return {};
+}
+
+// One realm's half (as the engine's own blueprint spawner, 0x1438fce60 / 0x1438fcbe0): creation info
+// with an entity list at +0xe8, kind 2 at +0x28 and the game context's value at +0x108; spawn; release
+// the bus reference it returns; Entity_init every listed entity. A null reference object works.
+std::vector<uintptr_t> spawnHalf(bool server, void* blueprint, uintptr_t bus, const gn_transform& at) {
+    alignas(16) uint8_t ci[0x200] = {};
+    alignas(16) gn_transform t = at;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    reinterpret_cast<CiCtorFn>(mem::rva(server ? e::function::ServerEntityCreationInfo_ctor : e::function::ClientEntityCreationInfo_ctor))(
+        ci, nullptr, reinterpret_cast<void*>(bus), &t);
+    const uintptr_t ctx = mem::readOr<uintptr_t>(mem::rva(server ? e::global::ServerGameContext : e::global::ClientGameContext));
+    const uint64_t v = ctx ? mem::readOr<uint64_t>(ctx + (server ? 0x80 : 0x88)) : 0;
+    std::memcpy(ci + 0x108, &v, 8);
+    const int32_t kind = 2;
+    std::memcpy(ci + 0x28, &kind, 4);
+    EntityList list;
+    const EntityList* lp = &list;
+    std::memcpy(ci + 0xe8, &lp, 8);
+    uint64_t result[3] = {0, 0, 0};
+    if (server) {
+        reinterpret_cast<ServerSpawnFn>(mem::rva(e::function::Blueprint_instantiate))(result, ci, blueprint, nullptr, 0);
+        if (result[1]) reinterpret_cast<void (*)(uint64_t)>(mem::rva(e::function::EntityBus_release))(result[1]);
+        reinterpret_cast<void (*)(EntityList*, uint64_t)>(mem::rva(e::function::serverSpawned_initAll))(&list, 0);
+    } else {
+        reinterpret_cast<ClientSpawnFn>(mem::rva(e::function::ClientEntity_spawnBlueprint))(result, ci, blueprint, 0, 0);
+        if (result[2]) reinterpret_cast<void (*)(uint64_t)>(mem::rva(e::function::EntityBus_release))(result[2]);
+        reinterpret_cast<void (*)(EntityList*)>(mem::rva(e::function::clientSpawned_initAll))(&list);
+    }
+    return entitiesOf(list);
+}
+
+void spawnClientHalf(uint32_t h, void* blueprint, gn_transform at, uint64_t level) {
+    if (level != g_level.load()) return;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (!prefabOf(h)) return; // destroyed before its client half: none is made
+    }
+    const uintptr_t bus = rootBus(localClientCharacter(), "client");
+    std::vector<uintptr_t> made;
+    if (bus) made = spawnHalf(false, blueprint, bus, at);
+    std::lock_guard<std::mutex> lock(g_m);
+    Prefab* p = prefabOf(h);
+    if (!p) { // destroyed while this half was made
+        client().post([made, level] { destroyEntities(made, level); });
+        return;
+    }
+    p->client = made;
+    p->state = bus ? Prefab::Live : Prefab::Failed;
+    GN_LOG("bundles: prefab %u: client %s, %u entities", h, bus ? "spawned" : "skipped (no bus from Faith on the client)", static_cast<unsigned>(made.size()));
+}
+
+// ---- movement blockers made at runtime (claim-lab runtime-data, game-tested 2026-11-12) ----------------
+// A PamOBBCollisionEntityData and an ObjectBlueprint (Object at +0x40) built by the types' own create
+// functions in memory that is never freed (the entities read their data while they live, and a level
+// end does not tell us when they are gone; each is 0x100 bytes). Copied from a loaded barrier's data:
+// the realm flags, layer and material, and its first PhysicsBodies element (copied too, in a one-element
+// array of ours, so the template's part of the level may stream out). Then ours: the world transform in
+// the data's Transform (+0x20; PamOBBCollision_enable resolves it there, not from the creation info),
+// HalfExtents (+0x60), Enabled (+0x80: the init enables it) and CantStand.. CantWallrun (+0x90..0x93).
+void* keptObject(const reflect::Type* type) {
+    if (!type || !type->createFn || !type->size) return nullptr;
+    void* mem = _aligned_malloc(type->size, 16);
+    if (!mem) return nullptr;
+    std::memset(mem, 0, type->size);
+    using CreateFn = void* (*)(void* mem, void* arena, bool guidPrefix);
+    void* obj = reinterpret_cast<CreateFn>(type->createFn)(mem, nullptr, false);
+    if (!obj) {
+        _aligned_free(mem);
+        return nullptr;
+    }
+    *reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(obj) + 0x08) = 1; // our reference: never released to 0
+    return obj;
+}
+
+// A loaded barrier's data to copy from (server thread): any server PamOBBCollisionEntity with a body element.
+uintptr_t blockerTemplate() {
+    static const reflect::Type* pamData = registry().find("PamOBBCollisionEntityData");
+    static const reflect::Type* obb = registry().find("PamOBBCollisionEntity");
+    if (!pamData || !obb) return 0;
+    for (const auto& [p, t] : inspector::tracked()) {
+        if (!t || !registry().isKindOf(t, obb) || !inspector::alive(p, t)) continue;
+        if (!(mem::readOr<uint32_t>(p + 0x18) & 1)) continue; // server ones
+        const uintptr_t data = mem::readOr<uintptr_t>(p + 0x28);
+        if (!data || registry().typeOf(mem::ProcessMemory(), data) != pamData) continue;
+        const uintptr_t bodies = mem::readOr<uintptr_t>(data + 0x70);
+        if (bodies && mem::readOr<uint32_t>(bodies - 4) >= 1 && mem::readOr<uintptr_t>(bodies)) return data;
+    }
+    return 0;
+}
+
+void* makeBlocker(const gn_transform& at, const float* half, uint8_t cant) {
+    static const reflect::Type* dataType = registry().find("PamOBBCollisionEntityData");
+    static const reflect::Type* bpType = registry().find("ObjectBlueprint");
+    const uintptr_t tpl = blockerTemplate();
+    if (!tpl) {
+        GN_LOG("bundles: blocker not made: no barrier is loaded to copy its physics settings from");
+        return nullptr;
+    }
+    const uintptr_t tplBody = mem::readOr<uintptr_t>(mem::readOr<uintptr_t>(tpl + 0x70));
+    const reflect::Type* bodyType = tplBody ? registry().typeOf(mem::ProcessMemory(), tplBody) : nullptr;
+    if (!dataType || !bpType || !bodyType || !bodyType->size || dataType->size < 0x94 || bpType->size < 0x48) {
+        GN_LOG("bundles: blocker not made: the barrier types are not as expected");
+        return nullptr;
+    }
+    void* data = keptObject(dataType);
+    void* bp = keptObject(bpType);
+    void* body = _aligned_malloc(bodyType->size, 16);
+    void* array = _aligned_malloc(16, 16);
+    if (!data || !bp || !body || !array) {
+        GN_LOG("bundles: blocker not made: out of memory");
+        return nullptr; // what was made is left: a few hundred bytes, never handed to the game
+    }
+    uint8_t* d = static_cast<uint8_t*>(data);
+    mem::read(tpl + 0x10, d + 0x10, dataType->size - 0x10); // after the header (vtable, refcount, flags)
+    mem::read(tplBody, body, bodyType->size);
+    *reinterpret_cast<uint16_t*>(static_cast<uint8_t*>(body) + 0x08) = 1;
+    // The array: its header at -8 (the count at -4), then the one element.
+    uint8_t* a = static_cast<uint8_t*>(array);
+    mem::read(mem::readOr<uintptr_t>(tpl + 0x70) - 8, a, 8);
+    *reinterpret_cast<uint32_t*>(a + 4) = 1;
+    *reinterpret_cast<void**>(a + 8) = body;
+    *reinterpret_cast<void**>(d + 0x70) = a + 8;
+    gn_transform t = at;
+    t.right[3] = t.up[3] = t.forward[3] = 0.f, t.trans[3] = 1.f;
+    std::memcpy(d + 0x20, &t, sizeof(t));
+    for (int k = 0; k < 3; ++k) reinterpret_cast<float*>(d + 0x60)[k] = std::max(half[k], 0.01f);
+    reinterpret_cast<float*>(d + 0x60)[3] = 0.f;
+    d[0x80] = 1;
+    for (int k = 0; k < 4; ++k) d[0x90 + k] = (cant >> k) & 1;
+    *reinterpret_cast<void**>(static_cast<uint8_t*>(bp) + 0x40) = data;
+    return bp;
+}
+
+void spawnOnServer(uint32_t h, std::string asset, gn_transform at) {
+    uint64_t level = 0;
+    bool blocker = false;
+    float half[3] = {};
+    uint8_t cant = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Prefab* p = prefabOf(h);
+        if (!p || p->state != Prefab::Queued) return;
+        level = p->level;
+        blocker = p->blocker, cant = p->cant;
+        std::memcpy(half, p->half, sizeof(half));
+    }
+    if (level != g_level.load()) return;
+    void* blueprint = blocker ? makeBlocker(at, half, cant) : blueprintOf(asset.c_str());
+    if (!blueprint && blocker) {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (Prefab* p = prefabOf(h)) p->state = Prefab::Failed;
+        return;
+    }
+    const std::string spawner = blueprint && !blocker ? spawnerIn(reinterpret_cast<uintptr_t>(blueprint)) : std::string();
+    if (!spawner.empty()) {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (Prefab* p = prefabOf(h)) p->state = Prefab::Failed;
+        GN_LOG("bundles: prefab %u: %s not spawned: it holds a spawner (%s), whose client half needs the server's network data", h,
+               asset.c_str(), spawner.c_str());
+        return;
+    }
+    const uintptr_t bus = blueprint ? rootBus(localServerCharacter(), "server") : 0;
+    std::vector<uintptr_t> made;
+    if (bus) made = spawnHalf(true, blueprint, bus, at);
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Prefab* p = prefabOf(h);
+        if (!p) { // destroyed while this half was made
+            server().post([made, level] { destroyEntities(made, level); });
+            return;
+        }
+        p->server = made;
+        if (!bus) {
+            p->state = Prefab::Failed;
+            GN_LOG("bundles: prefab %u: %s not spawned: %s", h, asset.c_str(), blueprint ? "no bus from Faith on the server" : "no loaded bundle has it");
+            return;
+        }
+    }
+    GN_LOG("bundles: prefab %u: %s, server %u entities", h, asset.c_str(), static_cast<unsigned>(made.size()));
+    client().post([h, blueprint, at, level] { spawnClientHalf(h, blueprint, at, level); });
+}
+
+// The entity's own realm thread. Entity_requestDestroy(entity, ownerRef) reads [ownerRef] = the owner and
+// jumps to its vtable +0x10 with (owner, entity); the owner sets entity +0x18 bit 10 and queues it. The
+// entity's bus holds the owner at +0x00, so ownerRef = the bus: at +0x20 on logic entities, +0x28 on
+// spatial ones (reading the other crashed in the lab).
+void destroyEntities(const std::vector<uintptr_t>& list, uint64_t level) {
+    if (level != g_level.load()) return;
+    for (const uintptr_t ent : list) {
+        const reflect::Type* type = registry().typeOf(mem::ProcessMemory(), ent);
+        if (!type || !inspector::alive(ent, type)) continue; // gone already (GridNode's destructor hook saw it)
+        if (mem::readOr<uint32_t>(ent + 0x18) & 0x400) continue;     // already going
+        for (const uint32_t off : {0x20u, 0x28u}) {
+            const uintptr_t bus = mem::readOr<uintptr_t>(ent + off);
+            if (!isBus(bus)) continue;
+            const uintptr_t vt = mem::readOr<uintptr_t>(mem::readOr<uintptr_t>(bus));
+            if (!mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) continue;
+            reinterpret_cast<void (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::Entity_requestDestroy))(ent, bus);
+            break;
+        }
+    }
+}
+
+// (g_m) Takes a prefab out and queues its entities' destruction.
+void destroyLocked(std::vector<Prefab>::iterator it) {
+    if (!it->server.empty() || !it->client.empty()) {
+        const uint64_t level = it->level;
+        std::vector<uintptr_t> s = it->server, c = it->client;
+        server().post([s, level] { destroyEntities(s, level); });
+        client().post([c, level] { destroyEntities(c, level); });
+    }
+    g_prefabs.erase(it);
+}
+
+// (g_m) Takes a bundle out: its prefabs first, then the game's handle.
+void releaseLocked(std::vector<Bundle>::iterator it) {
+    const std::vector<uint32_t> parents = it->parents;
+    for (auto p = g_prefabs.begin(); p != g_prefabs.end();)
+        if (p->bundle == it->handle) destroyLocked(p), p = g_prefabs.begin();
+        else ++p;
+    if (it->game[0]) {
+        PendingRelease r;
+        r.name = it->name;
+        r.game[0] = it->game[0], r.game[1] = it->game[1];
+        r.held = it->held;
+        r.level = it->level;
+        r.at = std::chrono::steady_clock::now() + kReleaseDelay;
+        g_pending.push_back(r);
+    }
+    g_bundles.erase(it);
+    for (uint32_t ph : parents) // after the child: the game gives parents back last too
+        for (auto p = g_bundles.begin(); p != g_bundles.end(); ++p)
+            if (p->handle == ph) {
+                releaseLocked(p);
+                break;
+            }
+}
+
+void levelChanged(const char* level, int loaded, void*) {
+    if (loaded) return;
+    g_level.fetch_add(1);
+    std::lock_guard<std::mutex> lock(g_m);
+    if (!g_bundles.empty() || !g_prefabs.empty())
+        GN_LOG("bundles: %s ended: %u bundles and %u prefabs went with it (handles dropped, not released)", level ? level : "the level",
+               static_cast<unsigned>(g_bundles.size()), static_cast<unsigned>(g_prefabs.size()));
+    g_bundles.clear();
+    g_prefabs.clear();
+    g_pending.clear(); // the game unloaded them with the level
+}
+
+void start() {
+    std::call_once(g_once, [] {
+        onLevel("GridNode", &levelChanged, nullptr);
+        server().addListener("GridNode bundles", [](float) { pollOnServer(); });
+    });
+}
+
+bool finite(const gn_transform& t) {
+    for (int k = 0; k < 4; ++k)
+        if (!std::isfinite(t.right[k]) || !std::isfinite(t.up[k]) || !std::isfinite(t.forward[k]) || !std::isfinite(t.trans[k])) return false;
+    return std::fabs(t.trans[0]) < 1e6f && std::fabs(t.trans[1]) < 1e6f && std::fabs(t.trans[2]) < 1e6f;
+}
+
+} // namespace
+
+int bundleLoad(const void* caller, const char* name, uint32_t* handle) {
+    if (!name || !*name || std::strlen(name) > 512 || !handle) return GN_ERR_ARGUMENT;
+    start();
+    const std::vector<std::string> parents = parentChain(name); // reads the table once: outside g_m
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_bundles.size() + parents.size() >= 64) return GN_ERR_FULL;
+    Bundle b;
+    b.handle = g_next++;
+    b.name = name;
+    b.owner = reinterpret_cast<uintptr_t>(caller);
+    b.level = g_level.load();
+    for (const std::string& pn : parents) {
+        Bundle p;
+        p.handle = g_next++;
+        p.name = pn;
+        p.owner = b.owner;
+        p.level = b.level;
+        p.child = b.handle;
+        b.parents.push_back(p.handle);
+        const uint32_t ph = p.handle;
+        g_bundles.push_back(std::move(p));
+        server().post([ph] { requestOnServer(ph); });
+    }
+    if (!parents.empty()) GN_LOG("bundles: %s: its parents first (%u)", name, static_cast<unsigned>(parents.size()));
+    *handle = b.handle;
+    const uint32_t h = b.handle;
+    const bool waits = !b.parents.empty();
+    g_bundles.push_back(std::move(b));
+    if (!waits) server().post([h] { requestOnServer(h); });
+    return GN_OK;
+}
+
+int bundleState(uint32_t handle, uint32_t* ready) {
+    std::lock_guard<std::mutex> lock(g_m);
+    const Bundle* b = bundleOf(handle);
+    if (!b) return GN_ERR_NOT_FOUND;
+    if (b->state == Bundle::Failed) return GN_ERR_UNAVAILABLE;
+    if (ready) *ready = b->state == Bundle::Ready ? 1u : 0u;
+    return GN_OK;
+}
+
+int bundleRelease(uint32_t handle) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (auto it = g_bundles.begin(); it != g_bundles.end(); ++it)
+        if (it->handle == handle) {
+            if (it->child) return GN_ERR_ARGUMENT; // a parent goes with its child
+            releaseLocked(it);
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
+    if (!asset || !*asset || !at || !handle || !finite(*at)) return GN_ERR_ARGUMENT;
+    start();
+    std::lock_guard<std::mutex> lock(g_m);
+    if (bundle) {
+        const Bundle* b = bundleOf(bundle);
+        if (!b) return GN_ERR_NOT_FOUND;
+        if (b->state != Bundle::Ready) return GN_ERR_UNAVAILABLE;
+    }
+    if (g_prefabs.size() >= 256) return GN_ERR_FULL;
+    Prefab p;
+    p.handle = g_next++;
+    p.bundle = bundle;
+    p.owner = reinterpret_cast<uintptr_t>(caller);
+    p.level = g_level.load();
+    *handle = p.handle;
+    const uint32_t h = p.handle;
+    g_prefabs.push_back(std::move(p));
+    const std::string name = asset;
+    const gn_transform t = *at;
+    server().post([h, name, t] { spawnOnServer(h, name, t); });
+    return GN_OK;
+}
+
+int blockerSpawn(const void* caller, const gn_transform* at, const float* half, uint8_t cant, uint32_t* handle) {
+    if (!at || !half || !handle || !finite(*at)) return GN_ERR_ARGUMENT;
+    for (int k = 0; k < 3; ++k)
+        if (!std::isfinite(half[k]) || half[k] <= 0.f || half[k] > 500.f) return GN_ERR_ARGUMENT;
+    start();
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_prefabs.size() >= 256) return GN_ERR_FULL;
+    Prefab p;
+    p.handle = g_next++;
+    p.owner = reinterpret_cast<uintptr_t>(caller);
+    p.level = g_level.load();
+    p.blocker = true;
+    std::memcpy(p.half, half, sizeof(p.half));
+    p.cant = cant;
+    *handle = p.handle;
+    const uint32_t h = p.handle;
+    g_prefabs.push_back(std::move(p));
+    const gn_transform t = *at;
+    server().post([h, t] { spawnOnServer(h, "movement blocker", t); });
+    return GN_OK;
+}
+
+int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities) {
+    std::vector<uintptr_t> all;
+    bool spawned = false;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        const Prefab* p = prefabOf(handle);
+        if (!p) return GN_ERR_NOT_FOUND;
+        if (p->state == Prefab::Failed) return GN_ERR_UNAVAILABLE;
+        spawned = p->state == Prefab::Live;
+        all = p->server;
+        all.insert(all.end(), p->client.begin(), p->client.end());
+    }
+    // The ones still alive (GridNode's destructor hook marks the dead at once): the game can take a prefab
+    // away itself (a checkpoint reload), and then none are.
+    uint32_t alive = 0;
+    for (const uintptr_t ent : all) {
+        const reflect::Type* type = registry().typeOf(mem::ProcessMemory(), ent);
+        if (type && inspector::alive(ent, type)) ++alive;
+    }
+    if (live) *live = spawned && alive ? 1u : 0u;
+    if (entities) *entities = alive;
+    return GN_OK;
+}
+
+int prefabDestroy(uint32_t handle) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (auto it = g_prefabs.begin(); it != g_prefabs.end(); ++it)
+        if (it->handle == handle) {
+            destroyLocked(it);
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+void forgetBundles(const CodeRange& r) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (auto it = g_prefabs.begin(); it != g_prefabs.end();)
+        if (r.has(reinterpret_cast<void*>(it->owner))) destroyLocked(it), it = g_prefabs.begin();
+        else ++it;
+    for (auto it = g_bundles.begin(); it != g_bundles.end();)
+        if (r.has(reinterpret_cast<void*>(it->owner))) releaseLocked(it), it = g_bundles.begin();
+        else ++it;
+}
+
+} // namespace gn::host

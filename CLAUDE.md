@@ -24,7 +24,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 - After every addition, give the user an in-depth human test: numbered steps in game (or Ghidra),
   what they should see at each step, and what to send back (recording name, log, numbers).
 - Docs and messages: plain, short, consistent with the existing docs.
-- The layout editor is paused on purpose (SDK and research work first).
+- The layout editor is back in work (user, 2026-11-12): placing volumes, dash parts and prefabs from any area.
 - After structural changes, update this file and `docs/progress.md`. Keep this file under 150 lines.
 
 ## Layout (read only what the task needs)
@@ -32,11 +32,11 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | Path | What |
 |---|---|
 | `sdk/include/gridnode/` | public headers (`gridnode.hpp`, `api.h` = the C ABI mods use); `engine.hpp` is GENERATED |
-| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
+| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `bundles.cpp` (bundles and prefabs at runtime), `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
-| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check/ebx-build/deps/usage/fbmod-info/fbmod-build` (the game's data store, read in place; EBX to and from lossless YAML; what an asset needs; Frosty mods) |
+| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check/ebx-build/deps/used-by/bundle-parents/usage/fbmod-info/fbmod-build` (the game's data store, read in place; EBX to and from lossless YAML; what an asset needs; Frosty mods) |
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |

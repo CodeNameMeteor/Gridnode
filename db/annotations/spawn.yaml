@@ -171,7 +171,7 @@ functions:
     signature: "void*(void* result, EntityCreationInfo* ci, void* blueprint, u64 a4, u64 a5)"
     confidence: inferred
     sources: [research]
-    note: "Spawns a blueprint (creates a bus for it); result[0] is the root entity, result[2] (+0x10) a bus reference to release. Not for plain entity data (crashed)."
+    note: "Spawns a blueprint (creates a bus for it); result[0] is the root entity, result[2] (+0x10) a bus reference to release. Not for plain entity data (crashed). Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
   - name: ClientEntity_spawnIntoBus
     va: 0x1431c44b0
     signature: "void*(EntityCreationInfo* ci, void* parentBus)"
@@ -258,7 +258,49 @@ functions:
   - name: blueprint_instantiateContents
     va: 0x143361260
     signature: "void*(void*, void*, void*, i64, i64, i64)"
-    note: "Named in Ghidra as blueprint_instantiateContents; checked in the decompiler (2026-10-30): in 359 recorded creation stacks, under fb_Blueprint_instantiateImpl."
+    note: "Named in Ghidra as blueprint_instantiateContents; checked in the decompiler (2026-10-30, again 2026-11-12): in 359 recorded creation stacks, under fb_Blueprint_instantiateImpl. result[0] = root entity only for an ObjectBlueprint (one object); for a PrefabBlueprint it walks the objects and result[0] is 0: the entities are found in the creation info's list (+0xe8 pointer, see serverSpawned_initAll). result[1] = the new bus (+8)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: serverBlueprint_spawnRoot
+    va: 0x1433e80a0
+    signature: "u64(void* blueprint, void* bus, LinearTransform* transform, u64 a4)"
+    note: "Checked in the decompiler (2026-11-12): builds a ServerEntityCreationInfo, calls Blueprint_instantiate with referenceData 0, releases the result bus and returns the root entity (result[0]). Game-untested."
+    confidence: inferred
+    sources: [ghidra]
+  - name: serverBlueprint_spawnAndInit
+    va: 0x1433deda0
+    signature: "i64(u64, LinearTransform* transform, void* bus, void* referenceData, void* blueprint, u64, u32)"
+    note: "Checked in the decompiler (2026-11-12): ServerEntityCreationInfo_ctor, Blueprint_instantiate, releases the result bus, writes u32 at root+0x11c and a time float at +0x120 (so the root is of one specific class), ServerEntityInitInfo_ctor, Entity_init(root). Needs an ObjectBlueprint (a null root would crash)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: clientBlueprint_instantiateImpl
+    va: 0x1431c4900
+    signature: "u64(void* result, void* ci, void* parentBus, void* blueprint, u64 a5)"
+    note: "Checked in the decompiler (2026-11-12): client counterpart of fb_Blueprint_instantiateImpl: entityBus_createForLayerOrBlueprint, addRef, FUN_1431c6280 (instantiates the contents), release."
+    confidence: inferred
+    sources: [ghidra]
+  - name: blueprintEntity_spawnServer
+    va: 0x1438fce60
+    signature: "void(i64 self, void* blueprint)"
+    note: "Checked in the decompiler (2026-11-12): sets self+0x68 = 1 and NetState dirty (self+0x30, mask 2), creates a child bus (stored at self+0x70, data object at +0x78) under the bus at self+0x20, spawns the blueprint with an identity transform into it (Blueprint_instantiate), releases the result bus and inits all created entities (serverSpawned_initAll). If the blueprint's vtable +0x10 returns non-zero it takes another path (FUN_142d585d0). Class name unconfirmed."
+    confidence: inferred
+    sources: [ghidra]
+  - name: blueprintEntity_spawnClient
+    va: 0x1438fcbe0
+    signature: "void(i64 self, void* blueprint)"
+    note: "Checked in the decompiler (2026-11-12): client half of blueprintEntity_spawnServer: child bus stored at self+0x80 (data at +0x88), transform copied from the server data's transform (self+0x78 +0x38), ClientEntity_spawnBlueprint, release the result bus, clientSpawned_initAll."
+    confidence: inferred
+    sources: [ghidra]
+  - name: serverSpawned_initAll
+    va: 0x1433602d0
+    signature: "void(i64 list, i64 sink)"
+    note: "Checked in the decompiler (2026-11-12): walks the list of entities a server blueprint spawn created (chunks of 0x1f0 bytes; the creation info's +0xe8 points at the list) and calls Entity_init on each with a stack ServerEntityInitInfo (vtable 0x141b477a8). With sink != 0 it calls FUN_1433b8900 instead. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: clientSpawned_initAll
+    va: 0x1431c5b40
+    signature: "void(i64 list)"
+    note: "Checked in the decompiler (2026-11-12): client counterpart of serverSpawned_initAll: Entity_init on every entity of the list with a stack ClientEntityInitInfo (vtable 0x141b01f58). Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
     confidence: inferred
     sources: [ghidra]
   - name: spawnEntityFromRecord_LinearTransform

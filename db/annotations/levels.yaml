@@ -289,6 +289,60 @@ functions:
     note: "Named in Ghidra as levelList_getTable; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
+  - name: SubLevelManager_requestBundle
+    va: 0x1432f38f0
+    signature: "void*(void* manager, void* outHandle, void* request)"
+    note: "Ghidra-checked (bundle-load): finds or creates the bundle group for request->name (lowercase DJB2-XOR hash by 0x1432f0380), adds a reference (+0x10, atomic) and writes the handle (group pointer u64 + compartment u16, 16 bytes) to outHandle. Locks manager + 0x79d0. Callers include zone load (0x143c81510) and sublevel stream-in (0x143363c00). Ghidra-checked (partition-sharing): the parent is the entry whose u16 id (entry + 0xc) is request + 0x18, or the id of the entry that request + 0x10 resolves to (0 = base entry manager + 0x1c70); the child holds it at +0x30 (atomic +1 at parent + 0x10 while the parent is state < 4 and not flagged 0x10) and stores the id at +0x28; an existing entry is reused only when +0x28 matches, so the same name under another parent makes a second entry. Not game-tested. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: BundleRequest_init
+    va: 0x1432ed4b0
+    signature: "void*(void* request, const i8* name, u16 compartment, i64 a4)"
+    note: "Ghidra-checked (bundle-load): request + 0x00 = name, +0x18 = u16 compartment, +0x38 = a4, flags cleared. The struct is larger than 0x48 bytes (the request is read up to +0x40 by 0x1432f38f0); the plan's 48 is wrong. Not game-tested. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: BundleHandle_assign
+    va: 0x1432ee2a0
+    signature: "void*(void* handle, const void* from)"
+    note: "Ghidra-checked (bundle-load): releases the old group (atomic -1 at group + 0x10), copies the 16-byte handle, adds a reference (atomic +1). When the handle's compartment differs from group + 0xc it also calls vtable +0x68 / +0x60 of the object at group + 0x78. Not game-tested."
+    confidence: inferred
+    sources: [ghidra]
+  - name: BundleHandle_release
+    va: 0x1432f4880
+    signature: "i32(void* handle, i32 a2)"
+    note: "Ghidra-checked (bundle-load): atomic -1 at group + 0x10, clears the handle, returns the new count. It does not unload anything itself (a2 == 1 first calls 0x1432f5580, not checked). Callers include zone unload (0x143c81600) and sublevel stream-out (0x14335efb0). Not game-tested. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
+    confidence: inferred
+    sources: [ghidra]
+  - name: BundleHandle_isReady
+    va: 0x1432f3820
+    signature: "u8(void* handle)"
+    note: "Ghidra-checked (bundle-load): true when the group's state (+0x08, i32) is 3, or 2 with bit 0 of group + 0x6c clear. State labels other than 3 are not checked. Not game-tested."
+    confidence: inferred
+    sources: [ghidra]
+  - name: BundleHandle_compartmentId
+    va: 0x1432f0a20
+    signature: "u16(void* handle)"
+    note: "Ghidra-checked (bundle-load): the group's u16 at +0x0c, or 0xffff for a null handle."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Lock_enter
+    va: 0x142a9f970
+    signature: "void(void* lock)"
+    note: "A jump through 0x1448150f8 (the OS lock's enter): SubLevelManager_requestBundle locks manager + 0x79d0 with it (rcx), and ResourceManager_registerBundleGroup its + 0x26300. Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Lock_leave
+    va: 0x142aa1840
+    signature: "void(void* lock)"
+    note: "The leave of Lock_enter (a jump through 0x144815140). Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: SubLevelManager_registerBundleName
+    va: 0x1432f4730
+    signature: "void(void* manager, void* slot, const i8* path)"
+    note: "Ghidra-checked (bundle-load): under the lock at manager + 0x79d0, inserts (lowercase DJB2-XOR hash of path -> slot) into the map at manager + 0x7340. The value is the caller's slot pointer (ZoneStreamer's per-zone array), not a bundle group. Called for every zone by 0x143c87a00. Not game-tested."
+    confidence: inferred
+    sources: [ghidra]
   - name: levelLoader_reset
     va: 0x1432e7d10
     signature: "void(void*)"

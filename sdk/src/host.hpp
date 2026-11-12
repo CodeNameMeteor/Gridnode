@@ -92,6 +92,7 @@ void modReload(const std::string& file);             // any thread: done on Grid
 void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
+void modReloadAll();                                 // any thread: every reloadable mod reloaded, new DLLs in mods\ loaded
 // API 36 (vhooks.cpp, world.cpp): classes' vtables and virtuals by name, hooks on a class's virtual,
 // any entity's components, the game's data folder.
 int typeVtableCount(const reflect::Type* type);
@@ -351,6 +352,19 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user);
 int entitySetTransform(void* entity, const gn_transform* to);
 int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user); // world.cpp; how many, or -GN_ERR_*
 void assetRelease(void* asset);
+
+// Bundles loaded at runtime and prefabs spawned from them (bundles.cpp, API 38). caller: the mod's code,
+// for forgetBundles when it unloads.
+int bundleLoad(const void* caller, const char* name, uint32_t* handle);
+int bundleState(uint32_t handle, uint32_t* ready);
+int bundleRelease(uint32_t handle);
+int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
+// A movement blocker (a barrier box made in memory, no asset): half sizes in metres, cant bits 0..3 =
+// can't stand, climb, vault, wallrun. A prefab handle (prefabState / prefabDestroy). Not in the API yet.
+int blockerSpawn(const void* caller, const gn_transform* at, const float* half, uint8_t cant, uint32_t* handle);
+int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities);
+int prefabDestroy(uint32_t handle);
+void forgetBundles(const CodeRange& r); // a mod unloading: its prefabs destroyed, its bundles released
 
 // Layouts (layouts.cpp, M7): level edits applied at runtime, and their editor.
 namespace layouts {

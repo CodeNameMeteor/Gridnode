@@ -77,6 +77,58 @@ Worked out with the `bundle-load` claim-lab experiment (`.workflow/runs/bundle-l
 - The handles the game copies and drops every frame (thousands a minute, count 2 to 2) are noise: log only a
   count of 1 or 0.
 
-Not done yet: spawning an object from a loaded bundle (plan step 3). The layout editor spawns only static model
-data copied from a live entity; a prefab such as `pf_magrope_pullup` needs a blueprint spawn, which is its own
-research topic.
+## Spawning a prefab from a loaded bundle (game-tested 2026-11-12)
+
+From `.workflow/runs/prefab-spawn/` (claims c1, c4-c11) and the claim-lab experiment: `pf_magrope_pullup` from
+`AnchorArea3`, loaded by the lab with Faith in another district, spawned 3 m in front of her, could be used, and
+stayed after teleporting away and back.
+
+- Blueprint: `Partition_primaryInstance(Partition_findByName(getCompartment(resource group id), name))` (a
+  `SpatialPrefabBlueprint` here).
+- Server thread, as the engine's own blueprint spawner does (0x1438fce60): `ServerEntityCreationInfo_ctor(ci, 0,
+  bus, transform)`; ci +0x28 = 2, ci +0x108 = `[[g_serverGameContext] +0x80]`, ci +0xe8 = an empty 0x20-byte entity
+  list; `Blueprint_instantiate(result[2], ci, blueprint, null, 0)` (a null reference object works); release
+  result[1] (`EntityBus_release`); `serverSpawned_initAll(list, 0)` (0x1433602d0). result[0] is 0 for a prefab: the
+  entities are in the list.
+- Client thread, the same with `ClientEntityCreationInfo_ctor`, ci +0x108 = `[[g_clientGameContext] +0x88]`,
+  `ClientEntity_spawnBlueprint(result[3], ...)`, release result[2], `clientSpawned_initAll(list)` (0x1431c5b40).
+- `Blueprint_instantiate` returns `result` in rax and its callers use it: a detour must return it.
+- The bus: creation info +0x10 is the bus itself: +0x00 owner (owner +0x38 = the level), +0x08 parent bus, +0x10
+  transform, +0x28 first child, +0x30 refcount, +0x38 data (`FUN_14313ffe0`). Faith's server character +0x20 is
+  not a bus (0x737). Both the bus the game last used and the top of its parent chain (7 to 9 levels up) worked.
+- A checkpoint reload or a level reload removes the spawned prefab with everything else. After a level reload the
+  lab's bundle handle was stale: the level unload had freed the group, and releasing it read freed memory
+  (refs 526426303). A bundle API must drop its handles at level end without releasing them.
+
+Removing it (game-tested 2026-11-12): for every entity in the spawn's list (list +0x08 = first chunk; entries
+from chunk +0x10; bit 0 of chunk +0 marks the last chunk, whose u32 count is at +0x08; a full chunk ends at +0x1f0
+with the next chunk at +0x08), `Entity_requestDestroy(entity, bus)` on the entity's realm thread. The function
+does `jmp [[[bus]] +0x10]` with (owner, entity): the bus holds its owner at +0x00, and the owner (vtable +0x10 =
+0x143125180) sets entity +0x18 bit 10 and queues it. The bus is at entity +0x20 for logic entities and at +0x28
+for spatial ones (static models, the distance culling entity, characters); reading the other offset crashed. All
+21 entities of the magrope went, and it vanished.
+
+A Load within about 2 s of the last Release reuses the group the game still holds (state 3 at once), and
+`ResourceManager_registerBundleGroup` is not called again: keep each name's resource group id from earlier calls.
+
+In the SDK since API 38 (`sdk/src/bundles.cpp`): `bundle_load`, `prefab_spawn`, `prefab_destroy`, `bundle_release`. It
+builds its own request (`BundleRequest_init` as 0x143363c00 does: +0x2a = 0xfe, +0x24 = 0, +0x28 = 1, the heap info
+at +0x2c left at its default) instead of copying the game's, finds the asset as `asset_find` does (every resource
+group), and spawns into the root bus above Faith's (her bus is at +0x28). A release reaches the game 1.5 s later, after the
+prefabs' entities are gone; a load of the same name before then takes the handle back. Loading again just after a
+release found the group half unloaded, and a spawn from it crashed in an entity transform update (2026-11-12).
+
+**A bundle needs its parents loaded** (game-tested 2026-11-12). `pf_magrope_pullup` spawned from `AnchorArea3` alone
+crashed the game after a teleport (client update of the prefab's entities, `FUN_142d43da0` → `FUN_143165670`,
+reading freed memory); with `Anchor` held as well, the same teleport did not. A district area's objects use assets
+its district holds (`assets deps` lists the magrope's assets in `anchor` and 20 more bundles, and shaders in
+`sp_maincity` and `crowds/crowdssharedbundle`), so whoever loads an area loads its district too. The top bus above
+Faith is the level's own (her bus, her spawner's, a layer, then a bus with thousands of references and no parent).
+
+**Why: the game loads a file once** (2026-11-12). `assets bundle-parents` shows the city's sublevel tree flat: all
+266 sublevels are children of the level, so `Anchor` is not `AnchorArea3`'s parent in the data. But the magrope's
+files are in `anchorarea3` and in `anchor` (+20 more bundles), and a bundle loaded while another one holding the
+same files is up uses that one's copies. GridNode now holds the loaded bundles that share files with the one it
+loads (by a reference of its own to their group, found by name hash in the sublevel manager's tree at +0x7250
+under its lock at +0x79d0), and gives them back after it. The reverse is open: a bundle the game loads while ours
+is up may use our copies, and break when ours goes.

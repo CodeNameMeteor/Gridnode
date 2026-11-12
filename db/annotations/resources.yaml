@@ -3,6 +3,12 @@
 defaults: { confidence: hypothesis, sources: [ghidra] }
 
 globals:
+  - name: ResourceManager
+    va: 0x14237deb0
+    type: "ResourceManager"
+    note: "The resource manager object itself (not a pointer; ResourceGroups is its +0x08). +0x5df8: map of bundle name hash -> resource group id (eastl rb-tree: node +0x00 right, +0x08 left, +0x20 u32 key, +0x24 u16 id), key = lower-case djb2-xor of the name xor the u32 at +0x262e4 + kind * 4 (kind 1 for sublevel bundles); +0x26300: its lock (ResourceManager_registerBundleGroup, read 2026-11-12)."
+    confidence: inferred
+    sources: [ghidra]
   - name: ResourceGroups
     va: 0x14237deb8
     type: "void*[0xbbd]"
@@ -24,21 +30,21 @@ functions:
   - name: getCompartment
     va: 0x142abad00
     signature: "void*(u16 id)"
-    confidence: hypothesis
+    confidence: inferred
     sources: [ghidra, gridnode, research]
-    note: "The compartment of resource group id: ResourceGroups[id] +0x68, returned through a thunk (jmp [0x1447d2ab8]); null if the group does not exist. 0 is the static compartment. Confirmed in Ghidra decompilation."
+    note: "The compartment of resource group id: ResourceGroups[id] +0x68, returned through a thunk (jmp [0x1447d2ab8]); null if the group does not exist. 0 is the static compartment. Confirmed in Ghidra decompilation. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
   - name: Partition_findByName
     va: 0x142aeb310
     signature: "void*(void* compartment, const i8* path)"
-    confidence: hypothesis
+    confidence: inferred
     sources: [ghidra, gridnode, research]
-    note: "Case-insensitive (djb2-xor of the lower-cased path via 0x142aeb940; map at compartment +0x158, locked by +0xc0). Null if the partition is not loaded. Confirmed in Ghidra decompilation."
+    note: "Case-insensitive (djb2-xor of the lower-cased path via 0x142aeb940; map at compartment +0x158, locked by +0xc0). Null if the partition is not loaded. Confirmed in Ghidra decompilation. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
   - name: Partition_primaryInstance
     va: 0x142aec640
     signature: "void*(void* partition)"
-    confidence: hypothesis
+    confidence: inferred
     sources: [ghidra, gridnode, research]
-    note: "**(partition + 0x20): the partition's first (primary) instance, e.g. the Blueprint of a blueprint asset or the RigidMeshAsset of a mesh asset. Confirmed in Ghidra decompilation."
+    note: "**(partition + 0x20): the partition's first (primary) instance, e.g. the Blueprint of a blueprint asset or the RigidMeshAsset of a mesh asset. Confirmed in Ghidra decompilation. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
   - name: Partition_findByGuid
     va: 0x142aeb230
     signature: "void*(void* partitionPlus8, const void* guid)"
@@ -54,9 +60,9 @@ functions:
   - name: DataContainer_release
     va: 0x142a91cd0
     signature: "u32(void* container)"
-    confidence: hypothesis
+    confidence: inferred
     sources: [ghidra, gridnode, research]
-    note: "Drops a reference (u16 at +8, atomic); destroys the container at zero. The matching add is a locked increment of +8."
+    note: "Drops a reference (u16 at +8, atomic); destroys the container at zero by calling vtable[1](container, 0), then frees it (at container-0x10 if flag 0x100 at +0x0a) through Heap_ownerOf + poolFree. Flag 0x2000 at +0x0a skips that free and sets 0x800 instead; the vtable[1] cleanup of arrays and strings still runs. The matching add is a locked increment of +8. Checked in Ghidra (data-arrays)."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: sha1Init
     va: 0x14292a000

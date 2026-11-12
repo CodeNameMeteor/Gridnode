@@ -86,20 +86,44 @@ functions:
       Sends an event from a peer through its bus: walks the bus data's event connections (+0x68 ->
       +0x120, or +0x148 when bus+0x3c bit 28) for the source and event id (event +8), sets the
       target event id and delivers each (EntityBus_deliverEvent). Event ids are djb2-xor hashes of
-      the event names ("Out" = 0xb87df4b).
-    confidence: inferred
+      the event names ("Out" = 0xb87df4b). The list holds pointers to the 0x20-byte EventConnections
+      records of the blueprint (+0x00 Source, +0x08 Target, +0x10 source event hash, +0x14 target event
+      hash, +0x18 target type); a type-4 record is not delivered here, types 4 and 5 are passed to the
+      bus interface's vtable +0x28 instead. The event's +8 is put back at the end.
+    confidence: confirmed
     sources: [ghidra, recording]
   - name: EntityBus_deliverEvent
     va: 0x14314eac0
     signature: "void(void* bus, void* connection, void* event)"
-    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent. A connection to the blueprint's interface (target == bus +0x68 -> +0xb8 -> +0x28) fires the event in the parent bus (+0x10, minus 8) from source bus +0x60 (low two bits masked): how a blueprint's output leaves it."
-    confidence: inferred
+    note: "To the bus's interface (+0x10) or to the target peer from the bus's peer table (+0x40), via EntityBusPeer_sendEvent. A connection to the blueprint's interface (target == bus +0x68 -> +0xb8 -> +0x28) fires the event in the parent bus (+0x10, minus 8) from source bus +0x60 (low two bits masked): how a blueprint's output leaves it. Other targets: a binary search of the template's peer-target list (+0xd0, or +0xf8 when bus +0x3c bit 28) picks the index into the bus's peer table, event +0xc = 1."
+    confidence: confirmed
     sources: [ghidra]
   - name: EntityBusPeer_sendEvent
     va: 0x143134460
     signature: "void(i32 realm, void* peer, void* event)"
     note: "Calls the peer's vtable +0x20 (its onEvent) on the right thread, or queues it for that realm (0x143127d20)."
-    confidence: inferred
+    confidence: confirmed
+    sources: [ghidra]
+  - name: EntityBusTemplate_ctor
+    va: 0x1431417a0
+    signature: "EntityBusTemplate*(EntityBusTemplate* self, void* realmFlag, void* allocator, void* blueprint)"
+    note: >-
+      Builds a bus template (0x170 bytes, allocated by its factory 0x143147010): the base DataBusTemplate
+      (0x142a82b50), then EntityBusData_buildEventLists twice (client, server) into the sorted event lists
+      at +0x120 / +0x148 and the peer-target lists at +0xd0 / +0xf8. The template is cached by
+      BusTemplate_getOrBuild (0x142a82130; per realm a map at 0x14236e420 + 0x70 * (realm - 1), a lock
+      at +0x40, refcount at template +0xc4, evicted by 0x142a86070 when a bus is destroyed).
+    confidence: confirmed
+    sources: [ghidra]
+  - name: EntityBusData_buildEventLists
+    va: 0x143153a50
+    signature: "void(EntityBusTemplate* tmpl, void* arena, i32 realm, void* eventList, void* peerTargets)"
+    note: >-
+      Sorts the blueprint's EventConnections (data +0x38, count at ptr - 4, 0x20-byte records) by (Source,
+      source event) into eventList, skipping type 3 for realm 0 and type 2 for realm 1, and collects the
+      distinct Targets of those records and of the LinkConnections (data +0x20, 0x18-byte records) into
+      peerTargets (sorted DataContainer pointers).
+    confidence: confirmed
     sources: [ghidra]
   - name: ServerEventSync_onReachedClient
     va: 0x143364ba0

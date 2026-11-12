@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 37;
+pub const GN_API_VERSION: u32 = 38;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -546,6 +546,14 @@ pub struct gn_api {
     pub time_of_day_hold_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, seconds: f32) -> c_int>,
     pub visual_env_set_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, offset: u32, data: *const c_void, size: u32) -> c_int>,
     pub streaming_focus_add_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, pos: *const f32, handle: *mut u32) -> c_int>,
+    pub bundle_load: Option<unsafe extern "C" fn(name: *const c_char, handle: *mut u32) -> c_int>,
+    pub bundle_state: Option<unsafe extern "C" fn(handle: u32, ready: *mut u32) -> c_int>,
+    pub bundle_release: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub prefab_spawn: Option<unsafe extern "C" fn(asset: *const c_char, at: *const gn_transform, bundle: u32, handle: *mut u32) -> c_int>,
+    pub prefab_state: Option<unsafe extern "C" fn(handle: u32, live: *mut u32, entities: *mut u32) -> c_int>,
+    pub prefab_destroy: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub bundle_load_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, name: *const c_char, handle: *mut u32) -> c_int>,
+    pub prefab_spawn_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, asset: *const c_char, at: *const gn_transform, bundle: u32, handle: *mut u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -575,4 +583,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1536);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1600);
