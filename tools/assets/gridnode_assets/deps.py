@@ -150,3 +150,28 @@ def needs(index: Index, name: str, max_files: int = 5000) -> tuple[list[Item], l
                 add_chunks(index.store.read(r.sha1), r.name)
         add_chunks(data, it.name)
     return out, missing
+
+
+def used_by(index: Index, name: str) -> list[str]:
+    """The EBX files that import NAME (read from each header's import table; no values are read)."""
+    it = index.ebx.get(name.lower())
+    if it is None:
+        raise StoreError(f"{name}: no EBX by that name")
+    want = next((g for g, n in index.by_guid().items() if n == it.name), None)
+    if want is None:
+        raise StoreError(f"{name}: its file GUID could not be read")
+    out = []
+    for other in index.ebx.values():
+        if other is it or not index.store.has(other.sha1):
+            continue
+        try:
+            head = index.store.read_head(other.sha1)
+        except StoreError:
+            continue
+        if len(head) < 0x40:
+            continue
+        n_imp = int.from_bytes(head[0x0C:0x10], "little")
+        table = head[0x40:0x40 + 32 * n_imp]
+        if any(table[i:i + 16] == want for i in range(0, len(table), 32)):
+            out.append(other.name)
+    return sorted(out)

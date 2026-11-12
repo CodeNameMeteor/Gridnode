@@ -3,6 +3,17 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Layout editor research of 2026-11-12: volumes, dashes, runtime bundle loading
+
+Goal (user): place any volume (blockers, dash start / finish, mission parts, teleports), move and resize it, and
+place any object from any area without that area streaming in.
+- `docs/research/volume-catalogue.md`: what the game places, trigger shapes (a `Geometry` link to a shape), dashes
+  (start `OBBData` linked as `StartGeometry`, finish = the end arrow's `EndVolume`, links in `mainlogic`).
+- `assets used-by NAME` finds the files that place an asset.
+- Bundles load from a mod at runtime (claim-lab `bundle-load`, game-tested): a sublevel request copy on the server
+  thread, ready in 0.16 s, assets found through the resource group id from `ResourceManager_registerBundleGroup`
+  (`docs/research/zone-streaming.md`). Next: spawning a prefab from a loaded bundle, then `gn::bundleLoad` (API 38).
+
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
 The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the
 code first: its findings in parts 1 and 2 hold (both logs say `no page within 2 GB ... (0 tries)`; `validate
