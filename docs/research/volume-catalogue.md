@@ -66,9 +66,22 @@ map index, one `PamNamedChallengeDatabaseAsset` with 40 `Entries` (22 `RunnersRo
 `PamNamedChallengeData` above), `ContentId`, `Sid`, the star thresholds in seconds (`ID_NC_THEVIEW02`: 46 / 38 / 35,
 cheater 21), the stats codes and `HideInMap`. No type in the dump has a checkpoint list (`PamNamedChallengeData`,
 `PamNamedChallengeTypeData` and `PamNamedChallengeTransformOverride` checked), so a dash's checkpoints and finish are
-level logic: `gameplay/social/pf_runnersroute` (a `PamNamedChallengeEntityData`) placed in a district layer, wired to
-checkpoint triggers. To read next: that prefab and one layer that places it. A new dash therefore needs a
-`PamNamedChallengeData`, a database entry, and the placed prefab with its triggers.
+level logic. A dash has only a start and a finish (user, 2026-11-12), no checkpoints.
+
+`gameplay/social/pf_runnersroute` (135 instances) is one dash. Its parts:
+
+- `PamNamedChallengeEntityData` (#5) with events `Start`, `Finish`, `Restart`, `Trigger`; it drives a
+  `PamStopWatchEntityData` whose time goes back into it, and it enables a 50 m `SphereData` trigger (the
+  "press to start" area near the marker).
+- A logic prefab (#13, import 5) fires `OnEnterStart` (through an event gate to `Start`) and `OnEnterFinished` (to
+  `Finish`). Its geometry is not inside the dash prefab: three object links leave through the interface,
+  `StartGeometry`, `StopGeometry` (the finish) and one not yet named (`0x32107415`). So the layer that places the
+  dash links its own start and finish volumes in.
+- The interface also takes `ChallengeSelector` (the link that picks the `PamNamedChallengeData`), `FinishTransform`
+  (camera at the end), `Activated`, and exposes `Trigger`.
+
+A new dash therefore needs a `PamNamedChallengeData`, a database entry, the placed `pf_runnersroute`, and two
+volumes (shape plus area) linked as `StartGeometry` and `StopGeometry`. To read next: one layer that places it.
 
 **Trigger shapes** are separate instances: `VolumeVectorShapeData` (a closed polygon of `Points` with a `Height`,
 `IsClosed`), `BFWaypointsShapeData` (open paths) and `SphereData` (`Radius`, `Position`). A trigger does not hold
