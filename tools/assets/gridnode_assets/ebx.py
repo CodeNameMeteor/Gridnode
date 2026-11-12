@@ -62,8 +62,11 @@ def short_f32(v: float) -> float:
     want = struct.pack("<f", v)
     for digits in range(1, 10):
         s = float(f"{v:.{digits}g}")
-        if struct.pack("<f", s) == want:
-            return s
+        try:
+            if struct.pack("<f", s) == want:
+                return s
+        except OverflowError:  # rounded past the largest float32 (3.4028235e38): more digits
+            continue
     return v
 
 
