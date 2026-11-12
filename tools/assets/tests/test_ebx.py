@@ -116,6 +116,33 @@ class EbxTest(unittest.TestCase):
         self.assertIn("Thing.Name: not a field of the game's type (data only the pipeline uses?)", warnings)
         self.assertTrue(any(w.startswith("SubThing: not a type") for w in warnings), warnings)
 
+    def test_negative_zero_and_short_arrays(self):
+        # Seen in the user's install (2026-11-12): -0.0 must stay -0.0, and an array of 2-byte
+        # elements still starts 4-aligned (its count is 4 bytes).
+        x = sample()
+        x.instances[0].values["Pos"]["y"] = -0.0
+        x.types.append(Type("array", 4, ARRAY, 4, 0, [Field("member", 0xC0DD, 0, 0, 0)]))
+        x.types[6].fields.append(Field("Shorts", ARRAY, len(x.types) - 1, 0x50, 0x80))
+        x.types[6].fields.append(Field("More", ARRAY, len(x.types) - 1, 0x54, 0x88))
+        x.types[6].size = 0x58
+        x.instances[0].values["Points"] = [{"x": 1.0, "y": 2.0, "z": 3.0}]
+        x.instances[0].values["Shorts"] = [1, 2, 3]  # 6 bytes: the next array would start 2-aligned
+        x.instances[0].values["More"] = [4]
+        x.instances[1].values["Points"] = []
+        d = ebx.write(x)
+        y = ebx.read(d)
+        self.assertEqual(struct.pack("<f", y.instances[0].values["Pos"]["y"]), struct.pack("<f", -0.0))
+        self.assertEqual(y.instances[0].values["Shorts"], [1, 2, 3])
+        self.assertTrue(ebx.round_trip(d)[0])
+        str_at, = struct.unpack_from("<I", d, 4)
+        n_imp, = struct.unpack_from("<I", d, 12)
+        n_runs, _, _, n_types, n_fields, name_len = struct.unpack_from("<6H", d, 0x10)
+        p = 0x40 + 32 * n_imp + name_len + 16 * n_fields + 16 * n_types + 4 * n_runs
+        p = (p + 15) // 16 * 16
+        _, n_arrays, _ = struct.unpack_from("<3I", d, 0x1C)
+        offsets = [struct.unpack_from("<3I", d, p + 12 * i)[0] for i in range(n_arrays)]
+        self.assertTrue(all(o % 4 == 0 for o in offsets), offsets)
+
     def test_not_ebx(self):
         with self.assertRaises(ebx.EbxError):
             ebx.read(b"\0" * 0x40)

@@ -321,7 +321,7 @@ class _Writer:
         for k, v in enumerate(items):
             self.value(member, v, elements, k * stride, stride)
         index = len(self.arrays)
-        off = _align(len(self.array_data) + 4, self.member_align(member))
+        off = _align(len(self.array_data) + 4, max(self.member_align(member), 4))  # never under 4 (the count's own), seen with Int16
         self.arrays.append((off, len(items), f.ref))
         self.array_data += bytes(off - len(self.array_data))
         self.array_data[off - 4:off] = struct.pack("<I", len(items))
@@ -361,9 +361,9 @@ class _Writer:
         elif c in _INTS:
             struct.pack_into(_INTS[c], buf, at, int(v or 0))
         elif c == C_F32:
-            buf[at:at + 4] = bytes.fromhex(v["f32"]) if isinstance(v, dict) else struct.pack("<f", float(v or 0))
+            buf[at:at + 4] = bytes.fromhex(v["f32"]) if isinstance(v, dict) else struct.pack("<f", 0.0 if v is None else float(v))  # (-0.0 kept)
         elif c == C_F64:
-            buf[at:at + 8] = bytes.fromhex(v["f64"]) if isinstance(v, dict) else struct.pack("<d", float(v or 0))
+            buf[at:at + 8] = bytes.fromhex(v["f64"]) if isinstance(v, dict) else struct.pack("<d", 0.0 if v is None else float(v))
         elif c in (C_GUID, C_SHA1):
             raw = bytes.fromhex(v) if v else bytes(_SIZES[c])
             if len(raw) != _SIZES[c]:

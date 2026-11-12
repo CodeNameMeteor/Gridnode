@@ -93,6 +93,12 @@ No Offline Warning rebuilt through YAML by GridNode (same values, same two bundl
 `.fbmod` in Frosty's Mod Manager or the game. Game-tested (user, 2026-11-12): the GridNode-built No Offline Warning
 works through Frosty's Mod Manager, and GridNode under it logs `game data from ...\ModData\Default\ (-dataPath ...)`.
 
+Full `ebx-check` on the user's install (2026-11-12): 43,434 of 43,661 written back the same. The 227 others
+(`--keep`, grouped by section): -0.0 written as 0.0 (the writer's `v or 0`), and arrays of 2-byte elements
+started 2-aligned (the game starts every array 4-aligned). Both fixed: 44 of the kept files (all four groups) now
+write back the same. The one type disagreement was -1 vs 0xFFFFFFFF (the same value). Not rerun on the whole
+install yet.
+
 mec-trainer 1.10.3 (2026-11-12, user's ask; game-tested, merged #11): the player info (position, speed, state) can be dragged
 while the GridNode menu is open; its place is kept (`hud.player_info_x` / `_y`), clamped to the screen; Settings > HUD
 has "Reset place".
