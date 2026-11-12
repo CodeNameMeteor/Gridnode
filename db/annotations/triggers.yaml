@@ -22,6 +22,44 @@ functions:
     va: 0x14330bac0
     signature: "void(void* cache, void* dataAndField, void* busInterface)"
     note: "Fills a geometry cache from the data's linked shapes ({data, 0x31fb3b9f 'Geometry'}). PamServerAreaTriggerEntity's vf15 builds two: +0x1b8 (tested) and +0x70."
+  - name: PamServerAreaTriggerEntity_update
+    va: 0x14395c750
+    signature: "void(void* trigger, void* tickInfo)"
+    note: >-
+      The area-trigger system's per-tick update (trigger-events topic, Ghidra 2026-11-12). Runs the
+      updater at +0xa8 (the character gather, 0x14395de40), then per registered trigger (+0x28..+0x30,
+      16-byte entries with an interval counter): initialized (+0x18 bit 3), interval, enabled (+0x60).
+      Candidates into +0xa0 (0x143956e20, else 0x143956910 from the global lists), the overlap test
+      0x143956a70 into +0xe8, then enter, leave (either stops the rest when data+0x64 RunOnce is set),
+      inside (when +0x150 != 0), 0x14395fc60.
+  - name: PamServerAreaTriggerEntity_testOverlap
+    va: 0x143956a70
+    signature: "void(void* trigger, void* candidates, void* outInside)"
+    note: >-
+      Fills outInside with the candidate characters in the volume. data+0xbc == 0: the box centre
+      (character vtable +0xb8) through areaTriggerGeometry_contains with the cache at +0x70. Else each shape
+      at +0x78 against the character's box with 0x143956360 (OBB test 0x142a69020). No physics phantom:
+      the test is geometric (Ghidra 2026-11-12).
+  - name: PamServerAreaTriggerEntity_fireEnter
+    va: 0x143959420
+    signature: "bool(void* trigger, void* insideNow)"
+    note: "For each character now inside and not in the inside list (+0x130..+0x138, 16-byte {ref, f32 timer}): adds it and, unless data+0xbf (TriggerOnlyOnLeave), sends OnEnter (0xfb35ad6c) through AreaTrigger_sendEvent; an extended event (0x143395700) when the character has +0x250."
+  - name: PamServerAreaTriggerEntity_fireLeave
+    va: 0x143959930
+    signature: "bool(void* trigger, void* insideNow)"
+    note: "For each character in the inside list but not inside now: sends OnLeave (0xfbd34b3f) (when data+0xc1 or the character's +0x1f0 vtable[0]() is true) and removes it."
+  - name: PamServerAreaTriggerEntity_fireInside
+    va: 0x1439596a0
+    signature: "void(void* trigger, f32 dt)"
+    note: "OnInsideArea (0x935fd78f): with data+0xbe == 0 once per tick for each count of +0x150; else per inside entry, its timer (+0x8 of the entry) advanced by dt."
+  - name: AreaTrigger_sendEvent
+    va: 0x1433cabe0
+    signature: "void(void* trigger, void* event)"
+    note: "Fires a trigger's event: data+0x60 (Delay) <= 0 goes at once to EntityBus_fireEvent (via 0x14314e8a0); else queued with the delay. With data+0x64 (RunOnce) it first disables the trigger (+0x60 = 0) and sends OnDisabled (0xfc4bbbb4)."
+  - name: AreaTrigger_onEvent
+    va: 0x1433ca480
+    signature: "void(void* trigger, void* event)"
+    note: "Enable (0x8ba423e4) sets +0x60 and sends OnEnabled (0x9e88ca61); Disable (0xf90216b1) clears it and sends OnDisabled (0xfc4bbbb4); each only on a change."
   - name: shape_containsPoint
     va: 0x143427220
     signature: "bool(const f32* localPosition, void* shapeData)"

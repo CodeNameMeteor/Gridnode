@@ -292,7 +292,7 @@ functions:
   - name: SubLevelManager_requestBundle
     va: 0x1432f38f0
     signature: "void*(void* manager, void* outHandle, void* request)"
-    note: "Ghidra-checked (bundle-load): finds or creates the bundle group for request->name (lowercase DJB2-XOR hash by 0x1432f0380), adds a reference (+0x10, atomic) and writes the handle (group pointer u64 + compartment u16, 16 bytes) to outHandle. Locks manager + 0x79d0. Callers include zone load (0x143c81510) and sublevel stream-in (0x143363c00). Not game-tested. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
+    note: "Ghidra-checked (bundle-load): finds or creates the bundle group for request->name (lowercase DJB2-XOR hash by 0x1432f0380), adds a reference (+0x10, atomic) and writes the handle (group pointer u64 + compartment u16, 16 bytes) to outHandle. Locks manager + 0x79d0. Callers include zone load (0x143c81510) and sublevel stream-in (0x143363c00). Ghidra-checked (partition-sharing): the parent is the entry whose u16 id (entry + 0xc) is request + 0x18, or the id of the entry that request + 0x10 resolves to (0 = base entry manager + 0x1c70); the child holds it at +0x30 (atomic +1 at parent + 0x10 while the parent is state < 4 and not flagged 0x10) and stores the id at +0x28; an existing entry is reused only when +0x28 matches, so the same name under another parent makes a second entry. Not game-tested. Game-tested 2026-11-12 (bundle-load / prefab-spawn, docs/research/zone-streaming.md)."
     confidence: inferred
     sources: [ghidra]
   - name: BundleRequest_init

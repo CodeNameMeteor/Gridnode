@@ -177,6 +177,18 @@ hooks:
     note: Time-trial marker look picker; the thunk calls the factory 0x143a7b5a0.
 
 functions:
+  - name: PamClientSharedContentManager_findMarker
+    va: 0x143a43570
+    signature: "void*(void* manager, void* challengeData)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Finds the runtime marker of a challenge by ContentId (challengeData +0x98): hash map at manager +0x1d8 (bucket count +0x1e0), marker pointer vector at +0x180. Returns 0 if none. manager is the global at 0x14257e178. Called from the PamClientNamedChallengeEntity constructor (0x143a38080)."
+  - name: PamClientSharedContentManager_addChallengeMarker
+    va: 0x143a4f720
+    signature: "void(void* manager, void* a2, void* challengeData)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "Adds a PamNamedChallengeMapMarker (0x230 bytes, constructor 0x143a7ca20) for a challenge if its type data (challengeData +0x28) has a non-null +0x68: inserts ContentId (+0x98) into the map at manager +0x1d0, appends to the vector at +0x180, then calls slot +0x38 of the new marker. a2 (stored in the marker's init block) is not understood yet."
   - name: UIPauseController_applyToClient
     va: 0x143b16ae0
     signature: "void(UIPauseController* controller)"

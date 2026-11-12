@@ -60,9 +60,9 @@ functions:
   - name: DataContainer_release
     va: 0x142a91cd0
     signature: "u32(void* container)"
-    confidence: hypothesis
+    confidence: inferred
     sources: [ghidra, gridnode, research]
-    note: "Drops a reference (u16 at +8, atomic); destroys the container at zero. The matching add is a locked increment of +8."
+    note: "Drops a reference (u16 at +8, atomic); destroys the container at zero by calling vtable[1](container, 0), then frees it (at container-0x10 if flag 0x100 at +0x0a) through Heap_ownerOf + poolFree. Flag 0x2000 at +0x0a skips that free and sets 0x800 instead; the vtable[1] cleanup of arrays and strings still runs. The matching add is a locked increment of +8. Checked in Ghidra (data-arrays)."
   # From the user's Ghidra project (GridNodeSync, 2026-10-20); hypotheses until checked.
   - name: sha1Init
     va: 0x14292a000
