@@ -3,6 +3,8 @@
 // 2026-11-12; docs/research/zone-streaming.md has the details.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <deque>
@@ -38,7 +40,21 @@ struct Prefab {
     enum State { Queued, Live, Failed, Destroyed } state = Queued;
 };
 
+// A released bundle's game handle, given back only after a delay: its prefabs' entities are destroyed by
+// their owner later in the frame, and must be gone before the bundle's data is (a prefab's entities read
+// their data every frame). A bundle_load of the same name meanwhile takes the handle back instead of a
+// new request: a load just after a release found the group half unloaded and spawned from it, and the
+// game crashed in an entity transform update (2026-11-12).
+struct PendingRelease {
+    std::string name;
+    uint64_t game[2] = {0, 0};
+    uint64_t level = 0;
+    std::chrono::steady_clock::time_point at;
+};
+constexpr auto kReleaseDelay = std::chrono::milliseconds(1500);
+
 std::mutex g_m;
+std::vector<PendingRelease> g_pending; // (g_m)
 std::vector<Bundle> g_bundles;  // (g_m)
 std::vector<Prefab> g_prefabs;  // (g_m)
 uint32_t g_next = 1;            // (g_m) handles for both
@@ -56,6 +72,11 @@ Prefab* prefabOf(uint32_t h) {
     for (Prefab& p : g_prefabs)
         if (p.handle == h) return &p;
     return nullptr;
+}
+
+bool sameName(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y)); });
 }
 
 bool plausible(uintptr_t p) {
@@ -129,6 +150,14 @@ void requestOnServer(uint32_t h) {
         std::lock_guard<std::mutex> lock(g_m);
         Bundle* b = bundleOf(h);
         if (!b || b->state != Bundle::Queued) return;
+        for (auto it = g_pending.begin(); it != g_pending.end(); ++it)
+            if (it->level == b->level && sameName(it->name, b->name)) {
+                b->game[0] = it->game[0], b->game[1] = it->game[1];
+                b->state = Bundle::Loading; // pollOnServer sees it ready at once
+                g_pending.erase(it);
+                GN_LOG("bundles: load %s: taken back from a release not yet given to the game", b->name.c_str());
+                return;
+            }
         g_names.push_back(b->name);
         name = g_names.back().c_str();
     }
@@ -153,7 +182,18 @@ void requestOnServer(uint32_t h) {
 
 // Server thread, each tick: a group is ready at state 3 (or 2 with bit 0 of +0x6c clear); >= 4 is
 // not usable (BundleHandle_isReady).
+void releaseOnServer(uint64_t g0, uint64_t g1, uint64_t level);
+
 void pollOnServer() {
+    std::vector<PendingRelease> due;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = g_pending.begin(); it != g_pending.end();)
+            if (now >= it->at) due.push_back(*it), it = g_pending.erase(it);
+            else ++it;
+    }
+    for (const PendingRelease& r : due) releaseOnServer(r.game[0], r.game[1], r.level);
     std::lock_guard<std::mutex> lock(g_m);
     for (Bundle& b : g_bundles) {
         if (b.state != Bundle::Loading) continue;
@@ -305,8 +345,14 @@ void releaseLocked(std::vector<Bundle>::iterator it) {
     for (auto p = g_prefabs.begin(); p != g_prefabs.end();)
         if (p->bundle == it->handle) destroyLocked(p), p = g_prefabs.begin();
         else ++p;
-    const uint64_t g0 = it->game[0], g1 = it->game[1], level = it->level;
-    if (g0) server().post([g0, g1, level] { releaseOnServer(g0, g1, level); });
+    if (it->game[0]) {
+        PendingRelease r;
+        r.name = it->name;
+        r.game[0] = it->game[0], r.game[1] = it->game[1];
+        r.level = it->level;
+        r.at = std::chrono::steady_clock::now() + kReleaseDelay;
+        g_pending.push_back(r);
+    }
     g_bundles.erase(it);
 }
 
@@ -319,6 +365,7 @@ void levelChanged(const char* level, int loaded, void*) {
                static_cast<unsigned>(g_bundles.size()), static_cast<unsigned>(g_prefabs.size()));
     g_bundles.clear();
     g_prefabs.clear();
+    g_pending.clear(); // the game unloaded them with the level
 }
 
 void start() {

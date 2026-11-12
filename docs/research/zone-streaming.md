@@ -114,4 +114,6 @@ A Load within about 2 s of the last Release reuses the group the game still hold
 In the SDK since API 38 (`sdk/src/bundles.cpp`): `bundle_load`, `prefab_spawn`, `prefab_destroy`, `bundle_release`. It
 builds its own request (`BundleRequest_init` as 0x143363c00 does: +0x2a = 0xfe, +0x24 = 0, +0x28 = 1, the heap info
 at +0x2c left at its default) instead of copying the game's, finds the asset as `asset_find` does (every resource
-group), and spawns into the root bus above Faith's (her bus is at +0x28).
+group), and spawns into the root bus above Faith's (her bus is at +0x28). A release reaches the game 1.5 s later, after the
+prefabs' entities are gone; a load of the same name before then takes the handle back. Loading again just after a
+release found the group half unloaded, and a spawn from it crashed in an entity transform update (2026-11-12).

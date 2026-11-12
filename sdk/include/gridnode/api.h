@@ -1248,8 +1248,9 @@ typedef struct gn_api {
      * handle; the load runs on the server thread (a district: about 0.2 s). bundle_state: GN_OK with
      * *ready 0 (loading) or 1; GN_ERR_UNAVAILABLE when the game refused or the load failed;
      * GN_ERR_NOT_FOUND for an unknown handle, or one gone with its level. bundle_release destroys the
-     * prefabs spawned from it first, then gives the bundle back (the game unloads it about 2 s later when
-     * nothing else holds it). A level ending takes every bundle and prefab with it: their handles are then
+     * prefabs spawned from it first, then gives the bundle back 1.5 s later, once their entities are gone (the
+     * game unloads it about 2 s after that when nothing else holds it; a bundle_load of the same name before
+     * then keeps it). A level ending takes every bundle and prefab with it: their handles are then
      * gone (GN_ERR_NOT_FOUND), not released. At most 64 bundles at a time (GN_ERR_FULL).
      *
      * prefab_spawn spawns an asset's blueprint (a prefab or an object blueprint: "objects/props/
