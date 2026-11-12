@@ -89,8 +89,9 @@ it and shows the leaderboard again.
 
 Each dash has its own layer in `levels/sp/sp_maincity/mainlogic/mainlogic` (`assets used-by
 gameplay/social/pf_runnersroute`: 21 layers plus `mainlogic_networkregistry_win32`). `layer17_ct_socialrunnerroute01`
-is a `WorldPartData` holding the placed `pf_runnersroute`, one other prefab beside it, 10 copies of one object along
-the way (scaled and turned: route markers?), one object at the far end, and an `OBBData` (half extents 3.7 x 2.0 x
+is a `WorldPartData` holding the placed `pf_runnersroute`, `objects/props/runnerobject/dasharrows/pf_dasharrow_start`
+beside it, 10 `pf_dasharrow_medium` along the way (scaled and turned to point along the route), `pf_dasharrow_end`
+at the far end, and an `OBBData` (half extents 3.7 x 2.0 x
 5.8 m) beside the prefab that no object in the layer uses. The layer has no connections at all, so the links into
 the dash's interface (`StartGeometry`, `StopGeometry`, `ChallengeSelector`) are made by a file that imports the layer.
 
