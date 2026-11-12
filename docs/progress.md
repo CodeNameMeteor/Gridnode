@@ -64,8 +64,16 @@ an array is listed after the arrays in its elements; array 0 (empty) takes the t
 the payload never ends right at the data's end (padded to the next 16). Type codes seen: 0, 2, 3, 4, 7, 8, 10,
 12, 14, 15, 16, 19, 21, 23; FileRef (9), String (6), 64-bit and 8/16-bit signed ints are read as described
 but not seen yet. Not run yet: `ebx-check` over the whole install (43,040 more EBX files in archives over
-the 400 MB staging limit; about 20 minutes on the user's PC). Next: step 3, YAML to EBX as a command, with
-each type checked against the reflected dump.
+the 400 MB staging limit; about 20 minutes on the user's PC). Step 3, YAML to EBX (2026-11-12): `assets ebx-build FILE.yaml` writes the EBX after checking the file's type table
+against the reflected dump (`ebx.check_types`): type codes, parents, struct and enum types by name, enum values.
+The writer refuses an unknown field or a reference to nothing. Checked on the 621 files: no disagreement; the
+only differences are a few fields and one type (`InternetSimulationSettings`) in the data but not in the
+running game (pipeline or debug only: warnings), and value types whose flags have 0x8000 in the game
+(ignored). The file's second field offset is not the runtime offset (`EventConnection.TargetEvent`: 0x20 there,
+0x14 in the game). An edited ladder (`Length` 7.68 to 9.5) builds and reads back. Not tested: an edited
+file in the game (needs a way to load it: the `.fbmod` writer). Next (user, 2026-11-12): `assets deps`
+(everything a blueprint needs, for placing objects from other areas), then the `.fbmod` writer (needs
+real `.fbmod` files and a test with Frosty's Mod Manager), then the layout editor exporting to `.fbmod`.
 
 Second round (API 37, the user's choices of 2026-11-11; untested in game):
 - **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one

@@ -328,12 +328,13 @@ class _Writer:
         elif c == C_CLASS:
             if v is None:
                 n = 0
-            elif isinstance(v, str) and v.startswith("import:"):
+            elif isinstance(v, str) and v.startswith("import:") and 0 <= int(v[7:]) < len(self.x.imports):
                 n = 0x80000000 | int(v[7:])
-            elif isinstance(v, str) and v.startswith("#"):
+            elif isinstance(v, str) and v.startswith("#") and 0 <= int(v[1:]) < len(self.x.instances):
                 n = int(v[1:]) + 1
             else:
-                raise EbxError(f"{f.name}: a reference is null, '#N' or 'import:N', not {v!r}")
+                raise EbxError(f"{f.name}: a reference is null, '#N' (an instance of this file) or 'import:N' "
+                               f"(one of its {len(self.x.imports)} imports), not {v!r}")
             struct.pack_into("<I", buf, at, n)
         elif c == C_ARRAY:
             struct.pack_into("<I", buf, at, self.array(f, list(v or [])))
@@ -369,6 +370,7 @@ class _Writer:
 
     def fill(self, ti: int, values: dict, buf: bytearray, base: int, taken: set | None = None) -> None:
         t = self.x.types[ti]
+        top = taken is None  # the object itself, not a parent part of it
         taken = set() if taken is None else taken
         ends = sorted({f.offset for f in t.fields if code_of(f.flags) != C_INHERITED} | {t.size})
         for f in t.fields:
@@ -382,6 +384,10 @@ class _Writer:
             taken.add(key)
             if key in values:
                 self.value(f, values[key], buf, base + f.offset, size)
+        if top:
+            unknown = [k for k in values if k not in taken]
+            if unknown:
+                raise EbxError(f"{t.name} has no field {', '.join(unknown)}")
 
 
 def _type_table(x: Ebx) -> tuple[bytes, bytes, bytes]:
@@ -576,3 +582,82 @@ def round_trip(d: bytes) -> tuple[bool, str]:
     n = min(len(o), len(d))
     first = next((i for i in range(n) if o[i] != d[i]), n)
     return False, f"{len(d)} bytes, written {len(o)}; first difference at {first:#x}"
+
+
+# ---- the file's types against the game's -----------------------------------------------------------
+# GridNode's reflected dump (gridnode-reflected.json) has every type the running game knows. A file's
+# own type table must agree with it, or the game reads the data wrong: type codes, struct and enum
+# types by name, enum values. Seen on the user's files and not errors: a few fields and one type that
+# exist in the data but not in the running game (pipeline or debug only), and value types whose flags
+# have 0x8000 in the game. The file's second offsets are not the runtime offsets.
+
+def load_dump(path: str) -> dict:
+    import json
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    return {"by_name": {t["name"]: t for t in d.get("types", []) if t.get("name")},
+            "by_ti": {t["ti"]: t for t in d.get("types", [])}}
+
+
+def check_types(x: Ebx, dump: dict) -> tuple[list[str], list[str]]:
+    """(errors, warnings) for the file's type table against the game's types."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    by_name, by_ti = dump["by_name"], dump["by_ti"]
+
+    def name_of(f: Field) -> str:
+        c = code_of(f.flags)
+        if c in (C_STRUCT, C_ENUM):
+            return x.types[f.ref].name
+        if c == C_ARRAY:
+            m = x.types[f.ref].fields[0] if x.types[f.ref].fields else None
+            return "array of " + (name_of(m) if m and code_of(m.flags) in (C_STRUCT, C_ENUM, C_ARRAY) else str(m and code_of(m.flags)))
+        return ""
+
+    def game_name(g: dict) -> str:
+        c = (g["flags"] >> 4) & 0x1F
+        if c in (C_STRUCT, C_ENUM):
+            return g["name"]
+        if c == C_ARRAY:
+            e = by_ti.get(g.get("element") or g.get("elementType") or "")
+            return "array of " + (game_name(e) if e and ((e["flags"] >> 4) & 0x1F) in (C_STRUCT, C_ENUM, C_ARRAY) else
+                                  str(e and (e["flags"] >> 4) & 0x1F))
+        return ""
+
+    for t in x.types:
+        if t.name == "array":
+            continue
+        g = by_name.get(t.name)
+        if g is None:
+            warnings.append(f"{t.name}: not a type of the running game (data only the pipeline or a debug build uses?)")
+            continue
+        if code_of(t.flags) != (g["flags"] >> 4) & 0x1F:
+            errors.append(f"{t.name}: type code {code_of(t.flags)} here, {(g['flags'] >> 4) & 0x1F} in the game")
+            continue
+        if g.get("category") == "Enum":
+            game = {v["name"]: v["value"] for v in g.get("values", [])}
+            for f in t.fields:
+                if f.name not in game:
+                    errors.append(f"{t.name}.{f.name}: not a value of the game's enum")
+                elif game[f.name] != f.offset:
+                    errors.append(f"{t.name}.{f.name} = {f.offset} here, {game[f.name]} in the game")
+            continue
+        game_fields = {f["name"]: f for f in g.get("fields", [])}
+        for f in t.fields:
+            if code_of(f.flags) == C_INHERITED:
+                parent = by_ti.get(g.get("super", ""))
+                if parent is not None and parent["name"] != x.types[f.ref].name:
+                    errors.append(f"{t.name}: parent {x.types[f.ref].name} here, {parent['name']} in the game")
+                continue
+            gf = game_fields.get(f.name)
+            if gf is None:
+                warnings.append(f"{t.name}.{f.name}: not a field of the game's type (data only the pipeline uses?)")
+                continue
+            gt = by_ti.get(gf["type"])
+            if gt is None:
+                continue
+            if (gt["flags"] >> 4) & 0x1F != code_of(f.flags):
+                errors.append(f"{t.name}.{f.name}: type code {code_of(f.flags)} here, {(gt['flags'] >> 4) & 0x1F} ({gt['name']}) in the game")
+            elif code_of(f.flags) in (C_STRUCT, C_ENUM) and name_of(f) != game_name(gt):
+                errors.append(f"{t.name}.{f.name}: {name_of(f)} here, {game_name(gt)} in the game")
+    return errors, warnings

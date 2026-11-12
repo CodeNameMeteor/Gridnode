@@ -6,8 +6,11 @@
   assets extract NAME --data DIR [--out DIR]   one ebx / res entry (or a chunk by GUID), decompressed
   assets ebx NAME|FILE.ebx [--data DIR] [--out DIR|-]
                                                an EBX file as YAML (lossless: written back it is the same)
-  assets ebx-check --data DIR [--superbundle S] [--bundle B] [--limit N]
+  assets ebx-check --data DIR [--superbundle S] [--bundle B] [--limit N] [--dump JSON]
                                                every EBX read, to YAML, back and written: same bytes?
+                                               (and, with the reflected dump, its types against the game's)
+  assets ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]
+                                               a YAML file written as EBX, its types checked against the game's
 
 DIR is the game's Data folder (gridnode.log: "startup: game data from ..."), or the GRIDNODE_DATA
 environment variable. Extracted files go to bin/assets/ (git-ignored): game data is never committed.
@@ -142,8 +145,43 @@ def cmd_ebx(a) -> int:
     return 0 if same else 1
 
 
+DUMP = os.path.join(ROOT, "db", "reflected", "gridnode-reflected.json")
+
+
+def _dump(a):
+    path = a.dump or (DUMP if os.path.isfile(DUMP) else "")
+    return ebx.load_dump(path) if path else None
+
+
+def cmd_ebx_build(a) -> int:
+    with open(a.file, encoding="utf-8") as f:
+        x = ebx.from_yaml(f.read())
+    dump = _dump(a)
+    errors: list[str] = []
+    if dump is None:
+        print("ebx-build: no reflected dump (--dump, or gridnode.py setup): types not checked against the game's", file=sys.stderr)
+    else:
+        errors, warnings = ebx.check_types(x, dump)
+        for w in warnings:
+            print("warning:", w, file=sys.stderr)
+        for e in errors:
+            print("error:", e, file=sys.stderr)
+    if errors:
+        print(f"ebx-build: {len(errors)} error(s): not written", file=sys.stderr)
+        return 1
+    data = ebx.write(x)
+    out = a.out or os.path.join(OUT, "built", os.path.splitext(os.path.basename(a.file))[0] + ".ebx")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(data)
+    print(f"ebx-build: {len(x.instances)} instances, {len(data)} bytes -> {out}")
+    return 0
+
+
 def cmd_ebx_check(a) -> int:
     s = _store(a)
+    dump = _dump(a)
+    type_errors: Counter = Counter()
     seen: set[bytes] = set()
     passed = failed = absent = 0
     reasons: Counter = Counter()
@@ -171,6 +209,9 @@ def cmd_ebx_check(a) -> int:
                         if c not in ebx._SIZES and c not in (ebx.C_INHERITED, ebx.C_STRUCT):
                             raw_codes[c] += 1
                 same, why = ebx.round_trip(data)
+                if dump is not None:
+                    for err in ebx.check_types(x, dump)[0]:
+                        type_errors[err] += 1
             except Exception as ex:  # noqa: BLE001 - every failure is counted and shown
                 same, why = False, f"{type(ex).__name__}: {ex}"
             if same:
@@ -191,7 +232,11 @@ def cmd_ebx_check(a) -> int:
         print(f"type codes kept as raw bytes (fields per code): {dict(raw_codes)}")
     for k, n in reasons.most_common(20):
         print(f"  {n:6}  {examples[k]}")
-    return 0 if failed == 0 and passed else 1
+    if dump is not None:
+        print(f"types against the game's: {sum(type_errors.values())} disagreement(s) in {len(type_errors)} place(s)")
+        for k, n in type_errors.most_common(20):
+            print(f"  {n:6}  {k}")
+    return 0 if failed == 0 and passed and not type_errors else 1
 
 
 def main(argv: list[str]) -> int:
@@ -218,10 +263,15 @@ def main(argv: list[str]) -> int:
     ec.add_argument("--superbundle", help="only superbundles whose name contains this")
     ec.add_argument("--bundle", help="only bundles whose name contains this")
     ec.add_argument("--limit", type=int, default=0)
+    ec.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
+    bu = sub.add_parser("ebx-build", help="a YAML file written as EBX, into bin/assets/built")
+    bu.add_argument("file")
+    bu.add_argument("--out")
+    bu.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
     a = ap.parse_args(argv)
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
-                "ebx-check": cmd_ebx_check}[a.cmd](a)
+                "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build}[a.cmd](a)
     except (StoreError, ebx.EbxError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1
