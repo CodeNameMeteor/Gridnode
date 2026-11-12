@@ -92,11 +92,13 @@ game): GridNode reads the game's private read-write memory once for a word in th
 the known buses 0x20 bytes on, and keeps it if its vtable is an entity class. Game test (2026-11-12):
 works; injected mid-level the trainer's volumes and barriers all show; 3.9 GB read in 1.3 s.
 
-Optional dependencies (2026-11-12; untested in game): the trainer could not be unloaded while
+Optional dependencies (2026-11-12): the trainer could not be unloaded while
 detour-demo (which wants it optionally and imports its godMode) was loaded, and detour-demo loaded first
 never saw the trainer. Now unloading or reloading a mod unloads its optional dependents first and loads
 them again after; loading a mod reloads the loaded mods that want it optionally (`mods.cpp`,
-`optionalDependents`). A needed dependency still blocks the unload.
+`optionalDependents`). A needed dependency still blocks the unload. Game test: works (unload and load
+of the trainer with detour-demo loaded). Before merge, also tested: injection mid-level, the player
+build, and a mod built for 1.0.0 (loads and works).
 
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).
