@@ -8,6 +8,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <thread>
 #include <vector>
 
@@ -926,6 +927,20 @@ void testBuses() {
     std::sort(got.begin(), got.end());
     CHECK(s.roots == 1 && s.buses == 3 && s.peers == 3 && s.rejected == 1);
     CHECK(got.size() == 3 && got[0] == e1 && got[1] == e2 && got[2] == e3);
+    // The heap pass: a vtable-looking word with a known bus 0x20 on is a candidate; others are not.
+    std::unordered_set<uint64_t> all;
+    buses::walk({e1}, read, isEntity, [](uint64_t) {}, &all);
+    CHECK(all.size() == 3 && all.count(A) && all.count(B));
+    uint64_t heap[16] = {};
+    heap[0] = 0x140001000, heap[4] = B;     // an entity on bus B
+    heap[6] = 0x140002000, heap[10] = 0x55;  // a vtable but no bus: not one
+    heap[11] = 0x12345, heap[15] = A;        // a bus but no vtable: not one
+    std::vector<uint64_t> cands;
+    const size_t hits = buses::scanWords(heap, 16, 0x500000, 0x140000000, 0x150000000, all, [&](uint64_t a) {
+        cands.push_back(a);
+        return true;
+    });
+    CHECK(hits == 1 && cands.size() == 1 && cands[0] == 0x500000);
 }
 
 void testNearAlloc() {

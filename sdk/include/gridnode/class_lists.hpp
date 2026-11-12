@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace gn::classlists {
@@ -94,7 +95,7 @@ struct Stats {
 // seeds: known entities. isEntity(addr): an entity is at addr (its vtable is an entity class).
 // add(entity) for each peer that is one. Returns the stats; stops at kMaxBuses.
 template <class Read, class IsEntity, class Add>
-Stats walk(const std::vector<uint64_t>& seeds, Read read, IsEntity isEntity, Add add) {
+Stats walk(const std::vector<uint64_t>& seeds, Read read, IsEntity isEntity, Add add, std::unordered_set<uint64_t>* all = nullptr) {
     Stats s;
     std::unordered_set<uint64_t> roots, seen;
     for (uint64_t e : seeds) {
@@ -137,7 +138,29 @@ Stats walk(const std::vector<uint64_t>& seeds, Read read, IsEntity isEntity, Add
             if (!read(c + kNext, c)) break;
         }
     }
+    if (all) *all = std::move(seen);
     return s;
+}
+
+// Not every entity is a bus peer: a bus keeps only those its data lists by id (the ones with
+// connections; FUN_143150100 fills the slot), so a plain barrier or trigger is on no list. The last
+// pass reads the game's heap: an entity starts with its vtable (in the image) and keeps its bus at
+// +0x20, so a word in [imageLo, imageHi) with one of the known buses 0x20 bytes on is a candidate,
+// checked by the caller (its vtable must be an entity class). `words` is a copy of memory from
+// `base`; the last kEntityBus / 8 words only look ahead and are not candidates themselves.
+template <class Candidate>
+size_t scanWords(const uint64_t* words, size_t n, uint64_t base, uint64_t imageLo, uint64_t imageHi,
+                 const std::unordered_set<uint64_t>& busSet, Candidate candidate) {
+    size_t hits = 0;
+    const size_t ahead = kEntityBus / 8;
+    for (size_t i = 0; i + ahead < n; ++i) {
+        const uint64_t w = words[i];
+        if (w < imageLo || w >= imageHi || (w & 7)) continue;
+        const uint64_t b = words[i + ahead];
+        if (!b || (b & 7) || !busSet.count(b)) continue;
+        if (candidate(base + i * 8)) ++hits;
+    }
+    return hits;
 }
 
 } // namespace gn::buses

@@ -85,7 +85,11 @@ CompareBoolEntity, TimelineEntity) and no trigger volumes. So it also walks the 
 entity keeps its bus's interface at +0x20; buses form a tree (parent +8, first child +0x28, next
 +0x20) and each holds its entities at +0x38, one per id in its data's list (data +0x60, list +0xd0 or
 +0xf8 by flag bit 28 at +0x34; EntityBus_deliverEvent). From the found entities it walks up to every
-root and down the whole tree (untested in game).
+root and down the whole tree. Game test: +25,572 (4 roots, 16,577 buses, 172 ms), 41,676 of ~71k:
+TimelineEntity data now, still no barriers or triggers. Ghidra (FUN_143150100): a bus keeps only the
+peers its data lists by id (those with connections), so those are on no list. Last pass (untested in
+game): GridNode reads the game's private read-write memory once for a word in the image with one of
+the known buses 0x20 bytes on, and keeps it if its vtable is an entity class.
 
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).

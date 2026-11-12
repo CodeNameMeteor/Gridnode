@@ -23,6 +23,7 @@
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "gridnode/class_lists.hpp"
@@ -1184,6 +1185,51 @@ void markDead(uintptr_t p) {
 // per class and realm (gridnode/class_lists.hpp); each is walked once. GridNode's thread, reads only:
 // the lists may change while they are walked (a node read after its entity is gone just does not
 // resolve). A class's entities are only in its own list, so every reflected entity class is walked.
+// The entities no list holds (barriers, triggers, ...): read the game's private read-write memory
+// once for objects that start with a vtable and keep one of the known buses at +0x20, then keep
+// those whose vtable is an entity class (buses::scanWords).
+void scanHeap(const std::unordered_set<uint64_t>& busSet, const Type* entity) {
+    if (busSet.empty() || unloading()) return;
+    const ULONGLONG t0 = GetTickCount64();
+    const size_t before = g_live.size();
+    const uint64_t lo = mem::moduleBase(), hi = lo + mem::imageSize();
+    constexpr size_t kChunk = 1u << 20;
+    constexpr size_t kAhead = buses::kEntityBus + 8;
+    std::vector<uint64_t> buf((kChunk + kAhead) / 8);
+    size_t candidates = 0, bytes = 0, unreadable = 0;
+    const uint64_t bufLo = reinterpret_cast<uint64_t>(buf.data()), bufHi = bufLo + buf.size() * 8;
+    const auto candidate = [&](uint64_t a) {
+        if (a >= bufLo && a < bufHi) return false; // our own copy of a chunk read earlier
+        ++candidates;
+        const Type* t = typeOf(static_cast<uintptr_t>(a));
+        if (!t || t == entity || t->category != Category::Class || !registry().isKindOf(t, entity)) return false;
+        return g_live.add(static_cast<uintptr_t>(a), t);
+    };
+    MEMORY_BASIC_INFORMATION mbi{};
+    for (uintptr_t at = 0x10000; VirtualQuery(reinterpret_cast<void*>(at), &mbi, sizeof(mbi)) == sizeof(mbi);) {
+        const uintptr_t start = reinterpret_cast<uintptr_t>(mbi.BaseAddress), end = start + mbi.RegionSize;
+        if (end <= at) break;
+        at = end;
+        if (unloading()) return;
+        if (mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)))
+            continue;
+        for (uintptr_t p = start; p < end; p += kChunk) {
+            const size_t len = std::min<size_t>(kChunk + kAhead, end - p);
+            if (len < kAhead || !mem::read(p, buf.data(), len)) {
+                ++unreadable;
+                continue;
+            }
+            bytes += std::min<size_t>(kChunk, len);
+            buses::scanWords(buf.data(), len / 8, p, lo, hi, busSet, candidate);
+        }
+    }
+    GN_LOG("inspector: %llu more from the game's memory (%llu MB read, %llu candidates, %llu chunks unreadable, %llu ms); %llu tracked now",
+           static_cast<unsigned long long>(g_live.size() - before), static_cast<unsigned long long>(bytes >> 20),
+           static_cast<unsigned long long>(candidates), static_cast<unsigned long long>(unreadable),
+           static_cast<unsigned long long>(GetTickCount64() - t0), static_cast<unsigned long long>(g_live.size()));
+}
+
 void seedExisting() {
     const Type* entity = registry().find("Entity");
     if (!entity) return;
@@ -1218,14 +1264,16 @@ void seedExisting() {
         const Type* t = typeOf(static_cast<uintptr_t>(a));
         return t && t->category == Category::Class && registry().isKindOf(t, entity);
     };
+    std::unordered_set<uint64_t> busSet;
     const buses::Stats s = buses::walk(seeds, read, isEntity, [](uint64_t e) {
         g_live.add(static_cast<uintptr_t>(e), typeOf(static_cast<uintptr_t>(e)));
-    });
+    }, &busSet);
     GN_LOG("inspector: %llu more from the game's entity buses (%llu roots, %llu buses, %llu peers seen, %llu not entities, %llu ms); "
            "%llu tracked now",
            static_cast<unsigned long long>(g_live.size() - before), static_cast<unsigned long long>(s.roots),
            static_cast<unsigned long long>(s.buses), static_cast<unsigned long long>(s.peers), static_cast<unsigned long long>(s.rejected),
            static_cast<unsigned long long>(GetTickCount64() - t1), static_cast<unsigned long long>(g_live.size()));
+    scanHeap(busSet, entity);
 }
 
 void start() {
