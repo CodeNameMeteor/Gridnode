@@ -35,6 +35,45 @@ def write_annotations(d: str, text: str):
         f.write(textwrap.dedent(text))
 
 
+class Unverified(unittest.TestCase):
+    def test_engine_split(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_annotations(d, """
+                functions:
+                  - { name: sure, va: 0x140001000 }
+                  - { name: guess, va: 0x140002000, confidence: hypothesis }
+                """)
+            db, p = annotations.load(d)
+        text = emit_engine.emit(db)
+        self.assertIn("inline constexpr uint64_t sure = 0x140001000;", text)
+        self.assertRegex(text, r"namespace unverified \{[^}]*guess = 0x140002000")
+
+    def test_code_needs_a_note(self):
+        from gridnode_gen import unverified_check
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.cpp"), "w") as f:
+                f.write("// unverified: Known (a feature)\nint x = e::function::unverified::Known;\nint y = e::function::unverified::Other;\n")
+            problems = unverified_check.check(d)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("unverified::Other", problems[0])
+
+
+class TypeList(unittest.TestCase):
+    def test_link_sites(self):
+        import struct
+        from gridnode_gen import type_list
+
+        def site(at: int, head: int, ti: int, nxt: int | None = None) -> bytes:
+            nxt = ti + 8 if nxt is None else nxt
+            return (b"\x48\x8b\x05" + struct.pack("<i", head - (at + 7)) + b"\x48\x89\x05" + struct.pack("<i", nxt - (at + 14))
+                    + b"\x48\x8d\x05" + struct.pack("<i", ti - (at + 21)) + b"\x48\x89\x05" + struct.pack("<i", head - (at + 28)))
+
+        va, head = 0x140001000, 0x14215d028
+        code = site(va, head, 0x142200000) + b"\xe9\0\0\0\0" + site(va + 33, head, 0x142200100)
+        code += site(va + 61, 0x142999000, 0x142200200, nxt=0x142200300)  # same opcodes, not a link: left out
+        self.assertEqual(dict(type_list.find_in(code, va)), {head: 2})
+
+
 class Cli(unittest.TestCase):
     def test_missing_dump_is_a_message_not_a_traceback(self):
         from gridnode_gen import cli
@@ -156,6 +195,42 @@ class Errors(unittest.TestCase):
               - name: MyEntity
                 properties: [ { name: Visible, hash: 0x12345678 } ]
             """, "does not match djb2-xor")
+
+    def test_c_type_names_without_a_dump(self):
+        text = """
+            functions:
+              - { name: f, va: 0x140001000, signature: "void(const char* s, float x, int32_t n)" }
+            structs:
+              - name: S
+                size: 0x8
+                members: [ { offset: 0x0, name: x, type: float } ]
+            """
+        with tempfile.TemporaryDirectory() as d:
+            write_annotations(d, text)
+            db, p = annotations.load(d)
+        p.extend(validate.check(db, None))
+        joined = " ".join(p.errors)
+        for name, want in (("char", "i8"), ("float", "f32"), ("int32_t", "i32")):
+            self.assertIn(f"unknown type {name!r}: write {want!r}", joined)
+
+    def test_note_on_a_field_the_dump_lacks(self):
+        self.assertError("""
+            notes:
+              - { type: Asset, field: NoSuchField, note: "x" }
+            """, "has no reflected field NoSuchField")
+
+    def test_note_cannot_carry_an_offset(self):
+        self.assertError("""
+            notes:
+              - { type: Asset, field: Name, note: "x", offset: 0x8 }
+            """, "unknown key 'offset'")
+
+    def test_note_on_a_base_field(self):
+        p = self.load("""
+            notes:
+              - { type: MyData, field: Name, note: "inherited from Asset" }
+            """)
+        self.assertEqual(p.errors, [])
 
     def test_bad_event_hash(self):
         self.assertError("""

@@ -3,6 +3,125 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
+The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the
+code first: its findings in parts 1 and 2 hold (both logs say `no page within 2 GB ... (0 tries)`; `validate
+--strict --reflected` gave exactly 67 errors). Host tests, `gridnode.py check` with the user's dump and
+`verify-image` (1,123 checks, 0 errors) pass. **Nothing here has run in game.**
+
+Done:
+- **1.1 the reserve**: `near_alloc.hpp` (host-tested with a fake address map); the downward search asks about
+  each candidate. The first `patches:` lines should now say `64 KB kept near the game's code`.
+- **1.2 annotations**: 0 errors against the dump; `types.hpp` from the dump compiles. `validate` catches C type
+  names without a dump; `gridnode.py check --dump FILE` (validate, `types.hpp`, its compile) before a push.
+  Old vtables kept in notes: `ZoneStreamerEntity` 0x141cfe4c0, `PamClientEchoCustomizationManagerEntity`
+  0x141c73c18 (secondary tables? open, Ghidra).
+- **1.3 mod identity**: `mod_call.hpp`; every place GridNode calls a mod sets the callback running on the
+  thread; an API call whose return address is in gridnode.dll goes to it.
+- **1.4** every `mod.hpp` / `ui.hpp` trampoline guarded. **1.5**: dependency check before start, the
+  `gn_mod_load` export checked in the file, `patch_bytes` over several instructions written paused,
+  `codeWrite` waits, x64 `66 REX.W`, root mods find DLLs beside them, kept closures freed with the DLL,
+  raw addresses in `api.cpp` / `layouts.cpp` / `events.cpp` use annotated names, `StaticModelGroup_placementHash`
+  fingerprinted. Left: the ANT vtables in `faith.cpp` (no reflected type: need names from Ghidra).
+- **2.1 steps 1 and 3**: a detour whose first instruction is 5 bytes or more is written in one store; threads
+  are listed with `NtGetNextThread` (`threads.cpp`). The `detour entry` line in the Hooks list now says how
+  long the write or pause took.
+- **2.2** `Registry::typeOfLive` for the creator, destructor and event hooks. **2.4** copy-free
+  `settings_at` / `console_command_at`, OutputDebugString only under a debugger, `event_send` log throttled,
+  event names built at startup.
+- **API 36**: `hook_virtual` and friends (3.1, `vhook_set.hpp` host-tested; `gn::VirtualHook`),
+  `GN_MOD_MIN_API` and `gn::has` (3.3), `gn::Field<T>` (3.4), `entity_component(s)` (3.5), `ui_type_view`
+  (4.3), `data_path` and its startup line (4.4).
+- **4.1** `verify-image` finds the TypeInfo list head by the code linking types into it (27 sites, own
+  pattern, `type_list.py`). **4.2** `notes:` on reflected fields (`notes.yaml`): validated, `meta::fieldNotes`,
+  docs, the inspector's tooltip and read-only grey-out.
+- **5 step 1**: `tools/assets` (`gridnode.py assets check / list / extract`), synthetic tests only.
+
+Game-tested 2026-11-11 (user's run): the reserve is made (`64 KB kept near the game's code`, 1 try); detour
+entries pause the game 1.2 to 25.6 ms (were 99 to 132 ms); `hook_virtual` on setVisible fires; `gn::Field`
+TimeScale, Faith's components, the data folder line, the type view and the read-only note work; a non-mod DLL is
+skipped from the file; reload and unload of detour-demo and a full unload are clean. Fixed after: class hooks were
+missing from the Hooks list (now listed, and logged when taken out); `assets check` stopped at the first
+catalogue without NyanNyanNyanNyan (`Data\Win32\gameconfigurations\anchorinstallpackage\cas.cat`): such
+catalogues are now listed with their first 48 bytes and the rest read on. The second run (2026-11-11): every
+`.toc` and `.sb` read (24 superbundles, 622 bundles; 151,832 ebx, 74,646 res, 101,056 chunk entries), so the tree
+format is confirmed; every `cas.cat` starts with the signed header `00 d1 ce 01` (as the tocs do): the reader
+now skips it (and tries the XOR form when the magic is not behind it). The class hook was taken out at both
+unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`). Third run: `assets check`
+passes: 11 catalogues (two counts after the magic, 115,276 entries, no patch entries in Data), every bundle
+entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is done (extracting needs
+`pip install lz4`): `assets extract gameplay/movement/climbing/ladders/pf_climbladder_768_nobrackets` gave
+7,680 bytes (4,430 stored) starting `CE D1 B2 0F`, the EBX version 2 magic. Next: step 2, EBX to YAML,
+tested on the user's files.
+
+Second round (API 37, the user's choices of 2026-11-11; untested in game):
+- **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one
+  pause; the loader wraps every `gn_mod_load`, so all mods get it without a rebuild.
+- **3.2**: `gn_mod_load2(api, self)` (preferred when exported; `GN_MOD` exports both) and 20 `_m` calls;
+  `mod.hpp` uses them when the host has them. Tick listeners are named after their mod.
+- **3.6**: hypotheses in `unverified` namespaces in `engine.hpp`. `NamedChallengeFinish_statsCall` promoted
+  (patch_call checks it every run). The other 24 GridNode uses are named `unverified::` with a note per file
+  (assets.cpp, bodies.cpp, layouts.cpp, sounds.cpp): those notes are the list to confirm in Ghidra.
+  `gridnode.py unverified-check` (CI).
+- **2.3**: `EntityIndex` (host-tested): by address and per class; destruction removes at once; the dead set
+  is only for entities made before GridNode; pruning every second as a backstop; `entities_of_class` and
+  `entities_near` read the matching classes' lists only. Not done: the spatial grid for `entities_near`.
+
+Game-tested 2026-11-12 (user's run): each mod's detours written in one pause (mec-trainer 2 in 2.2 ms,
+detour-demo 2 in 2.0 ms; reloads need none, the entries stay); the trainer's detour features, god mode and
+bunny hop work; the Entities tab and level changes look as before; detour-demo's API 36 features still work;
+two reloads and a full unload are clean (7 code patches undone, 2,160 hooks out, gridnode.dll freed); the
+trainer's camera / time hold come back when it unloads (the mod handle). GridNode's own two startup
+detours still pause one at a time (6.3 and 1.2 ms): batching them would save a few ms at startup.
+
+Entities made before GridNode loaded (2026-11-12; untested in game): injected into a running level, the
+index missed them (the trainer's volumes: 152 of 400 in one area). Read in Ghidra: the game keeps a list
+per class and realm, `ClassInfo_addToWorldList` (0x1431661f0, 163 callers): head at ClassInfo + (realm +
+6) * 0x10, a second at + 8; node {next, prev link} at a per-class offset in the entity. At startup GridNode
+walks every entity class's lists once and finds each node's entity by stepping back to the address whose
+vtable is that class (`class_lists.hpp`, host-tested); the log says how many it found. Game test: 14,878
+found (92 classes, 0 unresolved, 16 ms) of ~71k, none of the logic entities (NotEntity, DelayEntity,
+CompareBoolEntity, TimelineEntity) and no trigger volumes. So it also walks the entity buses: every
+entity keeps its bus's interface at +0x20; buses form a tree (parent +8, first child +0x28, next
++0x20) and each holds its entities at +0x38, one per id in its data's list (data +0x60, list +0xd0 or
++0xf8 by flag bit 28 at +0x34; EntityBus_deliverEvent). From the found entities it walks up to every
+root and down the whole tree. Game test: +25,572 (4 roots, 16,577 buses, 172 ms), 41,676 of ~71k:
+TimelineEntity data now, still no barriers or triggers. Ghidra (FUN_143150100): a bus keeps only the
+peers its data lists by id (those with connections), so those are on no list. Last pass (untested in
+game): GridNode reads the game's private read-write memory once for a word in the image with one of
+the known buses 0x20 bytes on, and keeps it if its vtable is an entity class. Game test (2026-11-12):
+works; injected mid-level the trainer's volumes and barriers all show; 3.9 GB read in 1.3 s.
+
+Optional dependencies (2026-11-12): the trainer could not be unloaded while
+detour-demo (which wants it optionally and imports its godMode) was loaded, and detour-demo loaded first
+never saw the trainer. Now unloading or reloading a mod unloads its optional dependents first and loads
+them again after; loading a mod reloads the loaded mods that want it optionally (`mods.cpp`,
+`optionalDependents`). A needed dependency still blocks the unload. Game test: works (unload and load
+of the trainer with detour-demo loaded). Before merge, also tested: injection mid-level, the player
+build, and a mod built for 1.0.0 (loads and works).
+
+Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
+grid, parts 5.2 to 5.6 (a separate PR).
+
+In-game test (developer build, all mods from this build in `bin\mods`):
+1. Start the game, inject, load a level. `gridnode.log`: the first `patches:` lines say `64 KB kept near the
+   game's code`; `startup: game data from ...` names the Data folder.
+2. GridNode menu → Hooks: each `detour entry` says `one instruction, written in N ms` or `threads paused for
+   N ms`. Send the numbers (they were 99 to 132 ms each).
+3. Detour demo window → API 36: `setVisible ... hooked`, the count rises when Faith's visibility changes
+   (a cutscene, the replay), TimeScale reads 1.000, Faith's components are listed, the data folder shows.
+4. Inspector → Shortcuts → Faith (client): a `detour-demo: PamClientCharacterEntity` section above the fields.
+5. Inspector → Types → `PamCharacterEntityData` → default instance: `PamUseRunnersGhostShader` is blue with a
+   tooltip and greyed out.
+6. Mods → Reload detour-demo, then Unload it: the log's `hooked virtual PamClientCharacterEntity+0x3d8 in N
+   of M vtables` line comes back after the reload; after the unload the Hooks list no longer names
+   detour-demo, the inspector section goes, and nothing crashes.
+7. Put an empty file named `notamod.dll` in `mods\` and restart: the log says `notamod.dll does not export
+   gn_mod_load; skipped` (it is no longer loaded to find out). Delete it after.
+8. With the game closed, from the repo: `python tools/gen/gridnode.py assets check --data "<the Data folder
+   from step 1>"`. Send the whole output (catalogue layout, bundle count, codecs found).
+Send: `gridnode.log`, the numbers from step 2, the output of step 8.
+
 ## Mixer groups: API 35 (2026-11-10; game-tested, stable)
 - `busVolume` / `duck` (API 35) move the game's mixer groups. Ghidra-confirmed: group table, property blocks, the gain processor's update (`db/annotations/audio-mix.yaml`). Game-confirmed: the hook on the gain processor, per-group offset with fades, restore, duck, and unload undoing it. Not tested: which thread the mixer runs on, and unloading while the mixer is inside the hook. Stable (the user asked, 2026-11-10). `busVolume(bus)` only reads the group's end gain (parents, pause mixes and offsets included); it does not set a slider.
 

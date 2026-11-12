@@ -221,6 +221,12 @@ bool run(HMODULE self) {
     }
     GN_LOG("startup: build check passed%s", b.warnings ? " (with warnings)" : "");
     host::patchesReserve(); // before the game's heaps take the space near its code
+    {
+        bool fromArgument = false;
+        const std::string data = host::dataPath(&fromArgument);
+        // In a bug report: whether Frosty's Mod Manager (or another -dataPath) was in use.
+        GN_LOG("startup: game data from %s (%s)", data.c_str(), fromArgument ? "-dataPath: patched data, e.g. Frosty mods, are active" : "the install's Data folder");
+    }
 
     const Settings s = readSettings(moduleDir(self));
     logImageLayout();

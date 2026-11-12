@@ -17,6 +17,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -118,6 +119,7 @@ void* fromCreatedCharacters() {
 void callLevel(const std::vector<LevelListener>& ls, const std::string& level, bool loaded) {
     for (const LevelListener& l : ls) {
         try {
+            modcall::Scope scope(l.fn);
             l.fn(level.c_str(), loaded ? 1 : 0, l.user);
         } catch (...) {
             GN_LOG("level: a mod's level listener threw; ignored");
@@ -382,6 +384,107 @@ int teleport(void* character, const gn_transform* to) {
     t.right[3] = t.up[3] = t.forward[3] = 0.f;
     t.trans[3] = 1.f;
     reinterpret_cast<void (*)(void*, const void*)>(mem::rva(e::function::ServerCharacterEntity_teleport))(character, &t);
+    return GN_OK;
+}
+
+// An entity's components, from its collection (ComponentEntity_destroyComponents walks it the same
+// way): [entity+0x38] -> u8 slot count at +8, 0x20-byte slots from +0x10, the component at slot +0x10,
+// (slot byte +3) + 1 slots each. Only pointers to live, reflected components are kept.
+std::vector<std::pair<uintptr_t, const reflect::Type*>> componentsOf(uintptr_t entity) {
+    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
+    static const reflect::Type* component = registry().find("Component");
+    const uintptr_t col = mem::readOr<uintptr_t>(entity + 0x38);
+    if (!component || col < 0x10000) return out;
+    const uint32_t slots = mem::readOr<uint8_t>(col + 8);
+    for (uint32_t i = 0; i < slots && out.size() < 64;) {
+        const uintptr_t slot = col + 0x10 + uint64_t(i) * 0x20;
+        const uintptr_t c = mem::readOr<uintptr_t>(slot + 0x10);
+        const reflect::Type* t = c > 0x10000 ? registry().typeOf(mem::ProcessMemory(), c) : nullptr;
+        if (t && registry().isKindOf(t, component)) out.push_back({c, t});
+        i += uint32_t(mem::readOr<uint8_t>(slot + 3)) + 1;
+    }
+    return out;
+}
+
+
+// Any ComponentEntity's components (API 36): get_component took characters only, though every
+// ComponentEntity has the collection at +0x38. The collection is read, no virtual is called. On the
+// entity's realm thread (flags +0x18 bit 0: the server realm), where components come and go.
+namespace {
+int componentsCheck(void* entity) {
+    if (!entity) return GN_ERR_ARGUMENT;
+    if (!kindOf(entity, "ComponentEntity")) return GN_ERR_ARGUMENT;
+    const bool server = (mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(entity) + 0x18) & 1) != 0;
+    if (server ? !isServerThread() : !isClientThread()) return GN_ERR_THREAD;
+    return GN_OK;
+}
+} // namespace
+
+int entityComponent(void* entity, const gn_type* type, void** out) {
+    if (!type || !out) return GN_ERR_ARGUMENT;
+    *out = nullptr;
+    if (const int r = componentsCheck(entity); r != GN_OK) return r;
+    const auto* want = reinterpret_cast<const reflect::Type*>(type);
+    for (const auto& [c, t] : componentsOf(reinterpret_cast<uintptr_t>(entity)))
+        if (registry().isKindOf(t, want)) {
+            *out = reinterpret_cast<void*>(c);
+            return GN_OK;
+        }
+    return GN_ERR_NOT_FOUND;
+}
+
+int entityComponents(void* entity, gn_entity_each_fn fn, void* user) {
+    if (!fn) return -GN_ERR_ARGUMENT;
+    if (const int r = componentsCheck(entity); r != GN_OK) return -r;
+    int n = 0;
+    for (const auto& [c, t] : componentsOf(reinterpret_cast<uintptr_t>(entity))) {
+        modcall::Scope scope(fn);
+        fn(reinterpret_cast<void*>(c), reinterpret_cast<const gn_type*>(t), user);
+        ++n;
+    }
+    return n;
+}
+
+// The game's data root as launched (API 36): the -dataPath argument when present (Frosty's Mod
+// Manager starts the game with its ModData folder there), else the install's Data folder beside the
+// exe. Asset tools read the same files the game does from here.
+std::string dataPath(bool* fromArgument) {
+    wchar_t exe[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring dir(exe, n);
+    dir.resize(dir.find_last_of(L"\\/") + 1);
+    // The command line split as the CRT does for paths (quotes group, no escapes inside a path).
+    std::vector<std::wstring> args;
+    std::wstring cur;
+    bool quoted = false, any = false;
+    for (const wchar_t* c = GetCommandLineW(); c && *c; ++c) {
+        if (*c == L'"') {
+            quoted = !quoted, any = true;
+        } else if ((*c == L' ' || *c == L'\t') && !quoted) {
+            if (any) args.push_back(cur), cur.clear(), any = false;
+        } else {
+            cur += *c, any = true;
+        }
+    }
+    if (any) args.push_back(cur);
+    std::wstring path;
+    for (size_t i = 1; i + 1 < args.size(); ++i)
+        if (_wcsicmp(args[i].c_str(), L"-dataPath") == 0) path = args[i + 1];
+    if (fromArgument) *fromArgument = !path.empty();
+    if (path.empty()) path = dir + L"Data";
+    else if (path.size() < 2 || (path[1] != L':' && path[0] != L'\\' && path[0] != L'/')) path = dir + path; // relative to the game
+    if (!path.empty() && path.back() != L'\\' && path.back() != L'/') path += L'\\';
+    const int len = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(len > 0 ? len : 0), '\0');
+    if (len > 0) WideCharToMultiByte(CP_UTF8, 0, path.c_str(), static_cast<int>(path.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+int dataPathCopy(char* out, size_t size) {
+    if (!out || !size) return GN_ERR_ARGUMENT;
+    const std::string p = dataPath(nullptr);
+    if (p.size() >= size) return GN_ERR_FULL;
+    memcpy(out, p.c_str(), p.size() + 1);
     return GN_OK;
 }
 
@@ -824,7 +927,10 @@ int onLevel(const std::string& mod, gn_level_fn fn, void* user) {
         g_levelListeners.push_back({mod, fn, user});
         current = g_level;
     }
-    if (!current.empty()) fn(current.c_str(), 1, user);
+    if (!current.empty()) {
+        modcall::Scope scope(fn);
+        fn(current.c_str(), 1, user);
+    }
     return GN_OK;
 }
 
@@ -864,15 +970,19 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user) 
     int n = 0;
     const float r2 = radius * radius;
     static const reflect::Type* spatial = registry().find("SpatialEntity");
-    for (const auto& [p, t] : inspector::tracked()) {
+    if (!spatial) return 0;
+    // Only objects with a place (most entities are logic): the spatial classes' lists of the index, not
+    // a copy of every entity (up to 400,000, plan 2.3).
+    for (const auto& [p, t] : inspector::trackedOf(spatial)) {
         gn_transform at{};
-        // Only objects with a place (most entities are logic): their type first, then memory reads.
-        if (!t || !spatial || !registry().isKindOf(t, spatial)) continue;
         if (!inspector::alive(p, t) || !entityTransform(reinterpret_cast<void*>(p), at)) continue;
         const float dx = at.trans[0] - pos[0], dy = at.trans[1] - pos[1], dz = at.trans[2] - pos[2];
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 > r2) continue;
-        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        {
+            modcall::Scope scope(fn);
+            fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), &at, std::sqrt(d2), user);
+        }
         ++n;
     }
     return n;
@@ -885,7 +995,10 @@ int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user) {
     int n = 0;
     for (const auto& [p, t] : inspector::trackedOf(cls)) {
         if (!inspector::alive(p, t)) continue;
-        fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
+        {
+            modcall::Scope scope(fn);
+            fn(reinterpret_cast<void*>(p), reinterpret_cast<const gn_type*>(t), user);
+        }
         ++n;
     }
     return n;
@@ -982,6 +1095,7 @@ void levelReadyServerTick() {
     }
     for (const ReadyListener& l : tell) {
         try {
+            modcall::Scope scope(l.fn);
             l.fn(level.c_str(), l.user);
         } catch (...) {
             GN_LOG("level: %s's level-ready listener threw; ignored", l.mod.c_str());

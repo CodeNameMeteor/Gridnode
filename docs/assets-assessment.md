@@ -27,9 +27,11 @@ MIT and must not copy, port or adapt Frosty's code, and cannot ship a modified F
 - tell users to use Frosty, as a separate tool, for what it already does well;
 - produce files Frosty (or its Mod Manager) reads, written from our own understanding of the formats.
 
-Format work in GridNode is clean-room: from the game itself (GridNode's runtime reflection gives
-exact layouts for every EBX type, which Frosty gets from a prebuilt SDK DLL), from our own reversing,
-and from public documentation, never from Frosty's source.
+Format work in GridNode may use what Frosty's source shows about the formats (the user dropped the
+clean-room rule on 2026-11-11). The licence still forbids copying, porting or adapting Frosty's code:
+GridNode's readers are written from format descriptions (field orders, sizes, magic values), checked
+against the game's own files, and from the game itself (GridNode's runtime reflection gives exact
+layouts for every EBX type, which Frosty gets from a prebuilt SDK DLL).
 
 ## What is missing for Blender → custom maps
 

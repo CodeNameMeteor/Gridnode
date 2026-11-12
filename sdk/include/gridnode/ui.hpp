@@ -58,9 +58,23 @@ template <class F> bool onDraw(F f) {
     auto* p = ::gn::detail::keep(std::function<void(bool)>(std::move(f)));
     return api().on_ui(modName(),
                        [](int open, void* u) {
-                           if (detail::bind()) (*static_cast<std::function<void(bool)>*>(u))(open != 0);
+                           if (detail::bind())
+                               ::gn::detail::guarded("an onDraw callback", [&] { (*static_cast<std::function<void(bool)>*>(u))(open != 0); });
                        },
                        p) == GN_OK;
+}
+
+// fn(void* object, gn::Type type) draws a mod's own view of a class in GridNode's inspector (API 36), in a
+// section above the field list whenever an object of the class or a subclass is shown. Render thread.
+template <class F> bool typeView(const char* className, F f) {
+    if (!compatible() || !::gn::has(&gn_api::ui_type_view)) return false;
+    auto* p = ::gn::detail::keep(std::function<void(void*, Type)>(std::move(f)));
+    return api().ui_type_view(modName(), className,
+                              [](void* o, const gn_type* t, void* u) {
+                                  if (detail::bind())
+                                      ::gn::detail::guarded("a type view", [&] { (*static_cast<std::function<void(void*, Type)>*>(u))(o, Type(t)); });
+                              },
+                              p) == GN_OK;
 }
 
 inline bool menuOpen() { return api().ui_menu_open() != 0; }

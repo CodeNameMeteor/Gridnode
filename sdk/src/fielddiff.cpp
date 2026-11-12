@@ -75,25 +75,6 @@ bool readAll(uintptr_t p, size_t n, std::vector<uint8_t>& out) {
     return got > 0;
 }
 
-// An entity's components, from its collection (ComponentEntity_destroyComponents walks it the same
-// way): [entity+0x38] -> u8 slot count at +8, 0x20-byte slots from +0x10, the component at slot +0x10,
-// (slot byte +3) + 1 slots each. Only pointers to live, reflected components are kept.
-std::vector<std::pair<uintptr_t, const reflect::Type*>> componentsOf(uintptr_t entity) {
-    std::vector<std::pair<uintptr_t, const reflect::Type*>> out;
-    static const reflect::Type* component = registry().find("Component");
-    const uintptr_t col = mem::readOr<uintptr_t>(entity + 0x38);
-    if (!component || col < 0x10000) return out;
-    const uint32_t slots = mem::readOr<uint8_t>(col + 8);
-    for (uint32_t i = 0; i < slots && out.size() < 64;) {
-        const uintptr_t slot = col + 0x10 + uint64_t(i) * 0x20;
-        const uintptr_t c = mem::readOr<uintptr_t>(slot + 0x10);
-        const reflect::Type* t = c > 0x10000 ? registry().typeOf(mem::ProcessMemory(), c) : nullptr;
-        if (t && registry().isKindOf(t, component)) out.push_back({c, t});
-        i += uint32_t(mem::readOr<uint8_t>(slot + 3)) + 1;
-    }
-    return out;
-}
-
 void take(uintptr_t p) {
     Snapshot s;
     s.object = p;

@@ -77,19 +77,19 @@ functions:
 
   - name: Voice_setParameter
     va: 0x14301da40
-    signature: "void(void* voice, u32 key, float value)"
+    signature: "void(void* voice, u32 key, f32 value)"
     note: "Slot 3 of Voice vtable (0x141acfad0). Passes key (EDX) and float (XMM2) to SoundGraphInstance_setParameter (0x1430060b0), marks voice dirty in SoundManager (0x1423e29b8). Called by SoundEntity (0x14303d231); to be confirmed in game."
     confidence: inferred
     sources: [ghidra]
   - name: Voice_updateVelocity
     va: 0x143021f60
-    signature: "void(void* voice, const float* pos, float dt)"
+    signature: "void(void* voice, const f32* pos, f32 dt)"
     note: "Slot 16 of Voice vtable (0x141acfad0). Reads State3D (+0x28), calls State3D_update (0x143021cc8); to be confirmed in game."
     confidence: inferred
     sources: [ghidra]
   - name: State3D_update
     va: 0x143021cc8
-    signature: "void(void* state3d, const float* pos, float dt)"
+    signature: "void(void* state3d, const f32* pos, f32 dt)"
     note: "Differentiates position over dt, computes linear velocity into state3d+0x40, speed at +0x8c, stores position history; to be confirmed in game."
     confidence: inferred
     sources: [ghidra]

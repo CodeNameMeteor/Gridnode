@@ -71,8 +71,12 @@ void close() {
 
 // The formatted line out (g_mutex held).
 void emitLocked(const char* msg, size_t len) {
-    OutputDebugStringA("[GridNode] ");
-    OutputDebugStringA(msg);
+    // Only for a debugger: without one, each call raises and handles an exception inside Windows,
+    // twice per line (review, 2026-11-11). gridnode.log has every line either way.
+    if (IsDebuggerPresent()) {
+        OutputDebugStringA("[GridNode] ");
+        OutputDebugStringA(msg);
+    }
     if (g_file && !g_full) {
         if (g_written + len + 1 > kMaxLogBytes) {
             fputs("[log] gridnode.log reached 16 MB; nothing more is written to it this session\n", g_file);
@@ -107,7 +111,7 @@ void writeLineTry(const char* line) {
     const size_t len = strlen(line);
     emitLocked(line, len);
     if (len == 0 || line[len - 1] != '\n') {
-        OutputDebugStringA("\n");
+        if (IsDebuggerPresent()) OutputDebugStringA("\n");
         if (g_file && !g_full) {
             fputc('\n', g_file);
             fflush(g_file);

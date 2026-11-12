@@ -21,6 +21,7 @@
 
 #include "gridnode/log.hpp"
 #include "host.hpp"
+#include "threads.hpp"
 
 namespace gn::host {
 namespace {
@@ -116,30 +117,22 @@ ThreadsInCode threadsInCode(void* module, bool registers) {
     const std::vector<ModuleUnwind> mods = unwindTables();
     static const auto query = reinterpret_cast<NtQueryInformationThreadFn>(
         reinterpret_cast<void*>(GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread")));
-    std::vector<DWORD> ids;
-    if (HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); snap != INVALID_HANDLE_VALUE) {
-        THREADENTRY32 te{};
-        te.dwSize = sizeof(te);
-        const DWORD pid = GetCurrentProcessId(), me = GetCurrentThreadId();
-        for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te))
-            if (te.th32OwnerProcessID == pid && te.th32ThreadID != me) ids.push_back(te.th32ThreadID);
-        CloseHandle(snap);
-    }
+    std::vector<ThreadHandle> opened;
+    opened.reserve(4096);
+    openOtherThreads(opened, THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION);
     struct T {
         HANDLE h;
         DWORD id;
         uintptr_t stackBase;
     };
     std::vector<T> threads;
-    threads.reserve(ids.size());
-    for (DWORD id : ids) {
-        HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id);
-        if (!h) continue;
+    threads.reserve(opened.size());
+    for (const ThreadHandle& t : opened) {
         uintptr_t base = 0;
         ThreadBasicInformation tbi{};
-        if (query && query(h, 0, &tbi, sizeof(tbi), nullptr) >= 0 && tbi.tebBase) // TEB starts with NT_TIB
+        if (query && query(t.h, 0, &tbi, sizeof(tbi), nullptr) >= 0 && tbi.tebBase) // TEB starts with NT_TIB
             base = reinterpret_cast<uintptr_t>(static_cast<const NT_TIB*>(tbi.tebBase)->StackBase);
-        threads.push_back({h, id, base});
+        threads.push_back({t.h, t.id, base});
     }
     // Paused from here: no allocation, no logging.
     std::vector<bool> paused(threads.size(), false); // allocated before the pause

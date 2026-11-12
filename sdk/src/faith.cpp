@@ -20,6 +20,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -893,6 +894,7 @@ void movementEventsClientTick() {
         const gn_movement_event ev{e.kind, e.state, e.oldState, now.inAir ? 1 : 0};
         for (const MoveListener& l : listeners) {
             try {
+                modcall::Scope scope(l.fn);
                 l.fn(&ev, &m, l.user);
             } catch (...) {
                 static std::atomic<int> said{0};

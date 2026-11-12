@@ -51,7 +51,7 @@ def annotated_pages(db: Database, reflected=None) -> dict[str, str]:
     by_file: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for kind, table in (("classes", db.classes), ("structs", db.structs), ("globals", db.globals),
                         ("functions", db.functions), ("hooks", db.hooks), ("code", db.code), ("constants", db.constants),
-                        ("events", db.events)):
+                        ("events", db.events), ("notes", db.notes)):
         for item in table.values():
             by_file[os.path.basename(item.meta.file)][kind].append(item)
 
@@ -120,12 +120,15 @@ def _annotated_file(stem: str, k: dict, reflected) -> str:
         ("Constants", k["constants"], ["Name", "Value", "Note"], lambda c: [f"`{c.name}`", f"`{_hex(c.value)}`", _esc(c.meta.note)]),
         ("Events", k["events"], ["Event", "Hash", "Sent to", "Confidence", "Note"],
          lambda e: [f"`{e.name}`", f"`{_hex(e.hash)}`", ", ".join(f"`{c}`" for c in e.sent_to), _badge(e.meta), _esc(e.meta.note)]),
+        ("Notes on reflected fields", k["notes"], ["Field", "Unit", "Read only", "Confidence", "Note"],
+         lambda n: [f"`{n.type}.{n.field}`{_ref_link(n.type, reflected)}", _esc(n.unit), "yes" if n.readonly else "", _badge(n.meta),
+                    _esc(n.meta.note)]),
     ]
     for title, items, head, row in tables:
         if not items:
             continue
         o += [f"## {title}", "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
-        o += ["| " + " | ".join(row(x)) + " |" for x in sorted(items, key=lambda x: x.name)]
+        o += ["| " + " | ".join(row(x)) + " |" for x in sorted(items, key=lambda x: getattr(x, "name", None) or f"{x.type}.{x.field}")]
         o.append("")
     return "\n".join(o) + "\n"
 
@@ -172,7 +175,13 @@ def _module(mod: str, types: list[dict], reflected, db) -> str:
             o += ["", f"Annotated: [{os.path.basename(src).rsplit('.', 1)[0]}](../annotated/"
                       f"{os.path.basename(src).rsplit('.', 1)[0]}.md#{_anchor(t['displayName'])})"]
         fields = t.get("fields") or []
-        if fields:
+        notes = {fl: n for (tn, fl), n in db.notes.items() if tn == t["displayName"]} if db is not None else {}
+        if fields and notes:
+            o += ["", "| Offset | Field | Type | Note |", "|---|---|---|---|"]
+            o += [f"| `{_hex(f['offset'])}` | `{f['name']}` | {_type_link(f['_type'], reflected)} | "
+                  f"{_esc(notes[f['name']].meta.note) if f['name'] in notes else ''} |"
+                  for f in sorted(fields, key=lambda f: (f["offset"], f["name"]))]
+        elif fields:
             o += ["", "| Offset | Field | Type |", "|---|---|---|"]
             o += [f"| `{_hex(f['offset'])}` | `{f['name']}` | {_type_link(f['_type'], reflected)} |"
                   for f in sorted(fields, key=lambda f: (f["offset"], f["name"]))]

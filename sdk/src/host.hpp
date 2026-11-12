@@ -92,7 +92,37 @@ void modReload(const std::string& file);             // any thread: done on Grid
 void modAutoReload(const std::string& file, bool on);
 void modUnload(const std::string& file);             // any thread: unloaded on GridNode's thread, stays unloaded
 void modLoad(const std::string& file);               // any thread: an unloaded mod loaded again
+// API 36 (vhooks.cpp, world.cpp): classes' vtables and virtuals by name, hooks on a class's virtual,
+// any entity's components, the game's data folder.
+int typeVtableCount(const reflect::Type* type);
+uint64_t typeVtableAt(const reflect::Type* type, uint32_t index);
+int typeVirtualFind(const reflect::Type* type, const char* name, uint32_t* outOffset);
+int hookVirtual(const char* mod, const reflect::Type* type, uint32_t offset, void* detour, uint32_t flags, uint32_t* outHandle);
+void* hookOriginal(uint32_t handle, const void* self);
+int hookVirtualRemove(uint32_t handle);
+// Function detours made on this thread between the two are written in one pause at the commit
+// (patches.cpp; nested pairs: the outermost commits). GN_ERR_SLOT when an entry could not be written.
+void hooksBegin();
+int hooksCommit();
+struct VirtualHookInfo {
+    std::string mod, cls;
+    uint32_t offset;
+    size_t hooked, vtables;
+};
+std::vector<VirtualHookInfo> virtualHookList(); // the class hooks still in, for the Hooks list
+int entityComponent(void* entity, const gn_type* type, void** out);
+int entityComponents(void* entity, gn_entity_each_fn fn, void* user);
+std::string dataPath(bool* fromArgument); // UTF-8, ends in a backslash
+int dataPathCopy(char* out, size_t size);
+// An entity's components, from its collection at +0x38 (world.cpp): live, reflected ones only.
+std::vector<std::pair<uintptr_t, const reflect::Type*>> componentsOf(uintptr_t entity);
 int modUnloadAt(const void* address);                // the mod whose code holds address (gn_api mod_unload)
+// The address an API call is credited to: its return address, or, when that is in gridnode.dll (the
+// mod's callback tail-called the API), the mod callback GridNode is running on this thread (mod_call.hpp).
+const void* callerOf(const void* returnAddress);
+// A mod's handle (gn_mod_load2, API 37): its id and an address in its code, as an API call made with
+// it is credited. False for a handle GridNode did not give out, or one of a mod since unloaded.
+bool modContext(const gn_mod* m, std::string& id, const void*& caller);
 void pollMods();                                     // GridNode's thread: reloads asked for or due
 int modExport(const void* caller, const char* name, void* fn);          // gn_api mod_export
 int modDir(const void* caller, char* out, size_t size);                 // gn_api mod_dir
@@ -130,6 +160,7 @@ void forgetTicks(const CodeRange& r);    // at the next tick of each realm (serv
 size_t forgetTasks(const CodeRange& r);  // its queued run_on_server / run_on_client tasks, now (just before its DLL is freed)
 bool taskLive(const thread::Dispatcher::Task& t); // false for a task into a mod being unloaded
 size_t forgetHooks(const CodeRange& r, std::vector<std::string>* refused);
+void forgetVirtualHooks(const CodeRange& r); // after forgetHooks: the class hooks' bookkeeping (vhooks.cpp)
 void forgetCreated(const CodeRange& r);
 void forgetDestroyed(const CodeRange& r);
 void forgetLevelReady(const CodeRange& r);
@@ -402,12 +433,16 @@ struct ConsoleCommand {
     const char* online = nullptr;
 };
 std::vector<SettingsEntry> settingsList(); // cached for a second
+size_t settingsCount();                    // the same list, without a copy
+bool settingsAt(size_t i, SettingsEntry& out);
 uintptr_t settingsFind(const std::string& className);
 const char* onlineWarning(const std::string& name); // settings class or console group
 const char* commandOnline(const std::string& line);
 bool consoleAvailable();
 std::string consoleRun(const std::string& line); // client thread
 std::vector<ConsoleCommand> consoleCommands();
+size_t consoleCommandCount(); // the same list, without a copy
+bool consoleCommandAt(size_t i, ConsoleCommand& out);
 
 // Messages (messages.cpp).
 struct MessageType {
@@ -446,6 +481,8 @@ struct Settings {
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);
+int typeView(const std::string& mod, const char* className, gn_type_view_fn fn, void* user); // ui_type_view
+void drawTypeViews(uintptr_t object, const reflect::Type* type);                              // the inspector, render thread
 void forgetUi(const CodeRange& r);
 uint64_t frameCount(); // frames drawn so far
 bool release(); // a full unload: the overlay closed, Present, ResizeBuffers and the window procedure back; false if one could not be

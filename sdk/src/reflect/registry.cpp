@@ -29,6 +29,14 @@ const Type* Registry::typeOf(const MemoryView& mem, uint64_t object) const {
     return it == byAccessor_.end() ? nullptr : it->second;
 }
 
+const Type* Registry::typeOfLive(const void* object) const {
+    if (!object) return nullptr;
+    const auto vt = *static_cast<const uint64_t* const*>(object);
+    if (!vt) return nullptr;
+    auto it = byAccessor_.find(vt[layout::kGetTypeSlot]);
+    return it == byAccessor_.end() ? nullptr : it->second;
+}
+
 bool Registry::isKindOf(const Type* t, const Type* base) const {
     if (!t || !base) return false;
     if (t == base) return true;

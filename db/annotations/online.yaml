@@ -45,7 +45,7 @@ functions:
     sources: [ghidra, recording]
   - name: DashStats_find
     va: 0x1439d9750
-    signature: "void**(void* map, void** out, const char** key)"
+    signature: "void**(void* map, void** out, const i8** key)"
     note: "Finds a stat in a DashState best map (hash of the name, case-insensitive); out[0] is the node (value at +0x10) or the map's end (*(map +8)[*(u32*)(map +0x10)])."
     confidence: inferred
   - name: PamServerNamedChallengeEntity_finish
@@ -186,4 +186,6 @@ hooks:
 code:
   - name: NamedChallengeFinish_statsCall
     va: 0x143a8f522
-    note: "call NamedChallengeStats_onFinished in PamServerNamedChallengeEntity_finish (e8 rel32): the MEC trainer patches it to keep a new best from being saved."
+    note: "call NamedChallengeStats_onFinished in PamServerNamedChallengeEntity_finish (e8 rel32): the MEC trainer patches it to keep a new best from being saved. patch_call checks the call there goes to NamedChallengeStats_onFinished before it patches: it did in every run of 2026-11-11."
+    confidence: inferred
+    sources: [ghidra, game]

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from .annotations import Database, Problems
 from .pe_image import PeImage
+from . import type_list
 
 
 def check(db: Database, img: PeImage) -> tuple[Problems, int]:
@@ -55,4 +56,15 @@ def check(db: Database, img: PeImage) -> tuple[Problems, int]:
             (p.error if fc.required else p.warn)(f"fingerprint code {fc.what}", msg)
     for fs in db.fp_slots:
         slot(f"fingerprint slot {fs.what}", fs.slot, fs.fn)
+    # The TypeInfo list head, found by the code that links each type into it (type_list.py).
+    if "TypeInfoListHead" in db.globals:
+        checked += 1
+        g = db.globals["TypeInfoListHead"]
+        head, sites, other = type_list.find(img)
+        if not head:
+            p.error(f"{g.meta.file} global {g.name}", "no code linking a TypeInfo into the list was found")
+        elif head != g.va:
+            p.error(f"{g.meta.file} global {g.name}", f"the code links types into {head:#x} ({sites} sites), not {g.va:#x}")
+        elif other:
+            p.warn(f"{g.meta.file} global {g.name}", f"{sites} sites name it, {other} name something else")
     return p, checked

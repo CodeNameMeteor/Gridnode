@@ -8,19 +8,25 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <thread>
 #include <vector>
 
 #include "gridnode/ant_types.hpp"
 #include "gridnode/audio_mix.hpp"
+#include "gridnode/class_lists.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
+#include "gridnode/entity_index.hpp"
 #include "gridnode/hook_table.hpp"
 #include "gridnode/mod.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/mod_order.hpp"
+#include "gridnode/near_alloc.hpp"
 #include "gridnode/pe_file.hpp"
 #include "gridnode/projection.hpp"
+#include "gridnode/vhook_set.hpp"
 #include "gridnode/reflect/registry.hpp"
 
 using namespace gn;
@@ -112,6 +118,16 @@ void testRegistry() {
     CHECK(reg.typeOf(m, 0x5100) == nullptr);
     CHECK(reg.typeOf(m, 0x5200) == nullptr); // unreadable
     CHECK(reg.typeOf(m, 0) == nullptr);
+
+    // typeOfLive: the same answer from real memory with plain loads.
+    const uint64_t leafVtable[1] = {0x9100}, otherVtable[1] = {0x1234};
+    const uint64_t* leafObject = leafVtable;
+    const uint64_t* otherObject = otherVtable;
+    const uint64_t* noVtable = nullptr;
+    CHECK(reg.typeOfLive(&leafObject) == L);
+    CHECK(reg.typeOfLive(&otherObject) == nullptr);
+    CHECK(reg.typeOfLive(&noVtable) == nullptr);
+    CHECK(reg.typeOfLive(nullptr) == nullptr);
 }
 
 void testHookTable() {
@@ -718,9 +734,269 @@ void testMixOffsets() {
     m.set("a", 1, audio::kGroups, 0.5f);
 }
 
+// A fake address space answering as VirtualQuery does: a free region is described from the queried
+// page upwards only.
+struct FakeSpace {
+    struct Block {
+        uint64_t begin, end;
+        bool free;
+        uint64_t allocBase;
+    };
+    std::vector<Block> blocks; // sorted, covering everything that is asked about
+    std::vector<uint64_t> tried;
+    bool query(uint64_t a, nearmem::Region& r) const {
+        for (const Block& b : blocks)
+            if (a >= b.begin && a < b.end) {
+                r.base = a & ~uint64_t(0xfff);
+                r.size = b.end - r.base;
+                r.free = b.free;
+                r.allocationBase = b.free ? 0 : b.allocBase;
+                return true;
+            }
+        return false;
+    }
+    // An allocation works anywhere wholly inside one free block.
+    bool take(uint64_t a, uint64_t size) {
+        tried.push_back(a);
+        for (const Block& b : blocks)
+            if (b.free && a >= b.begin && a + size <= b.end) return true;
+        return false;
+    }
+};
+
+void modCallbackA(void*) {}
+void modCallbackB(void*) {}
+
+void testModCall() {
+    const char own[16] = {};  // stands in for gridnode.dll's code
+    const char other[16] = {}; // a mod's code
+    const auto inOwn = [&](const void* p) { return p >= own && p < own + sizeof(own); };
+    CHECK(modcall::current() == nullptr);
+    CHECK(modcall::resolve(own + 4, inOwn) == own + 4); // no mod callback running: as it is
+    {
+        modcall::Scope a(&modCallbackA);
+        CHECK(modcall::resolve(own + 4, inOwn) == reinterpret_cast<const void*>(&modCallbackA)); // a tail call
+        CHECK(modcall::resolve(other, inOwn) == other); // the mod's own return address wins
+        {
+            modcall::Scope b(&modCallbackB); // a callback inside a callback (entities_near's fn)
+            CHECK(modcall::resolve(own, inOwn) == reinterpret_cast<const void*>(&modCallbackB));
+        }
+        CHECK(modcall::current() == reinterpret_cast<const void*>(&modCallbackA));
+    }
+    CHECK(modcall::current() == nullptr);
+    std::thread([&] { CHECK(modcall::current() == nullptr); }).join(); // per thread
+}
+
+// hook_virtual's bookkeeping: a class and two subclasses, one overriding the slot.
+void testVirtualHooks() {
+    constexpr uint64_t kBase = 0x1000, kSub = 0x2000, kOver = 0x3000, kSlot = 0x18;
+    std::map<uint64_t, uint64_t> mem{{kBase + kSlot, 0xA0}, {kSub + kSlot, 0xA0}, {kOver + kSlot, 0xB0}};
+    hook::HookTable t({[&](uint64_t s, uint64_t& v) {
+                           auto it = mem.find(s);
+                           if (it == mem.end()) return false;
+                           v = it->second;
+                           return true;
+                       },
+                       [&](uint64_t s, uint64_t v) {
+                           mem[s] = v;
+                           return true;
+                       },
+                       [](uint64_t fn) { return fn >= 0xA0 && fn < 0x100; }, nullptr});
+    vhook::Set set("mod", {kOver, kBase, kSub, kBase}, kSlot, 0xD1); // unsorted, a duplicate
+    CHECK(set.vtableCount() == 3);
+    std::string why;
+    CHECK(set.install(t, &why) == 3 && why.empty());
+    CHECK(mem[kBase + kSlot] == 0xD1 && mem[kSub + kSlot] == 0xD1 && mem[kOver + kSlot] == 0xD1);
+    // Each object reaches its own class's function.
+    CHECK(set.original(kBase) == 0xA0 && set.original(kSub) == 0xA0 && set.original(kOver) == 0xB0);
+    CHECK(set.original(0x4000) == 0); // a vtable it did not hook
+    // A second hook on top: its originals are the first one's detour; the first's stay the game's.
+    vhook::Set top("other", {kBase, kOver}, kSlot, 0xD2);
+    CHECK(top.install(t) == 2 && top.original(kOver) == 0xD1 && set.original(kOver) == 0xB0);
+    // The lower one taken out: the upper one now calls the game's function directly.
+    CHECK(set.remove(t) == 3);
+    CHECK(top.original(kOver) == 0xB0 && top.original(kBase) == 0xA0);
+    CHECK(mem[kSub + kSlot] == 0xA0 && mem[kOver + kSlot] == 0xD2);
+    CHECK(set.hookedCount() == 0 && set.original(kBase) == 0xA0); // still callable by a thread inside it
+    CHECK(top.remove(t) == 2);
+    CHECK(mem[kBase + kSlot] == 0xA0 && mem[kSub + kSlot] == 0xA0 && mem[kOver + kSlot] == 0xB0); // all restored
+    // A slot holding no game function is refused; the rest still take.
+    mem[0x5000 + kSlot] = 0x55;
+    vhook::Set part("mod", {kBase, 0x5000}, kSlot, 0xD3);
+    CHECK(part.install(t, &why) == 1 && !why.empty() && part.hookedCount() == 1);
+    CHECK(part.remove(t) == 1 && mem[kBase + kSlot] == 0xA0);
+}
+
+void testEntityIndex() {
+    struct T {
+        int id;
+    };
+    const T base{1}, sub{2}, other{3};
+    EntityIndex<T> ix(4);
+    CHECK(ix.add(0x100, &base) && ix.add(0x200, &sub) && ix.add(0x300, &other) && ix.add(0x400, &sub));
+    CHECK(!ix.add(0x500, &base) && ix.dropped() == 1); // full
+    CHECK(ix.find(0x200) == &sub && ix.find(0x999) == nullptr);
+    // By class: only the classes picked are read.
+    auto subs = ix.ofClasses([&](const T* t) { return t == &sub; });
+    std::sort(subs.begin(), subs.end());
+    CHECK(subs.size() == 2 && subs[0].first == 0x200 && subs[1].first == 0x400);
+    // Destroyed: gone from both lists at once; the moved entries keep working.
+    CHECK(ix.remove(0x200) && !ix.remove(0x200));
+    CHECK(ix.ofClasses([&](const T* t) { return t == &sub; }).size() == 1 && ix.find(0x400) == &sub);
+    CHECK(ix.remove(0x100) && ix.size() == 2);
+    // An address reused by a new entity of another class.
+    CHECK(ix.add(0x300, &base) && ix.find(0x300) == &base && ix.ofClasses([&](const T* t) { return t == &other; }).empty());
+    // removeIf only when it is still that entity.
+    CHECK(!ix.removeIf(0x300, &other) && ix.removeIf(0x300, &base));
+    // Counts and the walk in steps see every entity once.
+    for (uintptr_t p = 0x1000; p < 0x1003; ++p) ix.add(p, &other);
+    size_t total = 0;
+    for (const auto& [t, n] : ix.counts()) total += n;
+    CHECK(total == ix.size() && ix.size() == 4);
+    size_t from = 0, seen = 0;
+    do seen += ix.slice(from, 3).size();
+    while (from != 0);
+    CHECK(seen == 4 && ix.all().size() == 4);
+}
+
+// Finding the entities made before GridNode loaded, from the game's per-class lists.
+void testClassLists() {
+    std::map<uint64_t, uint64_t> mem;
+    constexpr uint64_t kVtable = 0x9000, kOther = 0x9100, kClassInfo = 0x1000;
+    // Three entities of the class with their node at +0x40, linked from the client realm's head.
+    const uint64_t ents[3] = {0x20000, 0x30000, 0x40000};
+    for (uint64_t e : ents) mem[e] = kVtable;
+    mem[0x20000 + 0x18] = kOther; // a member that looks like a vtable of another class: not taken
+    mem[kClassInfo + classlists::kHeadsAt] = ents[0] + 0x40;
+    mem[ents[0] + 0x40] = ents[1] + 0x40;
+    mem[ents[1] + 0x40] = ents[2] + 0x40;
+    mem[ents[2] + 0x40] = 0;
+    const auto read = [&](uint64_t a, uint64_t& v) {
+        auto it = mem.find(a);
+        v = it == mem.end() ? 0 : it->second;
+        return true;
+    };
+    const auto isClass = [&](uint64_t a) { auto it = mem.find(a); return it != mem.end() && it->second == kVtable; };
+    std::vector<uint64_t> got;
+    uint32_t back = 0;
+    size_t unresolved = 0;
+    uint64_t heads[4];
+    classlists::heads(kClassInfo, heads);
+    CHECK(heads[0] == kClassInfo + 0x60 && heads[1] == kClassInfo + 0x80 && heads[2] == kClassInfo + 0x70 && heads[3] == kClassInfo + 0x90);
+    size_t n = 0;
+    for (uint64_t h : heads) n += classlists::walk(h, back, read, isClass, [&](uint64_t e) { got.push_back(e); }, 1000, unresolved);
+    CHECK(n == 3 && back == 0x40 && unresolved == 0);
+    CHECK(got.size() == 3 && got[0] == ents[0] && got[2] == ents[2]);
+    // A node with no entity of the class behind it is counted, not taken; a cycle stops at the cap.
+    mem[ents[2] + 0x40] = 0x50040;
+    mem[0x50040] = ents[0] + 0x40;
+    got.clear(), unresolved = 0;
+    classlists::walk(heads[0], back, read, isClass, [&](uint64_t e) { got.push_back(e); }, 10, unresolved);
+    CHECK(unresolved >= 1 && got.size() <= 10);
+}
+
+void testBuses() {
+    std::map<uint64_t, uint64_t> mem;
+    constexpr uint64_t kVt = 0x9000;
+    const auto read = [&](uint64_t a, uint64_t& v) {
+        auto it = mem.find(a);
+        v = it == mem.end() ? 0 : it->second;
+        return true;
+    };
+    const auto isEntity = [&](uint64_t a) { auto it = mem.find(a); return it != mem.end() && it->second == kVt; };
+    // root R with children A and B; B uses the other id list (flag bit 28 at +0x34).
+    const uint64_t R = 0x100000, A = 0x110000, B = 0x120000;
+    mem[A + buses::kParent] = R, mem[B + buses::kParent] = R;
+    mem[R + buses::kFirstChild] = A, mem[A + buses::kNext] = B;
+    mem[B + buses::kFlagsWord] = buses::kOtherBit;
+    auto give = [&](uint64_t bus, uint64_t data, uint64_t ids, std::vector<uint64_t> peers) {
+        mem[bus + buses::kData] = data;
+        const uint64_t arr = data + 0x1000;
+        mem[bus + buses::kPeers] = arr;
+        mem[data + ids] = 0x7000, mem[data + ids + 8] = 0x7000 + peers.size() * 8;
+        for (size_t i = 0; i < peers.size(); ++i) mem[arr + i * 8] = peers[i];
+    };
+    const uint64_t e1 = 0x200000, e2 = 0x210000, e3 = 0x220000, junk = 0x230000;
+    for (uint64_t e : {e1, e2, e3}) mem[e] = kVt;
+    mem[e1 + buses::kEntityBus] = A; // the seed: only its bus is known
+    give(R, 0x300000, buses::kIds, {e1});
+    give(A, 0x310000, buses::kIds, {e2, 0, junk});
+    give(B, 0x320000, buses::kIdsOther, {e3});
+    std::vector<uint64_t> got;
+    const buses::Stats s = buses::walk({e1}, read, isEntity, [&](uint64_t e) { got.push_back(e); });
+    std::sort(got.begin(), got.end());
+    CHECK(s.roots == 1 && s.buses == 3 && s.peers == 3 && s.rejected == 1);
+    CHECK(got.size() == 3 && got[0] == e1 && got[1] == e2 && got[2] == e3);
+    // The heap pass: a vtable-looking word with a known bus 0x20 on is a candidate; others are not.
+    std::unordered_set<uint64_t> all;
+    buses::walk({e1}, read, isEntity, [](uint64_t) {}, &all);
+    CHECK(all.size() == 3 && all.count(A) && all.count(B));
+    uint64_t heap[16] = {};
+    heap[0] = 0x140001000, heap[4] = B;     // an entity on bus B
+    heap[6] = 0x140002000, heap[10] = 0x55;  // a vtable but no bus: not one
+    heap[11] = 0x12345, heap[15] = A;        // a bus but no vtable: not one
+    std::vector<uint64_t> cands;
+    const size_t hits = buses::scanWords(heap, 16, 0x500000, 0x140000000, 0x150000000, all, [&](uint64_t a) {
+        cands.push_back(a);
+        return true;
+    });
+    CHECK(hits == 1 && cands.size() == 1 && cands[0] == 0x500000);
+}
+
+void testNearAlloc() {
+    constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
+    auto run = [&](FakeSpace& s, bool down, uint64_t from) {
+        const nearmem::Query q = [&](uint64_t a, nearmem::Region& r) { return s.query(a, r); };
+        const nearmem::TryAt t = [&](uint64_t a) { return s.take(a, kSize); };
+        int calls = 0;
+        const nearmem::Stop stop = [&] { return ++calls > 100000; };
+        return down ? nearmem::searchDown(q, from, from - 0x7ff00000, kSize, kGran, 8, t, stop)
+                    : nearmem::searchUp(q, from, from + 0x7ff00000, kSize, kGran, 8, t, stop);
+    };
+    { // A 64 KB gap just below the image, then taken memory below it (one allocation of many regions).
+        FakeSpace s;
+        s.blocks = {{0x0, kImage - 0x30000, false, 0x0}, {kImage - 0x30000, kImage - 0x20000, false, kImage - 0x30000},
+                    {kImage - 0x20000, kImage - 0x10000, true, 0}, {kImage - 0x10000, kImage, false, kImage - 0x10000}};
+        // From the page below the image, as patchesReserve asks: the gap's start is found.
+        CHECK(run(s, true, kImage - 0x1000) == kImage - 0x20000);
+        CHECK(s.tried.size() == 1);
+    }
+    { // A gap exactly one page long below the image: never tried, the walk goes on below it.
+        FakeSpace s;
+        s.blocks = {{0x0, 0x100000000, false, 0x0}, {0x100000000, 0x100100000, true, 0},
+                    {0x100100000, kImage - 0x1000, false, 0x100100000}, {kImage - 0x1000, kImage, true, 0}};
+        CHECK(run(s, true, kImage) == 0x100100000 - kSize); // the highest fit in the large free block
+        for (uint64_t a : s.tried) CHECK(a < kImage - 0x1000);
+    }
+    { // No gap at all: nothing tried, and the walk ends.
+        FakeSpace s;
+        s.blocks = {{0x0, kImage, false, 0x0}};
+        CHECK(run(s, true, kImage) == 0);
+        CHECK(s.tried.empty());
+    }
+    { // A gap only above the image: down finds nothing, up finds its first aligned address.
+        FakeSpace s;
+        s.blocks = {{0x0, kImage + 0x4000000, false, 0x0}, {kImage + 0x4000000, kImage + 0x4000000 + 0x200000, true, 0},
+                    {kImage + 0x4000000 + 0x200000, 0x7fffffffffff, false, kImage + 0x4000000 + 0x200000}};
+        CHECK(run(s, true, kImage) == 0);
+        CHECK(run(s, false, kImage + 0x1000000) == kImage + 0x4000000);
+    }
+    { // Free memory whose top is taken part-way into the request: the candidate below the taken part.
+        FakeSpace s;
+        s.blocks = {{0x0, 0x130000000, false, 0x0}, {0x130000000, kImage - 0x8000, true, 0}, {kImage - 0x8000, kImage, false, kImage - 0x8000}};
+        CHECK(run(s, true, kImage) == kImage - 0x8000 - kSize - 0x8000); // aligned down below the taken 32 KB
+    }
+}
+
 } // namespace
 
 int main() {
+    testNearAlloc();
+    testModCall();
+    testVirtualHooks();
+    testEntityIndex();
+    testClassLists();
+    testBuses();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();

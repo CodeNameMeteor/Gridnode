@@ -14,6 +14,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/version.hpp"
 #include "host.hpp"
 
@@ -109,22 +110,30 @@ uint64_t apiRva(uint64_t va) { return mem::rva(va); }
 struct CallTick {
     gn_tick_fn fn;
     void* user;
-    void operator()(float dt) const { fn(dt, user); }
+    void operator()(float dt) const {
+        modcall::Scope scope(fn);
+        fn(dt, user);
+    }
 };
 struct CallTask {
     gn_task_fn fn;
     void* user;
-    void operator()() const { fn(user); }
+    void operator()() const {
+        modcall::Scope scope(fn);
+        fn(user);
+    }
 };
 
 int apiOnServerTick(gn_tick_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
-    server().addListener("mod", CallTick{fn, user});
+    const std::string who = modNameAt(reinterpret_cast<const void*>(fn)); // the mod whose code fn is in
+    server().addListener(who.empty() ? "mod" : who, CallTick{fn, user});
     return GN_OK;
 }
 int apiOnClientTick(gn_tick_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
-    client().addListener("mod", CallTick{fn, user});
+    const std::string who = modNameAt(reinterpret_cast<const void*>(fn));
+    client().addListener(who.empty() ? "mod" : who, CallTick{fn, user});
     return GN_OK;
 }
 void apiRunOnServer(gn_task_fn fn, void* user) {
@@ -243,12 +252,12 @@ int apiUiMenuSet(int open) {
     return ui::setMenu(open != 0) ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
-uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsList().size()); }
+uint32_t apiSettingsCount() { return static_cast<uint32_t>(settingsCount()); }
 int apiSettingsAt(uint32_t i, const gn_type** type, void** object) {
-    const std::vector<SettingsEntry> l = settingsList();
-    if (i >= l.size()) return GN_ERR_ARGUMENT;
-    if (type) *type = G(l[i].type);
-    if (object) *object = reinterpret_cast<void*>(l[i].object);
+    SettingsEntry e;
+    if (!settingsAt(i, e)) return GN_ERR_ARGUMENT;
+    if (type) *type = G(e.type);
+    if (object) *object = reinterpret_cast<void*>(e.object);
     return GN_OK;
 }
 const char* apiOnlineWarning(const char* name) { return name ? onlineWarning(name) : nullptr; }
@@ -271,7 +280,10 @@ int consoleRunFor(const char* mod, const char* line, gn_console_fn fn, void* use
     client().post([who, l, fn, user] {
         const std::string out = consoleRun(l);
         // Queued, then its mod unloaded: its callback is gone with it (the command still ran).
-        if (fn && modCodeLive(reinterpret_cast<const void*>(fn))) fn(out.c_str(), user);
+        if (fn && modCodeLive(reinterpret_cast<const void*>(fn))) {
+            modcall::Scope scope(fn);
+            fn(out.c_str(), user);
+        }
     });
     return GN_OK;
 }
@@ -293,15 +305,15 @@ void* settingsFindFor(const char* name, const void* caller) {
     return obj;
 }
 
-uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommands().size()); }
+uint32_t apiConsoleCommandCount() { return static_cast<uint32_t>(consoleCommandCount()); }
 int apiConsoleCommandAt(uint32_t i, gn_command* out) {
-    const std::vector<ConsoleCommand> c = consoleCommands();
-    if (i >= c.size() || !out) return GN_ERR_ARGUMENT;
-    out->name = c[i].name;
-    out->group = c[i].group;
-    out->full = c[i].full;
-    out->help = c[i].help;
-    out->flags = (c[i].setting ? GN_COMMAND_SETTING : 0u) | (c[i].online ? GN_COMMAND_ONLINE : 0u);
+    ConsoleCommand c;
+    if (!out || !consoleCommandAt(i, c)) return GN_ERR_ARGUMENT;
+    out->name = c.name;
+    out->group = c.group;
+    out->full = c.full;
+    out->help = c.help;
+    out->flags = (c.setting ? GN_COMMAND_SETTING : 0u) | (c.online ? GN_COMMAND_ONLINE : 0u);
     return GN_OK;
 }
 
@@ -317,10 +329,10 @@ namespace {
 // The mod is the one whose code called: the return address is in its image (a direct call through
 // the table, so never inlined into the mod's caller).
 #if defined(_MSC_VER)
-#define GN_CALLER _ReturnAddress()
+#define GN_CALLER callerOf(_ReturnAddress())
 #define GN_NOINLINE __declspec(noinline)
 #else
-#define GN_CALLER __builtin_return_address(0)
+#define GN_CALLER callerOf(__builtin_return_address(0))
 #define GN_NOINLINE __attribute__((noinline))
 #endif
 GN_NOINLINE int apiCameraSet(const gn_transform* t, uint32_t flags) { return layouts::cameraSet(GN_CALLER, t, flags); }
@@ -351,7 +363,7 @@ int apiLocalize(const char* id, char* out, uint32_t cap) {
 int apiUiPauseState(int32_t* menus, int32_t* full) {
     if (!menus || !full) return GN_ERR_ARGUMENT;
     const uintptr_t ui = mem::readOr<uintptr_t>(mem::rva(e::global::PamUISystemInstance));
-    if (!ui || mem::readOr<uintptr_t>(ui) != mem::rva(0x141cb63b0ull)) return GN_ERR_UNAVAILABLE;
+    if (!ui || mem::readOr<uintptr_t>(ui) != mem::rva(e::cls::PamUISystem::vtable)) return GN_ERR_UNAVAILABLE;
     const uintptr_t ctrl = mem::readOr<uintptr_t>(ui + 0x8c8); // a pointer, not an inline struct
     if (ctrl < 0x10000) return GN_ERR_UNAVAILABLE;
     int32_t pair[2] = {};
@@ -366,15 +378,15 @@ namespace {
 // The mod is the one whose code called: the return address is in its image (a direct call through
 // the table, so never inlined into the mod's caller).
 #if defined(_MSC_VER)
-__declspec(noinline) int apiModUnload() { return modUnloadAt(_ReturnAddress()); }
+__declspec(noinline) int apiModUnload() { return modUnloadAt(callerOf(_ReturnAddress())); }
 #else
-__attribute__((noinline)) int apiModUnload() { return modUnloadAt(__builtin_return_address(0)); }
+__attribute__((noinline)) int apiModUnload() { return modUnloadAt(callerOf(__builtin_return_address(0))); }
 #endif
 #if defined(_MSC_VER)
-#define GN_CALLER _ReturnAddress()
+#define GN_CALLER callerOf(_ReturnAddress())
 #define GN_NOINLINE __declspec(noinline)
 #else
-#define GN_CALLER __builtin_return_address(0)
+#define GN_CALLER callerOf(__builtin_return_address(0))
 #define GN_NOINLINE __attribute__((noinline))
 #endif
 // A patch belongs to the code that made it (undone when that mod is unloaded).
@@ -407,6 +419,39 @@ GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* even
 }
 GN_NOINLINE int apiBusVolumeSet(const char* mod, const char* bus, float gain) { return busVolumeSet(mod, bus, gain, GN_CALLER); }
 GN_NOINLINE int apiBusDuck(const char* mod, const char* bus, float gain, float seconds) { return busDuck(mod, bus, gain, seconds, GN_CALLER); }
+} // namespace
+
+namespace {
+// API 37: the same calls with the mod's handle (gn_mod_load2) instead of its name and return address.
+#define GN_SELF(fail)                                                                                            \
+    std::string id;                                                                                              \
+    const void* who = nullptr;                                                                                   \
+    if (!modContext(self, id, who)) return fail;
+int mUnload(gn_mod* self) { GN_SELF(GN_ERR_ARGUMENT) return modUnloadAt(who); }
+int mPatchBytes(gn_mod* self, uint64_t va, const void* e, const void* b, size_t n) { GN_SELF(GN_ERR_ARGUMENT) return patchBytes(id.c_str(), va, e, b, n, who); }
+int mPatchCall(gn_mod* self, uint64_t site, uint64_t target, void* detour, void** original) {
+    GN_SELF(GN_ERR_ARGUMENT) return patchCall(id.c_str(), site, target, detour, original, who);
+}
+int mExport(gn_mod* self, const char* name, void* fn) { GN_SELF(GN_ERR_ARGUMENT) return modExport(who, name, fn); }
+void* mImport(gn_mod* self, const char* modId, const char* name) { GN_SELF(nullptr) return modImport(who, modId, name); }
+int mDir(gn_mod* self, char* out, size_t size) { GN_SELF(GN_ERR_ARGUMENT) return modDir(who, out, size); }
+int mConsoleRun(gn_mod* self, const char* line, gn_console_fn fn, void* user) { GN_SELF(GN_ERR_ARGUMENT) return consoleRunFor(id.c_str(), line, fn, user, who); }
+void* mSettingsFind(gn_mod* self, const char* name) { GN_SELF(nullptr) return settingsFindFor(name, who); }
+int mOnlineAllow(gn_mod* self, const char* reason) { GN_SELF(GN_ERR_ARGUMENT) return onlineAllow(who, id.c_str(), reason); }
+int mSettingAdd(gn_mod* self, const gn_setting* s) { GN_SELF(GN_ERR_ARGUMENT) return settingAdd(id.c_str(), s, who); }
+int mBoxAdd(gn_mod* self, const gn_transform* at, const float* half, uint32_t* out) { GN_SELF(GN_ERR_ARGUMENT) return boxAdd(id.c_str(), at, half, out, who); }
+int mSoundPlay(gn_mod* self, const char* path, const char* event, const float* pos, uint32_t* out) {
+    GN_SELF(GN_ERR_ARGUMENT) return soundPlay(id.c_str(), path, event, pos, out, who);
+}
+int mBusVolumeSet(gn_mod* self, const char* bus, float gain) { GN_SELF(GN_ERR_ARGUMENT) return busVolumeSet(id.c_str(), bus, gain, who); }
+int mBusDuck(gn_mod* self, const char* bus, float gain, float seconds) { GN_SELF(GN_ERR_ARGUMENT) return busDuck(id.c_str(), bus, gain, seconds, who); }
+int mSetGravity(gn_mod* self, int realm, const float* g) { GN_SELF(GN_ERR_ARGUMENT) return physicsSetGravity(realm, g, who); }
+int mCameraSet(gn_mod* self, const gn_transform* t, uint32_t flags) { GN_SELF(GN_ERR_ARGUMENT) return layouts::cameraSet(who, t, flags); }
+int mCameraFovSet(gn_mod* self, float degrees) { GN_SELF(GN_ERR_ARGUMENT) return layouts::cameraFovSet(who, degrees); }
+int mTimeOfDayHold(gn_mod* self, float seconds) { GN_SELF(GN_ERR_ARGUMENT) return timeOfDayHold(who, seconds); }
+int mVisualEnvSet(gn_mod* self, uint32_t offset, const void* data, uint32_t size) { GN_SELF(GN_ERR_ARGUMENT) return visualEnvSet(who, offset, data, size); }
+int mStreamingFocusAdd(gn_mod* self, const float* pos, uint32_t* handle) { GN_SELF(GN_ERR_ARGUMENT) return layouts::streamingFocusAdd(who, pos, handle); }
+#undef GN_SELF
 } // namespace
 
 const gn_api* api() {
@@ -569,6 +614,40 @@ const gn_api* api() {
         a.bus_volume_get = busVolumeGet;
         a.bus_volume_set = apiBusVolumeSet;
         a.bus_duck = apiBusDuck;
+        a.type_vtable_count = [](const gn_type* t) { return typeVtableCount(T(t)); };
+        a.type_vtable_at = [](const gn_type* t, uint32_t i) { return typeVtableAt(T(t), i); };
+        a.type_virtual_find = [](const gn_type* t, const char* name, uint32_t* out) { return typeVirtualFind(T(t), name, out); };
+        a.hook_virtual = [](const char* mod, const gn_type* t, uint32_t offset, void* detour, uint32_t flags, uint32_t* out) {
+            return hookVirtual(mod, T(t), offset, detour, flags, out);
+        };
+        a.hook_original = hookOriginal;
+        a.hook_virtual_remove = hookVirtualRemove;
+        a.entity_component = entityComponent;
+        a.entity_components = entityComponents;
+        a.data_path = dataPathCopy;
+        a.hooks_begin = hooksBegin;
+        a.hooks_commit = hooksCommit;
+        a.mod_unload_m = mUnload;
+        a.patch_bytes_m = mPatchBytes;
+        a.patch_call_m = mPatchCall;
+        a.mod_export_m = mExport;
+        a.mod_import_m = mImport;
+        a.mod_dir_m = mDir;
+        a.console_run_m = mConsoleRun;
+        a.settings_find_m = mSettingsFind;
+        a.online_allow_m = mOnlineAllow;
+        a.setting_add_m = mSettingAdd;
+        a.box_add_m = mBoxAdd;
+        a.sound_play_m = mSoundPlay;
+        a.bus_volume_set_m = mBusVolumeSet;
+        a.bus_duck_m = mBusDuck;
+        a.physics_set_gravity_m = mSetGravity;
+        a.camera_set_m = mCameraSet;
+        a.camera_fov_set_m = mCameraFovSet;
+        a.time_of_day_hold_m = mTimeOfDayHold;
+        a.visual_env_set_m = mVisualEnvSet;
+        a.streaming_focus_add_m = mStreamingFocusAdd;
+        a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;
         a.visual_env_release = visualEnvRelease;

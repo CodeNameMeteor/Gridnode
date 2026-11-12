@@ -125,6 +125,7 @@ if(GRIDNODE_BUILD_TESTS)
   target_link_libraries(engine_header_test PRIVATE gn_engine)
   add_test(NAME engine_header COMMAND engine_header_test)
   add_test(NAME gridnode_gen COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/tools/gen/tests -t ${CMAKE_SOURCE_DIR}/tools/gen)
+  add_test(NAME gridnode_assets COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${CMAKE_SOURCE_DIR}/tools/assets/tests -t ${CMAKE_SOURCE_DIR}/tools/assets)
 endif()
 
 if(NOT WIN32)
@@ -163,6 +164,8 @@ add_library(gridnode SHARED
   sdk/src/unload.cpp
   sdk/src/patches.cpp
   sdk/src/quiet.cpp
+  sdk/src/threads.cpp
+  sdk/src/vhooks.cpp
   sdk/src/modsettings.cpp
   sdk/src/world.cpp
   sdk/src/bodies.cpp

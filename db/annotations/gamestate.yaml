@@ -24,7 +24,7 @@ globals:
 functions:
   - name: ProgressionManager_setFlag
     va: 0x1439e3d90
-    signature: "int32_t(void* manager, PamProgressionFlag* flag, int32_t value, bool add, bool notifyMissions, bool onlyInItsMission)"
+    signature: "i32(void* manager, PamProgressionFlag* flag, i32 value, bool add, bool notifyMissions, bool onlyInItsMission)"
     note: "Sets (add: adds to) a flag's value: clamps it to [0, MaxValue] when the flag's Clamp is set, tells the mission manager when it is the active mission flag (PlayerProgressionData.SystemGeneratedFlags.Flags[0]), the reward conditions, the PamServerProgressionFlagEntity objects bound to the flag, flag group entities, mission entities (notifyMissions), and sends PamProgressionFlagUpdatedMessage (flag NameHash, value) on the server's message manager. onlyInItsMission: a flag with a MissionIndex is only set while that mission is active. Returns the new value. Server (g_serverGameContext). Checked in the decompiler, 2026-11-04."
 
 constants:

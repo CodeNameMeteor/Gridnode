@@ -26,6 +26,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -133,7 +134,10 @@ void dispatch(int manager, const uint8_t* msg) {
     info.realm = head[2];
     info.manager = manager;
     for (const Sub& s : subs)
-        if (!s.typeId || s.typeId == head[1]) s.fn(msg, &info, s.user);
+        if (!s.typeId || s.typeId == head[1]) {
+            modcall::Scope scope(s.fn);
+            s.fn(msg, &info, s.user);
+        }
 }
 
 // ---- registration with the managers --------------------------------------------------------------

@@ -23,6 +23,7 @@
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/reflect/layout.hpp"
 #include "host.hpp"
 
@@ -69,14 +70,15 @@ void deliver(void* peer, void* event) {
     if (const Tap tap = g_tap.load(std::memory_order_relaxed)) tap(peer, event);
     const Listeners* ls = g_listeners.load(std::memory_order_acquire);
     if (!ls || !peer || !event) return;
-    const uint32_t id = mem::readOr<uint32_t>(reinterpret_cast<uintptr_t>(event) + 8);
+    const uint32_t id = static_cast<const uint32_t*>(event)[2]; // the game is delivering it: plain loads
     const Type* t = nullptr;
     bool typed = false;
     for (const Listener& l : *ls) {
         if (l.id && l.id != id) continue;
-        if (!typed) t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(peer)), typed = true;
+        if (!typed) t = registry().typeOfLive(peer), typed = true;
         if (l.cls && (!t || !registry().isKindOf(t, l.cls))) continue;
         try {
+            modcall::Scope scope(l.fn);
             l.fn(peer, reinterpret_cast<const gn_type*>(t), id, l.user);
         } catch (...) {
             static std::atomic<int> said{0};
@@ -101,7 +103,14 @@ const std::array<OnEventFn, kPool> g_detours = makeDetours(std::make_index_seque
 
 } // namespace
 
-void start(const std::wstring& gridnodeDir) { g_namesFile = gridnodeDir + L"recordings\\event-names.txt"; }
+const std::unordered_map<uint32_t, std::string>& names();
+
+void start(const std::wstring& gridnodeDir) {
+    g_namesFile = gridnodeDir + L"recordings\\event-names.txt";
+    // Built here, on GridNode's thread at startup, not on whichever game thread first names an event
+    // (~10,000 types and a file read, review 2026-11-11).
+    (void)names();
+}
 
 void setTap(Tap tap) { g_tap = tap; }
 
@@ -234,7 +243,7 @@ uint32_t idOf(const char* event) {
 // entity's realm thread (flags +0x18 bit 0: the server realm), at its next tick. The slot holds the
 // game's onEvent, or our wrapper of it once events are wrapped.
 bool send(uintptr_t entity, const reflect::Type* type, uint32_t id) {
-    constexpr uint64_t kEntityEventVtable = 0x141a4a8b0;
+    constexpr uint64_t kEntityEventVtable = e::global::EntityEvent_vtable;
     const uintptr_t vt = mem::readOr<uintptr_t>(entity);
     if (!vt || !mem::readOr<uintptr_t>(vt + kOnEventSlot)) return false;
     auto deliver = [entity, type, id] {
@@ -322,7 +331,13 @@ int eventSend(const std::string& mod, void* entity, const char* event) {
     const reflect::Type* peer = registry().find("EntityBusPeer");
     if (!t || !peer || !registry().isKindOf(t, peer) || !inspector::alive(p, t)) return GN_ERR_NOT_FOUND;
     if (!events::send(p, t, id)) return GN_ERR_UNAVAILABLE;
-    GN_LOG("[%s] event %s sent to %s %p", mod.c_str(), events::name(id).c_str(), t->name.c_str(), entity);
+    // A mod may send every tick: the first sends are logged, then one line per 1,000 (review, 2026-11-11).
+    static std::atomic<uint64_t> sent{0};
+    const uint64_t n = sent.fetch_add(1) + 1;
+    if (n <= 20) GN_LOG("[%s] event %s sent to %s %p%s", mod.c_str(), events::name(id).c_str(), t->name.c_str(), entity,
+                        n == 20 ? " (further sends are counted, one line per 1,000)" : "");
+    else if (n % 1000 == 0) GN_LOG("[%s] event %s sent to %s %p (%llu sends so far)", mod.c_str(), events::name(id).c_str(), t->name.c_str(), entity,
+                                   static_cast<unsigned long long>(n));
     return GN_OK;
 }
 

@@ -24,15 +24,29 @@ clang, independently of how `gridnode.dll` was built. The quickest start is a re
 
 ## API versions
 
-`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 35 now (its comment
+`gridnode/api.h` is the whole API: a table of function pointers, `GN_API_VERSION` 37 now (its comment
 lists what each version added). The table only grows at its end, so a mod built for API N loads on
 any GridNode with API N or newer. Structs that may grow carry a size (`gn_ray_hit_ex`, `gn_setting`,
 `gn_mod_manifest`) or are passed with one (`view_get_ex`, API 23); `gn_ray_hit` never changes. On an older GridNode `GN_MOD` (and Rust's `gn_mod!`) returns 2 from
 `gn_mod_load` without running the mod; the log says "it was built for a newer GridNode" and the Mods
 list "needs a newer GridNode". Say which GridNode your mod needs when you ship it.
 
+**An older minimum (API 36).** A mod that uses only older calls can run on an older GridNode: define
+`GN_MOD_MIN_API` before including `mod.hpp`, and check anything newer with `gn::has` first:
+
+```cpp
+#define GN_MOD_MIN_API 17
+#include <gridnode/mod.hpp>
+...
+if (gn::has(&gn_api::hook_virtual)) { /* API 36 */ }
+```
+
+The default is the header's own version, so a mod that does not set it behaves as before. The
+`gn::` wrappers for API 36 (`VirtualHook`, `entityComponent(s)`, `dataPath`, `ui::typeView`) check
+`gn::has` themselves and return false (or nothing) on an older GridNode.
+
 **What is stable.** Everything up to API 28 was used in game by the MEC trainer or the examples and is stable.
-These are newer and **experimental** (tested lightly, or not at all, and may change before they settle): the visual
+These are newer and **experimental** (tested lightly, or not at all, and may change before they settle): API 36 and 37, the visual
 environment and timelines (API 29), streaming focus points (30), `raycastFiltered` (33), standalone collision boxes
 (`boxBackendNative`, 34), and the ANT live objects and Faith's last 15 seconds (26 and 27). `localize` (31), `menuOpen` / `pauseRequests` (32) and the mixer's groups (`busVolume`, `duck`, 35) work in game. [Known issues](known-issues.md)
 lists the limits.
@@ -44,6 +58,13 @@ the game's preferred base 0x140000000, to where the game is loaded now) and
 write is not recorded: nothing undoes it when the mod or GridNode unloads (the log says so once). Use
 `gn::patchBytes` for code. `gridnode/engine.hpp` names the addresses we
 know (`gn::engine::function::...`, `global::...`, `constant::...`).
+
+**Hypotheses are marked (API 37's engine.hpp).** An annotation that is only a hypothesis (not yet confirmed
+in Ghidra or in game) is in a nested `unverified` namespace: `gn::engine::function::unverified::Name`,
+`cls::<Class>::off::unverified::member`, and so on. A mod may use one, but it has to write `unverified::`,
+so the guess is visible in its code. When an item is confirmed it moves out, and the mod's code stops
+compiling until the `unverified::` is taken out of it. A mod built against an older `engine.hpp` that named
+a hypothesis without it needs that one word added.
 
 ## Manifest and other mods (API 16)
 
@@ -64,8 +85,12 @@ Mods can call each other. `gn::exportFn("name", &fn)` offers one of the mod's fu
 `<its id>.name`; another mod gets it with `gn::importFn<Fn>("its-id", "name")` (null when that mod is
 not loaded or does not offer it), from `gn_mod_load` or later, after declaring the dependency so the
 other mod is loaded first. `gn::modVersion("its-id", &version)` says whether a mod is loaded. A mod
-that another one needs, or imported from, cannot be unloaded on its own (the Mods list says which mod
-needs it); a full unload goes through them in reverse order. Rust: `export_fn`, `import_fn`,
+that another one needs cannot be unloaded on its own (the Mods list says which mod needs it); a full
+unload goes through them in reverse order. When the others need it only optionally (`"?id"`, or an
+import without a needed dependency), unloading or reloading it unloads them first and loads them
+again after, so they come back without it (or with the new copy); and loading it reloads the mods
+that want it optionally, so they see it. Look for the other mod in `gn_mod_load`: that is when it
+changes. Rust: `export_fn`, `import_fn`,
 `mod_version`. See `examples/detour-demo`.
 
 ## Rust
@@ -183,6 +208,21 @@ classes (entities, components) are reflected without fields; what is known about
 Data objects are shared: every entity made from the same asset points at the same data
 (`ComponentEntity+0x30`). Writing a data field changes it for all of them.
 
+**Field handles (API 36, header only).** `obj.get("TimeScale", v)` looks the field up by name each
+time. A `gn::Field<T>` looks it up once, on first use, and checks its size against `sizeof(T)`:
+
+```cpp
+static const gn::Field<float> kTimeScale("GameTimeSettings", "TimeScale");
+float v = kTimeScale.get(gn::settings("GameTimeSettings").ptr());   // 0 when it cannot be read
+kTimeScale.set(settings, 0.5f);                                     // fault-tolerant, like gn::write
+float w = kTimeScale.getLive(object);                               // a plain load
+```
+
+`get` / `set` go through GridNode's fault-tolerant read and write, for any pointer. `getLive` /
+`setLive` are plain loads and stores: only for an object the game just handed your hook or
+callback. Plain values only (numbers, booleans, enums, pointers): `String`, `CString` and arrays
+are not plain values in memory.
+
 ## Entity creation
 
 ```cpp
@@ -235,6 +275,16 @@ to 64 bytes that must be `expected` now. Patches are listed in the GridNode menu
 undone when the mod is unloaded (or GridNode is). Prefer a pointer swap where there is one. Rust:
 `patch_call`, `patch_bytes`.
 
+**Detours written together (API 37).** Every detour stops the game's threads for a moment while its
+jump is written. GridNode writes all the detours a mod makes in `gn_mod_load` in one stop, when
+`gn_mod_load` returns: a mod's detours take effect then, not at each `hookFunction`. Elsewhere, put
+several between `gn::api().hooks_begin()` and `hooks_commit()` for the same.
+
+**The mod's handle (API 37).** `GN_MOD` exports `gn_mod_load2` as well: GridNode gives the mod a handle,
+and the `gn::` calls that need to know which mod is calling (camera, patches, boxes, sounds, settings,
+exports) use it, so nothing is lost when the compiler turns a call into a jump. A mod rebuilt with this
+header gets it without changes; a C or Rust mod can export `gn_mod_load2` and call the `_m` functions.
+
 Any function of the game can be detoured, not only one a pointer or a call site leads to (API 16):
 
 ```cpp
@@ -261,6 +311,30 @@ warning, and GridNode's hook calls it as its `original`.
 
 A vtable hook affects every object of that class (and of subclasses that inherit the slot):
 filter inside the detour if you only care about some objects.
+
+**A class's virtual by name (API 36).** `hookSlot` needs a vtable address and a slot, and
+`engine.hpp` names a few dozen classes. `gn::VirtualHook` hooks a virtual in every vtable GridNode
+found for a class, and by default in its subclasses' too:
+
+```cpp
+static gn::VirtualHook<void(void* self, bool visible)> g_setVisible;
+
+g_setVisible.install("PamClientCharacterEntity", "setVisible", [](void* self, bool visible) {
+    gn::log("setVisible %d", visible);
+    g_setVisible.original(self)(self, visible);
+});
+```
+
+Subclasses override, so there is no single original: `original(self)` is the function for that
+object's class. Call it only with the object the game called you with (it reads `self`'s vtable).
+The name comes from the annotated virtuals of the class and its bases (`cls::<Class>::vf` in
+`engine.hpp`); for a class nobody has annotated, give the vtable byte offset instead
+(`install("SomeEntity", 0x1a8, &detour)`, a multiple of 8). The detour is a plain function or a
+lambda without captures. Offset 0 is refused: it is `getType`, which GridNode reads to know every
+object's class. `remove()` takes it out early; it goes with the mod otherwise. The C API is
+`type_vtable_count` / `type_vtable_at` (the vtables, as image VAs), `type_virtual_find`,
+`hook_virtual` (with `GN_HOOK_SUBCLASSES`), `hook_original` and `hook_virtual_remove`. The
+`detour-demo` example hooks `setVisible` this way.
 
 **Two mods on one place.** Hooks chain, so both run, but one may skip the other (by not calling
 `original`) or both may change the same thing. When a mod hooks a slot or detours a function another
@@ -291,6 +365,8 @@ std::string level = gn::levelName();
 | `transformOf` / `positionOf` | any | `false` if the entity has no readable transform. |
 | `teleport` | server | `GN_ERR_THREAD` elsewhere. Clears velocity and replicates to the client like the game's teleport triggers. |
 | `component` | the entity's realm | Characters only (client or server). |
+| `entityComponent(entity, type)` / `entityComponents(entity, fn)` | the entity's realm | Any `ComponentEntity` (API 36), read from its component collection; no game function is called. `fn(void* component, gn::Type type)`. Null / a negative `GN_ERR_` on another thread. |
+| `dataPath()` | any | The game's data root as launched, with a trailing backslash: `-dataPath` when given (Frosty's Mod Manager), else the install's `Data` (API 36). |
 | `raycast(from, to, hit[, radius])` | server | The game's ray caster (what its ray cast entities use); a radius sweeps a sphere. The first hit can be the character the ray starts in. |
 | `raycastObject(from, to, hit)` | server | A thin ray that says what it hit: `hit.entity` (the server entity owning the body; null for level geometry), `hit.body`, `hit.part` (a prop inside a static model group). API 19 adds `hit.layer` (the collision layer: 1 Static, 2 Dynamic, 3 Player, 4 AI, 14 Character, ...), `filter_info` and `material`. Looks through the physics entities: per click, not per tick (API 18). |
 | `entityBodies(entity)` | any | A physics entity's collision body ids (API 18). |
@@ -633,6 +709,12 @@ GridNode menu → **Inspector**:
 - The object view decodes reflected fields (and GridNode's annotated members, in blue), follows
   pointers and arrays, and edits booleans, numbers and enums. Edits are written on the client
   thread. Remember that data objects (`...Data`) are shared by every entity made from them.
+
+**A mod's own view of a class (API 36).** `gn::ui::typeView("PamClientCharacterEntity", fn)` draws
+`fn(void* object, gn::Type type)` in a section above the field list whenever the inspector shows an
+object of that class or a subclass (render thread, the same ImGui frame as `onDraw`). It goes when
+the mod is unloaded. Fields with a note (`db/annotations/notes.yaml`) show it as a tooltip on their
+name; a field marked read-only there is greyed out (writing it does not do what it seems).
 
 ## Settings and console
 

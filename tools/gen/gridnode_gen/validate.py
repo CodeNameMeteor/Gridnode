@@ -8,6 +8,17 @@ from .reflected import Reflected
 
 REALM_OF_CREATOR = {0: "client", 1: "server"}
 
+# C and C++ spellings that are never a reflected type or an annotation struct: the annotation
+# language has its own (u8 .. f64). Checked without a dump too, so CI catches them (56 of the 67
+# errors against a real dump on 2026-11-11 were these).
+C_NAMES = {
+    "char": "i8", "signed": "i32", "unsigned": "u32", "short": "i16", "int": "i32", "long": "i64",
+    "float": "f32", "double": "f64", "size_t": "u64", "uintptr_t": "u64", "intptr_t": "i64",
+    "int8_t": "i8", "int16_t": "i16", "int32_t": "i32", "int64_t": "i64",
+    "uint8_t": "u8", "uint16_t": "u16", "uint32_t": "u32", "uint64_t": "u64",
+    "BYTE": "u8", "WORD": "u16", "DWORD": "u32", "QWORD": "u64", "BOOL": "i32",
+}
+
 
 def known_type(name: str, db: Database, r: Reflected | None) -> bool:
     if name in PRIMITIVES or name in db.structs:
@@ -17,8 +28,9 @@ def known_type(name: str, db: Database, r: Reflected | None) -> bool:
 
 def check(db: Database, r: Reflected | None) -> Problems:
     p = Problems()
+    _c_names(db, p)
     if r is None:
-        return p  # type names and everything else that needs the reflected layer are checked with a dump
+        return p  # other type names and everything else that needs the reflected layer are checked with a dump
     _unknown_types(db, r, p, warn_only=False)
 
     for name, s in db.structs.items():
@@ -58,6 +70,14 @@ def check(db: Database, r: Reflected | None) -> Problems:
                 if off == m.offset:
                     p.error(w, f"member {m.name} (+{m.offset:#x}) is the reflected field {fname}: do not annotate reflected fields")
 
+    for (tname, fname), n in db.notes.items():
+        w = f"{n.meta.file} note {tname}.{fname}"
+        t = r.by_name.get(tname)
+        if t is None:
+            p.error(w, "no reflected type with this name")
+        elif not any(f["name"] == fname for c in r.chain(t) for f in c.get("fields", [])):
+            p.error(w, f"{tname} has no reflected field {fname} (its own or a base class's)")
+
     for ft in db.fp_types:
         t = r.by_name.get(ft.name)
         if t is None:
@@ -80,11 +100,25 @@ def _named(t: TypeRef | None):
     return t.named_type() if t is not None else None
 
 
+def _c_names(db: Database, p: Problems):
+    def need(name: str | None, where: str):
+        if name in C_NAMES and name not in db.structs:
+            p.error(where, f"unknown type {name!r}: write {C_NAMES[name]!r}")
+
+    _each_type_name(db, need)
+
+
 def _unknown_types(db: Database, r: Reflected | None, p: Problems, warn_only: bool):
     def need(name: str | None, where: str):
+        if name in C_NAMES and name not in db.structs:
+            return  # reported by _c_names, with or without a dump
         if name and not known_type(name, db, r):
             (p.warn if warn_only else p.error)(where, f"unknown type {name!r}" + (" (no dump given)" if warn_only else ""))
 
+    _each_type_name(db, need)
+
+
+def _each_type_name(db: Database, need):
     for c in db.classes.values():
         for m in c.members:
             need(_named(m.type), f"{c.meta.file} {c.name}.{m.name}")

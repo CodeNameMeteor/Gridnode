@@ -49,6 +49,9 @@ void lengths() {
         {{0x8b, 0x04, 0x25, 1, 2, 3, 4}, 7, -1},                         // mov eax, [abs32] (SIB, no base)
         {{0x0f, 0xb6, 0x41, 0x10}, 4, -1},                               // movzx eax, byte [rcx+0x10]
         {{0x66, 0x0f, 0x3a, 0x0f, 0xc1, 0x08}, 6, -1},                   // palignr xmm0, xmm1, 8
+        {{0x66, 0x48, 0xc7, 0xc0, 1, 2, 3, 4}, 8, -1},                   // mov rax, imm32: REX.W wins over 0x66
+        {{0x66, 0x48, 0x05, 1, 2, 3, 4}, 7, -1},                         // add rax, imm32 (0x66 ignored)
+        {{0x66, 0x05, 1, 2}, 4, -1},                                     // add ax, imm16
         {{0xc3}, 1, -1},                                                 // ret
     };
     for (const Case& c : cases) {

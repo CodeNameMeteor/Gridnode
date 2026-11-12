@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 35 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck) */
+#define GN_API_VERSION 37 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls) */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -118,10 +118,14 @@ typedef void (*gn_level_fn)(const char* level, int loaded, void* user);
 /* Every frame on the render thread, between Dear ImGui's NewFrame and Render. menu_open: the
  * GridNode menu (INSERT) is open, so the mouse and keyboard belong to the overlay. */
 typedef void (*gn_ui_fn)(int menu_open, void* user);
+typedef void (*gn_type_view_fn)(void* object, const gn_type* type, void* user);
+/* A mod's handle (API 37), given to gn_mod_load2: GridNode's record of this load of the mod. Opaque. */
+typedef struct gn_mod gn_mod;
 
 /* The console's output for one command line (client thread). */
 typedef void (*gn_console_fn)(const char* output, void* user);
 
+#define GN_HOOK_SUBCLASSES 1u /* hook_virtual: the class's subclasses too */
 #define GN_COMMAND_SETTING 1u /* a settings field bound to the console (Group.Field [value]) */
 #define GN_COMMAND_ONLINE 2u  /* touches online play or EA services: see online_warning */
 typedef struct gn_command {
@@ -1148,9 +1152,96 @@ typedef struct gn_api {
     int (*bus_volume_get)(const char* bus, float* out_gain);
     int (*bus_volume_set)(const char* mod, const char* bus, float gain);
     int (*bus_duck)(const char* mod, const char* bus, float gain, float seconds);
+
+    /* ==== GN_API_VERSION 36 ==================================================== */
+
+    /* ---- a class's virtuals, hooked by name ------------------------------------------------------------------
+     * type_vtable_count / type_vtable_at: the vtables GridNode found for a class (image VAs, as in engine.hpp;
+     *   0 past the end). Most classes have one; a class found only by its getType may list candidates.
+     * type_virtual_find: a virtual's vtable byte offset by name ("setVisible"), from the annotated virtuals of
+     *   the class and its base classes (engine.hpp cls::<Class>::vf). GN_ERR_NOT_FOUND for a class nobody has
+     *   annotated: a numeric offset always works.
+     * hook_virtual: hooks the virtual at `offset` (bytes, a multiple of 8) in every vtable of the class, and of
+     *   its subclasses with GN_HOOK_SUBCLASSES. Each slot chains like hook_slot. Subclasses override, so there is
+     *   no single original: hook_original(handle, self) gives the one for that object (by its vtable). Offset 0
+     *   is refused (GN_ERR_SLOT): slot 0 is getType, which GridNode reads to know every object's class.
+     *   GN_ERR_NOT_FOUND: no vtable known for the class; GN_ERR_SLOT: no slot could be hooked (not game code
+     *   there, or the offset is past the end of every vtable: a slot holding a class's getType is never hooked). Taken out when the mod is unloaded, or with hook_virtual_remove. Any thread.
+     * hook_original: null for an object whose vtable this hook is not in. A plain load of self's vtable: call it
+     *   only with the object the game called the detour with. */
+    int (*type_vtable_count)(const gn_type* type);
+    uint64_t (*type_vtable_at)(const gn_type* type, uint32_t index);
+    int (*type_virtual_find)(const gn_type* type, const char* name, uint32_t* out_offset);
+    int (*hook_virtual)(const char* mod, const gn_type* type, uint32_t offset, void* detour, uint32_t flags, uint32_t* out_handle);
+    void* (*hook_original)(uint32_t handle, const void* self);
+    int (*hook_virtual_remove)(uint32_t handle);
+
+    /* ---- any entity's components ----------------------------------------------------------------------------
+     * get_component takes characters only; these take any ComponentEntity, read from its component collection
+     * (no game function is called). On the entity's realm thread (GN_ERR_THREAD): server entities on the
+     * server thread, client entities on the client thread.
+     * entity_component: the first component that is a `type` (or a subclass) in *out; GN_ERR_NOT_FOUND.
+     * entity_components: fn for each component; how many, or a negative GN_ERR_. */
+    int (*entity_component)(void* entity, const gn_type* type, void** out);
+    int (*entity_components)(void* entity, gn_entity_each_fn fn, void* user);
+
+    /* ---- the game's data folder -----------------------------------------------------------------------------
+     * data_path: the data root the game was started with, UTF-8, ending in a backslash: the -dataPath argument
+     * (Frosty's Mod Manager points it at its ModData folder), else the install's Data folder. GN_ERR_FULL when
+     * size is too small. Any thread. */
+    int (*data_path)(char* out, size_t size);
+
+    /* ---- a mod's view of a class in the inspector ------------------------------------------------------------
+     * ui_type_view: when the inspector shows an object of the class (or a subclass), fn(object, type, user) draws in
+     * a collapsible section above the field list, on the render thread, in the same Dear ImGui frame as on_ui (bind
+     * the context the same way: gn::ui::typeView does). Gone when the mod is unloaded. GN_ERR_NOT_FOUND: no such
+     * class; GN_ERR_UNAVAILABLE: the overlay is off. Developer builds only draw it (the player build has no
+     * inspector). */
+    int (*ui_type_view)(const char* mod, const char* class_name, gn_type_view_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 37 ==================================================== */
+
+    /* ---- detours written together ------------------------------------------------------------------------
+     * hook_function between hooks_begin and hooks_commit (same thread) prepares each detour as before but
+     * writes the function entries together at hooks_commit: the game is paused once, not once per detour.
+     * Until hooks_commit the detours are not called. Pairs nest (the outermost commit writes). GridNode
+     * does this around every gn_mod_load itself: a mod's detours take effect when its gn_mod_load returns.
+     * hooks_commit: GN_ERR_SLOT when an entry could not be written (logged; that function stays the
+     * game's), GN_ERR_ARGUMENT without a hooks_begin. */
+    void (*hooks_begin)(void);
+    int (*hooks_commit)(void);
+
+    /* ---- the mod's handle --------------------------------------------------------------------------------
+     * A mod that exports gn_mod_load2(api, self) gets its handle (GridNode calls it instead of gn_mod_load;
+     * GN_MOD exports both). These calls are the ones that found the calling mod by its return address or a
+     * name it passed; with the handle they need neither (a tail call in the mod no longer loses track of
+     * who owns a camera, a patch, a box, a sound). Same arguments and results as the call named, without
+     * `mod`. GN_ERR_ARGUMENT (null for the two that return pointers) for a handle GridNode did not give, or
+     * one of a mod since unloaded. mod.hpp uses them when the host has them. */
+    int (*mod_unload_m)(gn_mod* self);
+    int (*patch_bytes_m)(gn_mod* self, uint64_t va, const void* expected, const void* bytes, size_t size);
+    int (*patch_call_m)(gn_mod* self, uint64_t site_va, uint64_t expected_target_va, void* detour, void** original);
+    int (*mod_export_m)(gn_mod* self, const char* name, void* fn);
+    void* (*mod_import_m)(gn_mod* self, const char* mod_id, const char* name);
+    int (*mod_dir_m)(gn_mod* self, char* out, size_t size);
+    int (*console_run_m)(gn_mod* self, const char* line, gn_console_fn fn, void* user);
+    void* (*settings_find_m)(gn_mod* self, const char* class_name);
+    int (*online_allow_m)(gn_mod* self, const char* reason);
+    int (*setting_add_m)(gn_mod* self, const gn_setting* setting);
+    int (*box_add_m)(gn_mod* self, const gn_transform* at, const float half_extents[3], uint32_t* out_box);
+    int (*sound_play_m)(gn_mod* self, const char* asset_path, const char* event, const float pos[3], uint32_t* out_sound);
+    int (*bus_volume_set_m)(gn_mod* self, const char* bus, float gain);
+    int (*bus_duck_m)(gn_mod* self, const char* bus, float gain, float seconds);
+    int (*physics_set_gravity_m)(gn_mod* self, int realm, const float* g);
+    int (*camera_set_m)(gn_mod* self, const gn_transform* t, uint32_t flags);
+    int (*camera_fov_set_m)(gn_mod* self, float degrees);
+    int (*time_of_day_hold_m)(gn_mod* self, float seconds);
+    int (*visual_env_set_m)(gn_mod* self, uint32_t offset, const void* data, uint32_t size);
+    int (*streaming_focus_add_m)(gn_mod* self, const float pos[3], uint32_t* handle);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
+typedef int (*gn_mod_load2_fn)(const gn_api* api, gn_mod* self); /* API 37: preferred when exported */
 
 #ifdef __cplusplus
 }

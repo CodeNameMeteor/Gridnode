@@ -14,7 +14,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -24,9 +26,19 @@
 
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
+#include "gridnode/mod_call.hpp"
 #include "gridnode/mod_order.hpp"
 #include "gridnode/pe_file.hpp"
 #include "host.hpp"
+
+// A mod's handle (gn_mod, API 37): GridNode's own record of one load of a mod, handed to
+// gn_mod_load2. Never freed (a mod may keep it and call with it after it was unloaded: then refused);
+// a reload makes a new one.
+struct gn_mod {
+    std::string id;
+    gn::host::CodeRange code;
+    std::atomic<bool> live{true};
+};
 
 namespace gn::host {
 namespace {
@@ -55,6 +67,9 @@ struct Mod {
     CodeRange code;            // its image while loaded (to find a mod by an address in it)
     ULONGLONG changedAt = 0; // the file changed (auto reload waits for it to settle)
     std::vector<modorder::Dep> deps;
+    gn_mod* handle = nullptr;  // given to its gn_mod_load2 (null for gn_mod_load only)
+    std::string backAfter;     // unloaded for this mod's unload or reload: loaded again once that is done
+    bool depsAsked = false;    // its optional dependents were asked to unload first (once per request)
 };
 
 // Functions mods offer each other (gn_api mod_export / mod_import), by "<id>.<name>".
@@ -73,6 +88,9 @@ std::wstring g_startingPath;
 // (g_expM) Mods that called online_allow, by id: their reason. Taken out with the mod (takeOut).
 std::map<std::string, std::string> g_online;
 
+std::mutex g_handlesM;
+std::vector<std::unique_ptr<gn_mod>> g_handles; // (g_handlesM) every handle ever given out (never freed)
+
 std::mutex g_modsM;
 std::vector<Mod> g_mods; // guarded by g_modsM; changed only on GridNode's thread
 std::wstring g_folder;   // the mods folder, with a trailing backslash
@@ -84,8 +102,8 @@ FILETIME writeTime(const std::wstring& path) {
 }
 bool sameTime(const FILETIME& a, const FILETIME& b) { return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime; }
 
-// Whether the DLL exports gn_mod_unload, read from the file (no DllMain, no imports, nothing mapped).
-bool exportsUnload(const std::wstring& path) {
+// Whether the DLL exports `name`, read from the file (no DllMain, no imports, nothing mapped).
+bool fileExports(const std::wstring& path, const char* name) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
@@ -96,7 +114,7 @@ bool exportsUnload(const std::wstring& path) {
         if (!ReadFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr) || got != bytes.size()) bytes.clear();
     }
     CloseHandle(f);
-    return pe::exportsName(bytes.data(), bytes.size(), "gn_mod_unload");
+    return pe::exportsName(bytes.data(), bytes.size(), name);
 }
 
 CodeRange imageOf(HMODULE m) {
@@ -133,7 +151,13 @@ void readManifest(Mod& m) {
 bool openMod(Mod& m) {
     const std::string name = m.info.file;
     m.written = writeTime(m.path);
-    m.info.reloadable = exportsUnload(m.path);
+    // Not a mod: never loaded, so its DllMain does not run (every DLL in mods\ was loaded first, 2026-11-11).
+    if (!fileExports(m.path, "gn_mod_load")) {
+        GN_LOG("mods: %s does not export gn_mod_load; skipped", name.c_str());
+        m.info.loaded = false, m.info.result = -1;
+        return false;
+    }
+    m.info.reloadable = fileExports(m.path, "gn_mod_unload");
     std::wstring from = m.path;
     if (m.info.reloadable) {
         // A copy under a new name each time: the original stays free to be rebuilt, and Windows never
@@ -157,16 +181,12 @@ bool openMod(Mod& m) {
             m.info.reloadable = false;
         }
     }
-    // A mod in its own folder may bring DLLs of its own there: found from that folder (the copy it
-    // runs from is in .loaded).
+    // A mod may bring DLLs of its own beside it: found from its folder, mods\ itself included (the
+    // copy it runs from is in .loaded, where a mod in the root of mods\ did not find them, 2026-11-11).
     const std::wstring own = m.path.substr(0, m.path.find_last_of(L"\\/") + 1);
-    if (own != g_folder) {
-        DLL_DIRECTORY_COOKIE cookie = AddDllDirectory(own.c_str());
-        m.module = LoadLibraryExW(from.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
-        if (cookie) RemoveDllDirectory(cookie);
-    } else {
-        m.module = LoadLibraryW(from.c_str());
-    }
+    DLL_DIRECTORY_COOKIE cookie = AddDllDirectory(own.c_str());
+    m.module = LoadLibraryExW(from.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
+    if (cookie) RemoveDllDirectory(cookie);
     if (!m.module) {
         m.info.loaded = false, m.info.result = -1;
         GN_LOG("mods: %s could not be loaded (error %lu)", name.c_str(), static_cast<unsigned long>(GetLastError()));
@@ -199,7 +219,13 @@ void forgetExports(const CodeRange& r, const std::string& id);
 // (an unload, or a gn_mod_load that failed half way). A hook with another mod's hook on top stays and
 // is listed in `refused`. How many hooks came out.
 size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::string>* refused) {
+    {
+        std::lock_guard<std::mutex> lock(g_handlesM);
+        for (const auto& h : g_handles)
+            if (h->code.begin == code.begin && h->id == id) h->live = false; // calls with it are refused from now
+    }
     const size_t hooksOut = forgetHooks(code, refused);
+    forgetVirtualHooks(code);
     forgetPatches(code);
     forgetTicks(code);
     forgetCreated(code);
@@ -233,6 +259,18 @@ void start(Mod& m) {
     const std::string name = m.info.file;
     crash::refreshModules(); // the crash notes name frames in it (and whatever it loads, next time)
     auto entry = reinterpret_cast<gn_mod_load_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load")));
+    // gn_mod_load2 (API 37) is preferred: the mod gets its handle, and calls made with it need no
+    // name and no return address.
+    auto entry2 = reinterpret_cast<gn_mod_load2_fn>(reinterpret_cast<void*>(GetProcAddress(m.module, "gn_mod_load2")));
+    gn_mod* self = nullptr;
+    if (entry2) {
+        auto rec = std::make_unique<gn_mod>();
+        rec->id = m.info.id, rec->code = m.code;
+        self = rec.get();
+        std::lock_guard<std::mutex> lock(g_handlesM);
+        g_handles.push_back(std::move(rec));
+    }
+    m.handle = self;
     if (!m.info.reloadable) {
         // Never unloaded: their hooks and callbacks point into them.
         HMODULE pinned = nullptr;
@@ -243,7 +281,15 @@ void start(Mod& m) {
         std::lock_guard<std::mutex> lock(g_expM);
         g_startingId = m.info.id, g_startingCode = m.code, g_startingPath = m.path;
     }
-    const int r = entry(api());
+    int r;
+    {
+        modcall::Scope scope(entry); // its gn_mod_load may tail-call the API too
+        // Its function detours are written together when gn_mod_load returns: one pause of the game
+        // instead of one per detour (API 37; 7 detours paused it 7 times, 2026-11-11).
+        hooksBegin();
+        r = entry2 ? entry2(api(), self) : entry(api());
+        hooksCommit();
+    }
     {
         std::lock_guard<std::mutex> lock(g_expM);
         g_startingId.clear(), g_startingCode = CodeRange{}, g_startingPath.clear();
@@ -303,6 +349,29 @@ std::string dependentsOf(const Mod& m) {
         if (needs) out += (out.empty() ? "" : ", ") + o.info.id;
     }
     return out;
+}
+
+// The loaded mods that need m only optionally (it is a soft dependency of theirs, or they imported
+// from it without a hard dependency): unloaded before it and loaded again after, so each comes back
+// as it would without m (or, after a reload, with the new m). False if none, or if one needs m for
+// sure or cannot be unloaded: then the unload is refused as before. g_modsM not held.
+bool optionalDependents(const Mod& m, std::vector<std::string>& files) {
+    std::set<std::string> importers;
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (auto it = g_importers.find(m.info.id); it != g_importers.end()) importers = it->second;
+    }
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& o : g_mods) {
+        if (!o.module || o.info.file == m.info.file) continue;
+        bool needs = importers.count(o.info.id) != 0, hard = false;
+        for (const modorder::Dep& d : o.deps)
+            if (d.id == m.info.id) needs = true, hard = hard || !d.soft;
+        if (!needs) continue;
+        if (hard || !o.info.reloadable) return false;
+        files.push_back(o.info.file);
+    }
+    return !files.empty();
 }
 
 void forgetExports(const CodeRange& r, const std::string& id) {
@@ -524,6 +593,25 @@ void pollMods() {
                 work = m;
             }
         }
+        // Mods that need it only optionally go first (and come back after), rather than blocking it.
+        const bool loadOnly = work.loadWanted && !work.unloadWanted;
+        std::vector<std::string> optional;
+        if (work.module && !loadOnly && !work.depsAsked && optionalDependents(work, optional)) {
+            std::string names;
+            std::lock_guard<std::mutex> lock(g_modsM);
+            for (Mod& o : g_mods)
+                if (std::find(optional.begin(), optional.end(), o.info.file) != optional.end()) {
+                    o.unloadWanted = true, o.backAfter = work.info.id;
+                    names += (names.empty() ? "" : ", ") + o.info.file;
+                }
+            Mod& cur = g_mods[i];
+            cur.depsAsked = true;
+            if (work.unloadWanted) cur.unloadWanted = true;
+            else cur.reloadWanted = true;
+            GN_LOG("mods: %s: first unloading %s (%s it only optionally), then loading %s again", work.info.file.c_str(), names.c_str(),
+                   optional.size() == 1 ? "needs" : "need", optional.size() == 1 ? "it" : "them");
+            continue;
+        }
         // Without the lock: the reload waits for frames, and the menu reads the list every frame.
         if (work.unloadWanted) {
             work.unloadWanted = false;
@@ -548,6 +636,29 @@ void pollMods() {
         cur.reloadWanted = reloadWanted && cur.module; // only what still applies to the new state
         cur.unloadWanted = unloadWanted && cur.module;
         cur.loadWanted = loadWanted && !cur.module;
+        // Done with it: the mods unloaded for it come back, and a mod just loaded is picked up by the
+        // loaded mods that want it optionally (they look for it when they load: reloaded to see it).
+        cur.depsAsked = false;
+        const std::string id = cur.info.id;
+        const bool nowLoaded = cur.module && cur.info.loaded;
+        std::set<std::string> importers;
+        if (loadOnly && nowLoaded) {
+            std::lock_guard<std::mutex> el(g_expM);
+            if (auto it = g_importers.find(id); it != g_importers.end()) importers = it->second;
+        }
+        for (Mod& o : g_mods) {
+            if (o.backAfter == id) {
+                o.backAfter.clear();
+                if (!o.module) o.loadWanted = true;
+                continue;
+            }
+            if (!loadOnly || !nowLoaded || !o.module || !o.info.loaded || !o.info.reloadable || importers.count(o.info.id)) continue;
+            for (const modorder::Dep& d : o.deps)
+                if (d.soft && d.id == id && !o.reloadWanted) {
+                    o.reloadWanted = true;
+                    GN_LOG("mods: %s wants %s optionally: reloading it so it sees it", o.info.file.c_str(), cur.info.file.c_str());
+                }
+        }
     }
 }
 
@@ -641,6 +752,29 @@ void* modImport(const void* caller, const char* modId, const char* name) {
     if (it == g_exports.end()) return nullptr;
     if (!me.empty() && me != modId) g_importers[modId].insert(me); // it now needs that mod loaded
     return it->second.fn;
+}
+
+bool modContext(const gn_mod* m, std::string& id, const void*& caller) {
+    if (!m) return false;
+    std::lock_guard<std::mutex> lock(g_handlesM);
+    for (const auto& h : g_handles)
+        if (h.get() == m) {
+            if (!h->live) return false;
+            id = h->id;
+            caller = reinterpret_cast<const void*>(h->code.begin); // an address in its code: owns what the call makes
+            return true;
+        }
+    return false;
+}
+
+const void* callerOf(const void* ret) {
+    static const CodeRange self = [] {
+        HMODULE me = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(reinterpret_cast<const void*>(&callerOf)), &me);
+        return me ? imageOf(me) : CodeRange{};
+    }();
+    return modcall::resolve(ret, [](const void* p) { return self.has(p); });
 }
 
 std::string modNameAt(const void* caller) {
@@ -745,6 +879,18 @@ void loadMods(const std::wstring& folder) {
     std::vector<bool> placed(opened.size(), false);
     for (size_t i : plan.order) {
         placed[i] = true;
+        // A hard dependency whose gn_mod_load failed: not started, as load() does (it started anyway).
+        std::string why;
+        {
+            std::lock_guard<std::mutex> lock(g_modsM);
+            why = missingDep(opened[i]);
+        }
+        if (!why.empty()) {
+            closeMod(opened[i], why);
+            std::lock_guard<std::mutex> lock(g_modsM);
+            g_mods.push_back(opened[i]);
+            continue;
+        }
         start(opened[i]);
         if (opened[i].info.loaded) ++loaded;
         std::lock_guard<std::mutex> lock(g_modsM);

@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover
 CONFIDENCE = ("confirmed", "inferred", "hypothesis")
 REALMS = ("client", "server", "any")
 HOOK_KINDS = ("vtable-slot", "creator-slot", "pointer")
-SECTIONS = ("defaults", "classes", "structs", "globals", "functions", "hooks", "code", "constants", "events", "fingerprint")
+SECTIONS = ("defaults", "classes", "structs", "globals", "functions", "hooks", "code", "constants", "events", "notes", "fingerprint")
 
 
 @dataclass
@@ -117,6 +117,16 @@ class Constant:
 
 
 @dataclass
+class FieldNote:
+    """What was learned about a reflected field: its offset and type stay the dump's (plan 4.2)."""
+    type: str
+    field: str
+    unit: str
+    readonly: bool
+    meta: Meta  # meta.note is the note
+
+
+@dataclass
 class EventAnn:
     """An entity event (or any name Frostbite keeps only as a djb2-xor hash), named by our research."""
     name: str
@@ -158,6 +168,7 @@ class Database:
     code: dict[str, CodeSite] = field(default_factory=dict)
     constants: dict[str, Constant] = field(default_factory=dict)
     events: dict[str, EventAnn] = field(default_factory=dict)
+    notes: dict[tuple[str, str], FieldNote] = field(default_factory=dict)  # (type, field)
     fp_types: list[FpType] = field(default_factory=list)
     fp_slots: list[FpSlot] = field(default_factory=list)
     fp_code: list[FpCode] = field(default_factory=list)
@@ -457,6 +468,25 @@ def _load_file(doc: dict, d: dict, fn: str, db: Database, p: Problems):
         if isinstance(sent_to, str):
             sent_to = [sent_to]
         db.events[name] = EventAnn(name, h, [str(x) for x in sent_to], _meta(e, d, fn, p, w))
+
+    for n in doc.get("notes", []) or []:
+        w = f"{fn} note {n.get('type', '?')}.{n.get('field', '?')}" if isinstance(n, dict) else f"{fn} note ?"
+        if not isinstance(n, dict):
+            p.error(w, "must be a mapping")
+            continue
+        # No offset and no type: those are the dump's, and a note cannot contradict them.
+        _check_keys(n, {"type", "field", "note", "unit", "readonly", "confidence", "sources"}, p, w)
+        t, fld = n.get("type"), n.get("field")
+        if not isinstance(t, str) or not t.isidentifier() or not isinstance(fld, str) or not fld:
+            p.error(w, "type and field must be names")
+            continue
+        if not str(n.get("note", "") or "").strip():
+            p.error(w, "a note needs its note")
+            continue
+        if (t, fld) in db.notes:
+            p.error(w, f"{t}.{fld} already has a note in {db.notes[(t, fld)].meta.file}")
+            continue
+        db.notes[(t, fld)] = FieldNote(t, fld, str(n.get("unit", "") or ""), bool(n.get("readonly", False)), _meta(n, d, fn, p, w))
 
     fp = doc.get("fingerprint")
     if fp:

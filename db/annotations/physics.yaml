@@ -13,6 +13,40 @@ globals:
     sources: [ghidra]
 
 structs:
+  - name: hkVector4
+    size: 0x10
+    align: 16
+    opaque: true
+    note: "Havok's four-float vector (x, y, z, w), passed by pointer in the hknp calls below."
+    confidence: inferred
+    sources: [ghidra]
+    members:
+      - { offset: 0x00, name: v, type: "f32[4]" }
+  - name: hkTransform
+    size: 0x40
+    align: 16
+    opaque: true
+    note: "Havok rotation (three hkVector4 columns) then translation at +0x30 (hkTransform_fromQuat fills the rotation, the caller the translation)."
+    confidence: inferred
+    sources: [ghidra]
+    members:
+      - { offset: 0x30, name: translation, type: hkVector4 }
+  - name: hkpSurfaceInfo
+    size: 0x30
+    opaque: true
+    note: "The character proxy's support info (docs/research/character-controller-proxy.md); supported state byte at +0x1."
+    confidence: hypothesis
+    sources: [ghidra]
+  - name: PhysicsCreationInfo
+    size: 0xd0
+    opaque: true
+    note: "Built on the stack by PhysicsCreationInfo_ctor; at least 0xd0 bytes (docs/research/standalone-collision.md). Only the members below are known."
+    confidence: hypothesis
+    sources: [ghidra, mecmp]
+    members:
+      - { offset: 0x00, name: bus, type: "void*" }
+      - { offset: 0xc0, name: owner, type: "void*", note: "The PhysicsOwner." }
+      - { offset: 0xc8, name: parent, type: "void*" }
   - name: hknpMotion
     size: 0x80
     align: 16
@@ -148,7 +182,7 @@ functions:
     confidence: confirmed
     sources: [research, ghidra]
   - { name: hknpConvexShape_BuildConfig_ctor, va: 0x143f2e490, signature: "void*(void* config)", note: "Havok's convex BuildConfig (0x30 bytes on the game's stack in 0x143516450).", confidence: confirmed, sources: [research, ghidra] }
-  - { name: hknpConvexShape_createFromHalfExtents, va: 0x143f2f140, signature: "void*(const hkVector4* halfExtents, float convexRadius, const void* config)", note: "A box; the game uses radius 0.01 (0x143516450, kind 1) and sets the shape's user data (+0x18).", confidence: confirmed, sources: [research, ghidra] }
+  - { name: hknpConvexShape_createFromHalfExtents, va: 0x143f2f140, signature: "void*(const hkVector4* halfExtents, f32 convexRadius, const void* config)", note: "A box; the game uses radius 0.01 (0x143516450, kind 1) and sets the shape's user data (+0x18).", confidence: confirmed, sources: [research, ghidra] }
   - { name: hknpBodyCinfo_ctor, va: 0x143f38a70, signature: "void(void* cinfo)", note: "0x60 bytes: +0 shape, +8 reserved id, +0xc motion id (0 static), +0x10 quality, +0x12 material, +0x14 collision filter info, +0x18 flags, +0x30 position, +0x40 orientation (quaternion).", confidence: confirmed, sources: [research, ghidra] }
   - { name: hknpWorld_createBody, va: 0x143f41880, signature: "void(void* hknpWorld, u32* outId, const void* cinfo, u8 flags)", note: "Flags bit 0: don't add it yet (the game's factory 0x143516450 passes 1 and sets the body's user data +0x88 first); otherwise addBodies(world, id, 1, flags) at 0x143f41a38.", confidence: confirmed, sources: [research, ghidra] }
   - { name: hknpWorld_addBodies, va: 0x143f41a80, signature: "void(void* hknpWorld, const u32* ids, i32 count, u32 flags)", confidence: inferred, sources: [research, ghidra] }
@@ -214,7 +248,7 @@ functions:
     sources: [ghidra]
   - name: hknpMotion_computeInertia
     va: 0x1434cf0d0
-    signature: "void(void* hknpWorld, void* shape, float mass, void* outMotion)"
+    signature: "void(void* hknpWorld, void* shape, f32 mass, void* outMotion)"
     note: "Frostbite helper that computes shape mass properties, extracts diagonal inertia tensor, computes inverse inertia components, and initializes dynamic motion properties."
     confidence: hypothesis
     sources: [ghidra]
@@ -232,19 +266,19 @@ functions:
     sources: [ghidra]
   - name: hknpContactImpulseEvent_unpack
     va: 0x143f3ddf0
-    signature: "void(const void* event, void* hknpWorld, float* outNormalAndContactPoints)"
+    signature: "void(const void* event, void* hknpWorld, f32* outNormalAndContactPoints)"
     note: "Decompresses contact manifold: outputs contact normal (Vec4) and 4 contact points (Vec4 pos0..pos3) in world coordinates."
     confidence: hypothesis
     sources: [ghidra]
-  - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(float* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
-  - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(float* hkTransform, const float* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
+  - { name: Quat_fromLinearTransform, va: 0x143ccbd50, signature: "void(f32* quat, const LinearTransform* t)", note: "The game's rows (w 0, translation w 1) to a rotation quaternion (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
+  - { name: hkTransform_fromQuat, va: 0x143cd0790, signature: "void(f32* hkTransform, const f32* quat)", note: "Fills the rotation; the caller writes the translation at +0x30 (0x1434f21e0).", confidence: inferred, sources: [ghidra] }
   - { name: PhysicsFactory_find, va: 0x143506830, signature: "void*(void* factories, const void* typeInfo)", note: "The first factory in a game world's list (+0x58; vector at +0x28..+0x30) whose type matches. A barrier's enable calls it with TI_PhysicsEntityFactory.", confidence: inferred, sources: [ghidra] }
   - { name: SurfaceTouch_classifyBody, va: 0x143913840, signature: "u32(void* probeContext, u32 bodyId, u32 partIndex)", note: "Classifies Faith's contact traversal permissions for a Havok body. Reads parent via PhysicsManager_objectOfId; if PamOBBCollisionEntity, reads traversal flags at parent[-1] (+0x90 Climb, +0x91 Vault, +0x92 Stand, +0x93 Wallrun) returning 0x1e for solid. If ClientCapsuleCollisionComponent, returns 0x1e directly. Pure research, to be confirmed in game.", confidence: inferred, sources: [ghidra, research] }
   - { name: PhysicsManager_objectOfId, va: 0x1434ee250, signature: "void*(void* manager, const u32* bodyId)", note: "Returns manager->owners[(id >> 16) & 0xff].table[id & 0xffff]. The parent or component pointer registered for the body. Read by SurfaceTouch_classifyBody, ray hit resolver, and capsule queries.", confidence: hypothesis, sources: [ghidra] }
   - { name: PhysicsManager_setParentOfId, va: 0x1434f82f0, signature: "void(void* manager, const u32* bodyId, void* parent)", note: "Sets manager->owners[(id >> 16) & 0xff].table[id & 0xffff] = parent, resizing the table if needed. Called by PhysicsEntityFactory_createBody.", confidence: hypothesis, sources: [ghidra] }
   - { name: PhysicsManager_ownerByIndex, va: 0x1434ee7e0, signature: "void*(void* manager, u32 ownerIndex)", note: "manager +0xf0 [ownerIndex * 8]. Called by PamOBBCollision_enable to get owner from rigidData +0x2a.", confidence: hypothesis, sources: [ghidra] }
-  - { name: hknpSphereShape_create, va: 0x143f6c460, signature: "void*(const hkVector4* origin, float radius)", note: "Creates an hknpSphereShape (vtable 0x141d4f348, size 0x80). Called by PhysicsEntityFactory_createBody for shape type 2.", confidence: hypothesis, sources: [ghidra] }
-  - { name: hknpCapsuleShape_create, va: 0x143f6b310, signature: "void*(const hkVector4* vertexA, const hkVector4* vertexB, float radius)", note: "Creates an hknpCapsuleShape (vtable 0x141d4f448, size 0x1b0). Called by PhysicsEntityFactory_createBody for shape type 3 with endpoints (0, 0, +/- 0.5h).", confidence: hypothesis, sources: [ghidra] }
+  - { name: hknpSphereShape_create, va: 0x143f6c460, signature: "void*(const hkVector4* origin, f32 radius)", note: "Creates an hknpSphereShape (vtable 0x141d4f348, size 0x80). Called by PhysicsEntityFactory_createBody for shape type 2.", confidence: hypothesis, sources: [ghidra] }
+  - { name: hknpCapsuleShape_create, va: 0x143f6b310, signature: "void*(const hkVector4* vertexA, const hkVector4* vertexB, f32 radius)", note: "Creates an hknpCapsuleShape (vtable 0x141d4f448, size 0x1b0). Called by PhysicsEntityFactory_createBody for shape type 3 with endpoints (0, 0, +/- 0.5h).", confidence: hypothesis, sources: [ghidra] }
   - { name: PamOBBCollisionEntity_getType, va: 0x143965ab0, signature: "void*(void* self)", note: "Returns TI_PamOBBCollisionEntity (0x142858650). 0x143965ab9 is the this - 0x30 thunk used in the subobject vtable 0x141c4e258.", confidence: hypothesis, sources: [ghidra] }
   - { name: PhysicsEntityFactory_createBody, va: 0x143516450, signature: "void(void* factory, u32* outId, PhysicsCreationInfo* info, void* rigidData, void* desc)", note: "What PhysicsEntityFactory_create (a 32-byte stub) jumps to. Reads rigidData +0xd4, +0xd8, +0xdc..+0xe4 and info +0xc0 (the physics owner) / +0xc8 (parent); keeps neither rigidData nor desc.", confidence: inferred, sources: [ghidra] }
   - { name: RigidBody_destroy, va: 0x1434eba50, signature: "void(void* owner, u32* id, const u32* args)", note: "The barrier's deinit (PamOBBCollision_deinit) passes {realm, 1}: the owner's object (table +0x130) is destroyed.", confidence: inferred, sources: [ghidra] }
