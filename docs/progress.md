@@ -83,6 +83,15 @@ found; 56 of them are not in `sp_maincity`. Not checked: whether a GUID scan can
 used (it lists more, never less), and objects whose files are in archives not staged here. The user's Frosty mods
 are staged for the `.fbmod` writer (read-only access to Documents\Frosty).
 
+`.fbmod` reader and writer (2026-11-12; `tools/assets/gridnode_assets/fbmod.py`, `assets fbmod-info`, `assets fbmod-build`):
+the format worked out from the user's 15 mods (format notes in the module header). FROSTY versions 1, 3, 5: all 11
+of the user's read and write back byte for byte; FBMODV1/V2 (4 mods): their header is the toc/sb tree, read only.
+Bundle hashes are djb2-xor of the lower-case bundle name (resolved to names with `--data`); the SHA-1 is of the stored
+(compressed) data; data is the game's payload blocks (LZ4 0x0970, as Frosty). EBX in the mods (21, written by
+Frosty) read and rebuild with the same values. Test mod: `bin/fbmods/GridNode No Offline Warning.fbmod`, zhpete's
+No Offline Warning rebuilt through YAML by GridNode (same values, same two bundles). Not tested: any GridNode-written
+`.fbmod` in Frosty's Mod Manager or the game.
+
 Second round (API 37, the user's choices of 2026-11-11; untested in game):
 - **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one
   pause; the loader wraps every `gn_mod_load`, so all mods get it without a rebuild.

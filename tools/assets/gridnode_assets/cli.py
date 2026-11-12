@@ -11,8 +11,23 @@
                                                (and, with the reflected dump, its types against the game's)
   assets deps NAME --data DIR [--into BUNDLE]   everything an EBX needs (imports, resources, chunks) and
                                                the bundles that hold each; --into: what a bundle lacks
+  assets fbmod-info FILE.fbmod [--data DIR] [--extract DIR]
+                                               a Frosty mod: details, what it changes, in which bundles
+  assets fbmod-build SPEC.yaml [--out FILE.fbmod] [--data DIR] [--dump JSON]
+                                               a Frosty mod (version 5) from EBX / YAML files (SPEC: below)
   assets ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]
                                                a YAML file written as EBX, its types checked against the game's
+
+SPEC for fbmod-build (paths relative to it):
+  title: My mod
+  author: me
+  category: Gameplay
+  version: "1.0"
+  description: What it does
+  ebx:
+    - name: gameplay/movement/climbing/ladders/pf_climbladder_768_nobrackets   # the asset it replaces
+      file: ladder.yaml                                                        # or a .ebx file
+      bundles: []          # only for an asset added to bundles that do not have it (names, as `list` shows)
 
 DIR is the game's Data folder (gridnode.log: "startup: game data from ..."), or the GRIDNODE_DATA
 environment variable. Extracted files go to bin/assets/ (git-ignored): game data is never committed.
@@ -207,6 +222,103 @@ def cmd_deps(a) -> int:
     return 0
 
 
+def _bundle_names(a) -> dict[int, str]:
+    if not (a.data or os.environ.get("GRIDNODE_DATA")):
+        return {}
+    names = {}
+    for b in _all_bundles(_store(a)):
+        names[ebx.name_hash(b.name.lower())] = b.name
+    return names
+
+
+def cmd_fbmod_info(a) -> int:
+    from . import fbmod
+    with open(a.file, "rb") as f:
+        d = f.read()
+    if not d.startswith(fbmod.MAGIC):
+        v = fbmod.read_legacy(d)
+        print(f"{v.get('magic')}: {v.get('title')} {v.get('version')} by {v.get('author')} (an old format: read only; "
+              f"its data is in {os.path.splitext(os.path.basename(a.file))[0]}_01.archive)")
+        for r in v.get("resources", []):
+            print(f"  {r.get('type', '?'):9} {r.get('name', '')}  {r.get('uncompressedSize', '')} bytes")
+        for act in v.get("actions", []):
+            print(f"  {act.get('type')} resource {act.get('resourceId')} in {act.get('bundle')}")
+        return 0
+    m = fbmod.read(d)
+    names = _bundle_names(a)
+    print(f"{m.title} {m.mod_version} by {m.author} ({m.category}): FROSTY version {m.version}, game version {m.game_version}")
+    if m.description:
+        print("  " + m.description.strip().replace("\n", "\n  "))
+    for r in m.resources:
+        if r.type == fbmod.EMBEDDED and r.index < 0:
+            continue
+        where = ", ".join(names.get(b, f"{b:#010x}") for b in r.bundles)
+        extra = f" resType {r.res_type:#010x} rid {r.res_rid:#018x}" if r.type == fbmod.RES else ""
+        print(f"  {fbmod.KINDS[r.type]:8} {r.name}  {r.size} bytes{extra}" + (f"  added to: {where}" if where else ""))
+        if a.extract and r.index >= 0:
+            data = m.payload(r)
+            path = os.path.join(a.extract, fbmod.KINDS[r.type], r.name.replace("/", os.sep) + "." + fbmod.KINDS[r.type])
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(data)
+            if r.type == fbmod.EBX:
+                with open(path[:-4] + ".yaml", "w", encoding="utf-8") as f:
+                    f.write(ebx.to_yaml(ebx.read(data)))
+    if a.extract:
+        print(f"extracted into {a.extract}")
+    return 0
+
+
+def cmd_fbmod_build(a) -> int:
+    import yaml
+
+    from . import fbmod
+    with open(a.spec, encoding="utf-8") as f:
+        spec = yaml.safe_load(f) or {}
+    here = os.path.dirname(os.path.abspath(a.spec))
+    m = fbmod.new_mod(str(spec.get("title", "")), str(spec.get("author", "")), str(spec.get("category", "")),
+                      str(spec.get("version", "1.0")), str(spec.get("description", "")), str(spec.get("link", "")))
+    if not m.title:
+        raise StoreError(f"{a.spec}: give the mod a title")
+    dump = _dump(a)
+    known: dict[str, str] = {}
+    if a.data or os.environ.get("GRIDNODE_DATA"):
+        for b in _all_bundles(_store(a)):
+            for e in b.entries:
+                if e.kind == "ebx":
+                    known.setdefault(e.name.lower(), b.name)
+    errors = 0
+    for item in spec.get("ebx") or []:
+        name, path = str(item.get("name", "")), os.path.join(here, str(item.get("file", "")))
+        if not name or not os.path.isfile(path):
+            raise StoreError(f"{a.spec}: an ebx entry needs a name and a file that exists ({name or '?'}: {path})")
+        if path.lower().endswith((".yaml", ".yml")):
+            with open(path, encoding="utf-8") as f:
+                x = ebx.from_yaml(f.read())
+        else:
+            with open(path, "rb") as f:
+                x = ebx.read(f.read())
+        if dump is not None:
+            errs, _ = ebx.check_types(x, dump)
+            for e in errs:
+                print(f"error: {name}: {e}", file=sys.stderr)
+            errors += len(errs)
+        bundles = [str(b) for b in item.get("bundles") or []]
+        if known and name.lower() not in known and not bundles:
+            print(f"warning: {name} is in no bundle of the game: a new asset needs `bundles` to be loaded", file=sys.stderr)
+        fbmod.add_ebx(m, name, ebx.write(x), bundles)
+    if errors:
+        print(f"fbmod-build: {errors} error(s): not written", file=sys.stderr)
+        return 1
+    out = a.out or os.path.join(OUT, "mods", "".join(c if c.isalnum() or c in " -_" else "_" for c in m.title) + ".fbmod")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    data = fbmod.write(m)
+    with open(out, "wb") as f:
+        f.write(data)
+    print(f"fbmod-build: {sum(1 for r in m.resources if r.index >= 0)} asset(s), {len(data)} bytes -> {out}")
+    return 0
+
+
 def cmd_ebx_check(a) -> int:
     s = _store(a)
     dump = _dump(a)
@@ -298,6 +410,15 @@ def main(argv: list[str]) -> int:
     de.add_argument("--data")
     de.add_argument("--into", help="a bundle (part of its name): list only what it lacks")
     de.add_argument("--all", action="store_true", help="with --into: list everything, not only what it lacks")
+    fi = sub.add_parser("fbmod-info", help="a Frosty mod: details and what it changes")
+    fi.add_argument("file")
+    fi.add_argument("--data", help="the game's Data folder: bundle names instead of hashes")
+    fi.add_argument("--extract", help="a folder: write its assets there (EBX also as YAML)")
+    fb = sub.add_parser("fbmod-build", help="a Frosty mod from EBX / YAML files")
+    fb.add_argument("spec")
+    fb.add_argument("--out")
+    fb.add_argument("--data", help="the game's Data folder: warns about assets in no bundle")
+    fb.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
     bu = sub.add_parser("ebx-build", help="a YAML file written as EBX, into bin/assets/built")
     bu.add_argument("file")
     bu.add_argument("--out")
@@ -306,7 +427,7 @@ def main(argv: list[str]) -> int:
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
                 "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
-                "deps": cmd_deps}[a.cmd](a)
-    except (StoreError, ebx.EbxError) as e:
+                "deps": cmd_deps, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
+    except (StoreError, ebx.EbxError, ValueError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1

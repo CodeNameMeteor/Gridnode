@@ -56,6 +56,8 @@ committed). Extracting needs `pip install lz4`.
 | `ebx NAME` (or a `.ebx` file) `[--out DIR\|-]` | An EBX file as YAML, into `bin/assets/yaml/`; says whether it writes back to the same bytes. |
 | `ebx-check [--superbundle S] [--bundle B] [--limit N] [--dump JSON]` | Every EBX read, turned into YAML, read back and written: the same bytes? Lists the files that are not, and with the reflected dump, where a file's types disagree with the game's. |
 | `deps NAME [--into BUNDLE] [--all]` | Everything an EBX needs: the EBX it imports (and theirs), the resources its fields name, the chunks those name, each with the bundles that hold it. `--into`: only what that bundle lacks (what placing the object in that area would have to add). EBX file GUIDs are kept in `bin/assets/index/`. |
+| `fbmod-info FILE.fbmod [--data DIR] [--extract DIR]` | A Frosty mod: its details, what it changes and the bundles it adds to (names with `--data`). `--extract`: its assets into a folder, EBX also as YAML. Reads every format seen (FROSTY 1, 3, 5; FBMODV1 and V2 headers). |
+| `fbmod-build SPEC.yaml [--out FILE.fbmod] [--data DIR] [--dump JSON]` | A Frosty mod (FROSTY version 5, as current Frosty writes) from EBX or YAML files; `gridnode.py assets --help` shows the SPEC. Types are checked against the game's first; into `bin/assets/mods/`. |
 | `ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]` | A YAML file written as EBX (into `bin/assets/built/`). Its types are checked against the game's first (the dump: `--dump`, or `db/reflected/` after `setup`); an unknown field, a reference to nothing or a type that disagrees stops it. |
 
 The YAML keeps everything the file has (its GUID, imports, its own type table with offsets, every
@@ -63,7 +65,11 @@ instance in order), so it writes back to the same bytes. In it: fields by name (
 parent already has is `Type.name`); references are `null`, `'#N'` (instance N of this file) or `'import:N'`;
 enums by name; floats as the shortest decimal that is the same float32. To change an asset: `ebx` it, edit the
 values, `ebx-build` it. Warnings about fields "not of the game's type" are normal for a few (data only the
-pipeline or a debug build uses). Format notes: the header of
+pipeline or a debug build uses).
+
+To make a Frosty mod from a change: `ebx` the asset, edit the YAML, list it in a SPEC, `fbmod-build`, then
+import the `.fbmod` in Frosty's Mod Manager. An EBX that Frosty wrote reads and builds with the same values,
+but not the same bytes: GridNode writes the game's own layout. Format notes: the header of
 `tools/assets/gridnode_assets/ebx.py`. Tests: `python3 -m unittest discover -s tools/assets/tests -t tools/assets`.
 
 ## Meshes (custom models)
