@@ -88,6 +88,34 @@ class EbxTest(unittest.TestCase):
         self.assertEqual(ebx.read(d).instances[0].values["Pos"]["x"], {"f32": "0000c07f"})
         self.assertTrue(ebx.round_trip(d)[0])
 
+    def test_unknown_field_and_bad_reference(self):
+        x = sample()
+        x.instances[1].values["Nope"] = 1
+        with self.assertRaisesRegex(ebx.EbxError, "no field Nope"):
+            ebx.write(x)
+        x = sample()
+        x.instances[1].values["Next"] = "#9"
+        with self.assertRaisesRegex(ebx.EbxError, "a reference is"):
+            ebx.write(x)
+
+    def test_types_against_the_game(self):
+        game = [
+            {"ti": "v", "name": "Vec3", "category": "ValueType", "flags": 0xD029, "fields": [
+                {"name": "x", "type": "f"}, {"name": "y", "type": "f"}, {"name": "z", "type": "f"}]},
+            {"ti": "f", "name": "Float32", "category": "Primitive", "flags": F32},
+            {"ti": "u", "name": "Uint32", "category": "Primitive", "flags": U32},
+            {"ti": "k", "name": "Kind", "category": "Enum", "flags": ENUM, "values": [{"name": "Kind_A", "value": 0}, {"name": "Kind_B", "value": 2}]},
+            {"ti": "d", "name": "DataContainer", "category": "Class", "flags": CLASS},
+            {"ti": "t", "name": "Thing", "category": "Class", "flags": CLASS, "super": "d", "fields": [
+                {"name": "Kind", "type": "k"}, {"name": "Pos", "type": "v"}, {"name": "Count", "type": "f"}]},
+        ]
+        dump = {"by_name": {t["name"]: t for t in game}, "by_ti": {t["ti"]: t for t in game}}
+        errors, warnings = ebx.check_types(sample(), dump)
+        self.assertIn("Kind.Kind_B = 1 here, 2 in the game", errors)
+        self.assertTrue(any(e.startswith("Thing.Count: type code 16 here, 19") for e in errors), errors)
+        self.assertIn("Thing.Name: not a field of the game's type (data only the pipeline uses?)", warnings)
+        self.assertTrue(any(w.startswith("SubThing: not a type") for w in warnings), warnings)
+
     def test_not_ebx(self):
         with self.assertRaises(ebx.EbxError):
             ebx.read(b"\0" * 0x40)

@@ -54,12 +54,15 @@ committed). Extracting needs `pip install lz4`.
 | `list [--bundle B] [--type ebx\|res\|chunks]` | The entries of the bundles. |
 | `extract NAME` | One entry, decompressed, into `bin/assets/<kind>/`. |
 | `ebx NAME` (or a `.ebx` file) `[--out DIR\|-]` | An EBX file as YAML, into `bin/assets/yaml/`; says whether it writes back to the same bytes. |
-| `ebx-check [--superbundle S] [--bundle B] [--limit N]` | Every EBX read, turned into YAML, read back and written: the same bytes? Lists the files that are not. |
+| `ebx-check [--superbundle S] [--bundle B] [--limit N] [--dump JSON]` | Every EBX read, turned into YAML, read back and written: the same bytes? Lists the files that are not, and with the reflected dump, where a file's types disagree with the game's. |
+| `ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]` | A YAML file written as EBX (into `bin/assets/built/`). Its types are checked against the game's first (the dump: `--dump`, or `db/reflected/` after `setup`); an unknown field, a reference to nothing or a type that disagrees stops it. |
 
 The YAML keeps everything the file has (its GUID, imports, its own type table with offsets, every
 instance in order), so it writes back to the same bytes. In it: fields by name (a parent's first; a name a
 parent already has is `Type.name`); references are `null`, `'#N'` (instance N of this file) or `'import:N'`;
-enums by name; floats as the shortest decimal that is the same float32. Format notes: the header of
+enums by name; floats as the shortest decimal that is the same float32. To change an asset: `ebx` it, edit the
+values, `ebx-build` it. Warnings about fields "not of the game's type" are normal for a few (data only the
+pipeline or a debug build uses). Format notes: the header of
 `tools/assets/gridnode_assets/ebx.py`. Tests: `python3 -m unittest discover -s tools/assets/tests -t tools/assets`.
 
 ## Meshes (custom models)
