@@ -90,7 +90,12 @@ Bundle hashes are djb2-xor of the lower-case bundle name (resolved to names with
 (compressed) data; data is the game's payload blocks (LZ4 0x0970, as Frosty). EBX in the mods (21, written by
 Frosty) read and rebuild with the same values. Test mod: `bin/fbmods/GridNode No Offline Warning.fbmod`, zhpete's
 No Offline Warning rebuilt through YAML by GridNode (same values, same two bundles). Not tested: any GridNode-written
-`.fbmod` in Frosty's Mod Manager or the game.
+`.fbmod` in Frosty's Mod Manager or the game. Game-tested (user, 2026-11-12): the GridNode-built No Offline Warning
+works through Frosty's Mod Manager, and GridNode under it logs `game data from ...\ModData\Default\ (-dataPath ...)`.
+
+mec-trainer 1.10.3 (2026-11-12, user's ask; untested in game): the player info (position, speed, state) can be dragged
+while the GridNode menu is open; its place is kept (`hud.player_info_x` / `_y`), clamped to the screen; Settings > HUD
+has "Reset place".
 
 Second round (API 37, the user's choices of 2026-11-11; untested in game):
 - **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one
