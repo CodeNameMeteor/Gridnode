@@ -81,7 +81,18 @@ level logic. A dash has only a start and a finish (user, 2026-11-12), no checkpo
   (camera at the end), `Activated`, and exposes `Trigger`.
 
 A new dash therefore needs a `PamNamedChallengeData`, a database entry, the placed `pf_runnersroute`, and two
-volumes (shape plus area) linked as `StartGeometry` and `StopGeometry`. To read next: one layer that places it (`assets used-by gameplay/social/pf_runnersroute`).
+volumes (shape plus area) linked as `StartGeometry` and `StopGeometry`.
+
+In game (user, 2026-11-12): a sphere trigger near the start is always on; using it shows the leaderboard; choosing to
+play turns the start and finish volumes on; entering the start starts the timer at the top; entering the finish stops
+it and shows the leaderboard again.
+
+Each dash has its own layer in `levels/sp/sp_maincity/mainlogic/mainlogic` (`assets used-by
+gameplay/social/pf_runnersroute`: 21 layers plus `mainlogic_networkregistry_win32`). `layer17_ct_socialrunnerroute01`
+is a `WorldPartData` holding the placed `pf_runnersroute`, one other prefab beside it, 10 copies of one object along
+the way (scaled and turned: route markers?), one object at the far end, and an `OBBData` (half extents 3.7 x 2.0 x
+5.8 m) beside the prefab that no object in the layer uses. The layer has no connections at all, so the links into
+the dash's interface (`StartGeometry`, `StopGeometry`, `ChallengeSelector`) are made by a file that imports the layer.
 
 **Trigger shapes** are separate instances: `VolumeVectorShapeData` (a closed polygon of `Points` with a `Height`,
 `IsClosed`), `BFWaypointsShapeData` (open paths) and `SphereData` (`Radius`, `Position`). A trigger does not hold
