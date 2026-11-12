@@ -35,6 +35,10 @@ GN_MOD("claim-lab") {
             static_cast<unsigned>(lab::registry().size()));
     gn::ui::onDraw([](bool menuOpen) {
         if (!menuOpen) return;
+        // A fixed first size and a height cap: grown to its content it ran off the bottom of the screen.
+        const ImVec2 view = ImGui::GetMainViewport()->Size;
+        ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 34, view.y * 0.5f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(ImGui::GetFontSize() * 20, ImGui::GetFontSize() * 8), ImVec2(view.x, view.y * 0.8f));
         ImGui::Begin("Claim Lab###claim-lab");
         ImGui::TextWrapped("Tests research claims before they become SDK/API. Nothing runs until you press Install; "
                            "unloading this mod undoes every hook.");
