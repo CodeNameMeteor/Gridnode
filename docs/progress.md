@@ -89,7 +89,8 @@ root and down the whole tree. Game test: +25,572 (4 roots, 16,577 buses, 172 ms)
 TimelineEntity data now, still no barriers or triggers. Ghidra (FUN_143150100): a bus keeps only the
 peers its data lists by id (those with connections), so those are on no list. Last pass (untested in
 game): GridNode reads the game's private read-write memory once for a word in the image with one of
-the known buses 0x20 bytes on, and keeps it if its vtable is an entity class.
+the known buses 0x20 bytes on, and keeps it if its vtable is an entity class. Game test (2026-11-12):
+works; injected mid-level the trainer's volumes and barriers all show; 3.9 GB read in 1.3 s.
 
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).
