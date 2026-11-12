@@ -1189,6 +1189,7 @@ void seedExisting() {
     if (!entity) return;
     const ULONGLONG t0 = GetTickCount64();
     size_t found = 0, classes = 0, unresolved = 0;
+    std::vector<uint64_t> seeds;
     const auto read = [](uint64_t a, uint64_t& v) { return mem::read(static_cast<uintptr_t>(a), v); };
     for (const Type& t : registry().data().types) {
         if (unloading()) return;
@@ -1199,13 +1200,32 @@ void seedExisting() {
         classlists::heads(t.ti, heads);
         const auto isClass = [&t](uint64_t a) { return typeOf(static_cast<uintptr_t>(a)) == &t; };
         for (uint64_t h : heads)
-            here += classlists::walk(h, back, read, isClass, [&t](uint64_t e) { g_live.add(static_cast<uintptr_t>(e), &t); }, 200000, unresolved);
+            here += classlists::walk(h, back, read, isClass, [&](uint64_t e) {
+                g_live.add(static_cast<uintptr_t>(e), &t);
+                seeds.push_back(e);
+            }, 200000, unresolved);
         if (here) found += here, ++classes;
     }
     GN_LOG("inspector: %llu entities made before GridNode loaded found in the game's class lists (%llu classes, %llu nodes not resolved, "
            "%llu ms); %llu tracked now",
            static_cast<unsigned long long>(found), static_cast<unsigned long long>(classes), static_cast<unsigned long long>(unresolved),
            static_cast<unsigned long long>(GetTickCount64() - t0), static_cast<unsigned long long>(g_live.size()));
+    // The rest (logic entities and anything else no class list has) from the buses those are on.
+    if (unloading()) return;
+    const ULONGLONG t1 = GetTickCount64();
+    const size_t before = g_live.size();
+    const auto isEntity = [entity](uint64_t a) {
+        const Type* t = typeOf(static_cast<uintptr_t>(a));
+        return t && t->category == Category::Class && registry().isKindOf(t, entity);
+    };
+    const buses::Stats s = buses::walk(seeds, read, isEntity, [](uint64_t e) {
+        g_live.add(static_cast<uintptr_t>(e), typeOf(static_cast<uintptr_t>(e)));
+    });
+    GN_LOG("inspector: %llu more from the game's entity buses (%llu roots, %llu buses, %llu peers seen, %llu not entities, %llu ms); "
+           "%llu tracked now",
+           static_cast<unsigned long long>(g_live.size() - before), static_cast<unsigned long long>(s.roots),
+           static_cast<unsigned long long>(s.buses), static_cast<unsigned long long>(s.peers), static_cast<unsigned long long>(s.rejected),
+           static_cast<unsigned long long>(GetTickCount64() - t1), static_cast<unsigned long long>(g_live.size()));
 }
 
 void start() {

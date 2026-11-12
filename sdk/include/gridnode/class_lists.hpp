@@ -9,6 +9,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_set>
+#include <vector>
 
 namespace gn::classlists {
 
@@ -62,3 +64,80 @@ size_t walk(uint64_t head, uint32_t& back, Read read, IsClass isClass, Add add, 
 }
 
 } // namespace gn::classlists
+
+// The game's entity buses (read in Ghidra: EntityBus_deliverEvent 0x14314eac0, EntityBus_release
+// 0x1431547b0). Every entity keeps its bus's interface I (bus + 8) at entity +0x20; offsets below are
+// from I. Buses form a tree (parent I+8, first child I+0x28, siblings I+0x18 / I+0x20), and each bus
+// holds its peers (the entities its data made) in an array at I+0x38, in the order of its data's
+// sorted id list (data at I+0x60, list {begin, end} at data+0xd0, or +0xf8 when I+0x34 bit 28 is
+// set). From a few known entities GridNode walks up to every root and down the whole tree, which
+// finds the logic entities (NotEntity, DelayEntity, ...) no class list has.
+namespace gn::buses {
+
+constexpr uint64_t kEntityBus = 0x20;
+constexpr uint64_t kParent = 0x08;
+constexpr uint64_t kNext = 0x20;
+constexpr uint64_t kFirstChild = 0x28;
+constexpr uint64_t kFlagsWord = 0x30; // u32 flags at +0x34: the high half of this word
+constexpr uint64_t kPeers = 0x38;
+constexpr uint64_t kData = 0x60;
+constexpr uint64_t kIds = 0xd0;
+constexpr uint64_t kIdsOther = 0xf8;
+constexpr uint64_t kOtherBit = 1ull << (32 + 28);
+constexpr size_t kMaxBuses = 1u << 20;
+constexpr size_t kMaxPeers = 1u << 16;
+
+struct Stats {
+    size_t roots = 0, buses = 0, peers = 0, rejected = 0;
+};
+
+// seeds: known entities. isEntity(addr): an entity is at addr (its vtable is an entity class).
+// add(entity) for each peer that is one. Returns the stats; stops at kMaxBuses.
+template <class Read, class IsEntity, class Add>
+Stats walk(const std::vector<uint64_t>& seeds, Read read, IsEntity isEntity, Add add) {
+    Stats s;
+    std::unordered_set<uint64_t> roots, seen;
+    for (uint64_t e : seeds) {
+        uint64_t b = 0;
+        if (!read(e + kEntityBus, b) || !b || (b & 7)) continue;
+        if (seen.count(b)) continue; // its chain was walked from another entity
+        for (int depth = 0; depth < 64; ++depth) {
+            seen.insert(b);
+            uint64_t p = 0;
+            if (!read(b + kParent, p) || !p || (p & 7) || seen.count(p)) break;
+            b = p;
+        }
+        uint64_t p = 0;
+        if (read(b + kParent, p) && !p) roots.insert(b);
+    }
+    s.roots = roots.size();
+    seen.clear();
+    std::vector<uint64_t> todo(roots.begin(), roots.end());
+    while (!todo.empty() && seen.size() < kMaxBuses) {
+        const uint64_t b = todo.back();
+        todo.pop_back();
+        if (!seen.insert(b).second) continue;
+        ++s.buses;
+        uint64_t flags = 0, data = 0, peers = 0, begin = 0, end = 0;
+        if (read(b + kFlagsWord, flags) && read(b + kData, data) && data && read(b + kPeers, peers) && peers) {
+            const uint64_t ids = data + ((flags & kOtherBit) ? kIdsOther : kIds);
+            if (read(ids, begin) && read(ids + 8, end) && end >= begin && (end - begin) / 8 <= kMaxPeers) {
+                for (uint64_t i = 0, n = (end - begin) / 8; i < n; ++i) {
+                    uint64_t e = 0;
+                    if (!read(peers + i * 8, e) || !e || (e & 7)) continue;
+                    if (isEntity(e)) add(e), ++s.peers;
+                    else ++s.rejected;
+                }
+            }
+        }
+        uint64_t c = 0;
+        if (!read(b + kFirstChild, c)) continue;
+        for (size_t k = 0; c && !(c & 7) && k < kMaxBuses; ++k) {
+            todo.push_back(c);
+            if (!read(c + kNext, c)) break;
+        }
+    }
+    return s;
+}
+
+} // namespace gn::buses

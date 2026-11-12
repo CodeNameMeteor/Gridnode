@@ -79,7 +79,13 @@ index missed them (the trainer's volumes: 152 of 400 in one area). Read in Ghidr
 per class and realm, `ClassInfo_addToWorldList` (0x1431661f0, 163 callers): head at ClassInfo + (realm +
 6) * 0x10, a second at + 8; node {next, prev link} at a per-class offset in the entity. At startup GridNode
 walks every entity class's lists once and finds each node's entity by stepping back to the address whose
-vtable is that class (`class_lists.hpp`, host-tested); the log says how many it found.
+vtable is that class (`class_lists.hpp`, host-tested); the log says how many it found. Game test: 14,878
+found (92 classes, 0 unresolved, 16 ms) of ~71k, none of the logic entities (NotEntity, DelayEntity,
+CompareBoolEntity, TimelineEntity) and no trigger volumes. So it also walks the entity buses: every
+entity keeps its bus's interface at +0x20; buses form a tree (parent +8, first child +0x28, next
++0x20) and each holds its entities at +0x38, one per id in its data's list (data +0x60, list +0xd0 or
++0xf8 by flag bit 28 at +0x34; EntityBus_deliverEvent). From the found entities it walks up to every
+root and down the whole tree (untested in game).
 
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).

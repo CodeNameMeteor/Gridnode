@@ -894,6 +894,40 @@ void testClassLists() {
     CHECK(unresolved >= 1 && got.size() <= 10);
 }
 
+void testBuses() {
+    std::map<uint64_t, uint64_t> mem;
+    constexpr uint64_t kVt = 0x9000;
+    const auto read = [&](uint64_t a, uint64_t& v) {
+        auto it = mem.find(a);
+        v = it == mem.end() ? 0 : it->second;
+        return true;
+    };
+    const auto isEntity = [&](uint64_t a) { auto it = mem.find(a); return it != mem.end() && it->second == kVt; };
+    // root R with children A and B; B uses the other id list (flag bit 28 at +0x34).
+    const uint64_t R = 0x100000, A = 0x110000, B = 0x120000;
+    mem[A + buses::kParent] = R, mem[B + buses::kParent] = R;
+    mem[R + buses::kFirstChild] = A, mem[A + buses::kNext] = B;
+    mem[B + buses::kFlagsWord] = buses::kOtherBit;
+    auto give = [&](uint64_t bus, uint64_t data, uint64_t ids, std::vector<uint64_t> peers) {
+        mem[bus + buses::kData] = data;
+        const uint64_t arr = data + 0x1000;
+        mem[bus + buses::kPeers] = arr;
+        mem[data + ids] = 0x7000, mem[data + ids + 8] = 0x7000 + peers.size() * 8;
+        for (size_t i = 0; i < peers.size(); ++i) mem[arr + i * 8] = peers[i];
+    };
+    const uint64_t e1 = 0x200000, e2 = 0x210000, e3 = 0x220000, junk = 0x230000;
+    for (uint64_t e : {e1, e2, e3}) mem[e] = kVt;
+    mem[e1 + buses::kEntityBus] = A; // the seed: only its bus is known
+    give(R, 0x300000, buses::kIds, {e1});
+    give(A, 0x310000, buses::kIds, {e2, 0, junk});
+    give(B, 0x320000, buses::kIdsOther, {e3});
+    std::vector<uint64_t> got;
+    const buses::Stats s = buses::walk({e1}, read, isEntity, [&](uint64_t e) { got.push_back(e); });
+    std::sort(got.begin(), got.end());
+    CHECK(s.roots == 1 && s.buses == 3 && s.peers == 3 && s.rejected == 1);
+    CHECK(got.size() == 3 && got[0] == e1 && got[1] == e2 && got[2] == e3);
+}
+
 void testNearAlloc() {
     constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
     auto run = [&](FakeSpace& s, bool down, uint64_t from) {
@@ -947,6 +981,7 @@ int main() {
     testVirtualHooks();
     testEntityIndex();
     testClassLists();
+    testBuses();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();

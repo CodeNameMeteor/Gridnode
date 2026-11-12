@@ -541,6 +541,8 @@ constants:
   - { name: EntityBus_Owner, value: 0x0, confidence: inferred, sources: [ghidra], note: "Set by the bus base init (0x14313ffe0)." }
   - { name: EntityBus_Parent, value: 0x8, confidence: inferred, sources: [ghidra], note: "The parent bus (holds a reference, +0x30). An object is usually on a blueprint's or layer's bus inside its sublevel's: walk up to find the sublevel." }
   - { name: EntityBus_FirstChild, value: 0x28, confidence: inferred, sources: [ghidra], note: "Children are linked through +0x18 (prev) and +0x20 (next)." }
+  - { name: EntityBus_Peers, value: 0x38, confidence: inferred, sources: [ghidra], note: "From the interface entities keep (bus + 8): the bus's peers (its entities), one per id in its data's sorted id list (EntityBus_deliverEvent, EntityBus_release 0x1431547b0)." }
+  - { name: EntityBus_Data, value: 0x60, confidence: inferred, sources: [ghidra], note: "From the interface: the bus's data; its id list {begin, end} is at +0xd0, or +0xf8 when the flags at interface +0x34 have bit 28." }
   - { name: ServerSubLevelEntity_Bus, value: 0x88, confidence: inferred, sources: [ghidra], note: "The sublevel's content bus (events other than streaming are passed to it)." }
   - { name: Event_StreamIn, value: 0xd27bc17e, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamIn." }
   - { name: Event_StreamOut, value: 0x21f3f677, confidence: inferred, sources: [ghidra, research], note: "djb2-xor of StreamOut." }
