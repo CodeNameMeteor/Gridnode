@@ -24,7 +24,7 @@ The last five share `PamFindableMovementVolumeEntityData` (its `Enabled` shows a
 
 | Type | Files / instances | Shape and fields |
 |---|---|---|
-| `PamAreaTriggerData` (triggers; kill volumes are server entities on these) | 276 / 1,107 | `GeometryTransform`, `Include`, `Delay`, `RunOnce`, `TriggerOnlyOnLeave`, ... (the geometry is not a field: to find) |
+| `PamAreaTriggerData` (triggers; kill volumes are server entities on these) | 276 / 1,107 | `GeometryTransform`, `Include`, `Delay`, `RunOnce`, `TriggerOnlyOnLeave`, ... (the geometry is a link, below) |
 | `PamSphereCollisionEntityData` | 6 / 7 | `Position`, `Radius`, Cant* flags |
 | `PamMagropeEntityData` | 49 / 171 | `MagropeType`, `Radius`, `VerticalStretch`, `GraphicsOffset`, `Triggers` |
 | `PamGameSplineEntityData` (ladders, pipes, ziplines, swings, balance) | 218 / 608 | `LocalPoints`, `Normals`, `SplineType`, `SplineRadius`, `AssistSpeed`, exit angles, ... |
@@ -57,12 +57,26 @@ volume is then a trigger area whose enter event fires this prefab's `Teleport`, 
 **Dashes are named challenges, not UGC** (user, 2026-11-12). `gameplay/social/namedchallenges` (in `globals`) is a
 `PamNamedChallengesAsset`: 62 `PamNamedChallengeData` (Sid such as `ID_NC_THEVIEW02`, star thresholds in
 centiseconds, stats codes `ch_rrt_*` for "runner's route" = dash, preview texture, flag) and 7 challenge types. The
-routes themselves (start, checkpoints, finish) are not in it: `levels/sp/sp_maincity/sp_maincity/namedchallenges/
-namedchallengedatabase_win32` is the next file to read. `PamTimeTrial*` / `ReachThis` prefabs are the UGC system.
+routes themselves (start, checkpoints, finish) are not in it. `PamTimeTrial*` / `ReachThis` prefabs are the UGC
+system.
+
+`levels/sp/sp_maincity/sp_maincity/namedchallenges/namedchallengedatabase_win32` is not the route either: it is the
+map index, one `PamNamedChallengeDatabaseAsset` with 40 `Entries` (22 `RunnersRoute` = dashes, 18
+`HackableBillboard`). Each entry has the map `Transform` (where the start sits in the world), `ChallengeDataGuid` (the
+`PamNamedChallengeData` above), `ContentId`, `Sid`, the star thresholds in seconds (`ID_NC_THEVIEW02`: 46 / 38 / 35,
+cheater 21), the stats codes and `HideInMap`. No type in the dump has a checkpoint list (`PamNamedChallengeData`,
+`PamNamedChallengeTypeData` and `PamNamedChallengeTransformOverride` checked), so a dash's checkpoints and finish are
+level logic: `gameplay/social/pf_runnersroute` (a `PamNamedChallengeEntityData`) placed in a district layer, wired to
+checkpoint triggers. To read next: that prefab and one layer that places it. A new dash therefore needs a
+`PamNamedChallengeData`, a database entry, and the placed prefab with its triggers.
 
 **Trigger shapes** are separate instances: `VolumeVectorShapeData` (a closed polygon of `Points` with a `Height`,
-`IsClosed`) and `BFWaypointsShapeData` (open paths). Which field of a trigger points at its shape is still to find
-(`me_sound/vo/logic/ambientanimconversation` has `PamAreaTriggerData` to read).
+`IsClosed`), `BFWaypointsShapeData` (open paths) and `SphereData` (`Radius`, `Position`). A trigger does not hold
+its shape in a field: the blueprint's `LinkConnections` has a link from the trigger to the shape instance, with
+`SourceFieldId` = hash of `Geometry` (838548383) and `TargetFieldId` 0 (the whole object). Seen in
+`me_sound/vo/logic/ambientanimconversation` (a `PamAreaTriggerData` linked to a 15 m `SphereData`). The hash is
+Frostbite's name hash (5381, `h = h*33 ^ c`, 32-bit). A placed trigger therefore needs three things: the trigger
+data, a shape instance, and that link; resizing it means changing the shape (or `GeometryTransform`).
 
 The full list (all 92 types, with examples and every field) is in the user's `bin/assets/usage.yaml` (game data:
 not committed).
