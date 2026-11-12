@@ -325,6 +325,18 @@ functions:
     note: "Ghidra-checked (bundle-load): the group's u16 at +0x0c, or 0xffff for a null handle."
     confidence: inferred
     sources: [ghidra]
+  - name: Lock_enter
+    va: 0x142a9f970
+    signature: "void(void* lock)"
+    note: "A jump through 0x1448150f8 (the OS lock's enter): SubLevelManager_requestBundle locks manager + 0x79d0 with it (rcx), and ResourceManager_registerBundleGroup its + 0x26300. Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: Lock_leave
+    va: 0x142aa1840
+    signature: "void(void* lock)"
+    note: "The leave of Lock_enter (a jump through 0x144815140). Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
   - name: SubLevelManager_registerBundleName
     va: 0x1432f4730
     signature: "void(void* manager, void* slot, const i8* path)"

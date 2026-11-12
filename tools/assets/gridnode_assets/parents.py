@@ -59,11 +59,30 @@ def chain(table: dict[str, dict], name: str, limit: int = 32) -> list[str]:
 BLUEPRINTS = ("SpatialPrefabBlueprint", "ObjectBlueprint", "PrefabBlueprint")
 
 
-def prefab_bundle(bundles: list[str], table: dict[str, dict]) -> str:
+def prefab_bundle(bundles: list[str], table: dict[str, dict], sizes: dict[str, int] | None = None) -> str:
     """The bundle to load for a blueprint found in `bundles`: one GridNode can load as a sublevel (a child
-    in the table) and with the fewest parents to load first; '' when it is in none."""
+    in the table), with the fewest parents to load first, then the smallest (fewest files); '' when none."""
     known = [bundle_key(b) for b in bundles if bundle_key(b) in table]
-    return min(known, key=lambda b: (len(chain(table, b)), b)) if known else ""
+    sizes = sizes or {}
+    return min(known, key=lambda b: (len(chain(table, b)), sizes.get(b, 0), b)) if known else ""
+
+
+def shares_of(contents: dict[str, set[str]], wanted: list[str], skip: set[str]) -> dict[str, list[str]]:
+    """For each wanted bundle, the other bundles holding any of its files. The game loads a file once: a
+    bundle loaded while another one with the same files is loaded uses that one's copies, and breaks when it
+    streams out (docs/research/zone-streaming.md). contents: bundle -> its file names; skip: bundles always
+    loaded (the level's own)."""
+    holders: dict[str, set[str]] = {}
+    for b, files in contents.items():
+        for f in files:
+            holders.setdefault(f, set()).add(b)
+    out: dict[str, list[str]] = {}
+    for w in wanted:
+        others: set[str] = set()
+        for f in contents.get(w, ()):
+            others |= holders.get(f, set())
+        out[w] = sorted(others - {w} - skip)
+    return out
 
 
 def write_prefabs(prefabs: dict[str, str], path: str) -> None:
@@ -74,10 +93,10 @@ def write_prefabs(prefabs: dict[str, str], path: str) -> None:
             f.write(f"{asset}\t{prefabs[asset]}\n")
 
 
-def write_table(table: dict[str, dict], path: str) -> None:
-    """One line a child: child<TAB>parent<TAB>preload;preload (GridNode's bundles.cpp reads this)."""
+def write_table(table: dict[str, dict], path: str, shares: dict[str, list[str]] | None = None) -> None:
+    """One line a child: child<TAB>parent<TAB>preload;preload<TAB>share;share (GridNode's bundles.cpp reads this)."""
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# GridNode bundle parents (gridnode.py assets bundle-parents): child, parent, preloads. From the game's files: do not commit.\n")
+        f.write("# GridNode bundle parents (gridnode.py assets bundle-parents): child, parent, preloads, bundles sharing its files. From the game's files: do not commit.\n")
         for child in sorted(table):
             row = table[child]
-            f.write(f"{child}\t{row['parent']}\t{';'.join(row['preload'])}\n")
+            f.write(f"{child}\t{row['parent']}\t{';'.join(row['preload'])}\t{';'.join((shares or {}).get(child, []))}\n")

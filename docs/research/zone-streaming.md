@@ -124,3 +124,11 @@ reading freed memory); with `Anchor` held as well, the same teleport did not. A 
 its district holds (`assets deps` lists the magrope's assets in `anchor` and 20 more bundles, and shaders in
 `sp_maincity` and `crowds/crowdssharedbundle`), so whoever loads an area loads its district too. The top bus above
 Faith is the level's own (her bus, her spawner's, a layer, then a bus with thousands of references and no parent).
+
+**Why: the game loads a file once** (2026-11-12). `assets bundle-parents` shows the city's sublevel tree flat: all
+266 sublevels are children of the level, so `Anchor` is not `AnchorArea3`'s parent in the data. But the magrope's
+files are in `anchorarea3` and in `anchor` (+20 more bundles), and a bundle loaded while another one holding the
+same files is up uses that one's copies. GridNode now holds the loaded bundles that share files with the one it
+loads (by a reference of its own to their group, found by name hash in the sublevel manager's tree at +0x7250
+under its lock at +0x79d0), and gives them back after it. The reverse is open: a bundle the game loads while ours
+is up may use our copies, and break when ours goes.

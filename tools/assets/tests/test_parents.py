@@ -32,11 +32,13 @@ class Parents(unittest.TestCase):
             path = os.path.join(d, "p.txt")
             parents.write_table(table, path)
             lines = open(path, encoding="utf-8").read().splitlines()
-            self.assertIn("levels/sp/sp_maincity/anchor\tlevels/sp/sp_maincity/sp_maincity\tlevels/sp/sp_maincity/shared", lines)
+            self.assertIn("levels/sp/sp_maincity/anchor\tlevels/sp/sp_maincity/sp_maincity\tlevels/sp/sp_maincity/shared\t", lines)
         # a blueprint in a shared bundle and two sublevels: the sublevel with the shortest chain
         self.assertEqual(parents.prefab_bundle(["Win32/shared/stuff", "Win32/levels/sp/sp_maincity/anchorarea3",
                                                 "Win32/levels/sp/sp_maincity/anchor"], table), "levels/sp/sp_maincity/anchor")
         self.assertEqual(parents.prefab_bundle(["Win32/shared/stuff"], table), "")
+        contents = {"a": {"x", "y"}, "b": {"y"}, "c": {"z"}, "lvl": {"x"}}
+        self.assertEqual(parents.shares_of(contents, ["a", "c"], {"lvl"}), {"a": ["b"], "c": []})
 
 
 if __name__ == "__main__":

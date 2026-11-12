@@ -1252,11 +1252,12 @@ typedef struct gn_api {
      * game unloads it about 2 s after that when nothing else holds it; a bundle_load of the same name before
      * then keeps it). A level ending takes every bundle and prefab with it: their handles are then
      * gone (GN_ERR_NOT_FOUND), not released. At most 64 bundles at a time (GN_ERR_FULL).
-     * A bundle's parents are loaded first and released with it: a district area needs its district
-     * ("Levels/SP/SP_MainCity/Anchor" for ".../AnchorArea3"), whose assets its objects use; with the parent
-     * not held, a teleport that streamed it out crashed the game in a spawned prefab's update (2026-11-12).
-     * GridNode knows the parents from assets\bundle-parents.txt next to gridnode.dll (`gridnode.py assets
-     * bundle-parents`, made from the player's own game files); without that file, load the parents yourself.
+     * The game loads a file once, so a bundle loaded while another one holding the same files is loaded uses
+     * that one's copies: AnchorArea3 loaded with Anchor up, then Anchor streamed out by a teleport, crashed the
+     * game in a spawned prefab (2026-11-12). GridNode holds the loaded bundles that share files with the one
+     * asked for, and gives them back with it. It knows which from assets\bundle-parents.txt next to
+     * gridnode.dll (`gridnode.py assets bundle-parents`, made from the player's own game files); without that
+     * file, hold them yourself (load them too).
      *
      * prefab_spawn spawns an asset's blueprint (a prefab or an object blueprint: "objects/props/
      * missionitem/magrope/pf_magrope_pullup") from any loaded bundle at `at`, server half then client

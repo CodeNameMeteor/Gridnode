@@ -2,6 +2,7 @@
 // Worked out with the claim lab (.workflow/runs/bundle-load, prefab-spawn) and tested there in game on
 // 2026-11-12; docs/research/zone-streaming.md has the details.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -35,6 +36,7 @@ struct Bundle {
     uint64_t game[2] = {0, 0};  // the game's handle: group pointer, compartment (server thread)
     enum State { Queued, Loading, Ready, Failed } state = Queued;
     std::vector<uint32_t> parents;  // loaded first, released with it (bundle-parents.txt)
+    std::vector<std::array<uint64_t, 2>> held; // loaded bundles sharing its files, held while it is (server thread)
     uint32_t child = 0;             // a parent loaded for this bundle: not the mod's own handle
 };
 
@@ -55,6 +57,7 @@ struct Prefab {
 struct PendingRelease {
     std::string name;
     uint64_t game[2] = {0, 0};
+    std::vector<std::array<uint64_t, 2>> held;
     uint64_t level = 0;
     std::chrono::steady_clock::time_point at;
 };
@@ -76,6 +79,7 @@ std::once_flag g_once;
 struct ParentRow {
     std::string parent;
     std::vector<std::string> preload;
+    std::vector<std::string> shares; // bundles holding some of its files
 };
 std::map<std::string, ParentRow> g_parents; // read once (g_parentsOnce), then only read
 std::once_flag g_parentsOnce;
@@ -115,13 +119,17 @@ void readParents() {
         if (b == std::string::npos) continue;
         ParentRow row;
         row.parent = line.substr(a + 1, b - a - 1);
-        for (size_t at = b + 1; at < line.size();) {
-            const size_t semi = line.find(';', at);
-            const std::string one = line.substr(at, semi == std::string::npos ? std::string::npos : semi - at);
-            if (!one.empty()) row.preload.push_back(one);
-            if (semi == std::string::npos) break;
-            at = semi + 1;
-        }
+        const size_t c = line.find('\t', b + 1);
+        auto split = [&](size_t from, size_t to, std::vector<std::string>& out) {
+            for (size_t at = from; at < to;) {
+                size_t semi = line.find(';', at);
+                if (semi == std::string::npos || semi > to) semi = to;
+                if (semi > at) out.push_back(line.substr(at, semi - at));
+                at = semi + 1;
+            }
+        };
+        split(b + 1, c == std::string::npos ? line.size() : c, row.preload);
+        if (c != std::string::npos) split(c + 1, line.size(), row.shares);
         g_parents[line.substr(0, a)] = std::move(row);
     }
     GN_LOG("bundles: %u sublevel bundles' parents known", static_cast<unsigned>(g_parents.size()));
@@ -232,7 +240,62 @@ std::vector<uintptr_t> entitiesOf(const EntityList& list) {
     return out;
 }
 
+std::vector<std::string> sharesOf(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    const auto it = g_parents.find(lowerName(name));
+    return it == g_parents.end() ? std::vector<std::string>{} : it->second.shares;
+}
+
 // --- the game's side, each on its realm's thread ----------------------------------------------------
+
+// The game loads a file once: a bundle loaded while another bundle holding the same files is loaded uses that
+// bundle's copies, and its objects break when that bundle streams out (AnchorArea3 with Anchor: a teleport
+// crashed the game in a spawned prefab, 2026-11-12). So before asking for a bundle, the loaded bundles that
+// share its files (bundle-parents.txt, 4th column) are held too, by a reference of our own to their group.
+// The sublevel manager keeps its groups by name hash in a tree at +0x7250 (root +0x7260; node +0x00 right,
+// +0x08 left, +0x20 u32 hash, +0x28 group), under its lock at +0x79d0 (SubLevelManager_requestBundle). The
+// hash: djb2-xor of the lower-cased name, from 0x1505 (0x1432f0380).
+uint32_t nameHash(const std::string& n) {
+    uint32_t h = 0x1505;
+    for (const char ch : n) {
+        const uint8_t b = static_cast<uint8_t>(ch);
+        h = (static_cast<uint32_t>(b) + (static_cast<uint8_t>(b - 'A') < 26 ? 0x20u : 0u)) ^ (h * 33u);
+    }
+    return n.empty() ? 0 : h;
+}
+
+bool groupUsable(uintptr_t group) {
+    const int32_t state = mem::readOr<int32_t>(group + 0x08, -1);
+    const bool ready = state == 3 || (state == 2 && (mem::readOr<uint8_t>(group + 0x6c) & 1) == 0);
+    return ready && mem::readOr<int32_t>(group + 0x10) > 0 && (mem::readOr<uint8_t>(group + 0x6c) & 0x10) == 0;
+}
+
+// Server thread. A reference of our own to every loaded bundle in `names` (none is loaded by this).
+std::vector<std::array<uint64_t, 2>> holdLoaded(const std::vector<std::string>& names) {
+    std::vector<std::array<uint64_t, 2>> out;
+    if (names.empty()) return out;
+    const uintptr_t mgr = mem::rva(e::global::ServerSubLevelManager);
+    using LockFn = void (*)(uintptr_t);
+    using AssignFn = void* (*)(uint64_t* handle, const uint64_t* from);
+    reinterpret_cast<LockFn>(mem::rva(e::function::Lock_enter))(mgr + 0x79d0);
+    for (const std::string& n : names) {
+        const uint32_t h = nameHash(n);
+        uintptr_t node = mem::readOr<uintptr_t>(mgr + 0x7260), found = 0;
+        for (int guard = 0; node && guard < 64; ++guard) { // the first node with a key >= h
+            if (mem::readOr<uint32_t>(node + 0x20) < h) node = mem::readOr<uintptr_t>(node);
+            else found = node, node = mem::readOr<uintptr_t>(node + 8);
+        }
+        if (!found || mem::readOr<uint32_t>(found + 0x20) != h) continue;
+        const uintptr_t group = mem::readOr<uintptr_t>(found + 0x28);
+        if (!group || !groupUsable(group)) continue;
+        const uint64_t from[2] = {group, mem::readOr<uint16_t>(group + 0x0c)}; // its own compartment: no other call
+        std::array<uint64_t, 2> mine{0, 0};
+        reinterpret_cast<AssignFn>(mem::rva(e::function::BundleHandle_assign))(mine.data(), from);
+        if (mine[0]) out.push_back(mine);
+    }
+    reinterpret_cast<LockFn>(mem::rva(e::function::Lock_leave))(mgr + 0x79d0);
+    return out;
+}
 
 void destroyEntities(const std::vector<uintptr_t>& list, uint64_t level);
 
@@ -255,6 +318,7 @@ void requestOnServer(uint32_t h, bool parentsReady = false) {
         for (auto it = g_pending.begin(); it != g_pending.end(); ++it)
             if (it->level == b->level && sameName(it->name, b->name)) {
                 b->game[0] = it->game[0], b->game[1] = it->game[1];
+                b->held = it->held;
                 b->state = Bundle::Loading; // pollOnServer sees it ready at once
                 g_pending.erase(it);
                 GN_LOG("bundles: load %s: taken back from a release not yet given to the game", b->name.c_str());
@@ -263,6 +327,7 @@ void requestOnServer(uint32_t h, bool parentsReady = false) {
         g_names.push_back(b->name);
         name = g_names.back().c_str();
     }
+    std::vector<std::array<uint64_t, 2>> held = holdLoaded(sharesOf(name));
     alignas(16) uint8_t req[0x60] = {};
     reinterpret_cast<RequestInitFn>(mem::rva(e::function::BundleRequest_init))(req, name, 0, 0);
     req[0x2a] = 0xfe;
@@ -275,9 +340,12 @@ void requestOnServer(uint32_t h, bool parentsReady = false) {
     Bundle* b = bundleOf(h);
     if (!b) { // released while asked: give it straight back
         if (game[0]) reinterpret_cast<ReleaseFn>(mem::rva(e::function::BundleHandle_release))(game, 0);
+        for (auto& g : held) reinterpret_cast<ReleaseFn>(mem::rva(e::function::BundleHandle_release))(g.data(), 0);
         return;
     }
     b->game[0] = game[0], b->game[1] = game[1];
+    b->held = held;
+    if (!held.empty()) GN_LOG("bundles: %s: holding %u loaded bundles that share its files", b->name.c_str(), static_cast<unsigned>(held.size()));
     b->state = game[0] ? Bundle::Loading : Bundle::Failed;
     GN_LOG("bundles: load %s: %s", b->name.c_str(), game[0] ? "asked" : "refused by the game");
 }
@@ -295,7 +363,10 @@ void pollOnServer() {
             if (now >= it->at) due.push_back(*it), it = g_pending.erase(it);
             else ++it;
     }
-    for (const PendingRelease& r : due) releaseOnServer(r.game[0], r.game[1], r.level);
+    for (const PendingRelease& r : due) {
+        releaseOnServer(r.game[0], r.game[1], r.level);
+        for (const auto& g : r.held) releaseOnServer(g[0], g[1], r.level); // after the bundle that used them
+    }
     std::vector<uint32_t> start;
     {
         std::lock_guard<std::mutex> lock(g_m);
@@ -473,6 +544,7 @@ void releaseLocked(std::vector<Bundle>::iterator it) {
         PendingRelease r;
         r.name = it->name;
         r.game[0] = it->game[0], r.game[1] = it->game[1];
+        r.held = it->held;
         r.level = it->level;
         r.at = std::chrono::steady_clock::now() + kReleaseDelay;
         g_pending.push_back(r);

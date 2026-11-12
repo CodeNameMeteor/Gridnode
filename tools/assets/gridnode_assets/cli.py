@@ -361,13 +361,17 @@ def _fields_of(x, ti: int) -> dict:
 
 
 def cmd_bundle_parents(a) -> int:
-    from .parents import BLUEPRINTS, KIND, bundle_key, chain, parents_of, prefab_bundle, write_prefabs, write_table
+    from .parents import BLUEPRINTS, KIND, bundle_key, chain, parents_of, prefab_bundle, shares_of, write_prefabs, write_table
     s = _store(a)
     levels: list[tuple[str, ebx.Ebx]] = []  # (bundle, model) of the level files naming sublevels
     where: dict[str, list[str]] = {}       # blueprint asset -> the bundles it is in
     read: dict[bytes, tuple[str, str]] = {}  # sha1 -> (what it is, its name): a file in several bundles is read once
+    contents: dict[str, set[str]] = {}       # bundle -> its EBX names
     for b in _all_bundles(s):
+        mine = contents.setdefault(bundle_key(b.name), set())
         for e in b.entries:
+            if e.kind == "ebx":
+                mine.add(e.name.lower())
             if e.kind != "ebx" or not e.sha1 or not s.has(e.sha1):
                 continue
             got = read.get(e.sha1)
@@ -387,15 +391,20 @@ def cmd_bundle_parents(a) -> int:
             if got[0] == "blueprint":
                 where.setdefault(got[1].lower(), []).append(b.name)
     table = parents_of(levels)
+    tops = {row["parent"] for row in table.values()} - set(table)  # the levels themselves: always loaded
+    shares = shares_of(contents, sorted(table), tops)
     path = a.out or os.path.join(OUT, "bundle-parents.txt")
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    write_table(table, path)
-    prefabs = {asset: prefab_bundle(bundles, table) for asset, bundles in where.items()}
+    write_table(table, path, shares)
+    sizes = {b: len(f) for b, f in contents.items()}
+    prefabs = {asset: prefab_bundle(bundles, table, sizes) for asset, bundles in where.items()}
     prefabs = {k: v for k, v in prefabs.items() if v}
     ppath = os.path.join(os.path.dirname(os.path.abspath(path)), "prefabs.txt")
     write_prefabs(prefabs, ppath)
     for name in a.show or []:
-        print(f"{bundle_key(name)} needs first: {', '.join(chain(table, name)) or '(nothing known)'}")
+        k = bundle_key(name)
+        print(f"{k} needs first: {', '.join(chain(table, name)) or '(nothing known)'}")
+        print(f"{k} shares files with {len(shares.get(k, []))} bundles: {', '.join(shares.get(k, [])[:40])}")
     print(f"bundle-parents: {len(table)} sublevel bundles -> {path}")
     print(f"prefabs: {len(prefabs)} of {len(where)} blueprints are in a sublevel bundle -> {ppath}")
     return 0
