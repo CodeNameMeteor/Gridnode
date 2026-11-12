@@ -81,7 +81,7 @@ level logic. A dash has only a start and a finish (user, 2026-11-12), no checkpo
   (camera at the end), `Activated`, and exposes `Trigger`.
 
 A new dash therefore needs a `PamNamedChallengeData`, a database entry, the placed `pf_runnersroute`, and two
-volumes (shape plus area) linked as `StartGeometry` and `StopGeometry`. To read next: one layer that places it.
+volumes (shape plus area) linked as `StartGeometry` and `StopGeometry`. To read next: one layer that places it (`assets used-by gameplay/social/pf_runnersroute`).
 
 **Trigger shapes** are separate instances: `VolumeVectorShapeData` (a closed polygon of `Points` with a `Height`,
 `IsClosed`), `BFWaypointsShapeData` (open paths) and `SphereData` (`Radius`, `Position`). A trigger does not hold

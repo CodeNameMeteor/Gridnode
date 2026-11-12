@@ -198,6 +198,16 @@ def cmd_ebx_build(a) -> int:
     return 0
 
 
+def cmd_used_by(a) -> int:
+    from .deps import Index, used_by
+    s = _store(a)
+    names = used_by(Index(s, os.path.join(OUT, "index")), a.name)
+    for n in names:
+        print(n)
+    print(f"used-by {a.name}: {len(names)} EBX files import it")
+    return 0
+
+
 def cmd_deps(a) -> int:
     from .deps import Index, needs
     s = _store(a)
@@ -521,6 +531,9 @@ def main(argv: list[str]) -> int:
     de.add_argument("--data")
     de.add_argument("--into", help="a bundle (part of its name): list only what it lacks")
     de.add_argument("--all", action="store_true", help="with --into: list everything, not only what it lacks")
+    ub = sub.add_parser("used-by", help="the EBX files that import an EBX (where a prefab is placed)")
+    ub.add_argument("name")
+    ub.add_argument("--data")
     us = sub.add_parser("usage", help="which types the game's EBX instances are of: counts, examples, fields")
     us.add_argument("--data")
     us.add_argument("--kind-of", help="only this class and its subclasses (needs the dump), e.g. SpatialEntityData")
@@ -546,7 +559,7 @@ def main(argv: list[str]) -> int:
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
                 "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
-                "deps": cmd_deps, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
+                "deps": cmd_deps, "used-by": cmd_used_by, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
     except (StoreError, ebx.EbxError, ValueError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1
