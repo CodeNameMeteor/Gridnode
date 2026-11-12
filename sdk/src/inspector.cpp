@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gridnode/class_lists.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/entity_index.hpp"
 #include "gridnode/log.hpp"
@@ -1178,6 +1179,35 @@ void markDead(uintptr_t p) {
     markDeadLocked(p); // one made before GridNode loaded
 }
 
+// The entities made before GridNode loaded (injected into a running level): the creator hook sees only
+// new ones, so the index missed them (152 of 400 volumes in one area, 2026-11-12). The game keeps a list
+// per class and realm (gridnode/class_lists.hpp); each is walked once. GridNode's thread, reads only:
+// the lists may change while they are walked (a node read after its entity is gone just does not
+// resolve). A class's entities are only in its own list, so every reflected entity class is walked.
+void seedExisting() {
+    const Type* entity = registry().find("Entity");
+    if (!entity) return;
+    const ULONGLONG t0 = GetTickCount64();
+    size_t found = 0, classes = 0, unresolved = 0;
+    const auto read = [](uint64_t a, uint64_t& v) { return mem::read(static_cast<uintptr_t>(a), v); };
+    for (const Type& t : registry().data().types) {
+        if (unloading()) return;
+        if (t.category != Category::Class || !t.ti || !registry().isKindOf(&t, entity)) continue;
+        uint32_t back = 0;
+        size_t here = 0;
+        uint64_t heads[4];
+        classlists::heads(t.ti, heads);
+        const auto isClass = [&t](uint64_t a) { return typeOf(static_cast<uintptr_t>(a)) == &t; };
+        for (uint64_t h : heads)
+            here += classlists::walk(h, back, read, isClass, [&t](uint64_t e) { g_live.add(static_cast<uintptr_t>(e), &t); }, 200000, unresolved);
+        if (here) found += here, ++classes;
+    }
+    GN_LOG("inspector: %llu entities made before GridNode loaded found in the game's class lists (%llu classes, %llu nodes not resolved, "
+           "%llu ms); %llu tracked now",
+           static_cast<unsigned long long>(found), static_cast<unsigned long long>(classes), static_cast<unsigned long long>(unresolved),
+           static_cast<unsigned long long>(GetTickCount64() - t0), static_cast<unsigned long long>(g_live.size()));
+}
+
 void start() {
     if (g_started) return;
     g_started = true;
@@ -1193,6 +1223,11 @@ void start() {
     }).detach();
     onCreated("gridnode", "Entity", &onEntity, nullptr);
     hookDestructors(); // dead the moment they are destroyed (pruning stays as the backstop)
+    // After the hooks: an entity made meanwhile is in both, which the index takes once.
+    std::thread([] {
+        BusyThread busy;
+        seedExisting();
+    }).detach();
 }
 
 void draw(bool* open) {

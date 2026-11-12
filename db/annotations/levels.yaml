@@ -119,7 +119,31 @@ functions:
   - name: ClassInfo_firstInWorld
     va: 0x143164d50
     signature: "void*(const TypeInfo* type, const void* world)"
-    note: "The first entity node of a class in a world: type + (world +0x28 + 6) * 0x10 (GameWorld_ClassListIndex). No null check of world."
+    note: "The first entity node of a class in a world: type + (world +0x28 + 6) * 0x10 (GameWorld_ClassListIndex: the world's realm, 0 client, 1 server). No null check of world. The list holds entities of exactly that class: the game's loops go on through ClassInfo_nextSubclass."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ClassInfo_firstPendingInWorld
+    va: 0x143164d70
+    signature: "void*(const TypeInfo* type, const void* world)"
+    note: "The second list of a class in a world: type + (world +0x28 + 8) * 0x10 (entities added without flag 0x10; see ClassInfo_addToWorldListAny). Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ClassInfo_nextSubclass
+    va: 0x143164f80
+    signature: "const TypeInfo*(const TypeInfo* root, const TypeInfo* at)"
+    note: "Walks the class tree under root, depth first: first child (+0x30), else the next sibling (+0x38) of at or of its supers (+0x18) up to root. The game's loops over a class's entities use it with ClassInfo_firstInWorld. Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ClassInfo_addToWorldList
+    va: 0x1431661f0
+    signature: "void(void* node, const TypeInfo* type, void* entity)"
+    note: "Links an entity into its class's list in its realm, if its flags (+0x18) have 0x10: head = type + ((flags & 1) + 6) * 0x10 (the realm bit: what GameWorld_ClassListIndex holds). node = {next, pointer to the previous link}, inserted at the head. 163 callers, each passing a node at its own class's offset in the entity (characters +0x40, AI groups +0x30, splines +0x110, zone streamers +0x268). GridNode walks these lists to find the entities made before it loaded (inspector.cpp). Read in Ghidra 2026-11-12."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ClassInfo_addToWorldListAny
+    va: 0x1431665b0
+    signature: "void(void* node, const TypeInfo* type, void* entity)"
+    note: "ClassInfo_addToWorldList for any entity: sets flags 0x20, and links into the +6 list with 0x10, else into the +8 list. 14 callers. Read in Ghidra 2026-11-12."
     confidence: inferred
     sources: [ghidra]
   - name: ZoneStreamerFocus_add

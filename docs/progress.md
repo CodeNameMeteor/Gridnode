@@ -74,6 +74,13 @@ two reloads and a full unload are clean (7 code patches undone, 2,160 hooks out,
 trainer's camera / time hold come back when it unloads (the mod handle). GridNode's own two startup
 detours still pause one at a time (6.3 and 1.2 ms): batching them would save a few ms at startup.
 
+Entities made before GridNode loaded (2026-11-12; untested in game): injected into a running level, the
+index missed them (the trainer's volumes: 152 of 400 in one area). Read in Ghidra: the game keeps a list
+per class and realm, `ClassInfo_addToWorldList` (0x1431661f0, 163 callers): head at ClassInfo + (realm +
+6) * 0x10, a second at + 8; node {next, prev link} at a per-class offset in the entity. At startup GridNode
+walks every entity class's lists once and finds each node's entity by stepping back to the address whose
+vtable is that class (`class_lists.hpp`, host-tested); the log says how many it found.
+
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).
 

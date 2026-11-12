@@ -13,6 +13,7 @@
 
 #include "gridnode/ant_types.hpp"
 #include "gridnode/audio_mix.hpp"
+#include "gridnode/class_lists.hpp"
 #include "gridnode/config.hpp"
 #include "gridnode/field_diff.hpp"
 #include "gridnode/dispatch.hpp"
@@ -857,6 +858,42 @@ void testEntityIndex() {
     CHECK(seen == 4 && ix.all().size() == 4);
 }
 
+// Finding the entities made before GridNode loaded, from the game's per-class lists.
+void testClassLists() {
+    std::map<uint64_t, uint64_t> mem;
+    constexpr uint64_t kVtable = 0x9000, kOther = 0x9100, kClassInfo = 0x1000;
+    // Three entities of the class with their node at +0x40, linked from the client realm's head.
+    const uint64_t ents[3] = {0x20000, 0x30000, 0x40000};
+    for (uint64_t e : ents) mem[e] = kVtable;
+    mem[0x20000 + 0x18] = kOther; // a member that looks like a vtable of another class: not taken
+    mem[kClassInfo + classlists::kHeadsAt] = ents[0] + 0x40;
+    mem[ents[0] + 0x40] = ents[1] + 0x40;
+    mem[ents[1] + 0x40] = ents[2] + 0x40;
+    mem[ents[2] + 0x40] = 0;
+    const auto read = [&](uint64_t a, uint64_t& v) {
+        auto it = mem.find(a);
+        v = it == mem.end() ? 0 : it->second;
+        return true;
+    };
+    const auto isClass = [&](uint64_t a) { auto it = mem.find(a); return it != mem.end() && it->second == kVtable; };
+    std::vector<uint64_t> got;
+    uint32_t back = 0;
+    size_t unresolved = 0;
+    uint64_t heads[4];
+    classlists::heads(kClassInfo, heads);
+    CHECK(heads[0] == kClassInfo + 0x60 && heads[1] == kClassInfo + 0x80 && heads[2] == kClassInfo + 0x70 && heads[3] == kClassInfo + 0x90);
+    size_t n = 0;
+    for (uint64_t h : heads) n += classlists::walk(h, back, read, isClass, [&](uint64_t e) { got.push_back(e); }, 1000, unresolved);
+    CHECK(n == 3 && back == 0x40 && unresolved == 0);
+    CHECK(got.size() == 3 && got[0] == ents[0] && got[2] == ents[2]);
+    // A node with no entity of the class behind it is counted, not taken; a cycle stops at the cap.
+    mem[ents[2] + 0x40] = 0x50040;
+    mem[0x50040] = ents[0] + 0x40;
+    got.clear(), unresolved = 0;
+    classlists::walk(heads[0], back, read, isClass, [&](uint64_t e) { got.push_back(e); }, 10, unresolved);
+    CHECK(unresolved >= 1 && got.size() <= 10);
+}
+
 void testNearAlloc() {
     constexpr uint64_t kGran = 0x10000, kSize = 0x10000, kImage = 0x140000000;
     auto run = [&](FakeSpace& s, bool down, uint64_t from) {
@@ -909,6 +946,7 @@ int main() {
     testModCall();
     testVirtualHooks();
     testEntityIndex();
+    testClassLists();
     testFieldDiff();
     testModOrder();
     testDeclaredSettings();
