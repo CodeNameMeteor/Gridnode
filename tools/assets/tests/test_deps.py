@@ -71,6 +71,15 @@ class Deps(unittest.TestCase):
             self.assertTrue(all("props.sb: levels/props" in i.bundles for i in items))
             self.assertTrue(os.path.isfile(os.path.join(d, "cache", "ebx-guids.json")))  # GUIDs kept for next time
 
+    def test_used_by_reads_import_tables(self):
+        with tempfile.TemporaryDirectory() as d:
+            install(d)
+            index = deps.Index(store.Store(os.path.join(d, "Data")), os.path.join(d, "cache"))
+            self.assertEqual(deps.used_by(index, "Objects/B"), ["objects/a"])
+            self.assertEqual(deps.used_by(index, "objects/a"), [])
+            with self.assertRaises(store.StoreError):
+                deps.used_by(index, "objects/none")
+
 
 if __name__ == "__main__":
     unittest.main()
