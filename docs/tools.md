@@ -42,6 +42,26 @@ header of the script has the command. The output comes from the game: do not com
 | `tools/ghidra/FrostbiteTypeDumper.java` | Dumps Frostbite's type info from Ghidra, to compare with ours (`gridnode.py compare`); [Dump format](dump-format.md). |
 | `tools/ghidra/FrostbiteVTableLengthFinder.java`, `vtable_finder.py` | The exact length of every vtable ([vtables](research/vtables.md)). The Python one works on an image file: `python tools/ghidra/vtable_finder.py --exe DUMP --export out.json`. |
 
+## Assets (the game's data files)
+
+`gridnode.py assets ...` reads the game's data where it is installed (`--data` the `Data` folder, as
+`gridnode.log` says, or `GRIDNODE_DATA`) and writes only to `bin/assets/` (git-ignored: game data is never
+committed). Extracting needs `pip install lz4`.
+
+| Command | What it does |
+|---|---|
+| `check` | Every catalogue and bundle read; the compression codecs found. |
+| `list [--bundle B] [--type ebx\|res\|chunks]` | The entries of the bundles. |
+| `extract NAME` | One entry, decompressed, into `bin/assets/<kind>/`. |
+| `ebx NAME` (or a `.ebx` file) `[--out DIR\|-]` | An EBX file as YAML, into `bin/assets/yaml/`; says whether it writes back to the same bytes. |
+| `ebx-check [--superbundle S] [--bundle B] [--limit N]` | Every EBX read, turned into YAML, read back and written: the same bytes? Lists the files that are not. |
+
+The YAML keeps everything the file has (its GUID, imports, its own type table with offsets, every
+instance in order), so it writes back to the same bytes. In it: fields by name (a parent's first; a name a
+parent already has is `Type.name`); references are `null`, `'#N'` (instance N of this file) or `'import:N'`;
+enums by name; floats as the shortest decimal that is the same float32. Format notes: the header of
+`tools/assets/gridnode_assets/ebx.py`. Tests: `python3 -m unittest discover -s tools/assets/tests -t tools/assets`.
+
 ## Meshes (custom models)
 
 `tools/mesh/frosty_fbx.py TEMPLATE.fbx BLENDER.fbx` makes a Blender export importable by Frosty;

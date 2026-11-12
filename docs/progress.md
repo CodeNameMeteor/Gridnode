@@ -51,8 +51,21 @@ unloads (`virtual PamClientCharacterEntity (and subclasses)+0x3d8 taken out`). T
 passes: 11 catalogues (two counts after the magic, 115,276 entries, no patch entries in Data), every bundle
 entry found in a catalogue, blocks LZ4 or stored (no Oodle). Step 1 of part 5 is done (extracting needs
 `pip install lz4`): `assets extract gameplay/movement/climbing/ladders/pf_climbladder_768_nobrackets` gave
-7,680 bytes (4,430 stored) starting `CE D1 B2 0F`, the EBX version 2 magic. Next: step 2, EBX to YAML,
-tested on the user's files.
+7,680 bytes (4,430 stored) starting `CE D1 B2 0F`, the EBX version 2 magic.
+
+Step 2, EBX to YAML (2026-11-12): `tools/assets/gridnode_assets/ebx.py`, `assets ebx` and `assets ebx-check`.
+Read from the user's own files (staged from the install: the index files and the four archives under 400 MB),
+lossless: read, to YAML, back and written gives the same bytes for all 621 EBX files those archives hold,
+which is every EBX of three superbundles (frontend 147, globals 632 entries, ui 18). Format facts found on the
+way (the header of ebx.py): header 0x10..0x14 are the instance-run count, the exported-run count (the first
+runs are exported) and the number of types the instances are of; a type aligned to 8 or more keeps its
+8-byte header in the payload, one aligned to 4 does not; an exported instance's GUID is aligned for its type;
+an array is listed after the arrays in its elements; array 0 (empty) takes the type of the first array met;
+the payload never ends right at the data's end (padded to the next 16). Type codes seen: 0, 2, 3, 4, 7, 8, 10,
+12, 14, 15, 16, 19, 21, 23; FileRef (9), String (6), 64-bit and 8/16-bit signed ints are read as described
+but not seen yet. Not run yet: `ebx-check` over the whole install (43,040 more EBX files in archives over
+the 400 MB staging limit; about 20 minutes on the user's PC). Next: step 3, YAML to EBX as a command, with
+each type checked against the reflected dump.
 
 Second round (API 37, the user's choices of 2026-11-11; untested in game):
 - **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one

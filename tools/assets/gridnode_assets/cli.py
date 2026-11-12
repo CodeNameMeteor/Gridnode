@@ -4,6 +4,10 @@
                                                compression codecs found are printed (plan step 1's test)
   assets list --data DIR [--bundle B] [--type ebx|res|chunks] [--limit N]
   assets extract NAME --data DIR [--out DIR]   one ebx / res entry (or a chunk by GUID), decompressed
+  assets ebx NAME|FILE.ebx [--data DIR] [--out DIR|-]
+                                               an EBX file as YAML (lossless: written back it is the same)
+  assets ebx-check --data DIR [--superbundle S] [--bundle B] [--limit N]
+                                               every EBX read, to YAML, back and written: same bytes?
 
 DIR is the game's Data folder (gridnode.log: "startup: game data from ..."), or the GRIDNODE_DATA
 environment variable. Extracted files go to bin/assets/ (git-ignored): game data is never committed.
@@ -16,6 +20,7 @@ import os
 import sys
 from collections import Counter
 
+from . import ebx
 from .store import Store, StoreError, bundles_of, read_toc
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -109,6 +114,86 @@ def cmd_extract(a) -> int:
     return 1
 
 
+def _ebx_bytes(a) -> tuple[str, bytes]:
+    if a.name.lower().endswith(".ebx") and os.path.isfile(a.name):
+        with open(a.name, "rb") as f:
+            return os.path.splitext(os.path.basename(a.name))[0], f.read()
+    s = _store(a)
+    want = a.name.lower()
+    for b in _all_bundles(s):
+        for e in b.entries:
+            if e.kind == "ebx" and e.name.lower() == want and e.sha1:
+                return e.name, s.read(e.sha1)
+    raise StoreError(f"{a.name} is no EBX in any bundle (or .ebx file)")
+
+
+def cmd_ebx(a) -> int:
+    name, data = _ebx_bytes(a)
+    text = ebx.to_yaml(ebx.read(data))
+    if a.out == "-":
+        sys.stdout.write(text)
+        return 0
+    path = os.path.join(a.out or os.path.join(OUT, "yaml"), name.replace("/", os.sep) + ".yaml")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    same, why = ebx.round_trip(data)
+    print(f"ebx {name}: {len(data)} bytes -> {path} ({'written back the same' if same else 'NOT the same written back: ' + why})")
+    return 0 if same else 1
+
+
+def cmd_ebx_check(a) -> int:
+    s = _store(a)
+    seen: set[bytes] = set()
+    passed = failed = absent = 0
+    reasons: Counter = Counter()
+    examples: dict[str, str] = {}
+    raw_codes: Counter = Counter()
+    for b in _all_bundles(s):
+        if a.superbundle and a.superbundle.lower() not in b.superbundle.lower():
+            continue
+        if a.bundle and a.bundle.lower() not in b.name.lower():
+            continue
+        for e in b.entries:
+            if e.kind != "ebx" or not e.sha1 or e.sha1 in seen:
+                continue
+            seen.add(e.sha1)
+            where = s.by_sha1.get(e.sha1)
+            if where is not None and not os.path.isfile(where.archive_path()):
+                absent += 1  # a copy of the install with some archives left out
+                continue
+            try:
+                data = s.read(e.sha1)
+                x = ebx.read(data)
+                for t in x.types:
+                    for fl in t.fields:
+                        c = ebx.code_of(fl.flags)
+                        if c not in ebx._SIZES and c not in (ebx.C_INHERITED, ebx.C_STRUCT):
+                            raw_codes[c] += 1
+                same, why = ebx.round_trip(data)
+            except Exception as ex:  # noqa: BLE001 - every failure is counted and shown
+                same, why = False, f"{type(ex).__name__}: {ex}"
+            if same:
+                passed += 1
+            else:
+                failed += 1
+                key = why.split(";")[-1].strip() if "difference" in why else why[:120]
+                key = "differs" if "difference" in why else key
+                reasons[key] += 1
+                examples.setdefault(key, f"{e.name}: {why}")
+            if a.limit and passed + failed >= a.limit:
+                break
+        if a.limit and passed + failed >= a.limit:
+            break
+    print(f"ebx-check: {passed + failed} EBX files, {passed} written back the same, {failed} not"
+          + (f" ({absent} in archives not in this folder)" if absent else ""))
+    if raw_codes:
+        print(f"type codes kept as raw bytes (fields per code): {dict(raw_codes)}")
+    for k, n in reasons.most_common(20):
+        print(f"  {n:6}  {examples[k]}")
+    return 0 if failed == 0 and passed else 1
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="gridnode.py assets", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -124,9 +209,19 @@ def main(argv: list[str]) -> int:
     ex.add_argument("name")
     ex.add_argument("--data")
     ex.add_argument("--out")
+    eb = sub.add_parser("ebx", help="an EBX file as YAML, into bin/assets/yaml")
+    eb.add_argument("name", help="the EBX's name in its bundle, or a .ebx file")
+    eb.add_argument("--data")
+    eb.add_argument("--out", help="a folder, or - for the screen")
+    ec = sub.add_parser("ebx-check", help="every EBX written back from its YAML: the same bytes?")
+    ec.add_argument("--data")
+    ec.add_argument("--superbundle", help="only superbundles whose name contains this")
+    ec.add_argument("--bundle", help="only bundles whose name contains this")
+    ec.add_argument("--limit", type=int, default=0)
     a = ap.parse_args(argv)
     try:
-        return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract}[a.cmd](a)
-    except StoreError as e:
+        return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
+                "ebx-check": cmd_ebx_check}[a.cmd](a)
+    except (StoreError, ebx.EbxError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1

@@ -36,7 +36,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
-| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract` (the game's data store, read in place) |
+| `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check` (the game's data store, read in place; EBX to lossless YAML) |
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
 | `tools/recording/summarize.py` | reads recordings (below) |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
@@ -67,7 +67,7 @@ cmake -S . -B /tmp/claude-0/bw -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
   -DCMAKE_BUILD_TYPE=Release -DGRIDNODE_BUILD_TESTS=OFF
 cmake --build /tmp/claude-0/bw      # gridnode.dll; -DGRIDNODE_PLAYER_BUILD=ON checks the player build
 cmake -S . -B /tmp/claude-0/hosttest -G Ninja && cmake --build /tmp/claude-0/hosttest && (cd /tmp/claude-0/hosttest && ctest)
-cd tools/gen && python3 -m unittest tests.test_gen  # Python tools (and tools/assets: python3 -m unittest tests.test_store)
+cd tools/gen && python3 -m unittest tests.test_gen  # Python tools (tools/assets: python3 -m unittest discover -s tools/assets/tests -t tools/assets)
 python3 tools/gen/gridnode.py validate              # after any annotation change; `check --dump D.json` before pushing it
 python3 tools/gen/gridnode.py docs --build          # the docs site, strict, as CI builds it
 ```
