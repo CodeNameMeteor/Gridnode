@@ -68,6 +68,8 @@ struct Mod {
     ULONGLONG changedAt = 0; // the file changed (auto reload waits for it to settle)
     std::vector<modorder::Dep> deps;
     gn_mod* handle = nullptr;  // given to its gn_mod_load2 (null for gn_mod_load only)
+    std::string backAfter;     // unloaded for this mod's unload or reload: loaded again once that is done
+    bool depsAsked = false;    // its optional dependents were asked to unload first (once per request)
 };
 
 // Functions mods offer each other (gn_api mod_export / mod_import), by "<id>.<name>".
@@ -349,6 +351,29 @@ std::string dependentsOf(const Mod& m) {
     return out;
 }
 
+// The loaded mods that need m only optionally (it is a soft dependency of theirs, or they imported
+// from it without a hard dependency): unloaded before it and loaded again after, so each comes back
+// as it would without m (or, after a reload, with the new m). False if none, or if one needs m for
+// sure or cannot be unloaded: then the unload is refused as before. g_modsM not held.
+bool optionalDependents(const Mod& m, std::vector<std::string>& files) {
+    std::set<std::string> importers;
+    {
+        std::lock_guard<std::mutex> lock(g_expM);
+        if (auto it = g_importers.find(m.info.id); it != g_importers.end()) importers = it->second;
+    }
+    std::lock_guard<std::mutex> lock(g_modsM);
+    for (const Mod& o : g_mods) {
+        if (!o.module || o.info.file == m.info.file) continue;
+        bool needs = importers.count(o.info.id) != 0, hard = false;
+        for (const modorder::Dep& d : o.deps)
+            if (d.id == m.info.id) needs = true, hard = hard || !d.soft;
+        if (!needs) continue;
+        if (hard || !o.info.reloadable) return false;
+        files.push_back(o.info.file);
+    }
+    return !files.empty();
+}
+
 void forgetExports(const CodeRange& r, const std::string& id) {
     std::lock_guard<std::mutex> lock(g_expM);
     for (auto it = g_exports.begin(); it != g_exports.end();) it = r.has(it->second.fn) ? g_exports.erase(it) : std::next(it);
@@ -568,6 +593,25 @@ void pollMods() {
                 work = m;
             }
         }
+        // Mods that need it only optionally go first (and come back after), rather than blocking it.
+        const bool loadOnly = work.loadWanted && !work.unloadWanted;
+        std::vector<std::string> optional;
+        if (work.module && !loadOnly && !work.depsAsked && optionalDependents(work, optional)) {
+            std::string names;
+            std::lock_guard<std::mutex> lock(g_modsM);
+            for (Mod& o : g_mods)
+                if (std::find(optional.begin(), optional.end(), o.info.file) != optional.end()) {
+                    o.unloadWanted = true, o.backAfter = work.info.id;
+                    names += (names.empty() ? "" : ", ") + o.info.file;
+                }
+            Mod& cur = g_mods[i];
+            cur.depsAsked = true;
+            if (work.unloadWanted) cur.unloadWanted = true;
+            else cur.reloadWanted = true;
+            GN_LOG("mods: %s: first unloading %s (%s it only optionally), then loading %s again", work.info.file.c_str(), names.c_str(),
+                   optional.size() == 1 ? "needs" : "need", optional.size() == 1 ? "it" : "them");
+            continue;
+        }
         // Without the lock: the reload waits for frames, and the menu reads the list every frame.
         if (work.unloadWanted) {
             work.unloadWanted = false;
@@ -592,6 +636,29 @@ void pollMods() {
         cur.reloadWanted = reloadWanted && cur.module; // only what still applies to the new state
         cur.unloadWanted = unloadWanted && cur.module;
         cur.loadWanted = loadWanted && !cur.module;
+        // Done with it: the mods unloaded for it come back, and a mod just loaded is picked up by the
+        // loaded mods that want it optionally (they look for it when they load: reloaded to see it).
+        cur.depsAsked = false;
+        const std::string id = cur.info.id;
+        const bool nowLoaded = cur.module && cur.info.loaded;
+        std::set<std::string> importers;
+        if (loadOnly && nowLoaded) {
+            std::lock_guard<std::mutex> el(g_expM);
+            if (auto it = g_importers.find(id); it != g_importers.end()) importers = it->second;
+        }
+        for (Mod& o : g_mods) {
+            if (o.backAfter == id) {
+                o.backAfter.clear();
+                if (!o.module) o.loadWanted = true;
+                continue;
+            }
+            if (!loadOnly || !nowLoaded || !o.module || !o.info.loaded || !o.info.reloadable || importers.count(o.info.id)) continue;
+            for (const modorder::Dep& d : o.deps)
+                if (d.soft && d.id == id && !o.reloadWanted) {
+                    o.reloadWanted = true;
+                    GN_LOG("mods: %s wants %s optionally: reloading it so it sees it", o.info.file.c_str(), cur.info.file.c_str());
+                }
+        }
     }
 }
 

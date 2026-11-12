@@ -85,8 +85,12 @@ Mods can call each other. `gn::exportFn("name", &fn)` offers one of the mod's fu
 `<its id>.name`; another mod gets it with `gn::importFn<Fn>("its-id", "name")` (null when that mod is
 not loaded or does not offer it), from `gn_mod_load` or later, after declaring the dependency so the
 other mod is loaded first. `gn::modVersion("its-id", &version)` says whether a mod is loaded. A mod
-that another one needs, or imported from, cannot be unloaded on its own (the Mods list says which mod
-needs it); a full unload goes through them in reverse order. Rust: `export_fn`, `import_fn`,
+that another one needs cannot be unloaded on its own (the Mods list says which mod needs it); a full
+unload goes through them in reverse order. When the others need it only optionally (`"?id"`, or an
+import without a needed dependency), unloading or reloading it unloads them first and loads them
+again after, so they come back without it (or with the new copy); and loading it reloads the mods
+that want it optionally, so they see it. Look for the other mod in `gn_mod_load`: that is when it
+changes. Rust: `export_fn`, `import_fn`,
 `mod_version`. See `examples/detour-demo`.
 
 ## Rust
