@@ -100,5 +100,15 @@ stayed after teleporting away and back.
   lab's bundle handle was stale: the level unload had freed the group, and releasing it read freed memory
   (refs 526426303). A bundle API must drop its handles at level end without releasing them.
 
-Not done yet: removing a spawned prefab (destroying the listed entities, then releasing the bundle), and
-`gn::bundleLoad` / `gn::prefabSpawn` in the SDK (API 38).
+Removing it (game-tested 2026-11-12): for every entity in the spawn's list (list +0x08 = first chunk; entries
+from chunk +0x10; bit 0 of chunk +0 marks the last chunk, whose u32 count is at +0x08; a full chunk ends at +0x1f0
+with the next chunk at +0x08), `Entity_requestDestroy(entity, bus)` on the entity's realm thread. The function
+does `jmp [[[bus]] +0x10]` with (owner, entity): the bus holds its owner at +0x00, and the owner (vtable +0x10 =
+0x143125180) sets entity +0x18 bit 10 and queues it. The bus is at entity +0x20 for logic entities and at +0x28
+for spatial ones (static models, the distance culling entity, characters); reading the other offset crashed. All
+21 entities of the magrope went, and it vanished.
+
+A Load within about 2 s of the last Release reuses the group the game still holds (state 3 at once), and
+`ResourceManager_registerBundleGroup` is not called again: keep each name's resource group id from earlier calls.
+
+Not done yet: `gn::bundleLoad` / `gn::prefabSpawn` / `gn::prefabDestroy` in the SDK (API 38).
