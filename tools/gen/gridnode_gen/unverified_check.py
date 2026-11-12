@@ -37,5 +37,5 @@ def check(src_dir: str) -> list[str]:
                     continue
                 for name in _USE.findall(line):
                     if name not in noted:
-                        problems.append(f"{os.path.relpath(path)}:{n}: uses unverified::{name} without a '// unverified:' note naming it")
+                        problems.append(f"{os.path.relpath(path, src_dir)}:{n}: uses unverified::{name} without a '// unverified:' note naming it")
     return problems

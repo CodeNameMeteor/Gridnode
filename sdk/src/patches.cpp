@@ -145,14 +145,14 @@ bool spansInstructions(uintptr_t at, size_t n) {
 // Writes code a thread may be running: in one store when the bytes fit in an aligned 8 or 16 bytes;
 // otherwise with every other thread paused and none about to run them (patch_bytes over 16 bytes, or
 // across a 16-byte boundary), so no thread ever runs half old, half new code (review, 2026-11-03).
-// othersPaused: the caller paused them already (a detour's entry). paused: always the paused path
+// othersPaused: the caller paused them already (a detour's entry). mustPause: always the paused path
 // (bytes over more than one instruction: one store is atomic, but a thread stopped between two of
 // the old instructions would go on in the middle of the new ones, review 2026-11-11).
-bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused = false, bool paused = false) {
+bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused = false, bool mustPause = false) {
     DWORD prot = 0;
     if (!VirtualProtect(reinterpret_cast<void*>(at), n, PAGE_EXECUTE_READWRITE, &prot)) return false;
     const uintptr_t q = at & ~uintptr_t(7);
-    if (!paused && at + n <= q + 8) {
+    if (!mustPause && at + n <= q + 8) {
         volatile LONG64* p = reinterpret_cast<volatile LONG64*>(q);
         LONG64 old = *p;
         for (;;) {
@@ -162,7 +162,7 @@ bool writeCode(uintptr_t at, const uint8_t* bytes, size_t n, bool othersPaused =
             if (seen == old) break;
             old = seen;
         }
-    } else if (const uintptr_t o = at & ~uintptr_t(15); !paused && at + n <= o + 16) {
+    } else if (const uintptr_t o = at & ~uintptr_t(15); !mustPause && at + n <= o + 16) {
         // A detour's 5-byte jump at a function entry not inside one aligned 8 bytes: one 16-byte store.
         alignas(16) uint8_t now[16];
         for (;;) {

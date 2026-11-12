@@ -1052,7 +1052,7 @@ private:
     bool resolve() const {
         int st = state_.load(std::memory_order_acquire);
         if (st == 0 && detail::apiPtr()) { // any thread may find it first: the same answer each time
-            gn_field f;
+            gn_field f{};
             const Type t = Type::find(class_);
             const bool ok = t && t.field(field_, f) && f.size == sizeof(T);
             if (ok) offset_.store(f.offset, std::memory_order_relaxed);
