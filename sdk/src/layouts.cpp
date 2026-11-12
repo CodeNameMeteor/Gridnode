@@ -65,6 +65,9 @@ struct Edit {
     std::string source;
     std::string mesh;   // "Copy": the source's mesh (MeshAsset name): found by it when the source is not
     int copyId = -1;
+    // kind "PlacedPrefab": a blueprint from any part of the level, spawned from its bundle (API 38's
+    // bundles.cpp): its asset name and the bundle GridNode loads for it (with the bundle's parents).
+    std::string asset, bundle;
 };
 
 // Where removed copies and hidden group copies go (entities cannot be destroyed yet): this far
@@ -76,6 +79,7 @@ std::string g_level;            // the level the edits are for (g_m)
 std::vector<Edit> g_edits;      // (g_m)
 bool g_dirty = false;           // unsaved changes (g_m)
 std::wstring g_dir;             // layouts folder
+std::wstring g_assetsDir;       // assets folder next to gridnode.dll (gridnode.py assets writes there)
 std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
 std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
 int g_nextCopyId = 0;           // (g_m)
@@ -448,6 +452,8 @@ bool save(const std::string& name) {
         o += "  - kind: " + oneLine(ed.kind) + "\n";
         if (!ed.source.empty()) o += "    source: " + oneLine(ed.source) + "\n";
         if (!ed.mesh.empty()) o += "    mesh: " + oneLine(ed.mesh) + "\n";
+        if (!ed.asset.empty()) o += "    asset: " + oneLine(ed.asset) + "\n";
+        if (!ed.bundle.empty()) o += "    bundle: " + oneLine(ed.bundle) + "\n";
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
         o += "    up: " + fmtVec(ed.to.up) + "\n";
@@ -521,6 +527,10 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
             cur.mesh = val;
             continue;
         }
+        if (key == "asset" || key == "bundle") {
+            (key == "asset" ? cur.asset : cur.bundle) = val;
+            continue;
+        }
         if (key == "kind") cur.kind = val, ok = !val.empty();
         else if (key == "at") ok = parseVec(val, cur.at);
         else if (key == "right") ok = parseVec(val, cur.to.right);
@@ -540,7 +550,7 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
     flush();
     fclose(f);
     for (Edit& ed : out) {
-        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy") { // a copy has no level placement: putting it back removes it
+        if (ed.kind == "Copy" || ed.kind == "BarrierCopy" || ed.kind == "MagropeCopy" || ed.kind == "PlacedPrefab") { // a copy has no level placement: putting it back removes it
             ed.from = ed.to;
             ed.haveFrom = true;
             std::lock_guard<std::mutex> lock(g_m);
@@ -552,6 +562,13 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
     }
     out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [&](const Edit& ed) {
+                                 const bool bad = ed.kind == "PlacedPrefab" && (ed.asset.empty() || ed.bundle.empty());
+                                 if (bad) GN_LOG("layouts: %s: a placed prefab without its asset or bundle; skipped", level.c_str());
+                                 return bad;
+                             }),
+              out.end());
     // Values the game must never be given (nan / inf from a hand-edited file, a zero row).
     const size_t before = out.size();
     out.erase(std::remove_if(out.begin(), out.end(),
@@ -3233,6 +3250,255 @@ void placeLibraryTry(const LibEntry& e, std::array<float, 6> r, int attempt) {
     if (missing) setStatus("Placed \"" + e.name + "\"; " + std::to_string(missing) + " of its parts are not loaded here.");
 }
 
+// ---- prefabs from any part of the level (API 38: bundles.cpp) ----------------------------------------------
+// A "PlacedPrefab" edit is kept spawned while the layout has it: its bundle (and the bundle's parents) loaded,
+// the prefab spawned at the edit's place. Kept on the server thread every quarter second: the game takes
+// spawned prefabs away on a checkpoint or level reload, and they are spawned again.
+std::mutex g_pfM;
+std::unordered_map<int, uint32_t> g_pfLive;            // (g_pfM) copyId -> prefab handle
+std::unordered_map<std::string, uint32_t> g_pfBundles; // (g_pfM) bundle (lower case) -> bundle handle
+std::unordered_map<int, std::string> g_pfStatus;       // (g_pfM) copyId -> what it is doing (the editor's list)
+
+std::string lowerCopy(std::string v) {
+    for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return v;
+}
+
+void prefabSync() {
+    std::vector<Edit> want;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "PlacedPrefab") want.push_back(ed);
+    }
+    std::lock_guard<std::mutex> lock(g_pfM);
+    // Prefabs no longer in the layout go first, then the bundles nothing needs.
+    for (auto it = g_pfLive.begin(); it != g_pfLive.end();) {
+        const bool kept = std::any_of(want.begin(), want.end(), [&](const Edit& ed) { return ed.copyId == it->first; });
+        if (kept) {
+            ++it;
+            continue;
+        }
+        prefabDestroy(it->second);
+        g_pfStatus.erase(it->first);
+        it = g_pfLive.erase(it);
+    }
+    for (auto it = g_pfBundles.begin(); it != g_pfBundles.end();) {
+        const bool needed = std::any_of(want.begin(), want.end(), [&](const Edit& ed) { return lowerCopy(ed.bundle) == it->first; });
+        if (needed) {
+            ++it;
+            continue;
+        }
+        bundleRelease(it->second);
+        it = g_pfBundles.erase(it);
+    }
+    for (const Edit& ed : want) {
+        const std::string key = lowerCopy(ed.bundle);
+        uint32_t& bh = g_pfBundles[key];
+        uint32_t ready = 0;
+        const int bs = bh ? bundleState(bh, &ready) : GN_ERR_NOT_FOUND;
+        if (bs == GN_ERR_NOT_FOUND) { // not asked yet, or gone with a level reload: ask (again)
+            bh = 0;
+            if (bundleLoad(nullptr, ed.bundle.c_str(), &bh) != GN_OK) bh = 0;
+            g_pfStatus[ed.copyId] = "loading " + ed.bundle;
+            continue;
+        }
+        if (bs != GN_OK) {
+            g_pfStatus[ed.copyId] = "its bundle did not load";
+            continue;
+        }
+        if (!ready) {
+            g_pfStatus[ed.copyId] = "loading " + ed.bundle;
+            continue;
+        }
+        auto live = g_pfLive.find(ed.copyId);
+        if (live != g_pfLive.end()) {
+            uint32_t on = 0, n = 0;
+            const int ps = prefabState(live->second, &on, &n);
+            if (ps == GN_OK && on) {
+                g_pfStatus[ed.copyId] = "placed, " + std::to_string(n) + " entities"; // from now on, none alive means taken away
+                continue;
+            }
+            if (ps == GN_OK && !on && g_pfStatus[ed.copyId] == "spawning") continue; // its halves are still being made
+            if (ps == GN_ERR_UNAVAILABLE) {
+                g_pfStatus[ed.copyId] = "could not be spawned (see the log)";
+                continue; // not tried again until it is placed again
+            }
+            prefabDestroy(live->second); // gone (the game took it away): spawned again below
+            g_pfLive.erase(live);
+        }
+        uint32_t ph = 0;
+        if (prefabSpawn(nullptr, ed.asset.c_str(), &ed.to, bh, &ph) == GN_OK) {
+            g_pfLive[ed.copyId] = ph;
+            g_pfStatus[ed.copyId] = "spawning";
+        }
+    }
+}
+
+// The prefab list (gridnode.py assets bundle-parents writes it): asset, the bundle to load.
+struct PrefabChoice {
+    std::string asset, bundle;
+};
+std::vector<PrefabChoice> g_pfIndex; // render thread
+bool g_pfIndexRead = false;
+
+void readPrefabIndex() {
+    g_pfIndexRead = true;
+    g_pfIndex.clear();
+    FILE* f = _wfopen((g_assetsDir + L"prefabs.txt").c_str(), L"rb");
+    if (!f) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        std::string l = line;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        const size_t tab = l.find('\t');
+        if (l.empty() || l[0] == '#' || tab == std::string::npos) continue;
+        g_pfIndex.push_back({l.substr(0, tab), l.substr(tab + 1)});
+    }
+    fclose(f);
+    GN_LOG("layouts: %llu prefabs can be placed (assets\\prefabs.txt)", static_cast<unsigned long long>(g_pfIndex.size()));
+}
+
+// Server thread: where the ray hits (or 10 m along it), upright, facing along the ray.
+void placePrefab(const std::string& asset, const std::string& bundle, std::array<float, 6> r) {
+    const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+    gn_ray_hit hit{};
+    alignas(16) gn_transform t{};
+    if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) memcpy(t.trans, hit.position, sizeof(float) * 3);
+    else
+        for (int k = 0; k < 3; ++k) t.trans[k] = r[k] + r[3 + k] * 10.f;
+    float fwd[3] = {r[3], 0.f, r[5]};
+    if (std::fabs(fwd[0]) + std::fabs(fwd[2]) < 1e-4f) fwd[2] = 1.f;
+    normalize(fwd);
+    t.forward[0] = fwd[0], t.forward[2] = fwd[2];
+    t.up[1] = 1.f;
+    t.right[0] = fwd[2], t.right[2] = -fwd[0]; // up x forward
+    t.trans[3] = 1.f;
+    Edit ed;
+    ed.kind = "PlacedPrefab";
+    ed.asset = asset;
+    ed.bundle = bundle;
+    ed.to = ed.from = t;
+    ed.haveFrom = true;
+    memcpy(ed.at, t.trans, sizeof(ed.at));
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        ed.copyId = g_nextCopyId++;
+        g_edits.push_back(ed);
+        g_dirty = true;
+    }
+    GN_LOG("layouts: placed prefab %s (bundle %s) at (%.1f, %.1f, %.1f)", asset.c_str(), bundle.c_str(), t.trans[0], t.trans[1], t.trans[2]);
+    setStatus("Placing " + asset + ": its bundle loads first (a second or two).");
+}
+
+void drawPrefabs() {
+    if (!ImGui::CollapsingHeader("Prefabs from any part of the level (experimental)")) return;
+    if (!g_pfIndexRead) readPrefabIndex();
+    static char filter[128] = "magrope";
+    static char asset[256] = "";
+    static char bundle[256] = "";
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("Any prefab of the city, wherever you are: GridNode loads the part of the level it comes from "
+                        "(and that part's parents) and spawns it. Saved with the layout.");
+    if (g_pfIndex.empty())
+        ImGui::TextDisabled("No list yet: run  python tools/gen/gridnode.py assets bundle-parents --data <the game's Data folder>  "
+                            "(it writes assets\\prefabs.txt and assets\\bundle-parents.txt), then Reload the list. "
+                            "You can also type an asset and its bundle below.");
+    ImGui::PopTextWrapPos();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+    ImGui::InputText("Find##pf", filter, sizeof(filter));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reload the list")) readPrefabIndex();
+    if (!g_pfIndex.empty() && ImGui::BeginChild("##pflist", ImVec2(0.f, ImGui::GetTextLineHeightWithSpacing() * 8), true)) {
+        const std::string f = lowerCopy(filter);
+        int shown = 0;
+        for (const PrefabChoice& c : g_pfIndex) {
+            if (!f.empty() && c.asset.find(f) == std::string::npos) continue;
+            if (++shown > 200) {
+                ImGui::TextDisabled("... more: type more of the name");
+                break;
+            }
+            if (ImGui::Selectable(c.asset.c_str(), c.asset == asset)) {
+                snprintf(asset, sizeof(asset), "%s", c.asset.c_str());
+                snprintf(bundle, sizeof(bundle), "%s", c.bundle.c_str());
+            }
+        }
+        if (!shown) ImGui::TextDisabled("Nothing matches.");
+    }
+    if (!g_pfIndex.empty()) ImGui::EndChild();
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
+    ImGui::InputText("Asset##pf", asset, sizeof(asset));
+    ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 4);
+    ImGui::InputText("Bundle##pf", bundle, sizeof(bundle));
+    ImGui::BeginDisabled(!asset[0] || !bundle[0]);
+    if (ImGui::Button("Place at the crosshair##pf")) {
+        float ray[6];
+        if (centreRay(ray)) {
+            std::array<float, 6> r{};
+            memcpy(r.data(), ray, sizeof(ray));
+            const std::string a = asset, b = bundle;
+            server().post([a, b, r] { placePrefab(a, b, r); });
+        }
+    }
+    ImGui::EndDisabled();
+    // The placed ones: move by typing (applied on Enter: it is spawned again there), or remove.
+    std::vector<Edit> placed;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : g_edits)
+            if (ed.kind == "PlacedPrefab") placed.push_back(ed);
+    }
+    if (placed.empty()) return;
+    ImGui::Separator();
+    for (const Edit& ed : placed) {
+        std::string status;
+        {
+            std::lock_guard<std::mutex> lock(g_pfM);
+            const auto it = g_pfStatus.find(ed.copyId);
+            status = it == g_pfStatus.end() ? "waiting" : it->second;
+        }
+        ImGui::PushID(ed.copyId);
+        const size_t slash = ed.asset.find_last_of('/');
+        ImGui::Text("%s", slash == std::string::npos ? ed.asset.c_str() : ed.asset.c_str() + slash + 1);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", status.c_str());
+        float pos[3] = {ed.to.trans[0], ed.to.trans[1], ed.to.trans[2]};
+        float yaw = std::atan2(ed.to.forward[0], ed.to.forward[2]) * 57.29578f;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+        const bool movePos = ImGui::InputFloat3("##pos", pos, "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 4);
+        const bool turn = ImGui::InputFloat("turn##yaw", &yaw, 0.f, 0.f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        const bool remove = ImGui::SmallButton("Remove");
+        if ((movePos || turn) && finite(pos, 3) && std::isfinite(yaw)) {
+            const float a = yaw / 57.29578f;
+            std::lock_guard<std::mutex> lock(g_m);
+            for (Edit& e : g_edits)
+                if (e.kind == "PlacedPrefab" && e.copyId == ed.copyId) {
+                    e.to = gn_transform{};
+                    e.to.forward[0] = std::sin(a), e.to.forward[2] = std::cos(a);
+                    e.to.up[1] = 1.f;
+                    e.to.right[0] = std::cos(a), e.to.right[2] = -std::sin(a);
+                    memcpy(e.to.trans, pos, sizeof(pos));
+                    e.to.trans[3] = 1.f;
+                    e.from = e.to;
+                    memcpy(e.at, pos, sizeof(pos));
+                    e.copyId = g_nextCopyId++; // a new id: the old one is destroyed and this one spawned at the new place
+                    g_dirty = true;
+                }
+        }
+        if (remove) {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](const Edit& e) { return e.kind == "PlacedPrefab" && e.copyId == ed.copyId; }),
+                          g_edits.end());
+            g_dirty = true;
+        }
+        ImGui::PopID();
+    }
+    ImGui::TextDisabled("Type a position or a turn (degrees) and press Enter to move one. Save the layout to keep them.");
+}
+
 void drawLibrary() {
     loadLibrary();
     if (!ImGui::CollapsingHeader("Library")) return;
@@ -3353,6 +3619,7 @@ void upright(gn_transform& t) {
 // ---- host interface ----------------------------------------------------------------------------------
 void start(const std::wstring& dir) {
     g_dir = dir + L"layouts\\";
+    g_assetsDir = dir + L"assets\\";
     for (const char* cls : {"ServerStaticModelEntity", "ClientStaticModelEntity"})
         onCreated("gridnode", cls, &onCreatedModel, nullptr); // Pam* models derive from these
     for (const char* cls : {"ServerStaticModelGroupEntity", "ClientStaticModelGroupEntity"})
@@ -3475,6 +3742,11 @@ void serverTick() {
         maintainSpawned();
         zoneFocusSync();
         specialSweep();
+    }
+    static DWORD lastPrefabs = 0;
+    if (now - lastPrefabs >= 250) {
+        lastPrefabs = now;
+        prefabSync();
     }
 }
 
@@ -5274,6 +5546,7 @@ void draw(bool* open) {
     else ImGui::TextDisabled("Copy an object (a building, a prop) to paste new ones of it anywhere in this level. Copies are saved with the layout.");
     ImGui::PopTextWrapPos();
     drawLibrary();
+    drawPrefabs();
     drawKeys();
     ImGui::End();
 }

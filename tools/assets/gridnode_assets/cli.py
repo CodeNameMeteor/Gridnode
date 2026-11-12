@@ -360,6 +360,47 @@ def _fields_of(x, ti: int) -> dict:
     return out
 
 
+def cmd_bundle_parents(a) -> int:
+    from .parents import BLUEPRINTS, KIND, bundle_key, chain, parents_of, prefab_bundle, write_prefabs, write_table
+    s = _store(a)
+    levels: list[tuple[str, ebx.Ebx]] = []  # (bundle, model) of the level files naming sublevels
+    where: dict[str, list[str]] = {}       # blueprint asset -> the bundles it is in
+    read: dict[bytes, tuple[str, str]] = {}  # sha1 -> (what it is, its name): a file in several bundles is read once
+    for b in _all_bundles(s):
+        for e in b.entries:
+            if e.kind != "ebx" or not e.sha1 or not s.has(e.sha1):
+                continue
+            got = read.get(e.sha1)
+            if got is None:
+                got = ("", e.name)
+                try:
+                    data = s.read(e.sha1)
+                    head = ebx.read(data, values=False)
+                    names = {t.name for t in head.types}
+                    if e.name.lower().startswith("levels/") and KIND in names:
+                        levels.append((b.name, ebx.read(data)))
+                    if head.instances and head.types[head.instances[0].type].name in BLUEPRINTS:
+                        got = ("blueprint", e.name)
+                except Exception:  # noqa: BLE001 - ebx-check is the place to look at files that do not read
+                    pass
+                read[e.sha1] = got
+            if got[0] == "blueprint":
+                where.setdefault(got[1].lower(), []).append(b.name)
+    table = parents_of(levels)
+    path = a.out or os.path.join(OUT, "bundle-parents.txt")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    write_table(table, path)
+    prefabs = {asset: prefab_bundle(bundles, table) for asset, bundles in where.items()}
+    prefabs = {k: v for k, v in prefabs.items() if v}
+    ppath = os.path.join(os.path.dirname(os.path.abspath(path)), "prefabs.txt")
+    write_prefabs(prefabs, ppath)
+    for name in a.show or []:
+        print(f"{bundle_key(name)} needs first: {', '.join(chain(table, name)) or '(nothing known)'}")
+    print(f"bundle-parents: {len(table)} sublevel bundles -> {path}")
+    print(f"prefabs: {len(prefabs)} of {len(where)} blueprints are in a sublevel bundle -> {ppath}")
+    return 0
+
+
 def cmd_usage(a) -> int:
     import yaml
     s = _store(a)
@@ -534,6 +575,10 @@ def main(argv: list[str]) -> int:
     ub = sub.add_parser("used-by", help="the EBX files that import an EBX (where a prefab is placed)")
     ub.add_argument("name")
     ub.add_argument("--data")
+    bp = sub.add_parser("bundle-parents", help="each sublevel bundle's parents, for GridNode's bundle_load (bin/assets/bundle-parents.txt)")
+    bp.add_argument("--data")
+    bp.add_argument("--out")
+    bp.add_argument("--show", nargs="*", help="print what these bundles need first")
     us = sub.add_parser("usage", help="which types the game's EBX instances are of: counts, examples, fields")
     us.add_argument("--data")
     us.add_argument("--kind-of", help="only this class and its subclasses (needs the dump), e.g. SpatialEntityData")
@@ -559,7 +604,7 @@ def main(argv: list[str]) -> int:
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
                 "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
-                "deps": cmd_deps, "used-by": cmd_used_by, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
+                "deps": cmd_deps, "used-by": cmd_used_by, "bundle-parents": cmd_bundle_parents, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
     except (StoreError, ebx.EbxError, ValueError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1

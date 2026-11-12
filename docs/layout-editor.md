@@ -6,9 +6,8 @@ developer build of GridNode and not in the player build (see [Shipping a mod](sh
 
 Open the GridNode menu (Insert) and choose **Layout editor**.
 
-!!! note "Paused"
-    Work on the layout editor is paused while the SDK gets ready for release; what is here works as
-    described, but it is not finished.
+!!! note "Not finished"
+    What is here works as described, but the editor is not finished.
 
 ## Free camera
 
@@ -134,6 +133,26 @@ Entries added before 2026-10-21 evening have no source position: remove and add 
 
 Your own meshes can be placed the same way once they are in the game: see
 [Custom meshes](custom-meshes.md).
+
+## Prefabs from any part of the level (experimental)
+
+Under **Prefabs from any part of the level**, any prefab of the city can be placed wherever you are: a
+magrope from Anchor while you stand in Downtown. GridNode loads the part of the level it comes from (and
+that part's parents) without the game streaming it in around you, and spawns the prefab with its logic
+running, so a magrope works.
+
+First make the list once (it reads your game files; it takes a few minutes):
+
+```text
+python tools/gen/gridnode.py assets bundle-parents --data "<the game's Data folder>"
+```
+
+It writes `assets/prefabs.txt` and `assets/bundle-parents.txt` next to gridnode.dll. Type part of a name in
+**Find**, pick one (or type an asset and its bundle yourself), and press **Place at the crosshair**. The list
+of placed prefabs shows what each is doing (loading its bundle, placed); type a position or a turn and press
+Enter to move one (it is spawned again there), or **Remove** it. They are saved with the layout and come
+back when it loads, and after a checkpoint or level reload. A prefab whose logic expects links from the level
+(a dash's start and finish) does nothing on its own yet.
 
 ## Teleport
 

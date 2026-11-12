@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -17,6 +19,8 @@
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "host.hpp"
+
+#include <windows.h>
 
 namespace gn::host {
 namespace {
@@ -30,6 +34,8 @@ struct Bundle {
     uint64_t level = 0;   // g_level when made: a level ending frees it in the game
     uint64_t game[2] = {0, 0};  // the game's handle: group pointer, compartment (server thread)
     enum State { Queued, Loading, Ready, Failed } state = Queued;
+    std::vector<uint32_t> parents;  // loaded first, released with it (bundle-parents.txt)
+    uint32_t child = 0;             // a parent loaded for this bundle: not the mod's own handle
 };
 
 struct Prefab {
@@ -63,6 +69,86 @@ std::atomic<uint64_t> g_level{1};
 // The game keeps the name pointer it was asked with: names are never freed (one per bundle_load).
 std::deque<std::string> g_names;  // (g_m)
 std::once_flag g_once;
+
+// bundle-parents.txt (gridnode.py assets bundle-parents, next to gridnode.dll in assets\): child, parent,
+// preloads, lower case. Made from the user's game files, so it is not shipped; without it a mod names the
+// parents itself.
+struct ParentRow {
+    std::string parent;
+    std::vector<std::string> preload;
+};
+std::map<std::string, ParentRow> g_parents; // read once (g_parentsOnce), then only read
+std::once_flag g_parentsOnce;
+
+std::string lowerName(std::string v) {
+    for (char& c : v) c = c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (v.rfind("win32/", 0) == 0) v.erase(0, 6);
+    return v;
+}
+
+std::wstring gridnodeFolder() {
+    HMODULE self = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&gridnodeFolder), &self))
+        return {};
+    wchar_t path[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring p(path, n);
+    const size_t slash = p.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1);
+}
+
+void readParents() {
+    const std::wstring path = gridnodeFolder() + L"assets\\bundle-parents.txt";
+    std::ifstream f(path.c_str());
+    if (!f) {
+        GN_LOG("bundles: no assets\\bundle-parents.txt next to gridnode.dll (gridnode.py assets bundle-parents): a bundle's "
+               "parents are not loaded with it");
+        return;
+    }
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const size_t a = line.find('\t');
+        const size_t b = a == std::string::npos ? a : line.find('\t', a + 1);
+        if (b == std::string::npos) continue;
+        ParentRow row;
+        row.parent = line.substr(a + 1, b - a - 1);
+        for (size_t at = b + 1; at < line.size();) {
+            const size_t semi = line.find(';', at);
+            const std::string one = line.substr(at, semi == std::string::npos ? std::string::npos : semi - at);
+            if (!one.empty()) row.preload.push_back(one);
+            if (semi == std::string::npos) break;
+            at = semi + 1;
+        }
+        g_parents[line.substr(0, a)] = std::move(row);
+    }
+    GN_LOG("bundles: %u sublevel bundles' parents known", static_cast<unsigned>(g_parents.size()));
+}
+
+// What to load before `name`, outermost first (as gridnode_assets.parents.chain), without the running level's own
+// bundle: the game holds that one, and the level is not a sublevel GridNode should ask for.
+std::vector<std::string> parentChain(const std::string& name) {
+    std::call_once(g_parentsOnce, readParents);
+    std::vector<std::string> order;
+    std::string key = lowerName(name);
+    std::vector<std::string> seen{key};
+    const std::string level = lowerName(levelName());
+    for (int depth = 0; depth < 32; ++depth) {
+        const auto it = g_parents.find(key);
+        if (it == g_parents.end()) break;
+        std::vector<std::string> step = it->second.preload;
+        step.push_back(it->second.parent);
+        std::vector<std::string> add;
+        for (const std::string& p : step)
+            if (std::find(seen.begin(), seen.end(), p) == seen.end()) seen.push_back(p), add.push_back(p);
+        order.insert(order.begin(), add.begin(), add.end());
+        key = it->second.parent;
+    }
+    order.erase(std::remove(order.begin(), order.end(), level), order.end());
+    return order;
+}
 
 Bundle* bundleOf(uint32_t h) {
     for (Bundle& b : g_bundles)
@@ -160,12 +246,12 @@ using ClientSpawnFn = void* (*)(void* result, void* ci, void* blueprint, uint64_
 // Server thread. As a district streaming in asks (0x143363c00): BundleRequest_init with parent
 // compartment 0, then +0x2a = 0xfe, +0x24 = 0, +0x28 = 1. The request is 0x50 bytes: +0x2c the heap
 // info (left at its default), +0x40 an empty string (nothing to free).
-void requestOnServer(uint32_t h) {
+void requestOnServer(uint32_t h, bool parentsReady = false) {
     const char* name = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_m);
         Bundle* b = bundleOf(h);
-        if (!b || b->state != Bundle::Queued) return;
+        if (!b || b->state != Bundle::Queued || (!b->parents.empty() && !parentsReady)) return;
         for (auto it = g_pending.begin(); it != g_pending.end(); ++it)
             if (it->level == b->level && sameName(it->name, b->name)) {
                 b->game[0] = it->game[0], b->game[1] = it->game[1];
@@ -210,6 +296,27 @@ void pollOnServer() {
             else ++it;
     }
     for (const PendingRelease& r : due) releaseOnServer(r.game[0], r.game[1], r.level);
+    std::vector<uint32_t> start;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (Bundle& b : g_bundles) {
+            if (b.state != Bundle::Queued || b.parents.empty()) continue;
+            bool all = true, failed = false;
+            for (uint32_t ph : b.parents) {
+                const Bundle* p = bundleOf(ph);
+                if (!p || p->state == Bundle::Failed) failed = true;
+                else if (p->state != Bundle::Ready) all = false;
+            }
+            if (failed) {
+                b.state = Bundle::Failed;
+                GN_LOG("bundles: %s not loaded: a parent failed", b.name.c_str());
+            } else if (all) {
+                b.parents.shrink_to_fit();
+                start.push_back(b.handle);
+            }
+        }
+    }
+    for (uint32_t h : start) requestOnServer(h, true);
     std::lock_guard<std::mutex> lock(g_m);
     for (Bundle& b : g_bundles) {
         if (b.state != Bundle::Loading) continue;
@@ -358,6 +465,7 @@ void destroyLocked(std::vector<Prefab>::iterator it) {
 
 // (g_m) Takes a bundle out: its prefabs first, then the game's handle.
 void releaseLocked(std::vector<Bundle>::iterator it) {
+    const std::vector<uint32_t> parents = it->parents;
     for (auto p = g_prefabs.begin(); p != g_prefabs.end();)
         if (p->bundle == it->handle) destroyLocked(p), p = g_prefabs.begin();
         else ++p;
@@ -370,6 +478,12 @@ void releaseLocked(std::vector<Bundle>::iterator it) {
         g_pending.push_back(r);
     }
     g_bundles.erase(it);
+    for (uint32_t ph : parents) // after the child: the game gives parents back last too
+        for (auto p = g_bundles.begin(); p != g_bundles.end(); ++p)
+            if (p->handle == ph) {
+                releaseLocked(p);
+                break;
+            }
 }
 
 void levelChanged(const char* level, int loaded, void*) {
@@ -402,17 +516,32 @@ bool finite(const gn_transform& t) {
 int bundleLoad(const void* caller, const char* name, uint32_t* handle) {
     if (!name || !*name || std::strlen(name) > 512 || !handle) return GN_ERR_ARGUMENT;
     start();
+    const std::vector<std::string> parents = parentChain(name); // reads the table once: outside g_m
     std::lock_guard<std::mutex> lock(g_m);
-    if (g_bundles.size() >= 64) return GN_ERR_FULL;
+    if (g_bundles.size() + parents.size() >= 64) return GN_ERR_FULL;
     Bundle b;
     b.handle = g_next++;
     b.name = name;
     b.owner = reinterpret_cast<uintptr_t>(caller);
     b.level = g_level.load();
+    for (const std::string& pn : parents) {
+        Bundle p;
+        p.handle = g_next++;
+        p.name = pn;
+        p.owner = b.owner;
+        p.level = b.level;
+        p.child = b.handle;
+        b.parents.push_back(p.handle);
+        const uint32_t ph = p.handle;
+        g_bundles.push_back(std::move(p));
+        server().post([ph] { requestOnServer(ph); });
+    }
+    if (!parents.empty()) GN_LOG("bundles: %s: its parents first (%u)", name, static_cast<unsigned>(parents.size()));
     *handle = b.handle;
     const uint32_t h = b.handle;
+    const bool waits = !b.parents.empty();
     g_bundles.push_back(std::move(b));
-    server().post([h] { requestOnServer(h); });
+    if (!waits) server().post([h] { requestOnServer(h); });
     return GN_OK;
 }
 
@@ -429,6 +558,7 @@ int bundleRelease(uint32_t handle) {
     std::lock_guard<std::mutex> lock(g_m);
     for (auto it = g_bundles.begin(); it != g_bundles.end(); ++it)
         if (it->handle == handle) {
+            if (it->child) return GN_ERR_ARGUMENT; // a parent goes with its child
             releaseLocked(it);
             return GN_OK;
         }
@@ -460,12 +590,26 @@ int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, u
 }
 
 int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities) {
-    std::lock_guard<std::mutex> lock(g_m);
-    const Prefab* p = prefabOf(handle);
-    if (!p) return GN_ERR_NOT_FOUND;
-    if (p->state == Prefab::Failed) return GN_ERR_UNAVAILABLE;
-    if (live) *live = p->state == Prefab::Live ? 1u : 0u;
-    if (entities) *entities = static_cast<uint32_t>(p->server.size() + p->client.size());
+    std::vector<uintptr_t> all;
+    bool spawned = false;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        const Prefab* p = prefabOf(handle);
+        if (!p) return GN_ERR_NOT_FOUND;
+        if (p->state == Prefab::Failed) return GN_ERR_UNAVAILABLE;
+        spawned = p->state == Prefab::Live;
+        all = p->server;
+        all.insert(all.end(), p->client.begin(), p->client.end());
+    }
+    // The ones still alive (GridNode's destructor hook marks the dead at once): the game can take a prefab
+    // away itself (a checkpoint reload), and then none are.
+    uint32_t alive = 0;
+    for (const uintptr_t ent : all) {
+        const reflect::Type* type = registry().typeOf(mem::ProcessMemory(), ent);
+        if (type && inspector::alive(ent, type)) ++alive;
+    }
+    if (live) *live = spawned && alive ? 1u : 0u;
+    if (entities) *entities = alive;
     return GN_OK;
 }
 

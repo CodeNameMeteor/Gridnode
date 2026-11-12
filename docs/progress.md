@@ -17,7 +17,10 @@ place any object from any area without that area streaming in.
   another district, kept after a teleport; gone on a checkpoint or level reload). Removing it works too
   (`Entity_requestDestroy` per listed entity). API 38 (`sdk/src/bundles.cpp`, untested in game):
   `gn::bundleLoad` / `bundleReady` / `bundleRelease`, `gn::prefabSpawn` / `prefabLive` / `prefabDestroy`; handles
-  dropped at level end; a mod's released and destroyed when it unloads. Test with the claim lab's `bundle-api`.
+  dropped at level end; a mod's released and destroyed when it unloads. Game-tested
+  with the claim lab's `bundle-api` (load, spawn, destroy, release, checkpoint reload, teleport with the parent
+  held, mod unload). Parents load automatically from `assets bundle-parents`' table; the layout editor places
+  prefabs from any area (`PlacedPrefab` edits, saved in the layout). Both untested in game.
 
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
 The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the
