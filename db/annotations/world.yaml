@@ -11,6 +11,12 @@ globals:
     va: 0x1425469e0
     type: "ServerGameWorld*"
     note: "The server world. Changes on every level load; null between levels. Written by levelLoad_setupWorldObjects; 131 functions read it, many for physics queries, hence g_physicsQueryManager in the user's Ghidra (checked 2026-10-29: the same global)."
+  - name: ServerSubLevelManager
+    va: 0x14253d680
+    type: "SubLevelManager"
+    note: "The server's sublevel manager object itself (not a pointer; vtable 0x141b42e40 at its start): what sublevel stream-in (0x143363c00) passes to SubLevelManager_requestBundle. Game-tested 2026-11-12: loading a sublevel bundle with it from a mod works (docs/research/zone-streaming.md)."
+    confidence: inferred
+    sources: [ghidra, game]
   - name: SubLevelManagerA
     va: 0x1424a9f58
     type: "void*"

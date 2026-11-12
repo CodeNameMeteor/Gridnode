@@ -251,6 +251,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetTimeOfDay(code);
     forgetVisualEnv(code);
     layouts::forgetStreamingFocus(code);
+    forgetBundles(code);
     return hooksOut;
 }
 

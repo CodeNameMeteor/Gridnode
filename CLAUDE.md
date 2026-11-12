@@ -32,7 +32,7 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | Path | What |
 |---|---|
 | `sdk/include/gridnode/` | public headers (`gridnode.hpp`, `api.h` = the C ABI mods use); `engine.hpp` is GENERATED |
-| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
+| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `bundles.cpp` (bundles and prefabs at runtime), `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |

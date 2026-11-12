@@ -15,8 +15,9 @@ place any object from any area without that area streaming in.
   (`docs/research/zone-streaming.md`).
 - A prefab from a loaded bundle spawns anywhere (game-tested: a usable magrope from `AnchorArea3` beside Faith in
   another district, kept after a teleport; gone on a checkpoint or level reload). Removing it works too
-  (`Entity_requestDestroy` per listed entity). Next: API 38 (`gn::bundleLoad` / `gn::prefabSpawn` /
-  `gn::prefabDestroy`), dropping bundle handles at level end.
+  (`Entity_requestDestroy` per listed entity). API 38 (`sdk/src/bundles.cpp`, untested in game):
+  `gn::bundleLoad` / `bundleReady` / `bundleRelease`, `gn::prefabSpawn` / `prefabLive` / `prefabDestroy`; handles
+  dropped at level end; a mod's released and destroyed when it unloads. Test with the claim lab's `bundle-api`.
 
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
 The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the

@@ -111,4 +111,7 @@ for spatial ones (static models, the distance culling entity, characters); readi
 A Load within about 2 s of the last Release reuses the group the game still holds (state 3 at once), and
 `ResourceManager_registerBundleGroup` is not called again: keep each name's resource group id from earlier calls.
 
-Not done yet: `gn::bundleLoad` / `gn::prefabSpawn` / `gn::prefabDestroy` in the SDK (API 38).
+In the SDK since API 38 (`sdk/src/bundles.cpp`): `bundle_load`, `prefab_spawn`, `prefab_destroy`, `bundle_release`. It
+builds its own request (`BundleRequest_init` as 0x143363c00 does: +0x2a = 0xfe, +0x24 = 0, +0x28 = 1, the heap info
+at +0x2c left at its default) instead of copying the game's, finds the asset as `asset_find` does (every resource
+group), and spawns into the root bus above Faith's (her bus is at +0x28).

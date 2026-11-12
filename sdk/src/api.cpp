@@ -340,6 +340,10 @@ GN_NOINLINE int apiTimeOfDayHold(float seconds) { return timeOfDayHold(GN_CALLER
 GN_NOINLINE int apiStreamingFocusAdd(const float pos[3], uint32_t* handle) { return layouts::streamingFocusAdd(GN_CALLER, pos, handle); }
 GN_NOINLINE int apiVisualEnvSet(uint32_t offset, const void* data, uint32_t size) { return visualEnvSet(GN_CALLER, offset, data, size); }
 GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
+GN_NOINLINE int apiBundleLoad(const char* name, uint32_t* handle) { return bundleLoad(GN_CALLER, name, handle); }
+GN_NOINLINE int apiPrefabSpawn(const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
+    return prefabSpawn(GN_CALLER, asset, at, bundle, handle);
+}
 
 // The UI's text lookup. Without a localiser (or an unknown id) the game leaves the buffer empty; the id is
 // given back then, and when the "text" is the id itself or not printable.
@@ -451,6 +455,10 @@ int mCameraFovSet(gn_mod* self, float degrees) { GN_SELF(GN_ERR_ARGUMENT) return
 int mTimeOfDayHold(gn_mod* self, float seconds) { GN_SELF(GN_ERR_ARGUMENT) return timeOfDayHold(who, seconds); }
 int mVisualEnvSet(gn_mod* self, uint32_t offset, const void* data, uint32_t size) { GN_SELF(GN_ERR_ARGUMENT) return visualEnvSet(who, offset, data, size); }
 int mStreamingFocusAdd(gn_mod* self, const float* pos, uint32_t* handle) { GN_SELF(GN_ERR_ARGUMENT) return layouts::streamingFocusAdd(who, pos, handle); }
+int mBundleLoad(gn_mod* self, const char* name, uint32_t* handle) { GN_SELF(GN_ERR_ARGUMENT) return bundleLoad(who, name, handle); }
+int mPrefabSpawn(gn_mod* self, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
+    GN_SELF(GN_ERR_ARGUMENT) return prefabSpawn(who, asset, at, bundle, handle);
+}
 #undef GN_SELF
 } // namespace
 
@@ -647,6 +655,14 @@ const gn_api* api() {
         a.time_of_day_hold_m = mTimeOfDayHold;
         a.visual_env_set_m = mVisualEnvSet;
         a.streaming_focus_add_m = mStreamingFocusAdd;
+        a.bundle_load = apiBundleLoad;
+        a.bundle_state = bundleState;
+        a.bundle_release = bundleRelease;
+        a.prefab_spawn = apiPrefabSpawn;
+        a.prefab_state = prefabState;
+        a.prefab_destroy = prefabDestroy;
+        a.bundle_load_m = mBundleLoad;
+        a.prefab_spawn_m = mPrefabSpawn;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

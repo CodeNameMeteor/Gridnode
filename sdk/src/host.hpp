@@ -352,6 +352,16 @@ int entitySetTransform(void* entity, const gn_transform* to);
 int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user); // world.cpp; how many, or -GN_ERR_*
 void assetRelease(void* asset);
 
+// Bundles loaded at runtime and prefabs spawned from them (bundles.cpp, API 38). caller: the mod's code,
+// for forgetBundles when it unloads.
+int bundleLoad(const void* caller, const char* name, uint32_t* handle);
+int bundleState(uint32_t handle, uint32_t* ready);
+int bundleRelease(uint32_t handle);
+int prefabSpawn(const void* caller, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
+int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities);
+int prefabDestroy(uint32_t handle);
+void forgetBundles(const CodeRange& r); // a mod unloading: its prefabs destroyed, its bundles released
+
 // Layouts (layouts.cpp, M7): level edits applied at runtime, and their editor.
 namespace layouts {
 void start(const std::wstring& gridnodeDir);
