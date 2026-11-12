@@ -581,6 +581,25 @@ def from_yaml(text: str) -> Ebx:
     return from_dict(yaml.load(text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)))
 
 
+def region_of(d: bytes, at: int) -> str:
+    """The section of an EBX file an offset is in (to say where a round trip first differs)."""
+    if len(d) < HEADER:
+        return "header"
+    str_at, _, n_imp = struct.unpack_from("<3I", d, 4)
+    n_runs, _, _, n_types, n_fields, name_len = struct.unpack_from("<6H", d, 0x10)
+    str_len, _, pay_len = struct.unpack_from("<3I", d, 0x1C)
+    p = HEADER + 32 * n_imp
+    marks = [("header", 0), ("imports", HEADER), ("names", p), ("fields", p + name_len),
+             ("types", p + name_len + 16 * n_fields), ("runs", p + name_len + 16 * n_fields + 16 * n_types),
+             ("array table", _align(p + name_len + 16 * n_fields + 16 * n_types + 4 * n_runs, 16)),
+             ("strings", str_at), ("payload", str_at + str_len), ("array data", str_at + str_len + pay_len)]
+    name = "header"
+    for n, start in marks:
+        if at >= start:
+            name = n
+    return name
+
+
 def round_trip(d: bytes) -> tuple[bool, str]:
     """read, to YAML, back, write: (same bytes?, where they first differ)."""
     o = write(from_yaml(to_yaml(read(d))))
@@ -588,7 +607,7 @@ def round_trip(d: bytes) -> tuple[bool, str]:
         return True, ""
     n = min(len(o), len(d))
     first = next((i for i in range(n) if o[i] != d[i]), n)
-    return False, f"{len(d)} bytes, written {len(o)}; first difference at {first:#x}"
+    return False, f"{len(d)} bytes, written {len(o)}; first difference at {first:#x} ({region_of(d, first)})"
 
 
 # ---- the file's types against the game's -----------------------------------------------------------
@@ -642,7 +661,7 @@ def check_types(x: Ebx, dump: dict) -> tuple[list[str], list[str]]:
             errors.append(f"{t.name}: type code {code_of(t.flags)} here, {(g['flags'] >> 4) & 0x1F} in the game")
             continue
         if g.get("category") == "Enum":
-            game = {v["name"]: v["value"] for v in g.get("values", [])}
+            game = {v["name"]: v["value"] & 0xFFFFFFFF for v in g.get("values", [])}  # the dump has -1, the file 0xFFFFFFFF
             for f in t.fields:
                 if f.name not in game:
                     errors.append(f"{t.name}.{f.name}: not a value of the game's enum")
