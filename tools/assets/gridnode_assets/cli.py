@@ -341,6 +341,7 @@ def cmd_ebx_check(a) -> int:
             if where is not None and not os.path.isfile(where.archive_path()):
                 absent += 1  # a copy of the install with some archives left out
                 continue
+            data = b""
             try:
                 data = s.read(e.sha1)
                 x = ebx.read(data)
@@ -359,8 +360,13 @@ def cmd_ebx_check(a) -> int:
                 passed += 1
             else:
                 failed += 1
-                key = why.split(";")[-1].strip() if "difference" in why else why[:120]
-                key = "differs" if "difference" in why else key
+                # grouped by where they differ (the section) or by the error
+                key = why[why.rfind("(") + 1:-1] if "difference" in why else why[:120]
+                if a.keep:  # the file itself, to look at (git-ignored: game data)
+                    path = os.path.join(a.keep, e.name.replace("/", os.sep) + ".ebx")
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "wb") as f:
+                        f.write(data)
                 reasons[key] += 1
                 examples.setdefault(key, f"{e.name}: {why}")
             if a.limit and passed + failed >= a.limit:
@@ -405,6 +411,7 @@ def main(argv: list[str]) -> int:
     ec.add_argument("--bundle", help="only bundles whose name contains this")
     ec.add_argument("--limit", type=int, default=0)
     ec.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
+    ec.add_argument("--keep", help="a folder: the files that do not write back the same are copied there")
     de = sub.add_parser("deps", help="everything an EBX needs, and the bundles that hold it")
     de.add_argument("name")
     de.add_argument("--data")
