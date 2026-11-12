@@ -16,9 +16,9 @@
 #include "gridnode/mem.hpp"
 #include "host.hpp"
 
-// unverified: DataContainer_release, ResourceGroup_Count (assets by name, asset_find, API 7): hypotheses in
-// db/annotations; confirm in Ghidra, then mark them confirmed. (getCompartment and Partition_findByName are
-// game-tested since 2026-11-12.)
+// unverified: ResourceGroup_Count (assets by name, asset_find, API 7): a hypothesis in db/annotations; confirm in
+// Ghidra, then mark it confirmed. (getCompartment and Partition_findByName are game-tested since 2026-11-12;
+// DataContainer_release checked in Ghidra by the runtime-data run.)
 
 namespace gn::host {
 namespace {
@@ -89,7 +89,7 @@ void assetRelease(void* asset) {
         if (--it->second == 0) g_held.erase(it);
     }
     using ReleaseFn = uint32_t (*)(void*);
-    reinterpret_cast<ReleaseFn>(mem::rva(e::function::unverified::DataContainer_release))(asset);
+    reinterpret_cast<ReleaseFn>(mem::rva(e::function::DataContainer_release))(asset);
 }
 
 } // namespace gn::host
