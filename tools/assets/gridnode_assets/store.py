@@ -294,6 +294,23 @@ class Store:
             raise StoreError(f"{e.archive_path()}: {e.size} bytes at {e.offset:#x} run past the file")
         return decompress_payload(raw, f"{sha1.hex()} in {os.path.basename(e.archive_path())}")
 
+    def has(self, sha1: bytes) -> bool:
+        """In a catalogue, and its archive is here (a copy of an install can leave archives out)."""
+        e = self.by_sha1.get(sha1)
+        return e is not None and os.path.isfile(e.archive_path())
+
+    def read_head(self, sha1: bytes) -> bytes:
+        """The first block only, decompressed: enough for a file's header."""
+        e = self.by_sha1.get(sha1)
+        if e is None:
+            raise StoreError(f"{sha1.hex()} is in no catalogue")
+        with open(e.archive_path(), "rb") as f:
+            f.seek(e.offset)
+            raw = f.read(min(e.size, 0x10008))
+        for code, size, data in blocks(raw, sha1.hex()):  # stops after the first: the rest may be cut off
+            return _decompress(code, data, size, sha1.hex())
+        return b""
+
     def codecs(self, sample: int = 0) -> Counter:
         """Blocks by codec over the catalogues' entries (all, or the first `sample`)."""
         seen: Counter = Counter()

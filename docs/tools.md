@@ -55,6 +55,7 @@ committed). Extracting needs `pip install lz4`.
 | `extract NAME` | One entry, decompressed, into `bin/assets/<kind>/`. |
 | `ebx NAME` (or a `.ebx` file) `[--out DIR\|-]` | An EBX file as YAML, into `bin/assets/yaml/`; says whether it writes back to the same bytes. |
 | `ebx-check [--superbundle S] [--bundle B] [--limit N] [--dump JSON]` | Every EBX read, turned into YAML, read back and written: the same bytes? Lists the files that are not, and with the reflected dump, where a file's types disagree with the game's. |
+| `deps NAME [--into BUNDLE] [--all]` | Everything an EBX needs: the EBX it imports (and theirs), the resources its fields name, the chunks those name, each with the bundles that hold it. `--into`: only what that bundle lacks (what placing the object in that area would have to add). EBX file GUIDs are kept in `bin/assets/index/`. |
 | `ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]` | A YAML file written as EBX (into `bin/assets/built/`). Its types are checked against the game's first (the dump: `--dump`, or `db/reflected/` after `setup`); an unknown field, a reference to nothing or a type that disagrees stops it. |
 
 The YAML keeps everything the file has (its GUID, imports, its own type table with offsets, every
