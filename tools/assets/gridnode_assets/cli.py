@@ -9,6 +9,8 @@
   assets ebx-check --data DIR [--superbundle S] [--bundle B] [--limit N] [--dump JSON]
                                                every EBX read, to YAML, back and written: same bytes?
                                                (and, with the reflected dump, its types against the game's)
+  assets deps NAME --data DIR [--into BUNDLE]   everything an EBX needs (imports, resources, chunks) and
+                                               the bundles that hold each; --into: what a bundle lacks
   assets ebx-build FILE.yaml [--out FILE.ebx] [--dump JSON]
                                                a YAML file written as EBX, its types checked against the game's
 
@@ -178,6 +180,33 @@ def cmd_ebx_build(a) -> int:
     return 0
 
 
+def cmd_deps(a) -> int:
+    from .deps import Index, needs
+    s = _store(a)
+    index = Index(s, os.path.join(OUT, "index"))
+    items, missing = needs(index, a.name)
+    into = a.into.lower() if a.into else ""
+    lacking = 0
+    for it in items:
+        held = sorted(it.bundles)
+        has = any(into in b.lower() for b in held) if into else True
+        lacking += not has
+        if into and has and not a.all:
+            continue
+        mark = "" if it.here else "  (data not here)"
+        need = f"  <- {it.via}" if it.via else ""
+        where = held[0] + (f" (+{len(held) - 1} more)" if len(held) > 1 else "") if held else "no bundle"
+        print(f"{it.kind:6} {it.name}{(' ' + it.detail) if it.detail else ''}  [{where}]{need}{mark}")
+    counts = {k: sum(1 for i in items if i.kind == k) for k in ("ebx", "res", "chunks")}
+    print(f"deps {a.name}: {counts['ebx']} ebx, {counts['res']} res, {counts['chunks']} chunks"
+          + (f"; {lacking} not in a bundle matching '{a.into}'" if into else ""))
+    for m in missing[:30]:
+        print("not followed:", m, file=sys.stderr)
+    if len(missing) > 30:
+        print(f"not followed: {len(missing) - 30} more", file=sys.stderr)
+    return 0
+
+
 def cmd_ebx_check(a) -> int:
     s = _store(a)
     dump = _dump(a)
@@ -264,6 +293,11 @@ def main(argv: list[str]) -> int:
     ec.add_argument("--bundle", help="only bundles whose name contains this")
     ec.add_argument("--limit", type=int, default=0)
     ec.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
+    de = sub.add_parser("deps", help="everything an EBX needs, and the bundles that hold it")
+    de.add_argument("name")
+    de.add_argument("--data")
+    de.add_argument("--into", help="a bundle (part of its name): list only what it lacks")
+    de.add_argument("--all", action="store_true", help="with --into: list everything, not only what it lacks")
     bu = sub.add_parser("ebx-build", help="a YAML file written as EBX, into bin/assets/built")
     bu.add_argument("file")
     bu.add_argument("--out")
@@ -271,7 +305,8 @@ def main(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
-                "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build}[a.cmd](a)
+                "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
+                "deps": cmd_deps}[a.cmd](a)
     except (StoreError, ebx.EbxError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1

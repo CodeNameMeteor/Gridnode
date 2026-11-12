@@ -75,6 +75,14 @@ file in the game (needs a way to load it: the `.fbmod` writer). Next (user, 2026
 (everything a blueprint needs, for placing objects from other areas), then the `.fbmod` writer (needs
 real `.fbmod` files and a test with Frosty's Mod Manager), then the layout editor exporting to `.fbmod`.
 
+`assets deps NAME [--into BUNDLE]` (2026-11-12; `tools/assets/gridnode_assets/deps.py`): imports followed by file GUID
+(read from each EBX header, cached by SHA-1 in `bin/assets/index/`), resources by the res ids in ResourceRef fields
+(a bundle's resRid is signed: masked to 64 bits), chunks by their GUIDs found in the EBX or resource bytes (no res
+format needed). On the staged files: `levels/sp/frontend/frontend` needs 132 EBX, 10 res, 13 chunks, every one
+found; 56 of them are not in `sp_maincity`. Not checked: whether a GUID scan can find a chunk that is not really
+used (it lists more, never less), and objects whose files are in archives not staged here. The user's Frosty mods
+are staged for the `.fbmod` writer (read-only access to Documents\Frosty).
+
 Second round (API 37, the user's choices of 2026-11-11; untested in game):
 - **2.1 step 2**: detours made between `hooks_begin` and `hooks_commit` (per thread) are written in one
   pause; the loader wraps every `gn_mod_load`, so all mods get it without a rebuild.

@@ -111,6 +111,7 @@ class Ebx:
     types: list[Type]
     instances: list[Instance]
     runs: list[tuple[int, int]]  # (type, count) in payload order; the writer makes them when empty
+    resources: set = field(default_factory=set)  # every ResourceRef value read (res ids: what it needs)
 
 
 class _Reader:
@@ -174,7 +175,10 @@ class _Reader:
         if c in (C_GUID, C_SHA1):
             return d[at:at + _SIZES[c]].hex()
         if c == C_RESREF:
-            return f"{struct.unpack_from('<Q', d, at)[0]:#018x}"
+            rid = struct.unpack_from("<Q", d, at)[0]
+            if rid:
+                self.x.resources.add(rid)
+            return f"{rid:#018x}"
         return {"raw": d[at:at + size].hex()}  # a type code not read yet: kept as bytes
 
     def member_size(self, member: Field) -> int:
