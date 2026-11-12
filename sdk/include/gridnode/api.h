@@ -1252,6 +1252,10 @@ typedef struct gn_api {
      * game unloads it about 2 s after that when nothing else holds it; a bundle_load of the same name before
      * then keeps it). A level ending takes every bundle and prefab with it: their handles are then
      * gone (GN_ERR_NOT_FOUND), not released. At most 64 bundles at a time (GN_ERR_FULL).
+     * Load a bundle's parents with it: a district area needs its district ("Levels/SP/SP_MainCity/Anchor"
+     * before ".../AnchorArea3"). A bundle's objects use the assets the parents hold; with the parent not
+     * held, a teleport that streamed it out crashed the game in a spawned prefab's update (2026-11-12).
+     * `gridnode.py assets deps ASSET` names the bundles an asset is in.
      *
      * prefab_spawn spawns an asset's blueprint (a prefab or an object blueprint: "objects/props/
      * missionitem/magrope/pf_magrope_pullup") from any loaded bundle at `at`, server half then client

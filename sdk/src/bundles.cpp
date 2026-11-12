@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -95,12 +96,27 @@ bool isBus(uintptr_t bus) {
 // The level's root bus, from Faith's: a spatial entity keeps its bus at +0x28 (+0x20 holds other data
 // there: 0x737 on the server Faith, which crashed the spawn), then up the parents (+0x08). The root bus
 // is where the claim lab's spawns survived teleports.
-uintptr_t rootBus(void* faith) {
+uintptr_t rootBus(void* faith, const char* realm) {
     uintptr_t bus = faith ? mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(faith) + 0x28) : 0;
-    if (!isBus(bus)) return 0;
+    if (!isBus(bus)) {
+        GN_LOG("bundles: %s: Faith %p has no bus at +0x28 (%llx)", realm, faith, static_cast<unsigned long long>(bus));
+        return 0;
+    }
+    // The chain is logged: which bus is the top decides what the prefab lives under (a teleport that
+    // streamed part of the city out crashed a prefab spawned under Faith's top bus, 2026-11-12).
+    std::string chain;
     for (int depth = 0; depth < 64; ++depth) {
+        const uintptr_t data = mem::readOr<uintptr_t>(bus + 0x38);
+        const reflect::Type* t = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+        char b[160];
+        std::snprintf(b, sizeof(b), " %llx(%s, refs %d)", static_cast<unsigned long long>(bus), t ? t->name.c_str() : "?",
+                      mem::readOr<int32_t>(bus + 0x30));
+        chain += b;
         const uintptr_t parent = mem::readOr<uintptr_t>(bus + 0x08);
-        if (!isBus(parent) || parent == bus) break;
+        if (!isBus(parent) || parent == bus) {
+            GN_LOG("bundles: %s bus chain from Faith:%s; top's parent %llx", realm, chain.c_str(), static_cast<unsigned long long>(parent));
+            break;
+        }
         bus = parent;
     }
     return bus;
@@ -263,7 +279,7 @@ void spawnClientHalf(uint32_t h, void* blueprint, gn_transform at, uint64_t leve
         std::lock_guard<std::mutex> lock(g_m);
         if (!prefabOf(h)) return; // destroyed before its client half: none is made
     }
-    const uintptr_t bus = rootBus(localClientCharacter());
+    const uintptr_t bus = rootBus(localClientCharacter(), "client");
     std::vector<uintptr_t> made;
     if (bus) made = spawnHalf(false, blueprint, bus, at);
     std::lock_guard<std::mutex> lock(g_m);
@@ -287,7 +303,7 @@ void spawnOnServer(uint32_t h, std::string asset, gn_transform at) {
     }
     if (level != g_level.load()) return;
     void* blueprint = blueprintOf(asset.c_str());
-    const uintptr_t bus = blueprint ? rootBus(localServerCharacter()) : 0;
+    const uintptr_t bus = blueprint ? rootBus(localServerCharacter(), "server") : 0;
     std::vector<uintptr_t> made;
     if (bus) made = spawnHalf(true, blueprint, bus, at);
     {

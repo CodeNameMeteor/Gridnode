@@ -117,3 +117,10 @@ at +0x2c left at its default) instead of copying the game's, finds the asset as 
 group), and spawns into the root bus above Faith's (her bus is at +0x28). A release reaches the game 1.5 s later, after the
 prefabs' entities are gone; a load of the same name before then takes the handle back. Loading again just after a
 release found the group half unloaded, and a spawn from it crashed in an entity transform update (2026-11-12).
+
+**A bundle needs its parents loaded** (game-tested 2026-11-12). `pf_magrope_pullup` spawned from `AnchorArea3` alone
+crashed the game after a teleport (client update of the prefab's entities, `FUN_142d43da0` → `FUN_143165670`,
+reading freed memory); with `Anchor` held as well, the same teleport did not. A district area's objects use assets
+its district holds (`assets deps` lists the magrope's assets in `anchor` and 20 more bundles, and shaders in
+`sp_maincity` and `crowds/crowdssharedbundle`), so whoever loads an area loads its district too. The top bus above
+Faith is the level's own (her bus, her spawner's, a layer, then a bus with thousands of references and no parent).
