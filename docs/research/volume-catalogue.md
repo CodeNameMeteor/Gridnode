@@ -92,8 +92,20 @@ gameplay/social/pf_runnersroute`: 21 layers plus `mainlogic_networkregistry_win3
 is a `WorldPartData` holding the placed `pf_runnersroute`, `objects/props/runnerobject/dasharrows/pf_dasharrow_start`
 beside it, 10 `pf_dasharrow_medium` along the way (scaled and turned to point along the route), `pf_dasharrow_end`
 at the far end, and an `OBBData` (half extents 3.7 x 2.0 x
-5.8 m) beside the prefab that no object in the layer uses. The layer has no connections at all, so the links into
-the dash's interface (`StartGeometry`, `StopGeometry`, `ChallengeSelector`) are made by a file that imports the layer.
+5.8 m) beside the prefab that no object in the layer uses. The layer has no connections at all; the links are in
+`levels/sp/sp_maincity/mainlogic/mainlogic` (a `SubWorldData` with 52 `WorldPartReferenceObjectData`, one per
+layer), which links objects of different layers by import:
+
+- `pf_runnersroute` `StartGeometry` -> the layer's `OBBData` (the start volume is a bare shape: transform plus half
+  extents, no trigger of its own; the trigger is inside the dash prefab).
+- `pf_runnersroute` `StopGeometry` -> `pf_dasharrow_end`'s `EndVolume` (the finish volume is inside the end arrow).
+- `pf_runnersroute` `ChallengeSelector` -> an object in another file (file `5201a4e6...`, instance `da619d7a...`; not
+  a `ChallengeDataGuid` of the database: still to name).
+- `pf_runnersroute` `Activated` -> `Enabled` of every arrow (they show only while the dash is on), and two more
+  properties into the end arrow (hashes `0x13f3c4fc` -> `0x4db752b4`, `0x90100ae4` -> `0xc2490554`: unnamed).
+
+So a custom dash in a mod is: the dash prefab, a start `OBBData`, the arrows with the end arrow last, and these
+links in the level's `SubWorldData` (or in our own blueprint that holds all of them).
 
 **Trigger shapes** are separate instances: `VolumeVectorShapeData` (a closed polygon of `Points` with a `Height`,
 `IsClosed`), `BFWaypointsShapeData` (open paths) and `SphereData` (`Radius`, `Position`). A trigger does not hold
