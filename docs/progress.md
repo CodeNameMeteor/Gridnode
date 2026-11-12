@@ -12,7 +12,10 @@ place any object from any area without that area streaming in.
 - `assets used-by NAME` finds the files that place an asset.
 - Bundles load from a mod at runtime (claim-lab `bundle-load`, game-tested): a sublevel request copy on the server
   thread, ready in 0.16 s, assets found through the resource group id from `ResourceManager_registerBundleGroup`
-  (`docs/research/zone-streaming.md`). Next: spawning a prefab from a loaded bundle, then `gn::bundleLoad` (API 38).
+  (`docs/research/zone-streaming.md`).
+- A prefab from a loaded bundle spawns anywhere (game-tested: a usable magrope from `AnchorArea3` beside Faith in
+  another district, kept after a teleport; gone on a checkpoint or level reload). Next: removing it, then API 38
+  (`gn::bundleLoad` / `gn::prefabSpawn`), dropping bundle handles at level end.
 
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
 The plan (code review of `main` at f685e95, Frosty's SDK and formats; a PDF from the user) checked against the

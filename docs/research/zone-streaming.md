@@ -77,6 +77,28 @@ Worked out with the `bundle-load` claim-lab experiment (`.workflow/runs/bundle-l
 - The handles the game copies and drops every frame (thousands a minute, count 2 to 2) are noise: log only a
   count of 1 or 0.
 
-Not done yet: spawning an object from a loaded bundle (plan step 3). The layout editor spawns only static model
-data copied from a live entity; a prefab such as `pf_magrope_pullup` needs a blueprint spawn, which is its own
-research topic.
+## Spawning a prefab from a loaded bundle (game-tested 2026-11-12)
+
+From `.workflow/runs/prefab-spawn/` (claims c1, c4-c11) and the claim-lab experiment: `pf_magrope_pullup` from
+`AnchorArea3`, loaded by the lab with Faith in another district, spawned 3 m in front of her, could be used, and
+stayed after teleporting away and back.
+
+- Blueprint: `Partition_primaryInstance(Partition_findByName(getCompartment(resource group id), name))` (a
+  `SpatialPrefabBlueprint` here).
+- Server thread, as the engine's own blueprint spawner does (0x1438fce60): `ServerEntityCreationInfo_ctor(ci, 0,
+  bus, transform)`; ci +0x28 = 2, ci +0x108 = `[[g_serverGameContext] +0x80]`, ci +0xe8 = an empty 0x20-byte entity
+  list; `Blueprint_instantiate(result[2], ci, blueprint, null, 0)` (a null reference object works); release
+  result[1] (`EntityBus_release`); `serverSpawned_initAll(list, 0)` (0x1433602d0). result[0] is 0 for a prefab: the
+  entities are in the list.
+- Client thread, the same with `ClientEntityCreationInfo_ctor`, ci +0x108 = `[[g_clientGameContext] +0x88]`,
+  `ClientEntity_spawnBlueprint(result[3], ...)`, release result[2], `clientSpawned_initAll(list)` (0x1431c5b40).
+- `Blueprint_instantiate` returns `result` in rax and its callers use it: a detour must return it.
+- The bus: creation info +0x10 is the bus itself: +0x00 owner (owner +0x38 = the level), +0x08 parent bus, +0x10
+  transform, +0x28 first child, +0x30 refcount, +0x38 data (`FUN_14313ffe0`). Faith's server character +0x20 is
+  not a bus (0x737). Both the bus the game last used and the top of its parent chain (7 to 9 levels up) worked.
+- A checkpoint reload or a level reload removes the spawned prefab with everything else. After a level reload the
+  lab's bundle handle was stale: the level unload had freed the group, and releasing it read freed memory
+  (refs 526426303). A bundle API must drop its handles at level end without releasing them.
+
+Not done yet: removing a spawned prefab (destroying the listed entities, then releasing the bundle), and
+`gn::bundleLoad` / `gn::prefabSpawn` in the SDK (API 38).
