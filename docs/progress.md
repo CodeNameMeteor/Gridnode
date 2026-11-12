@@ -99,6 +99,11 @@ started 2-aligned (the game starts every array 4-aligned). Both fixed: 44 of the
 write back the same. The one type disagreement was -1 vs 0xFFFFFFFF (the same value). Rerun on the whole install
 (user, 2026-11-12): all 43,661 EBX files written back the same, 0 type disagreements. Step 2 and 3 done.
 
+`assets usage` (2026-11-12): a catalogue of the types EBX instances are of (counts, files, superbundles, examples,
+fields), to plan the general volume editor (user, 2026-11-12: place any volume, blocker, dash start/end, mission
+parts, teleports; move and resize them; load any object anywhere, not only where its area streams in). Untested on
+the whole install.
+
 mec-trainer 1.10.3 (2026-11-12, user's ask; game-tested, merged #11): the player info (position, speed, state) can be dragged
 while the GridNode menu is open; its place is kept (`hud.player_info_x` / `_y`), clamped to the screen; Settings > HUD
 has "Reset place".

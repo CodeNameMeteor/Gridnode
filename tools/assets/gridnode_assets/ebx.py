@@ -206,7 +206,8 @@ class _Reader:
             out[key_of(t, f, out)] = self.value(f, base + f.offset, size)
 
 
-def read(d: bytes) -> Ebx:
+def read(d: bytes, values: bool = True) -> Ebx:
+    """The file as a model. values=False: types, imports and instance types and GUIDs only (fast)."""
     if len(d) < HEADER or struct.unpack_from("<I", d, 0)[0] != MAGIC:
         raise EbxError("not an EBX version 2 file (magic 0x0FB2D1CE)")
     str_at, to_end, n_imp = struct.unpack_from("<3I", d, 4)
@@ -255,7 +256,7 @@ def read(d: bytes) -> Ebx:
             if k < exported:
                 g = guid_at(pos, t.align)
                 guid = d[pay + g:pay + g + 16]
-            x.instances.append(Instance(ti, guid, r.struct(ti, pay + start - 8)))
+            x.instances.append(Instance(ti, guid, r.struct(ti, pay + start - 8) if values else {}))
             pos = start - 8 + t.size
             k += 1
     return x

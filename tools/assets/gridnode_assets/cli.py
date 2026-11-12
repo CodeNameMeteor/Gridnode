@@ -11,6 +11,9 @@
                                                (and, with the reflected dump, its types against the game's)
   assets deps NAME --data DIR [--into BUNDLE]   everything an EBX needs (imports, resources, chunks) and
                                                the bundles that hold each; --into: what a bundle lacks
+  assets usage --data DIR [--kind-of TYPE] [--like TEXT] [--dump JSON] [--out FILE.yaml]
+                                               every type instances are of, in every EBX: how many, in how
+                                               many files, examples, its fields (a catalogue to plan from)
   assets fbmod-info FILE.fbmod [--data DIR] [--extract DIR]
                                                a Frosty mod: details, what it changes, in which bundles
   assets fbmod-build SPEC.yaml [--out FILE.fbmod] [--data DIR] [--dump JSON]
@@ -319,6 +322,107 @@ def cmd_fbmod_build(a) -> int:
     return 0
 
 
+_PRIMS = {1: "DbObject", 6: "String", 7: "CString", 9: "FileRef", 10: "Boolean", 11: "Int8", 12: "Uint8", 13: "Int16",
+          14: "Uint16", 15: "Int32", 16: "Uint32", 17: "Int64", 18: "Uint64", 19: "Float32", 20: "Float64", 21: "Guid",
+          22: "SHA1", 23: "ResourceRef", 25: "TypeRef", 26: "BoxedValueRef"}
+
+
+def _field_type(x, f) -> str:
+    c = ebx.code_of(f.flags)
+    if c in (ebx.C_STRUCT, ebx.C_ENUM):
+        return x.types[f.ref].name
+    if c == ebx.C_CLASS:
+        return "ref"
+    if c == ebx.C_ARRAY:
+        m = x.types[f.ref].fields[0] if x.types[f.ref].fields else None
+        return "array of " + (_field_type(x, m) if m else "?")
+    return _PRIMS.get(c, f"code {c}")
+
+
+def _fields_of(x, ti: int) -> dict:
+    out: dict = {}
+    t = x.types[ti]
+    for f in t.fields:
+        if ebx.code_of(f.flags) == ebx.C_INHERITED:
+            out.update(_fields_of(x, f.ref))
+        else:
+            out[ebx.key_of(t, f, out)] = _field_type(x, f)
+    return out
+
+
+def cmd_usage(a) -> int:
+    import yaml
+    s = _store(a)
+    dump = _dump(a)
+    parents: dict[str, list[str]] = {}
+
+    def chain(name: str) -> list[str]:
+        if name in parents:
+            return parents[name]
+        out, t = [], dump["by_name"].get(name) if dump else None
+        while t is not None and len(out) < 64:
+            out.append(t["name"])
+            t = dump["by_ti"].get(t.get("super", ""))
+        parents[name] = out
+        return out
+
+    want_kind = a.kind_of.lower() if a.kind_of else ""
+    like = a.like.lower() if a.like else ""
+    if want_kind and dump is None:
+        raise StoreError("--kind-of needs the reflected dump (--dump, or gridnode.py setup)")
+    seen: set[bytes] = set()
+    found: dict[str, dict] = {}
+    files = absent = bad = 0
+    for b in _all_bundles(s):
+        for e in b.entries:
+            if e.kind != "ebx" or not e.sha1 or e.sha1 in seen:
+                continue
+            seen.add(e.sha1)
+            if not s.has(e.sha1):
+                absent += 1
+                continue
+            try:
+                x = ebx.read(s.read(e.sha1), values=False)
+            except Exception:  # noqa: BLE001 - counted; ebx-check is the place to look at them
+                bad += 1
+                continue
+            files += 1
+            here: set[str] = set()
+            for inst in x.instances:
+                name = x.types[inst.type].name
+                if like and like not in name.lower():
+                    continue
+                if want_kind and want_kind not in (p.lower() for p in chain(name)):
+                    continue
+                u = found.get(name)
+                if u is None:
+                    u = found[name] = {"instances": 0, "files": 0, "superbundles": set(), "examples": [],
+                                       "fields": _fields_of(x, inst.type)}
+                u["instances"] += 1
+                if name not in here:
+                    here.add(name)
+                    u["files"] += 1
+                    u["superbundles"].add(b.superbundle)
+                    if len(u["examples"]) < a.examples:
+                        u["examples"].append(e.name)
+    out = []
+    for name, u in sorted(found.items(), key=lambda kv: (-kv[1]["files"], kv[0])):
+        row = {"type": name}
+        if dump is not None:
+            row["parents"] = chain(name)[1:]
+        row.update(instances=u["instances"], files=u["files"], superbundles=sorted(u["superbundles"]), examples=u["examples"],
+                   fields=u["fields"])
+        out.append(row)
+    path = a.out or os.path.join(OUT, "usage.yaml")
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(out, f, sort_keys=False, width=140, allow_unicode=True)
+    for row in out[:a.top]:
+        print(f"{row['files']:6} files {row['instances']:7} instances  {row['type']}")
+    print(f"usage: {len(out)} types in {files} EBX files ({absent} in archives not here, {bad} not read) -> {path}")
+    return 0
+
+
 def cmd_ebx_check(a) -> int:
     s = _store(a)
     dump = _dump(a)
@@ -417,6 +521,14 @@ def main(argv: list[str]) -> int:
     de.add_argument("--data")
     de.add_argument("--into", help="a bundle (part of its name): list only what it lacks")
     de.add_argument("--all", action="store_true", help="with --into: list everything, not only what it lacks")
+    us = sub.add_parser("usage", help="which types the game's EBX instances are of: counts, examples, fields")
+    us.add_argument("--data")
+    us.add_argument("--kind-of", help="only this class and its subclasses (needs the dump), e.g. SpatialEntityData")
+    us.add_argument("--like", help="only types whose name contains this, e.g. Volume")
+    us.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
+    us.add_argument("--out", help="the catalogue (default: bin/assets/usage.yaml)")
+    us.add_argument("--examples", type=int, default=3)
+    us.add_argument("--top", type=int, default=40, help="how many to print (all are in the file)")
     fi = sub.add_parser("fbmod-info", help="a Frosty mod: details and what it changes")
     fi.add_argument("file")
     fi.add_argument("--data", help="the game's Data folder: bundle names instead of hashes")
@@ -434,7 +546,7 @@ def main(argv: list[str]) -> int:
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
                 "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
-                "deps": cmd_deps, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
+                "deps": cmd_deps, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
     except (StoreError, ebx.EbxError, ValueError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1
