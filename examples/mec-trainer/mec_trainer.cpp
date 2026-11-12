@@ -56,6 +56,10 @@ namespace {
 std::atomic<bool> g_god{false}, g_noclip{false}, g_sameWall{false}, g_infClimbs{false}, g_infRuns{false}, g_fastLoads{false},
     g_freezeTime{false}, g_hud{true}, g_cheatList{true}, g_killOff{false}, g_barriersOff{false}, g_noAlerts{false};
 std::atomic<float> g_frozenTime{0.f}, g_timeScale{1.f};
+// The player info's top-left corner, from the screen's top left (moved by dragging it with the menu open).
+constexpr float kHudX = 12.f, kHudY = 12.f;
+std::atomic<float> g_hudX{kHudX}, g_hudY{kHudY};
+std::atomic<bool> g_hudPlace{false}; // put it at g_hudX / g_hudY next frame (Reset place)
 
 // ---- what the client tick saw (render thread shows it) ------------------------------------------------
 std::atomic<bool> g_haveFaith{false};
@@ -1538,6 +1542,9 @@ void settingsTab() {
     bool v = g_hud;
     if (ImGui::Checkbox("Player info", &v)) g_hud = v;
     ImGui::SameLine();
+    if (ImGui::SmallButton("Reset place")) g_hudX = kHudX, g_hudY = kHudY, g_hudPlace = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("With this menu open, drag the player info to move it.");
+    ImGui::SameLine();
     v = g_cheatList;
     if (ImGui::Checkbox("Active cheats", &v)) g_cheatList = v;
     v = g_landHud;
@@ -1574,7 +1581,8 @@ const BoolSetting kBools[] = {{"same_wall", &g_sameWall},          {"kill_volume
                               {"bhop.swings", &g_bhopSwing},       {"bhop.use_prediction", &g_bhopUsePrediction},
                               {"freecam.stay_flying", &g_keepFlying}}; // (a new key: the old one saved the first default, off)
 const FloatSetting kFloats[] = {{"bhop.press_below", &g_bhopPredictBelow},
-                                {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs}};
+                                {"bhop.contact", &g_bhopContact},   {"bhop.bias_ms", &g_bhopBiasMs},
+                                {"hud.player_info_x", &g_hudX},     {"hud.player_info_y", &g_hudY}};
 
 void loadSettings() {
     for (const BoolSetting& s : kBools) *s.v = gn::config::getBool(s.key, s.v->load());
@@ -1651,20 +1659,38 @@ void trainerMark() {
     dl->AddText(at, IM_COL32(255, 200, 60, 255), text);
 }
 
-void hud() {
+void hud(bool menuOpen) {
     trainerMark();
     landingPractice();
     if (!g_haveFaith) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
-                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
     if (g_hud) {
-        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 12.f, vp->WorkPos.y + 12.f), ImGuiCond_Always);
-        ImGui::SetNextWindowBgAlpha(0.45f);
+        // Click-through in play; with the menu open (the mouse is free) it can be dragged, and where it is
+        // left is kept (hud.player_info_x / _y). Placed every frame otherwise, so it follows the setting.
+        ImGuiWindowFlags f = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoSavedSettings;
+        if (!menuOpen) f |= ImGuiWindowFlags_NoInputs;
+        static bool wasOpen = false;
+        const bool place = !menuOpen || !wasOpen || g_hudPlace.exchange(false);  // with the menu open ImGui moves it
+        wasOpen = menuOpen;
+        if (place) {
+            // Kept on screen: a saved place from a bigger window (or a bad value) would hide it.
+            const float x = std::clamp(g_hudX.load(), 0.f, std::max(0.f, vp->WorkSize.x - 40.f));
+            const float y = std::clamp(g_hudY.load(), 0.f, std::max(0.f, vp->WorkSize.y - 20.f));
+            ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + x, vp->WorkPos.y + y), ImGuiCond_Always);
+        }
+        ImGui::SetNextWindowBgAlpha(menuOpen ? 0.7f : 0.45f);
         if (ImGui::Begin("##mec_hud", nullptr, f)) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
             ImGui::Text("Speed %.1f m/s   State %d", g_hSpeed.load(), g_state.load());
             if (g_chain || g_bestChain) ImGui::Text("Bhop chain %d   best %d", g_chain.load(), g_bestChain.load());
+            if (menuOpen) {
+                ImGui::TextDisabled("drag to move");
+                if (!place) {
+                    const ImVec2 p = ImGui::GetWindowPos();
+                    g_hudX = p.x - vp->WorkPos.x, g_hudY = p.y - vp->WorkPos.y;
+                }
+            }
         }
         ImGui::End();
     }
@@ -1691,7 +1717,7 @@ void hud() {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.10.2", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.10.3", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))
@@ -1702,7 +1728,7 @@ GN_MOD("mec-trainer") {
     if (!gn::ui::onDraw([](bool menuOpen) {
             volumes::draw();
             freecamKeys();
-            hud();
+            hud(menuOpen);
             if (menuOpen) window();
         }))
         gn::log("no overlay: hotkeys only");
