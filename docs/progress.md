@@ -67,6 +67,13 @@ Second round (API 37, the user's choices of 2026-11-11; untested in game):
   is only for entities made before GridNode; pruning every second as a backstop; `entities_of_class` and
   `entities_near` read the matching classes' lists only. Not done: the spatial grid for `entities_near`.
 
+Game-tested 2026-11-12 (user's run): each mod's detours written in one pause (mec-trainer 2 in 2.2 ms,
+detour-demo 2 in 2.0 ms; reloads need none, the entries stay); the trainer's detour features, god mode and
+bunny hop work; the Entities tab and level changes look as before; detour-demo's API 36 features still work;
+two reloads and a full unload are clean (7 code patches undone, 2,160 hooks out, gridnode.dll freed); the
+trainer's camera / time hold come back when it unloads (the mod handle). GridNode's own two startup
+detours still pause one at a time (6.3 and 1.2 ms): batching them would save a few ms at startup.
+
 Still not done: moving GridNode's three internal "every subclass" pools onto `hook_virtual`, the spatial
 grid, parts 5.2 to 5.6 (a separate PR).
 
