@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 38;
+pub const GN_API_VERSION: u32 = 39;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -82,6 +82,7 @@ pub type gn_level_ready_fn = Option<unsafe extern "C" fn(level: *const c_char, u
 pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *const gn_type, event_id: u32, user: *mut c_void)>;
 pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_progress_flag_fn = Option<unsafe extern "C" fn(flag: *const gn_progress_flag, user: *mut c_void)>;
+pub type gn_data_fn = Option<unsafe extern "C" fn(objects: *mut *mut c_void, count: u32, bundle: u32, loaded: c_int, user: *mut c_void)>;
 pub type gn_mod_load2_fn = Option<unsafe extern "C" fn(api: *const gn_api, self_: *mut gn_mod) -> c_int>;
 
 #[repr(C)]
@@ -554,6 +555,8 @@ pub struct gn_api {
     pub prefab_destroy: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
     pub bundle_load_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, name: *const c_char, handle: *mut u32) -> c_int>,
     pub prefab_spawn_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, asset: *const c_char, at: *const gn_transform, bundle: u32, handle: *mut u32) -> c_int>,
+    pub data_of_class: Option<unsafe extern "C" fn(cls: *const c_char, subclasses: c_int, out: *mut *mut c_void, max: u32) -> c_int>,
+    pub on_data: Option<unsafe extern "C" fn(mod_: *const c_char, fn_: gn_data_fn, user: *mut c_void) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -583,4 +586,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1600);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1616);

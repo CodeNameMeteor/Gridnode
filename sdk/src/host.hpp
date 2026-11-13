@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -352,6 +353,17 @@ int entitiesNear(const float pos[3], float radius, gn_entity_fn fn, void* user);
 int entitySetTransform(void* entity, const gn_transform* to);
 int entitiesOfClass(const char* className, gn_entity_each_fn fn, void* user); // world.cpp; how many, or -GN_ERR_*
 void assetRelease(void* asset);
+
+// The game's data registry (data_registry.cpp, API 39): loaded data objects by class, and listeners told
+// when a bundle's data comes and goes. dataEach calls fn per object of the class (subclasses too when
+// asked) until fn returns false, and returns how many there are; dataFirstWithVtable: 0 when none.
+size_t dataEach(const reflect::Type* cls, bool subclasses, const std::function<bool(uintptr_t)>& fn);
+uintptr_t dataFirstWithVtable(uint64_t vtableVa);
+int dataOfClass(const char* className, int subclasses, void** out, uint32_t max); // how many, or -GN_ERR_*
+int onData(const std::string& mod, gn_data_fn fn, void* user);
+void forgetData(const CodeRange& r);
+void dataRelease(); // GridNode's unload: the game's listener out
+std::string dataCommand(const std::string& rest); // the console's "data"
 
 // Bundles loaded at runtime and prefabs spawned from them (bundles.cpp, API 38). caller: the mod's code,
 // for forgetBundles when it unloads.

@@ -116,6 +116,24 @@ functions:
       data not in it writes nothing and the stream goes out of step. One registry for both realms. Bundles
       fill it through a message (0x143138e00). GridNode registers its custom dashes' data with it
       (dashes.cpp, game-tested 2026-11-13).
+  - name: DataRegistry_addListener
+    va: 0x143134420
+    signature: "void(void* registry, const void* listener)"
+    confidence: inferred
+    sources: [ghidra]
+    note: >-
+      Adds a load / unload listener: listener = 16 bytes {void* ctx, fn}, copied into an rb-tree at registry
+      + 0x88 (anchor + 0x90; keyed by the 16 bytes, so the same pair twice is one entry). No lock taken: the
+      game adds its one (SubLevelManager's, 0x143302290) at startup. DataRegistry_register and _unregister
+      call every fn(ctx, &objects {begin, end, capacity}, u16 registry slot, bool loaded) under
+      DataRegistry_Lock, after the objects went in (loaded 1), or after they left the address tree and
+      before the table drops them (loaded 0; the objects are still allocated). Read in Ghidra 2026-11-13.
+  - name: DataRegistry_removeListener
+    va: 0x143138c60
+    signature: "bool(void* registry, const void* listener)"
+    confidence: inferred
+    sources: [ghidra]
+    note: "rcx += 0x88, then the tree's erase by the same 16 bytes (0x14311f440): 1 when it was there. Read in Ghidra 2026-11-13."
   - name: DataRegistry_unregister
     va: 0x14311b8e0
     signature: "void(u16 bundleId)"
@@ -546,6 +564,30 @@ globals:
     confidence: confirmed
     sources: [ghidra]
     note: "Registry slot -> bundle id - 3; 0x7d2 = free."
+  - name: DataRegistry
+    va: 0x1421054b0
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: "The data registry itself (DataRegistry_addListener's first argument as the game passes it): +0x00 a sorted (slot << 16 | class id) -> count vector, +0x30 the address tree (DataRegistry_TreeHead), +0x60 the object table (DataRegistry_Entries), +0x88 the listeners. Read in Ghidra 2026-11-13."
+  - name: DataRegistry_Entries
+    va: 0x142105510
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: >-
+      Every loaded data object (blueprints, entity data, assets of every bundle loaded): a vector {begin, end
+      +8, capacity +0x10} of 16-byte {u64 key, DataContainer*} sorted by key = slot << 40 | class id << 16 |
+      index (class id: the u16 at the object's TypeInfo + 0x28, from vtable slot 0; slot: the bundle's registry
+      slot). Filled by DataRegistry_register, under DataRegistry_Lock. Was "JumpTuningRoot" (faith.yaml):
+      the trainer's jump path read entry 164 (+0xa48), a PamCharacterBlueprint only in the usual load order.
+      Read in Ghidra 2026-11-13 (DataRegistry_register's binary search and insert).
+  - name: DataRegistry_Lock
+    va: 0x1423f7390
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra]
+    note: "The lock DataRegistry_register / _unregister hold (Lock_enter / Lock_leave) while they change the registry and call the listeners. Read in Ghidra 2026-11-13."
   - name: DataRegistry_TreeHead
     va: 0x1421054e0
     type: "void*"

@@ -663,6 +663,8 @@ const gn_api* api() {
         a.prefab_destroy = prefabDestroy;
         a.bundle_load_m = mBundleLoad;
         a.prefab_spawn_m = mPrefabSpawn;
+        a.data_of_class = dataOfClass;
+        a.on_data = [](const char* mod, gn_data_fn fn, void* user) { return onData(mod ? mod : "?", fn, user); };
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

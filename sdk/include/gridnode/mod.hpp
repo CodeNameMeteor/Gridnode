@@ -906,6 +906,37 @@ inline bool streamingFocusMove(uint32_t handle, const Vec3& pos) {
     return api().streaming_focus_move(handle, p) == GN_OK;
 }
 inline void streamingFocusRemove(uint32_t handle) { api().streaming_focus_remove(handle); }
+// The game's loaded data (API 39; see api.h). dataOfClass: every loaded data object of a class (and its
+// subclasses), e.g. dataOfClass("PamCharacterBlueprint"); empty when none or the host is older.
+// onData: fn(objects, bundle, loaded) when a bundle's data comes or goes, on the loading thread while
+// the game holds its data lock (keep it short).
+inline std::vector<void*> dataOfClass(const std::string& cls, bool subclasses = true) {
+    std::vector<void*> out;
+    if (!detail::hostHas(&gn_api::data_of_class)) return out;
+    for (int tries = 0; tries < 3; ++tries) {
+        const int n = api().data_of_class(cls.c_str(), subclasses ? 1 : 0, out.data(), static_cast<uint32_t>(out.size()));
+        if (n < 0) return {};
+        if (static_cast<size_t>(n) <= out.size()) {
+            out.resize(static_cast<size_t>(n));
+            return out;
+        }
+        out.resize(static_cast<size_t>(n) + 64); // more loaded since: room to spare
+    }
+    return out;
+}
+template <class F> bool onData(F f) {
+    if (!detail::hostHas(&gn_api::on_data)) return false;
+    using Fn = std::function<void(const std::vector<void*>&, uint32_t, bool)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    return api().on_data(modName(),
+                         [](void* const* objects, uint32_t count, uint32_t bundle, int loaded, void* u) {
+                             detail::guarded("an onData listener", [&] {
+                                 const std::vector<void*> v(objects, objects + count);
+                                 (*static_cast<Fn*>(u))(v, bundle, loaded != 0);
+                             });
+                         },
+                         p) == GN_OK;
+}
 // Bundles and prefabs (API 38, experimental; see api.h). bundleLoad: the handle, 0 when refused; the load
 // runs on the server thread, so poll bundleReady. A level ending drops them (bundleReady and prefabLive are
 // then false for good). Released and destroyed when the mod unloads.

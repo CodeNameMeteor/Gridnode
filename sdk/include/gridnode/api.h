@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 38 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them */
+#define GN_API_VERSION 39 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data) */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -414,6 +414,10 @@ typedef struct gn_progress_flag {
     uint8_t reserved;
 } gn_progress_flag;
 typedef void (*gn_progress_flag_fn)(const gn_progress_flag* flag, void* user);
+/* A bundle's data objects came in (loaded 1) or are going (loaded 0): objects[0..count) are the game's
+ * DataContainers (blueprints, entity data, assets; gn_type_of names them). bundle: the game's id for the
+ * bundle (the same id while it stays loaded), 0 if unknown. API 39. */
+typedef void (*gn_data_fn)(void* const* objects, uint32_t count, uint32_t bundle, int loaded, void* user);
 
 typedef struct gn_api {
     uint32_t version;         /* GN_API_VERSION of the host */
@@ -1283,6 +1287,27 @@ typedef struct gn_api {
     int (*prefab_destroy)(uint32_t handle);
     int (*bundle_load_m)(gn_mod* self, const char* name, uint32_t* handle);
     int (*prefab_spawn_m)(gn_mod* self, const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle);
+
+    /* ==== GN_API_VERSION 39 =================================================================== */
+
+    /* ---- the game's loaded data (its data registry) -----------------------------------------------
+     * The game keeps every data object of every loaded bundle (blueprints, entity data, movement and
+     * dash data, UI assets...) in one table, which is how its network finds data by id. These read it, so
+     * a mod finds loaded data by class instead of by a pointer path that depends on what loaded first.
+     *
+     * data_of_class writes up to max of the loaded objects of a reflected class (with its subclasses when
+     * subclasses != 0) into out and returns how many there are (call again with more room when that is
+     * more than max); -GN_ERR_NOT_FOUND for an unknown class, -GN_ERR_UNAVAILABLE for a type that is not
+     * a class. Any thread; the objects stay valid while their bundle is loaded (on_data says when it goes).
+     * One pass over the table (about 10^5 entries in the city): call it when needed, not every frame.
+     *
+     * on_data calls fn whenever a bundle's data comes in or goes (levels, districts streaming, bundles
+     * mods load), through the game's own listener list (nothing hooked). fn runs on the thread loading
+     * the bundle while the game holds its data lock: keep it short, copy what you need, and do not load or
+     * release bundles or wait on a game thread from it. On loaded 0 the objects are still allocated; drop
+     * your pointers to them. Game-tested 2026-11-13. */
+    int (*data_of_class)(const char* cls, int subclasses, void** out, uint32_t max);
+    int (*on_data)(const char* mod, gn_data_fn fn, void* user);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);
