@@ -19,6 +19,8 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -41,6 +43,7 @@ constexpr const char* kWorld = "levels/sp/sp_maincity/mainlogic/mainlogic"; // t
 constexpr const char* kDashAsset = "gameplay/social/pf_runnersroute";
 constexpr uint32_t kStreamIn = 0xd27bc17e, kStreamOut = 0x21f3f677; // ServerBlueprintEntity events
 constexpr uint16_t kFreeSlot = 0x7d3, kFreeId = 0x7d2;               // DataRegistry_SlotOfId / IdOfSlot
+constexpr uint32_t kContentIdBase = 0xf1d00000u;                     // our dashes' ContentIds (the game's are name hashes)
 // A destroyed dash's data stays registered this long: its client half is taken down from the network.
 constexpr auto kUnregisterDelay = std::chrono::seconds(5);
 
@@ -200,7 +203,15 @@ struct Templates {
     uintptr_t obj[RCount] = {};
     std::vector<TConn> conns; // the medium arrow's once: made for every guide arrow
     std::string missing;      // why there is none
+    std::map<std::string, uintptr_t> arrowObj; // an arrow kind (kArrowBlueprint) -> one of the city's dashes' arrows of it
+    std::map<std::string, uintptr_t> arrowBp;  // an arrow kind no city dash uses -> its blueprint (in the city's bundle)
 };
+
+// Guide arrow kinds (DashArrowSpec::kind): the blueprint name's end; turn right is turn left mirrored (the city's
+// bundle has no turn-right or large arrow: belikewater has, not loaded in free roam).
+const std::vector<std::string> kArrowNames = {"medium", "small", "turn left", "turn right"};
+const char* const kArrowBlueprint[] = {"dasharrow_medium", "dasharrow_small", "dasharrow_turnleft", "dasharrow_turnleft"};
+std::atomic<int32_t> g_tplStars[3] = {{0}, {0}, {0}};
 std::mutex g_tplM;
 Templates g_tpl; // (g_tplM)
 std::atomic<uint64_t> g_level{1};
@@ -265,6 +276,35 @@ Templates findTemplates() { // server thread
                            k == 1 ? 0u : mem::readOr<uint32_t>(r + 0x18)});
         }
     }
+    // Every arrow kind the city's dashes turn on (Activated), for its object (its scale) to copy; and how many start
+    // boxes (StartGeometry links) a dash has at most.
+    std::map<uintptr_t, int> starts;
+    for (const C& c : all) {
+        if (!c.src || !c.dst || mem::readOr<uintptr_t>(c.src + 0x18) != t.dashBp) continue;
+        if (c.kind == 1 && c.sf == kStartGeometry) ++starts[c.src];
+        if (c.kind != 0 || c.sf != kActivated) continue;
+        const std::string n = blueprintName(c.dst);
+        for (const char* k : kArrowBlueprint)
+            if (n.size() >= std::strlen(k) && n.compare(n.size() - std::strlen(k), std::string::npos, k) == 0 && !t.arrowObj.count(k)) t.arrowObj[k] = c.dst;
+    }
+    int most = 0;
+    for (const auto& [ref, n] : starts) most = std::max(most, n);
+    uint32_t worldGroup = 0;
+    if (void* w2 = assetFind(kWorld, &worldGroup)) assetRelease(w2);
+    for (const char* k : kArrowBlueprint) {
+        if (t.arrowObj.count(k) || t.arrowBp.count(k)) continue;
+        uint32_t g = 0;
+        void* bp = assetFind((std::string("objects/props/runnerobject/dasharrows/pf_") + k).c_str(), &g);
+        if (!bp) continue;
+        assetRelease(bp); // the level holds it (only taken from the city's own group)
+        if (g == worldGroup) t.arrowBp[k] = reinterpret_cast<uintptr_t>(bp);
+    }
+    {
+        std::string kinds;
+        for (const auto& [k, o] : t.arrowObj) kinds += std::string(" ") + k;
+        for (const auto& [k, o] : t.arrowBp) kinds += std::string(" ") + k + "(blueprint)";
+        GN_LOG("dashes: arrow kinds in the city's data:%s; a dash has at most %d start box(es)", kinds.empty() ? " none" : kinds.c_str(), most);
+    }
     // The first dash with all its parts.
     std::vector<uintptr_t> tried;
     for (const C& c0 : all) {
@@ -303,6 +343,10 @@ Templates findTemplates() { // server thread
             if (r == RMedium) mediums.push_back(o);
         learnArrowAxis(mediums, d.obj[REnd]);
         if (d.obj[RStart] && d.obj[REnd] && d.obj[RStartArrow] && d.obj[RMedium] && d.obj[RArea] && selectorOk) {
+            const uintptr_t tch = mem::readOr<uintptr_t>(d.obj[RSelector] + 0x18);
+            for (int k = 0; k < 3; ++k) g_tplStars[k] = mem::readOr<int32_t>(tch + 0x18 + 4 * k);
+            GN_LOG("dashes: the template's stars at %.2f / %.2f / %.2f s, cancel at %.2f s (InternalThreshold1..3Star, Cancel)", mem::readOr<int32_t>(tch + 0x18) / 100.0,
+                   mem::readOr<int32_t>(tch + 0x1c) / 100.0, mem::readOr<int32_t>(tch + 0x20) / 100.0, mem::readOr<int32_t>(tch + 0x24) / 100.0);
             GN_LOG("dashes: copying the city's dash at (%.0f, %.0f, %.0f): %u connections", mem::readOr<float>(ref + 0x50), mem::readOr<float>(ref + 0x54),
                    mem::readOr<float>(ref + 0x58), static_cast<unsigned>(d.conns.size()));
             return d;
@@ -333,6 +377,8 @@ struct Dash {
     int64_t lastTime = 0; // centiseconds
     uintptr_t challengeEnt = 0; // its PamServerNamedChallengeEntity (+0x80 = our challenge, +0x78 state), found once
     std::chrono::steady_clock::time_point lookedAt{};
+    int64_t best = -1;          // GridNode's best (the layout's, dashSetBest), centiseconds; -1 none
+    uintptr_t marker = 0;       // our map marker (client), hidden when the dash goes
 };
 struct PendingId {
     uint16_t id;
@@ -386,11 +432,13 @@ std::atomic<bool> g_statsHooked{false};
 struct BestValue {
     uintptr_t at; // a map node's value (+0x10)
     int64_t value;
+    bool main;    // the main stat's (the time)
 };
 // The values in DashState's maps for the challenge's stats (main +0x58, total stars +0x70, extras +0x88), per player.
 std::vector<BestValue> bestsOf(uintptr_t state, uintptr_t data) {
     std::vector<BestValue> out;
     std::vector<const char*> keys;
+    const char* mainKey = reinterpret_cast<const char*>(mem::readOr<uintptr_t>(data + 0x58));
     for (const uint32_t off : {0x58u, 0x70u})
         if (const char* k = reinterpret_cast<const char*>(mem::readOr<uintptr_t>(data + off))) keys.push_back(k);
     if (const uintptr_t extras = mem::readOr<uintptr_t>(data + 0x88)) {
@@ -413,19 +461,27 @@ std::vector<BestValue> bestsOf(uintptr_t state, uintptr_t data) {
             find(map, it, &key);
             const uintptr_t node = reinterpret_cast<uintptr_t>(it[0]);
             if (!node || node == end) continue;
-            BestValue b{node + 0x10, 0};
+            BestValue b{node + 0x10, 0, key == mainKey};
             if (mem::read(b.at, b.value)) out.push_back(b);
         }
     }
     return out;
 }
 
+// No best yet: a time no run beats the other way (the game's "none" for a player with no best, 99999.99 s).
+constexpr int64_t kNoBest = 9999999;
+
 void statsHook(void* state, void* data, void* times, uint32_t run) {
     uint32_t mine = 0;
+    int64_t ours = -1; // GridNode's best for the dash
     {
         std::lock_guard<std::mutex> lock(g_m);
         for (const Dash& d : g_dashes)
-            if (d.challenge && d.challenge == reinterpret_cast<uintptr_t>(data)) mine = d.handle;
+            if (d.challenge && d.challenge == reinterpret_cast<uintptr_t>(data)) {
+                mine = d.handle;
+                ours = d.best;
+                if (d.lastTime > 0 && (ours <= 0 || d.lastTime < ours)) ours = d.lastTime;
+            }
     }
     if (!mine || !state || unloaded()) return g_statsOrig(state, data, times, run);
     int64_t t = -1;
@@ -439,23 +495,61 @@ void statsHook(void* state, void* data, void* times, uint32_t run) {
     uint8_t was = 0;
     const bool flag = active && mem::read(active + 1, was);
     if (flag && was) mem::write(active + 1, uint8_t{0});
+    // The run is compared with GridNode's best, not the template's: the finished message (the end screen's record,
+    // the difference, new record or not) is made in the call from the best it finds (2026-11-13: a custom dash was
+    // compared with the template's 13.96 s). The template's bests are written back after.
+    const int64_t swapIn = ours > 0 ? ours : kNoBest;
+    for (const BestValue& bv : before)
+        if (bv.main) mem::write(bv.at, swapIn);
     g_statsOrig(state, data, times, run);
     if (flag && was) mem::write(active + 1, was);
     bool changed = false;
     for (const BestValue& bv : before) {
         int64_t now = 0;
-        if (mem::read(bv.at, now) && now != bv.value) changed = true, mem::write(bv.at, bv.value);
+        if (mem::read(bv.at, now) && now != (bv.main ? swapIn : bv.value)) changed = true;
+        mem::write(bv.at, bv.value);
     }
     if (changed && havePending) mem::write(st + 0x218, pending, sizeof(pending));
     std::lock_guard<std::mutex> lock(g_m);
     if (Dash* d = dashOf(mine)) {
         if (t > 0) d->finished = true, d->lastTime = t;
-        GN_LOG("dashes: dash %u finished in %.2f s (kept by GridNode; nothing saved to the game's stats or sent online%s)", mine, t / 100.0,
+        GN_LOG("dashes: dash %u finished in %.2f s, compared with GridNode's best %s (kept by GridNode; nothing saved to the game's stats or sent online%s)", mine,
+               t / 100.0, ours > 0 ? (std::to_string(ours / 100) + "." + std::to_string(ours % 100 / 10) + std::to_string(ours % 10) + " s").c_str() : "(none)",
                changed ? "; the best it wrote was put back" : "");
     }
 }
 
+// The best the client shows (the dash's own screens, its marker's stars): the server sends DashState's best for the
+// challenge's stat key, which for a custom dash is the template's (dash-end-screen-best c1, c2). The client stores it
+// with PamClientNamedChallengeEntity_storeResult (entity +0x58 = the challenge): for ours, GridNode's best is given
+// instead (none: no best).
+using StoreFn = void (*)(void* entity, int32_t player, int64_t best, char hasBest);
+StoreFn g_storeOrig = nullptr;
+
+void storeHook(void* entity, int32_t player, int64_t best, char hasBest) {
+    if (entity && !unloaded()) {
+        const uintptr_t ch = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(entity) + 0x58);
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Dash& d : g_dashes)
+            if (ch && d.challenge == ch) {
+                int64_t b = d.best;
+                if (d.lastTime > 0 && (b <= 0 || d.lastTime < b)) b = d.lastTime;
+                static int said = 0;
+                if (said++ < 20)
+                    GN_LOG("dashes: dash %u: the client shows best %.2f s for player %d (the game sent %.2f s%s)", d.handle, b > 0 ? b / 100.0 : 0.0, player,
+                           best / 100.0, hasBest ? "" : ", none");
+                best = b > 0 ? b : 0, hasBest = b > 0 ? 1 : 0;
+                break;
+            }
+    }
+    g_storeOrig(entity, player, best, hasBest);
+}
+
 void hookStats() {
+    static std::atomic<bool> storeTried{false};
+    if (!storeTried.exchange(true) &&
+        hookFunction("GridNode", e::function::PamClientNamedChallengeEntity_storeResult, reinterpret_cast<void*>(&storeHook), reinterpret_cast<void**>(&g_storeOrig)) != GN_OK)
+        GN_LOG("dashes: could not hook PamClientNamedChallengeEntity_storeResult: custom dashes show the template dash's best");
     if (g_statsHooked.exchange(true)) return;
     if (hookFunction("GridNode", e::function::NamedChallengeStats_onFinished, reinterpret_cast<void*>(&statsHook), reinterpret_cast<void**>(&g_statsOrig)) != GN_OK) {
         g_statsHooked = false;
@@ -511,6 +605,13 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
     if (!ch || !type || !sel) return fail("could not copy the challenge");
     b.objects.push_back(reinterpret_cast<uintptr_t>(sel));
     type[0x9a] = 0, type[0x9d] = 0, type[0x9f] = 0; // RequiresOnline, HasDuration (the Started message, the replay), SendRefreshLeaderboardMessage
+    // A ContentId (+0x98) of its own: the client's shared content manager keys map markers by it (findMarker, also
+    // from the client challenge entity's constructor), so with the template's the real dash's marker was found and
+    // ours could not be added (dash-map-register c5, c6). markOnClient moves it on if one is taken. Shown on the
+    // map (HideInMap +0x9c off).
+    static std::atomic<uint32_t> contentIds{0};
+    *reinterpret_cast<uint32_t*>(ch + 0x98) = kContentIdBase + (++contentIds & 0xfffff) * 16;
+    ch[0x9c] = 0;
     *reinterpret_cast<uint8_t**>(ch + 0x28) = type;
     *reinterpret_cast<uint8_t**>(sel + 0x18) = ch;
     // StatsData keeps the template's stat keys: the end screen needs them (statsHook puts the game's bests back).
@@ -521,6 +622,17 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
         if (n.compare(0, 3, "ID_") == 0) n.insert(0, " "); // never taken for an id
         *reinterpret_cast<const char**>(ch + 0x10) = keptText(n);
     }
+    // Stars (InternalThreshold1Star..3Star, ints in centiseconds; lower is better: NamedChallenge_starsForValue).
+    if (spec.stars[0] > 0 && spec.stars[1] > 0 && spec.stars[2] > 0) {
+        int32_t st[3] = {spec.stars[0], spec.stars[1], spec.stars[2]};
+        std::sort(st, st + 3, std::greater<int32_t>()); // 1 star the slowest
+        std::memcpy(ch + 0x18, st, sizeof(st));
+        GN_LOG("dashes: dash %u: stars at %.2f / %.2f / %.2f s", handle, st[0] / 100.0, st[1] / 100.0, st[2] / 100.0);
+    }
+    // InternalThresholdCancel (+0x24): what it does is not read yet (a run longer than it cancelled?). A custom dash
+    // may be longer than the template, so it is never below 3 minutes or twice the 1-star time.
+    if (int32_t& cancel = *reinterpret_cast<int32_t*>(ch + 0x24); cancel > 0)
+        cancel = std::max({cancel, 18000, *reinterpret_cast<int32_t*>(ch + 0x18) * 2});
     b.challenge = reinterpret_cast<uintptr_t>(ch);
 
     // The parts.
@@ -537,17 +649,43 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
     place(area, tp.obj[RArea], compose(relative(transformOf(tp.obj[RArea]), tDash), spec.marker)); // stays with the marker
     place(start, tp.obj[RStart], spec.start);
     for (int k = 0; k < 3; ++k) reinterpret_cast<float*>(start + 0x60)[k] = std::clamp(spec.startHalf[k], 0.1f, 100.f); // OBBData.HalfExtents
-    const gn_transform arrowAt = compose(relative(transformOf(tp.obj[RStartArrow]), tStart), spec.start);
+    std::vector<uint8_t*> starts{start};
+    for (const DashStartSpec& more : spec.moreStarts) {
+        uint8_t* c = copyOf(tp.obj[RStart]);
+        if (!c) return fail("could not copy a start box");
+        place(c, tp.obj[RStart], more.at);
+        for (int k = 0; k < 3; ++k) reinterpret_cast<float*>(c + 0x60)[k] = std::clamp(more.half[k], 0.1f, 100.f);
+        starts.push_back(c);
+    }
+    const gn_transform arrowAt = spec.haveStartLine ? keepScale(spec.startLine, transformOf(tp.obj[RStartArrow]))
+                                                    : compose(relative(transformOf(tp.obj[RStartArrow]), tStart), spec.start);
     place(startArrow, tp.obj[RStartArrow], arrowAt);
     GN_LOG("dashes: dash %u: start arrow at (%.1f, %.1f, %.1f), start box at (%.1f, %.1f, %.1f)", handle, arrowAt.trans[0], arrowAt.trans[1], arrowAt.trans[2],
            spec.start.trans[0], spec.start.trans[1], spec.start.trans[2]);
     place(end, tp.obj[REnd], keepScale(spec.end, transformOf(tp.obj[REnd])));
     parts = {{RDash, dash}, {RArea, area}, {RStart, start}, {RStartArrow, startArrow}, {REnd, end}};
     std::vector<uint8_t*> arrows;
-    for (const gn_transform& t : spec.arrows) {
-        uint8_t* a = copyOf(tp.obj[RMedium]);
+    for (const DashArrowSpec& as : spec.arrows) {
+        const int kind = std::clamp(as.kind, 0, static_cast<int>(kArrowNames.size()) - 1);
+        const std::string bpName = kArrowBlueprint[kind];
+        uintptr_t src = tp.obj[RMedium], bp = 0;
+        if (const auto o = tp.arrowObj.find(bpName); o != tp.arrowObj.end()) src = o->second;
+        else if (const auto f = tp.arrowBp.find(bpName); f != tp.arrowBp.end() && typeName(f->second) == typeName(mem::readOr<uintptr_t>(src + 0x18))) bp = f->second;
+        else if (kind) GN_LOG("dashes: dash %u: no %s arrow in the city's data: a medium one instead", handle, kArrowNames[kind].c_str());
+        uint8_t* a = copyOf(src);
         if (!a) return fail("could not copy an arrow");
-        place(a, tp.obj[RMedium], keepScale(t, transformOf(tp.obj[RMedium])));
+        if (bp) *reinterpret_cast<uintptr_t*>(a + 0x18) = bp; // ObjectReferenceObjectData.Blueprint
+        gn_transform t = keepScale(as.at, transformOf(src));
+        const float sc = std::clamp(as.scale, 0.1f, 20.f);
+        float* rows[3] = {t.right, t.up, t.forward};
+        for (float* r : rows)
+            for (int k = 0; k < 3; ++k) r[k] *= sc;
+        if (kind == 3) { // turn right: turn left mirrored across the way it points (the row beside it, flat, turned round)
+            const int axis = g_arrowAxis.load();
+            float* side = axis == 1 || axis == 3 ? t.forward : t.right;
+            for (int k = 0; k < 3; ++k) side[k] = -side[k];
+        }
+        place(a, src, t);
         arrows.push_back(a);
     }
 
@@ -567,16 +705,19 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
         uint32_t sf, tf, extra;
     };
     std::vector<Out> out;
-    for (const TConn& c : tp.conns) {
-        if (c.src == RMedium || c.dst == RMedium) {
-            for (uint8_t* a : arrows)
-                out.push_back({c.kind, c.src == RMedium ? reinterpret_cast<uintptr_t>(a) : ptrOf(c.src), c.dst == RMedium ? reinterpret_cast<uintptr_t>(a) : ptrOf(c.dst),
-                               c.sf, c.tf, c.extra});
-            continue;
-        }
-        const uintptr_t s = ptrOf(c.src), d = ptrOf(c.dst);
-        if (s && d) out.push_back({c.kind, s, d, c.sf, c.tf, c.extra});
-    }
+    // The template's connections, for every arrow (the medium's) and every start box (the start's).
+    auto all = [&](Role r) {
+        std::vector<uintptr_t> v;
+        if (r == RMedium)
+            for (uint8_t* a : arrows) v.push_back(reinterpret_cast<uintptr_t>(a));
+        else if (r == RStart)
+            for (uint8_t* st : starts) v.push_back(reinterpret_cast<uintptr_t>(st));
+        else if (const uintptr_t p = ptrOf(r)) v.push_back(p);
+        return v;
+    };
+    for (const TConn& c : tp.conns)
+        for (const uintptr_t s : all(c.src))
+            for (const uintptr_t d : all(c.dst)) out.push_back({c.kind, s, d, c.sf, c.tf, c.extra});
     uint32_t nk[3] = {0, 0, 0};
     for (const Out& o : out) ++nk[o.kind];
     uint8_t* arr[3];
@@ -591,12 +732,13 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
         std::memcpy(r + 0x14, &o.tf, 4);
         if (o.kind != 1) std::memcpy(r + 0x18, &o.extra, 4);
     }
-    const uint32_t nObj = static_cast<uint32_t>(parts.size() + arrows.size());
+    const uint32_t nObj = static_cast<uint32_t>(parts.size() + arrows.size() + starts.size() - 1);
     uint8_t* objs = engineArray(nObj, 8);
     if (!objs) return fail("out of memory");
     uint32_t io = 0;
     for (const auto& [r, p] : parts) reinterpret_cast<uint8_t**>(objs)[io++] = p;
     for (uint8_t* a : arrows) reinterpret_cast<uint8_t**>(objs)[io++] = a;
+    for (size_t i = 1; i < starts.size(); ++i) reinterpret_cast<uint8_t**>(objs)[io++] = starts[i];
     for (int k = 0; k < 3; ++k) *reinterpret_cast<uint8_t**>(bp + kConnOff[k]) = arr[k];
     *reinterpret_cast<uint16_t*>(bp + 0x30) = mem::readOr<uint16_t>(tp.dashBp + 0x30); // Flags as the dash's
     *reinterpret_cast<uint8_t**>(bp + 0x40) = objs;
@@ -615,22 +757,78 @@ Built build(const Templates& tp, const DashSpec& spec, uint32_t handle) {
 }
 
 void destroyOnServer(uintptr_t ent, uintptr_t bus, uint16_t id, uint64_t level);
+void hideMarker(uintptr_t marker, uintptr_t challenge, uint64_t level);
+
+// A dash between the server's build and its placing: the map marker is added on the client first, so the client
+// challenge entity (made from the network after the placing) finds it by its ContentId.
+struct Prep {
+    uint32_t handle = 0;
+    uint64_t level = 0;
+    DashSpec spec;
+    Built built;
+    uint16_t id = 0;
+    uintptr_t bus = 0;
+    uintptr_t marker = 0;
+};
+void placeOnServer(std::shared_ptr<Prep> p);
+
+// Client thread: our challenge's map marker, as PamClientSharedContentManagerEntity's vf15 adds the level's (a layout
+// entry: the marker's transform, then the challenge's GUID at +0x40; the constructor copies it). Not in the manager's
+// lists keyed by stat name (+0x280: ours has the template's keys) or by ContentId (+0x2b0): the readers of those
+// skip a challenge they do not find (dash-map-register c10).
+void markOnClient(std::shared_ptr<Prep> p) {
+    if (p->level != g_level.load() || unloading()) return server().post([p] { placeOnServer(p); });
+    const uintptr_t mgr = mem::readOr<uintptr_t>(mem::rva(e::global::PamClientSharedContentManager));
+    uint8_t* ch = reinterpret_cast<uint8_t*>(p->built.challenge);
+    const uintptr_t type = mem::readOr<uintptr_t>(p->built.challenge + 0x28);
+    using FindFn = uintptr_t (*)(uintptr_t, uintptr_t);
+    const auto find = reinterpret_cast<FindFn>(mem::rva(e::function::PamClientSharedContentManager_findMarker));
+    if (!mgr) {
+        GN_LOG("dashes: dash %u: no shared content manager on the client: no map icon", p->handle);
+    } else if (!mem::readOr<uintptr_t>(type + 0x68)) {
+        GN_LOG("dashes: dash %u: the template's challenge type has no map icon data (+0x68): no map icon", p->handle);
+    } else {
+        int tries = 0;
+        while (find(mgr, p->built.challenge) && tries++ < 64) *reinterpret_cast<uint32_t*>(ch + 0x98) += 1; // taken
+        alignas(16) uint8_t entry[0xc0] = {};
+        const gn_transform at = clean(p->spec.marker);
+        std::memcpy(entry, &at, sizeof(at));
+        std::memcpy(entry + 0x40, ch - 0x10, 0x10); // the GUID copyData gave it
+        using AddFn = void (*)(uintptr_t, void*, uintptr_t);
+        reinterpret_cast<AddFn>(mem::rva(e::function::PamClientSharedContentManager_addChallengeMarker))(mgr, entry, p->built.challenge);
+        p->marker = find(mgr, p->built.challenge);
+        GN_LOG("dashes: dash %u: map marker %s (ContentId %08x; allowed %u, shown %u, unlock data %s)", p->handle, p->marker ? "added" : "NOT added",
+               mem::readOr<uint32_t>(p->built.challenge + 0x98), p->marker ? mem::readOr<uint8_t>(p->marker + 0x225) : 0u,
+               p->marker ? mem::readOr<uint8_t>(p->marker + 0x121) : 0u, mem::readOr<uintptr_t>(p->built.challenge + 0x40) ? "set (shown once unlocked)" : "none");
+    }
+    server().post([p] { placeOnServer(p); });
+}
+
+// Client thread: a marker of ours hidden (no removal function is known): +0x225 (allowed) off, then its refresh.
+void hideMarker(uintptr_t marker, uintptr_t challenge, uint64_t level) {
+    if (!marker || level != g_level.load()) return; // the level's manager and its markers are gone with it
+    const uintptr_t mgr = mem::readOr<uintptr_t>(mem::rva(e::global::PamClientSharedContentManager));
+    using FindFn = uintptr_t (*)(uintptr_t, uintptr_t);
+    if (!mgr || reinterpret_cast<FindFn>(mem::rva(e::function::PamClientSharedContentManager_findMarker))(mgr, challenge) != marker) return;
+    mem::write(marker + 0x225, uint8_t{0});
+    reinterpret_cast<void (*)(uintptr_t)>(mem::rva(e::function::PamNamedChallengeMapMarker_refresh))(marker);
+}
 
 void spawnOnServer(uint32_t h) {
-    DashSpec spec;
-    uint64_t level = 0;
+    auto p = std::make_shared<Prep>();
+    p->handle = h;
     {
         std::lock_guard<std::mutex> lock(g_m);
         Dash* d = dashOf(h);
         if (!d || d->state != Dash::Queued) return;
-        spec = d->spec, level = d->level;
+        p->spec = d->spec, p->level = d->level;
     }
     auto failWith = [&](const std::string& why) {
         std::lock_guard<std::mutex> lock(g_m);
         if (Dash* d = dashOf(h)) d->state = Dash::Failed, d->status = why;
         GN_LOG("dashes: dash %u not made: %s", h, why.c_str());
     };
-    if (level != g_level.load()) return;
+    if (p->level != g_level.load()) return;
     hookStats();
     if (!g_statsHooked) return failWith("the stats hook is not in (see the log)");
     Templates tp;
@@ -639,61 +837,82 @@ void spawnOnServer(uint32_t h) {
         tp = *templates();
     }
     if (!tp.missing.empty()) return failWith(tp.missing);
-    const uintptr_t bus = parentBus();
-    if (!bus) return failWith("no bus the client knows (Faith not in the world yet?)");
-    Built b = build(tp, spec, h);
-    if (!b.error.empty()) return failWith(b.error);
+    p->bus = parentBus();
+    if (!p->bus) return failWith("no bus the client knows (Faith not in the world yet?)");
+    p->built = build(tp, p->spec, h);
+    if (!p->built.error.empty()) return failWith(p->built.error);
 
-    uint16_t id = 0;
     {
         std::lock_guard<std::mutex> lock(g_m);
-        id = freeId();
-        if (id) g_usedIds.push_back(id);
+        p->id = freeId();
+        if (p->id) g_usedIds.push_back(p->id);
     }
-    if (!id) return failWith("no free bundle id in the data registry");
+    if (!p->id) return failWith("no free bundle id in the data registry");
     uint8_t* partition = static_cast<uint8_t*>(_aligned_malloc(0x40, 16));
-    uint8_t* inst = engineArray(static_cast<uint32_t>(b.objects.size()), 8);
+    uint8_t* inst = engineArray(static_cast<uint32_t>(p->built.objects.size()), 8);
     if (!partition || !inst) return failWith("out of memory");
     std::memset(partition, 0, 0x40);
-    for (size_t i = 0; i < b.objects.size(); ++i) reinterpret_cast<uintptr_t*>(inst)[i] = b.objects[i];
+    for (size_t i = 0; i < p->built.objects.size(); ++i) reinterpret_cast<uintptr_t*>(inst)[i] = p->built.objects[i];
     *reinterpret_cast<uint8_t**>(partition + 0x18) = inst; // all DataRegistry_register reads
-    reinterpret_cast<void (*)(void*, uint16_t)>(mem::rva(e::function::DataRegistry_register))(partition, id);
+    reinterpret_cast<void (*)(void*, uint16_t)>(mem::rva(e::function::DataRegistry_register))(partition, p->id);
+    client().post([p] { markOnClient(p); });
+}
 
-    alignas(16) uint8_t ci[0x200] = {};
-    const gn_transform origin = clean(gn_transform{{1.f, 0.f, 0.f, 0.f}, {0.f, 1.f, 0.f, 0.f}, {0.f, 0.f, 1.f, 0.f}, {0.f, 0.f, 0.f, 1.f}});
-    reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ServerEntityCreationInfo_ctor))(ci, b.outer, bus, &origin);
-    const uintptr_t ent = reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::unverified::entityCreator_spawnIntoBus))(ci, 0);
-    if (ent) {
-        alignas(16) uint8_t init[0x40] = {};
-        reinterpret_cast<void (*)(uint8_t*, uint64_t, uint64_t)>(mem::rva(e::function::ServerEntityInitInfo_ctor))(init, 0, 0);
-        reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::Entity_init))(ent, init);
-        char ev[16];
-        std::snprintf(ev, sizeof(ev), "0x%08x", kStreamIn);
-        eventSend("GridNode", reinterpret_cast<void*>(ent), ev); // its contents at its next tick; the client's from the network
+// Server thread, after markOnClient: the ServerBlueprintEntity under the bus, streamed in.
+void placeOnServer(std::shared_ptr<Prep> p) {
+    const uint32_t h = p->handle;
+    const uint64_t level = p->level;
+    const uint16_t id = p->id;
+    uintptr_t ent = 0;
+    if (level == g_level.load() && isBus(p->bus)) {
+        alignas(16) uint8_t ci[0x200] = {};
+        const gn_transform origin = clean(gn_transform{{1.f, 0.f, 0.f, 0.f}, {0.f, 1.f, 0.f, 0.f}, {0.f, 0.f, 1.f, 0.f}, {0.f, 0.f, 0.f, 1.f}});
+        reinterpret_cast<void (*)(uint8_t*, uintptr_t, uintptr_t, const gn_transform*)>(mem::rva(e::function::ServerEntityCreationInfo_ctor))(ci, p->built.outer, p->bus, &origin);
+        ent = reinterpret_cast<uintptr_t (*)(uint8_t*, uintptr_t)>(mem::rva(e::function::unverified::entityCreator_spawnIntoBus))(ci, 0);
+        if (ent) {
+            alignas(16) uint8_t init[0x40] = {};
+            reinterpret_cast<void (*)(uint8_t*, uint64_t, uint64_t)>(mem::rva(e::function::ServerEntityInitInfo_ctor))(init, 0, 0);
+            reinterpret_cast<void (*)(uintptr_t, uint8_t*)>(mem::rva(e::function::Entity_init))(ent, init);
+            inspector::noteCreated(ent); // its creator is not hooked, and its address may be marked dead (entity-liveness c3, c7)
+            char ev[16];
+            std::snprintf(ev, sizeof(ev), "0x%08x", kStreamIn);
+            eventSend("GridNode", reinterpret_cast<void*>(ent), ev); // its contents at its next tick; the client's from the network
+        }
     }
     std::lock_guard<std::mutex> lock(g_m);
     Dash* d = dashOf(h);
-    if (!d) { // destroyed while made
+    if (!d || level != g_level.load()) { // destroyed while made (or the level went)
         if (ent) {
             g_liveEnts.push_back(ent);
+            const uintptr_t bus = p->bus;
             server().post([ent, bus, level] { destroyOnServer(ent, bus, 0, level); });
         }
-        g_unreg.push_back({id, level, std::chrono::steady_clock::now() + kUnregisterDelay});
+        if (p->marker) {
+            const uintptr_t m = p->marker, c = p->built.challenge;
+            client().post([m, c, level] { hideMarker(m, c, level); });
+        }
+        if (level == g_level.load()) g_unreg.push_back({id, level, std::chrono::steady_clock::now() + kUnregisterDelay});
         return;
     }
     d->regId = id;
-    d->challenge = b.challenge;
+    d->challenge = p->built.challenge;
+    d->marker = p->marker;
     if (!ent) {
         d->state = Dash::Failed, d->status = "the game made no entity (spawning is off?)";
         g_unreg.push_back({id, level, std::chrono::steady_clock::now() + kUnregisterDelay});
         d->regId = 0;
+        if (p->marker) {
+            const uintptr_t m = p->marker, c = p->built.challenge;
+            client().post([m, c, level] { hideMarker(m, c, level); });
+            d->marker = 0;
+        }
         return;
     }
-    d->entity = ent, d->bus = bus;
-    d->state = Dash::Live, d->status = "placed";
+    d->entity = ent, d->bus = p->bus;
+    d->state = Dash::Live, d->status = p->marker ? "placed" : "placed (no map icon: see the log)";
     g_liveEnts.push_back(ent);
-    GN_LOG("dashes: dash %u made: %u objects (bundle id %u), %u guide arrows, start box %.1f x %.1f x %.1f m", h, static_cast<unsigned>(b.objects.size()), id,
-           static_cast<unsigned>(spec.arrows.size()), spec.startHalf[0] * 2.f, spec.startHalf[1] * 2.f, spec.startHalf[2] * 2.f);
+    GN_LOG("dashes: dash %u made: %u objects (bundle id %u), %u guide arrows, start box %.1f x %.1f x %.1f m", h, static_cast<unsigned>(p->built.objects.size()), id,
+           static_cast<unsigned>(p->spec.arrows.size()), p->spec.startHalf[0] * 2.f, p->spec.startHalf[1] * 2.f, p->spec.startHalf[2] * 2.f);
 }
 
 // Server thread: streamed out and destroyed; its data leaves the registry a little later.
@@ -757,6 +976,12 @@ void entityGone(void* entity, void*) {
         if (d.state == Dash::Live && d.entity == reinterpret_cast<uintptr_t>(entity)) {
             d.state = Dash::Failed, d.status = "taken away by the game (a checkpoint or reload)";
             d.entity = 0;
+            if (d.marker) {
+                const uintptr_t m = d.marker, c = d.challenge;
+                const uint64_t level = d.level;
+                client().post([m, c, level] { hideMarker(m, c, level); });
+                d.marker = 0;
+            }
             if (d.regId) g_unreg.push_back({d.regId, d.level, std::chrono::steady_clock::now() + kUnregisterDelay}), d.regId = 0;
         }
 }
@@ -778,11 +1003,20 @@ bool finite(const gn_transform& t) {
 } // namespace
 
 int dashArrowAxis() { return g_arrowAxis.load(); }
+const std::vector<std::string>& dashArrowKinds() { return kArrowNames; }
+bool dashTemplateStars(int32_t out[3]) {
+    for (int k = 0; k < 3; ++k) out[k] = g_tplStars[k].load();
+    return out[0] || out[1] || out[2];
+}
 
 int dashSpawn(const DashSpec& spec, uint32_t* handle) {
-    if (!handle || !finite(spec.marker) || !finite(spec.start) || !finite(spec.end) || spec.arrows.size() > 64) return GN_ERR_ARGUMENT;
-    for (const gn_transform& t : spec.arrows)
-        if (!finite(t)) return GN_ERR_ARGUMENT;
+    if (!handle || !finite(spec.marker) || !finite(spec.start) || !finite(spec.end) || spec.arrows.size() > 64 || spec.moreStarts.size() > 8 ||
+        (spec.haveStartLine && !finite(spec.startLine)))
+        return GN_ERR_ARGUMENT;
+    for (const DashArrowSpec& a : spec.arrows)
+        if (!finite(a.at) || !std::isfinite(a.scale)) return GN_ERR_ARGUMENT;
+    for (const DashStartSpec& m : spec.moreStarts)
+        if (!finite(m.at)) return GN_ERR_ARGUMENT;
     start();
     std::lock_guard<std::mutex> lock(g_m);
     if (g_dashes.size() >= 32) return GN_ERR_FULL;
@@ -805,6 +1039,11 @@ int dashState(uint32_t handle, uint32_t* live, std::string* status) {
     if (status) *status = d->status;
     if (live) *live = d->state == Dash::Live ? 1u : 0u;
     return d->state == Dash::Failed ? GN_ERR_UNAVAILABLE : GN_OK;
+}
+
+void dashSetBest(uint32_t handle, int64_t centiseconds) {
+    std::lock_guard<std::mutex> lock(g_m);
+    if (Dash* d = dashOf(handle)) d->best = centiseconds;
 }
 
 bool dashFinished(uint32_t handle, int64_t* centiseconds) {
@@ -851,11 +1090,12 @@ int dashDestroy(uint32_t handle) {
     std::lock_guard<std::mutex> lock(g_m);
     for (auto it = g_dashes.begin(); it != g_dashes.end(); ++it)
         if (it->handle == handle) {
-            const uintptr_t ent = it->entity, bus = it->bus;
+            const uintptr_t ent = it->entity, bus = it->bus, marker = it->marker, ch = it->challenge;
             const uint16_t id = it->regId;
             const uint64_t level = it->level;
             g_dashes.erase(it);
             server().post([ent, bus, id, level] { destroyOnServer(ent, bus, id, level); });
+            if (marker) client().post([marker, ch, level] { hideMarker(marker, ch, level); });
             return GN_OK;
         }
     return GN_ERR_NOT_FOUND;

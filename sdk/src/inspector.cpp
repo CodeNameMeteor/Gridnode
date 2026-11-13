@@ -1174,6 +1174,20 @@ bool alive(uintptr_t p, const reflect::Type* type) {
     return typeOf(p) == type; // made before GridNode loaded: its type is all there is to go by
 }
 
+// An entity GridNode made itself: the creator hook may not see it (a ServerBlueprintEntity comes from creator slot +0x08
+// of vtable 0x141b47f70, not hooked; entity-liveness c3), and the address may be one that died before and is still
+// marked dead (the pool reuses it; c7): then alive() was false at once (the custom dash was made again every 3 s,
+// 2026-11-13).
+void noteCreated(uintptr_t p) {
+    const Type* t = p ? registry().typeOfLive(reinterpret_cast<void*>(p)) : nullptr;
+    if (!t) return;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        g_dead.erase(p);
+    }
+    g_live.add(p, t);
+}
+
 void markDead(uintptr_t p) {
     if (!p || g_live.remove(p)) return; // gone from the index at once
     std::lock_guard<std::mutex> lock(g_m);

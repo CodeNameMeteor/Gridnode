@@ -370,17 +370,33 @@ void forgetBundles(const CodeRange& r); // a mod unloading: its prefabs destroye
 // dash prefab's place), a start box, an end circle and guide arrows, copied from one of the city's dashes and
 // placed so the client gets it from the network. Times are kept by GridNode: nothing reaches the game's stats or
 // goes online. Server work is posted; dashState says when it is up.
+struct DashArrowSpec {
+    gn_transform at{};
+    int kind = 0;      // dashArrowKinds()[kind]: 0 medium, 1 small, 2 turn left, 3 turn right (turn left mirrored)
+    float scale = 1.f; // on top of the city's arrow of that kind
+};
+struct DashStartSpec {
+    gn_transform at{};                   // the start box's centre
+    float half[3] = {3.5f, 2.5f, 1.f};
+};
 struct DashSpec {
     gn_transform marker{};               // the dash prefab: its free-roam marker sits here
-    gn_transform start{};                // the start box's centre
+    gn_transform start{};                // the (first) start box's centre
     float startHalf[3] = {3.5f, 2.5f, 1.f};
+    std::vector<DashStartSpec> moreStarts; // more start boxes (some of the city's dashes have several; experimental)
+    bool haveStartLine = false;          // the start arrow (the start line) placed on its own; else beside the first start box
+    gn_transform startLine{};
     gn_transform end{};                  // the end circle (an end arrow: its EndVolume is the finish)
-    std::vector<gn_transform> arrows;    // guide arrows
-    std::string name;                    // the dash's name (not shown yet: research dash-name)
+    std::vector<DashArrowSpec> arrows;   // guide arrows
+    std::string name;                    // the dash's name: the challenge's Sid (the marker and the map show it)
+    int32_t stars[3] = {0, 0, 0};        // the times for 1, 2 and 3 stars, centiseconds; 0: the template dash's
 };
+const std::vector<std::string>& dashArrowKinds(); // the guide arrow kinds' names, by DashArrowSpec::kind
+bool dashTemplateStars(int32_t out[3]);            // the template dash's star times (centiseconds), once one was copied
 int dashSpawn(const DashSpec& spec, uint32_t* handle);
 int dashState(uint32_t handle, uint32_t* live, std::string* status); // GN_ERR_UNAVAILABLE: failed (status says why)
 bool dashFinished(uint32_t handle, int64_t* centiseconds);           // a finish since the last call, and its time
+void dashSetBest(uint32_t handle, int64_t centiseconds);             // GridNode's best (-1 none): the dash's screens show it
 int dashArrowAxis(); // the axis an arrow's model points along: 0 +forward, 1 +right, 2 -forward, 3 -right; -1 not known yet
 bool dashBusy(uint32_t handle);  // a run is on (chosen, running or at its end screen): not to be made again now
 int dashDestroy(uint32_t handle);
@@ -553,6 +569,7 @@ void drawConsole(bool* open); // the console window (render thread)
 std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
 std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base); // the same, only that class and its subclasses (no full copy)
 bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type
+void noteCreated(uintptr_t entity); // GridNode made it: tracked from now on, even if the creator hook missed it
 void markDead(uintptr_t entity); // GridNode is destroying it: alive() is false from now on (until a new entity is made there)
 } // namespace inspector
 

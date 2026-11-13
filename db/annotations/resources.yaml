@@ -684,7 +684,11 @@ functions:
     sources: [ghidra]
 
 constants:
-  - { name: ResourceGroup_Count, value: 0xbbd, note: "Also the 'none' id." }
+  - name: ResourceGroup_Count
+    value: 0xbbd
+    confidence: inferred
+    sources: [ghidra]
+    note: "Also the 'none' id. ResourceManager_registerBundleGroup hands out ids up to 0xbbc (kind 2) into ResourceGroups (ResourceManager +8): 0xbbd slots (checked 2026-11-13; registry-hardening c4)."
 
 structs:
   - name: Partition

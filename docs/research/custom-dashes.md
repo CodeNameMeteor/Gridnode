@@ -55,9 +55,40 @@ Moved parts are not made again while the free camera flies (every remake is a ne
 cancelled runs) or during a run (the challenge entity's state +0x78 not 0); they are made again when the free camera
 stops, or with Rebuild.
 
+## Map icon and the best shown (2026-11-13, untested in game)
+
+- The challenge copy gets a ContentId of its own (`0xf1d00000` up, +0x98) and HideInMap (+0x9c) off: the client's
+  shared content manager (`PamClientSharedContentManager`, ui.yaml) keys markers by ContentId, and with the template's
+  the real dash's marker was found and ours could not be added (`dash-map-register` c5, c6).
+- Before the dash is placed, the client adds its map marker as the manager's vf15 does for the level's:
+  `addChallengeMarker(manager, layout entry, challenge)`, the entry a LinearTransform (the marker's place) then the
+  challenge's GUID at +0x40; the constructor copies it. The manager's lists keyed by stat name (+0x280) and by
+  ContentId (+0x2b0) are left alone (their readers skip a challenge they do not find). No removal function is known:
+  a dash taken away hides its marker (+0x225 off, then `PamNamedChallengeMapMarker_refresh`).
+- The best the dash's own screens and its marker show comes from the server as DashState's best for the stat key
+  (the template's). `PamClientNamedChallengeEntity_storeResult` is detoured: for our challenge it gets GridNode's best
+  (the layout's, or the last run if better; none: no best).
+
+Game-tested 2026-11-13: the map icon (own ContentId) and the screens' best. The end screen's record, the difference
+and "new record" come from the finished message, made inside `NamedChallengeStats_onFinished` from DashState's best
+for the stat key: the run was compared with the template's 13.96 s. The stats hook now writes GridNode's best (none:
+9999999) into the main stat's best for the call and the template's back after.
+
+## Parts and stars (2026-11-13 evening, untested)
+
+- Arrow kinds: the city's dashes' arrows of each kind are copied (their scale); a kind no dash uses but in the city's
+  bundle: the medium copy with its Blueprint (+0x18) swapped. Turn right is turn left with its side row turned round.
+  Large and turn right are only in `belikewater` (not loaded in free roam).
+- More start boxes: copies of the start box, each with the template's StartGeometry connections. The log says how
+  many start boxes the city's dashes have at most. Whether the game uses more than one link: game test.
+- Stars: `PamNamedChallengeData` InternalThreshold1Star..3Star (+0x18, +0x1c, +0x20, ints, centiseconds,
+  `NamedChallenge_starsForValue`). InternalThresholdCancel (+0x24) is not read yet: kept at least 3 minutes and twice
+  the 1-star time (a custom dash may be longer than its template).
+
 ## Open
 
-- Map icon: the client content manager registers each dash from the map database (dash-map-icon); a custom dash is
-  not registered, has the real dash's ContentId and no icon (research `dash-map-register`).
-- The end screen shows the game's best for the template's stat keys, not GridNode's (`dash-end-screen-best`).
-- Ghosts of the best run (`dash-ghost`); writing a dash as a Frosty mod (`fbmod-dash-export`).
+- Whether the marker shows on the map and in the dash list, and whether the end screen reads the stored best
+  (`dash-end-screen-best` c11): game test.
+- The marker's stars come from the template's thresholds; the dash list keyed by stat name still finds the template.
+- Ghosts of the best run (`dash-ghost`: the game keeps none for dashes); writing a dash as a Frosty mod
+  (`fbmod-dash-export`: c3 refuted, the EBX side unverified).

@@ -180,9 +180,15 @@ with the move keys. The start box's row takes its size.
 Moving parts does not rebuild the dash while you fly: it is made again when you leave the free camera, or with
 **Rebuild**, and never during a run. Renaming rebuilds it (the free-roam marker shows the name).
 
+Guide arrows come in four kinds (medium, small, turn left, turn right: turn left mirrored) with a size each: pick
+the kind before **Add a guide arrow at the crosshair**, or change it on a selected arrow. **Add a start box** adds
+another start box (some of the city's dashes have several; experimental). **Place the start line on its own** places
+the start arrow apart from the start box (without one it sits beside the first start box). The start box's size is
+on its row when it is selected. **stars 1 / 2 / 3** sets the star times in seconds (0: the template dash's).
+
 GridNode keeps your best time per dash, saved with the layout; nothing reaches the game's stats or goes online.
-A custom dash is made from one of the city's dashes (`docs/research/custom-dashes.md`). Not yet: a map icon,
-your best on the game's end screen.
+The dash's own screens show that best, a run is compared with it, and the dash has a map icon at its marker.
+A custom dash is made from one of the city's dashes (`docs/research/custom-dashes.md`).
 
 ## Teleport
 
