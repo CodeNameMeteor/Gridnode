@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 39 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data) */
+#define GN_API_VERSION 40 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add) */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -418,6 +418,9 @@ typedef void (*gn_progress_flag_fn)(const gn_progress_flag* flag, void* user);
  * DataContainers (blueprints, entity data, assets; gn_type_of names them). bundle: the game's id for the
  * bundle (the same id while it stays loaded), 0 if unknown. API 39. */
 typedef void (*gn_data_fn)(void* const* objects, uint32_t count, uint32_t bundle, int loaded, void* user);
+/* A watched property changed (API 40): value as property_get gives it (the bytes; for a class reference a
+ * pointer to the object pointer, for a string a pointer to the char*), valid during the call only. */
+typedef void (*gn_property_fn)(void* entity, const char* name, const void* value, const gn_type* type, void* user);
 
 typedef struct gn_api {
     uint32_t version;         /* GN_API_VERSION of the host */
@@ -1308,6 +1311,61 @@ typedef struct gn_api {
      * your pointers to them. Game-tested 2026-11-13. */
     int (*data_of_class)(const char* cls, int subclasses, void** out, uint32_t max);
     int (*on_data)(const char* mod, gn_data_fn fn, void* user);
+
+    /* ==== GN_API_VERSION 40 =================================================================== */
+
+    /* ---- an entity's connected properties ------------------------------------------------------------
+     * A property is a field of an entity's data that the level's logic connects to (a bool a trigger
+     * sets, a float a timeline drives). The entity's bus keeps a slot for each, and the entity reads the
+     * slot, not its data, so writing its data does nothing: these read and write the slot, as a
+     * connection does, and listeners hear the change. name: the field's name in the entity's data class
+     * ("Enabled") or its id as hex ("0x1a2b3c4d": djb2-xor of the name, as event ids).
+     *
+     * property_get: *type (if not null) the property's type; with out null only that. Otherwise size must
+     * be the type's size and the value is copied to out; a class reference gives the object (8 bytes), a
+     * string the game's char* (8 bytes, valid until the property changes). property_set copies size
+     * bytes from value (the type's size); strings and class references are refused (GN_ERR_ARGUMENT).
+     * GN_ERR_NOT_FOUND: no such field, or nothing connects to it (the bus has no slot: then the entity
+     * reads its data and the property is not live), or the entity is on no bus list.
+     * The entity's own realm thread only (GN_ERR_THREAD): the lookup can make the slot's default value.
+     *
+     * property_watch calls fn whenever the property changes (any writer: the level's logic, the game,
+     * property_set), on the entity's realm thread, through the game's own listener list on the slot (no
+     * hook). *handle for property_unwatch. A watch ends by itself when the entity is destroyed, and a mod's
+     * watches when it unloads. At most 4096 at a time (GN_ERR_FULL). Realm thread only, like the others
+     * (property_unwatch: any thread).
+     * Console: prop ADDRESS [NAME [VALUE]], prop watch ADDRESS NAME (logs changes). Untested in game. */
+    int (*property_get)(void* entity, const char* name, void* out, uint32_t size, const gn_type** type);
+    int (*property_set)(void* entity, const char* name, const void* value, uint32_t size);
+    int (*property_watch)(const char* mod, void* entity, const char* name, gn_property_fn fn, void* user, uint32_t* handle);
+    int (*property_unwatch)(uint32_t handle);
+
+    /* ---- sending engine messages ------------------------------------------------------------------------
+     * message_init fills out (size >= the type's size, zeroed past it) with a default message of a
+     * reflected message type: a copy of the type's static instance, header (vtable, category, type id,
+     * realm 0xff) in place. Set its fields (field_find / write, or your own struct), then message_send
+     * delivers it now to the listeners of manager 0 core, 1 client, 2 server, on this thread, as the game's
+     * MessageManager_executeMessage does; it never frees the message (stack memory is fine) and on_message
+     * listeners hear it too. A message whose fields own memory (strings, arrays) keeps the static
+     * instance's: change those only to memory that outlives the call. Thread: manager 1 the client thread,
+     * 2 the server thread, 0 either (GN_ERR_THREAD); GN_ERR_UNAVAILABLE when that realm has no manager
+     * (no level). Queued (delayed) sending is not offered. Console: msg TYPE [core|client|server].
+     * Untested in game. */
+    int (*message_init)(const char* type, void* out, uint32_t size);
+    int (*message_send)(int manager, const void* message);
+
+    /* ---- physics shapes made by the game (experimental) ----------------------------------------------
+     * shape_add makes a body in the client's physics world (what Faith collides with) through the game's
+     * own physics factory, with the steps a barrier takes (PamOBBCollision_enable). shape: 1 box (size =
+     * half extents x, y, z), 2 sphere (size[0] = radius), 3 capsule (size[0] radius, size[1] length, along
+     * at's first row). Sizes 0.01 .. 1000 m. motion: 0 static, 1 keyframed (moves only when placed),
+     * 2 dynamic (falls and can be pushed; mass in kg, > 0). It is made at the client world's next physics
+     * update once a client barrier exists to copy the setup from (its bus and body data) and the level has
+     * been loaded 3 s; again in a new level's world. box_move / box_remove / box_state take its handle
+     * (box_move places it: a dynamic one is teleported). A mod's shapes go when it unloads; one goes with
+     * the barrier its setup came from. Any thread. Console: shape box|sphere|capsule SIZE... [dynamic MASS].
+     * Untested in game. */
+    int (*shape_add)(const char* mod, uint32_t shape, const gn_transform* at, const float size[3], uint32_t motion, float mass, uint32_t* handle);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

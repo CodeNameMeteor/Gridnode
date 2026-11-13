@@ -101,10 +101,11 @@ functions:
   - name: MessageManager_executeMessage
     va: 0x142a39770
     signature: "void(MessageManager* manager, const Message* message)"
-    note: Calls the category's listeners now, on this thread.
+    note: "Calls the category's listeners now, on this thread (dispatch through the manager's implementation, 0x142a394a0); never frees the message, so the game passes stack messages (0x142a29f34). Listeners are matched by category (+0x08) and realm (+0x10, 0xff any). Checked in Ghidra 2026-11-13 (audit, env-messages M1 to M6)."
   - name: MessageManager_queueMessage
     va: 0x142a3ad30
-    signature: "void(MessageManager* manager, const Message* message)"
+    signature: "void(MessageManager* manager, Message* message, f32 delay)"
+    note: "mov rcx,[rcx]; jmp 0x142a3a4e0. The delay is the caller's xmm2 (the game zeroes it before each call): always pass it. The queued message is delivered at a later pump and then freed through its vtable +0x08 (deleting destructor), so it must come from the game's allocator for that type, never the stack. Checked in Ghidra 2026-11-13 (audit, env-messages M7 to M13)."
   - name: Message_ctor
     va: 0x142a37120
     signature: "Message*(Message* message, u32 category, u32 typeId, u32 realm)"

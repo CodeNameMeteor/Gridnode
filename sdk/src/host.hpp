@@ -237,6 +237,10 @@ void bodiesStart();
 void physicsStaleNote();     // a server entity was destroyed: queries wait for the next physics flush
 bool physicsQueriesSafe();   // false until then (a second at most)
 int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out, const void* caller);
+int shapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out,
+             const void* caller); // API 40: a box, sphere or capsule made by the game's physics factory
+std::string shapeCommand(const std::string& rest); // the console's "shape"
+std::string censusCommand(const std::string& rest); // the console's "census" (census.cpp)
 int boxMove(uint32_t box, const gn_transform* at);
 int boxRemove(uint32_t box);
 int boxState(uint32_t box);
@@ -364,6 +368,21 @@ int onData(const std::string& mod, gn_data_fn fn, void* user);
 void forgetData(const CodeRange& r);
 void dataRelease(); // GridNode's unload: the game's listener out
 std::string dataCommand(const std::string& rest); // the console's "data"
+// Runs fn on the server (or client) thread and waits up to 2 s for its text (the console's commands).
+std::string runOnRealmAndWait(bool serverRealm, std::function<std::string()> fn);
+// Sending engine messages (messages.cpp, API 40).
+int messageInit(const char* type, void* out, uint32_t size);
+int messageSend(int manager, const void* message);
+std::string msgCommand(const std::string& rest); // the console's "msg"
+// An entity's connected properties (properties.cpp, API 40): the entity's realm thread only.
+int propertyGet(void* entity, const char* name, void* out, uint32_t size, const gn_type** type);
+int propertySet(void* entity, const char* name, const void* value, uint32_t size);
+std::string propCommand(const std::string& rest); // the console's "prop"
+int propertyWatch(const std::string& mod, void* entity, const char* name, gn_property_fn fn, void* user, uint32_t* handle);
+int propertyUnwatch(uint32_t handle);
+void forgetProperties(const CodeRange& r); // a mod's watches, detached at its realms' next ticks
+void propertiesRelease();                  // GridNode's unload: every watch detached at the next ticks
+bool propertiesReleased();                 // all detached
 
 // Bundles loaded at runtime and prefabs spawned from them (bundles.cpp, API 38). caller: the mod's code,
 // for forgetBundles when it unloads.

@@ -937,6 +937,47 @@ template <class F> bool onData(F f) {
                          },
                          p) == GN_OK;
 }
+// An entity's connected property by its data's field name (API 40; see api.h), on the entity's realm
+// thread: propertyGet(e, "Enabled", b) / propertySet(e, "Enabled", true). False when the host is older,
+// the property is not connected, or T is not its size.
+template <class T> bool propertyGet(void* entity, const char* name, T& out) {
+    return detail::hostHas(&gn_api::property_get) && api().property_get(entity, name, &out, sizeof(T), nullptr) == GN_OK;
+}
+template <class T> bool propertySet(void* entity, const char* name, const T& value) {
+    return detail::hostHas(&gn_api::property_set) && api().property_set(entity, name, &value, sizeof(T)) == GN_OK;
+}
+// fn(entity, value) whenever the property changes (realm thread). The handle for propertyUnwatch, 0 when
+// refused. T must be the property's size (for references and strings: void* / const char*).
+template <class T, class F> uint32_t propertyWatch(void* entity, const char* name, F f) {
+    if (!detail::hostHas(&gn_api::property_watch)) return 0;
+    using Fn = std::function<void(void*, const T&)>;
+    auto* p = detail::keep(Fn(std::move(f)));
+    uint32_t h = 0;
+    const int r = api().property_watch(modName(), entity, name,
+                                       [](void* e, const char*, const void* v, const gn_type*, void* u) {
+                                           detail::guarded("a propertyWatch listener", [&] { (*static_cast<Fn*>(u))(e, *static_cast<const T*>(v)); });
+                                       },
+                                       p, &h);
+    return r == GN_OK ? h : 0;
+}
+inline void propertyUnwatch(uint32_t handle) {
+    if (detail::hostHas(&gn_api::property_unwatch)) api().property_unwatch(handle);
+}
+// Sends a default message of a reflected message type now (API 40; see api.h): fill(void* msg) sets its
+// fields first. manager 0 core, 1 client (client thread), 2 server (server thread).
+template <class F> bool messageSend(int manager, const char* type, F fill) {
+    if (!detail::hostHas(&gn_api::message_send)) return false;
+    const gn_type* t = api().type_find(type);
+    const uint32_t size = t ? api().type_size(t) : 0;
+    if (!size || size > 65536) return false;
+    std::vector<uint64_t> buf(size / 8 + 2);
+    if (api().message_init(type, buf.data(), static_cast<uint32_t>(buf.size() * 8)) != GN_OK) return false;
+    fill(static_cast<void*>(buf.data()));
+    return api().message_send(manager, buf.data()) == GN_OK;
+}
+inline bool messageSend(int manager, const char* type) {
+    return messageSend(manager, type, [](void*) {});
+}
 // Bundles and prefabs (API 38, experimental; see api.h). bundleLoad: the handle, 0 when refused; the load
 // runs on the server thread, so poll bundleReady. A level ending drops them (bundleReady and prefabLive are
 // then false for good). Released and destroyed when the mod unloads.
