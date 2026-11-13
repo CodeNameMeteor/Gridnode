@@ -168,6 +168,22 @@ then move and turn it, as any object (Shift: 4 steps, Ctrl: a quarter). It is dr
 and spawned again there when the keys rest. The selected one's row also takes a typed position and turn, and
 a blocker's size and flags. Undo does not cover them yet.
 
+## Custom dashes (experimental)
+
+A dash of your own, run like the game's, in the city in free roam. Under **Custom dashes**, type a name and press
+**Place a new dash at the crosshair**: its free-roam marker goes where the crosshair points, the start box 8 m
+ahead and the end circle 40 m ahead. **Add a guide arrow at the crosshair** adds an arrow pointing the way the
+camera looks. While you fly the free camera the parts show as boxes (marker orange, start green, end red, arrows
+orange) with a line to the ground, their height above it and the way they face; click one, or its row, and move it
+with the move keys. The start box's row takes its size.
+
+Moving parts does not rebuild the dash while you fly: it is made again when you leave the free camera, or with
+**Rebuild**, and never during a run. Renaming rebuilds it (the free-roam marker shows the name).
+
+GridNode keeps your best time per dash, saved with the layout; nothing reaches the game's stats or goes online.
+A custom dash is made from one of the city's dashes (`docs/research/custom-dashes.md`). Not yet: a map icon,
+your best on the game's end screen.
+
 ## Teleport
 
 **T** teleports Faith to where the crosshair points, facing the way the camera looks, and leaves

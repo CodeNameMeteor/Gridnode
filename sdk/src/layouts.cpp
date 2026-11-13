@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -73,9 +74,16 @@ struct Edit {
     // metres along its right, up and forward rows, and cant bits 0..3 (stand, climb, vault, wallrun).
     float half[3] = {1.f, 1.5f, 0.25f};
     uint8_t cant = 0xf;
+    // A custom dash (dashes.cpp) is one edit per part, sharing `dash`: "DashMarker" (the dash prefab: its free-roam
+    // marker; holds the name and GridNode's best time, centiseconds, -1 none), "DashStart" (the start box: `half`),
+    // "DashEnd" (the end circle), "DashArrow" (guide arrows, in the order placed).
+    int dash = -1;
+    std::string name;
+    int64_t best = -1;
 };
 
-bool isPlaced(const Edit& ed) { return ed.kind == "PlacedPrefab" || ed.kind == "PlacedBlocker"; }
+bool isDashPart(const Edit& ed) { return ed.kind == "DashMarker" || ed.kind == "DashStart" || ed.kind == "DashEnd" || ed.kind == "DashArrow"; }
+bool isPlaced(const Edit& ed) { return ed.kind == "PlacedPrefab" || ed.kind == "PlacedBlocker" || isDashPart(ed); }
 
 // Where removed copies and hidden group copies go (entities cannot be destroyed yet): this far
 // below where they were, out of sight and out of reach (Frosty-Unity Pipeline uses the same).
@@ -90,6 +98,7 @@ std::wstring g_assetsDir;       // assets folder next to gridnode.dll (gridnode.
 std::string g_name;             // the loaded / last saved layout's name, empty if none (g_m)
 std::vector<Edit> g_previous;   // the edits of the layout unloaded last, to find what they moved (g_m)
 int g_nextCopyId = 0;           // (g_m)
+int g_nextDashId = 0;           // (g_m) custom dash ids (Edit::dash)
 
 std::atomic<bool> g_sweptThisLevel{false}; // existing objects matched since the level started
 constexpr float kMatch = 0.05f; // metres: how close a created object must be to an edit's position
@@ -461,10 +470,15 @@ bool save(const std::string& name) {
         if (!ed.mesh.empty()) o += "    mesh: " + oneLine(ed.mesh) + "\n";
         if (!ed.asset.empty()) o += "    asset: " + oneLine(ed.asset) + "\n";
         if (!ed.bundle.empty()) o += "    bundle: " + oneLine(ed.bundle) + "\n";
-        if (ed.kind == "PlacedBlocker") {
+        if (ed.kind == "PlacedBlocker" || ed.kind == "DashStart") {
             const float size[3] = {ed.half[0] * 2.f, ed.half[1] * 2.f, ed.half[2] * 2.f};
             o += "    size: " + fmtVec(size) + "\n";
-            o += "    cant: " + std::to_string(ed.cant & 0xf) + "\n";
+        }
+        if (ed.kind == "PlacedBlocker") o += "    cant: " + std::to_string(ed.cant & 0xf) + "\n";
+        if (isDashPart(ed)) o += "    dash: " + std::to_string(ed.dash) + "\n";
+        if (ed.kind == "DashMarker") {
+            o += "    name: " + oneLine(ed.name) + "\n";
+            if (ed.best > 0) o += "    best: " + std::to_string(ed.best) + "\n";
         }
         o += "    at: " + fmtVec(ed.at) + "\n";
         o += "    right: " + fmtVec(ed.to.right) + "\n";
@@ -554,6 +568,18 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
             cur.cant = static_cast<uint8_t>(atoi(val.c_str()) & 0xf);
             continue;
         }
+        if (key == "dash") {
+            cur.dash = atoi(val.c_str());
+            continue;
+        }
+        if (key == "name") {
+            cur.name = val;
+            continue;
+        }
+        if (key == "best") {
+            cur.best = std::max<int64_t>(-1, _atoi64(val.c_str()));
+            continue;
+        }
         if (key == "kind") cur.kind = val, ok = !val.empty();
         else if (key == "at") ok = parseVec(val, cur.at);
         else if (key == "right") ok = parseVec(val, cur.to.right);
@@ -585,6 +611,18 @@ std::vector<Edit> load(const std::string& level, const std::string& name) {
         if (ed.kind == "Copy" && ed.source.empty()) GN_LOG("layouts: %s: a copy without a source; skipped", level.c_str());
     }
     out.erase(std::remove_if(out.begin(), out.end(), [](const Edit& ed) { return ed.kind == "Copy" && ed.source.empty(); }), out.end());
+    out.erase(std::remove_if(out.begin(), out.end(),
+                             [&](const Edit& ed) {
+                                 const bool bad = isDashPart(ed) && ed.dash < 0;
+                                 if (bad) GN_LOG("layouts: %s: a custom dash part without its dash number; skipped", level.c_str());
+                                 return bad;
+                             }),
+              out.end());
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        for (const Edit& ed : out)
+            if (isDashPart(ed)) g_nextDashId = std::max(g_nextDashId, ed.dash + 1);
+    }
     out.erase(std::remove_if(out.begin(), out.end(),
                              [&](const Edit& ed) {
                                  const bool bad = ed.kind == "PlacedPrefab" && (ed.asset.empty() || ed.bundle.empty());
@@ -3302,7 +3340,7 @@ void prefabSync() {
     {
         std::lock_guard<std::mutex> lock(g_m);
         for (const Edit& ed : g_edits)
-            if (isPlaced(ed)) want.push_back(ed);
+            if (isPlaced(ed) && !isDashPart(ed)) want.push_back(ed); // dashes: dashSync
     }
     std::lock_guard<std::mutex> lock(g_pfM);
     const DWORD now = GetTickCount();
@@ -3384,6 +3422,170 @@ void prefabSync() {
             g_pfStatus[ed.copyId] = "spawning";
         }
     }
+}
+
+// ---- custom dashes (dashes.cpp) ---------------------------------------------------------------------------
+// A dash is kept made while the layout has its marker, start and end: made again when a part moved (once the
+// moves rest) or after the game took it away (a checkpoint or level reload). Server thread, with prefabSync.
+// A finish's time comes back here: a new best goes in the marker edit, and is saved at once when the layout
+// had no other unsaved change (else with the next save).
+struct DashLive {
+    uint32_t handle = 0;
+    std::vector<Edit> spawned; // the parts as last made
+    std::string status;
+    int64_t last = -1;  // the last finish (centiseconds)
+    DWORD triedAt = 0;  // a failed one: tried again every 3 s
+};
+std::unordered_map<int, DashLive> g_dashLive; // (g_pfM) dash id ->
+std::unordered_set<int> g_dashRebuild;        // (g_pfM) dashes to make again now (the Rebuild button)
+std::unordered_map<int, float> g_partGround;  // (g_pfM) a dash part's copyId -> the ground's height below it (NaN: none)
+std::atomic<bool> g_camFlying{false};         // the editor's free camera flies (set each frame)
+
+std::string dashTime(int64_t cs) {
+    if (cs <= 0) return "-";
+    char b[32];
+    const int64_t m = cs / 6000, rest = cs % 6000;
+    snprintf(b, sizeof(b), "%lld:%02lld.%02lld", static_cast<long long>(m), static_cast<long long>(rest / 100), static_cast<long long>(rest % 100));
+    return b;
+}
+
+// The parts of each dash, in a stable order (marker, start, end, arrows by when they were placed).
+std::map<int, std::vector<Edit>> dashParts(const std::vector<Edit>& edits) {
+    std::map<int, std::vector<Edit>> out;
+    for (const Edit& ed : edits)
+        if (isDashPart(ed)) out[ed.dash].push_back(ed);
+    auto rank = [](const Edit& e) { return e.kind == "DashMarker" ? 0 : e.kind == "DashStart" ? 1 : e.kind == "DashEnd" ? 2 : 3; };
+    for (auto& [id, parts] : out)
+        std::sort(parts.begin(), parts.end(), [&](const Edit& a, const Edit& b) { return rank(a) != rank(b) ? rank(a) < rank(b) : a.copyId < b.copyId; });
+    return out;
+}
+
+bool sameDash(const std::vector<Edit>& a, const std::vector<Edit>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].copyId != b[i].copyId || !sameSpawn(a[i], b[i])) return false;
+    return true;
+}
+
+void dashSync() {
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        edits = g_edits;
+    }
+    const std::map<int, std::vector<Edit>> dashes = dashParts(edits);
+    std::vector<std::pair<int, int64_t>> finishes; // dash id, time
+    {
+        std::lock_guard<std::mutex> lock(g_pfM);
+        const DWORD now = GetTickCount();
+        for (auto it = g_dashLive.begin(); it != g_dashLive.end();) { // dashes no longer in the layout
+            if (dashes.count(it->first)) {
+                ++it;
+                continue;
+            }
+            if (it->second.handle) dashDestroy(it->second.handle);
+            it = g_dashLive.erase(it);
+        }
+        for (const auto& [id, parts] : dashes) {
+            DashLive& live = g_dashLive[id];
+            const Edit* marker = nullptr;
+            const Edit* start = nullptr;
+            const Edit* end = nullptr;
+            DWORD movedAt = 0;
+            for (const Edit& p : parts) {
+                if (p.kind == "DashMarker") marker = &p;
+                if (p.kind == "DashStart") start = &p;
+                if (p.kind == "DashEnd") end = &p;
+                const auto m = g_pfMovedAt.find(p.copyId);
+                if (m != g_pfMovedAt.end()) movedAt = std::max(movedAt, m->second);
+            }
+            if (!marker || !start || !end) {
+                if (live.handle) dashDestroy(live.handle), live.handle = 0;
+                live.status = std::string("needs its ") + (!marker ? "marker" : !start ? "start" : "end circle");
+                continue;
+            }
+            if (live.handle) {
+                int64_t t = 0;
+                while (dashFinished(live.handle, &t)) finishes.push_back({id, t}), live.last = t;
+            }
+            const bool changed = !sameDash(live.spawned, parts);
+            const bool settled = movedAt == 0 || now - movedAt >= 300;
+            uint32_t on = 0;
+            std::string st;
+            const int ds = live.handle ? dashState(live.handle, &on, &st) : GN_ERR_NOT_FOUND;
+            // Moved parts are not made again while you edit (every remake is a network spawn: it stuttered, and it
+            // cancelled what you were doing, 2026-11-13): when the free camera stops flying, or on Rebuild. Never
+            // during a run.
+            const bool asked = g_dashRebuild.erase(id) > 0;
+            if (ds == GN_OK && changed && settled && !asked && g_camFlying.load()) {
+                live.status = "moved: made again when you leave the free camera (or press Rebuild)";
+                continue;
+            }
+            if (ds == GN_OK && (changed || asked) && dashBusy(live.handle)) {
+                if (asked) g_dashRebuild.insert(id); // kept for when the run ends
+                live.status = "moved: made again when the run ends";
+                continue;
+            }
+            if (ds == GN_OK && !asked && (!changed || !settled)) {
+                live.status = changed ? "moving" : on ? "placed" : st;
+                continue;
+            }
+            if (ds == GN_ERR_UNAVAILABLE && !changed) {
+                live.status = st;
+                if (now - live.triedAt < 3000) continue;
+            }
+            if (live.handle) dashDestroy(live.handle), live.handle = 0;
+            DashSpec spec;
+            spec.marker = marker->to;
+            spec.start = start->to;
+            memcpy(spec.startHalf, start->half, sizeof(spec.startHalf));
+            spec.end = end->to;
+            spec.name = marker->name;
+            for (const Edit& p : parts)
+                if (p.kind == "DashArrow") spec.arrows.push_back(p.to);
+            live.triedAt = now;
+            if (dashSpawn(spec, &live.handle) == GN_OK) {
+                live.spawned = parts;
+                live.status = "being made";
+            } else {
+                live.handle = 0;
+                live.status = "could not be made (see the log)";
+            }
+        }
+    }
+    // The ground below each part while the free camera flies (drawn as a line with its height).
+    if (g_camFlying.load()) {
+        std::unordered_map<int, float> ground;
+        for (const auto& [id, parts] : dashes)
+            for (const Edit& p : parts) {
+                const float from[3] = {p.to.trans[0], p.to.trans[1] + 0.2f, p.to.trans[2]};
+                const float to[3] = {p.to.trans[0], p.to.trans[1] - 300.f, p.to.trans[2]};
+                gn_ray_hit hit{};
+                ground[p.copyId] = raycastObject(from, to, &hit, nullptr, nullptr, nullptr) == GN_OK ? hit.position[1] : NAN;
+            }
+        std::lock_guard<std::mutex> lock(g_pfM);
+        g_partGround.swap(ground);
+    }
+    if (finishes.empty()) return;
+    bool save1 = false;
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        const bool wasDirty = g_dirty;
+        bool better = false;
+        for (const auto& [id, t] : finishes)
+            for (Edit& e : g_edits)
+                if (e.kind == "DashMarker" && e.dash == id) {
+                    GN_LOG("layouts: dash \"%s\": %s (best %s)", e.name.c_str(), dashTime(t).c_str(), dashTime(e.best > 0 && e.best < t ? e.best : t).c_str());
+                    if (e.best <= 0 || t < e.best) e.best = t, better = true;
+                }
+        if (better) {
+            g_dirty = true;
+            save1 = !wasDirty && !g_name.empty();
+            name = g_name;
+        }
+    }
+    if (save1) save(name); // only the new best was unsaved
 }
 
 // The prefab list (gridnode.py assets bundle-parents writes it): asset, the bundle to load.
@@ -3504,6 +3706,24 @@ void drawPlacedControls(const Edit& ed) {
         }
         movePlaced(ed.copyId, t);
     }
+    if (ed.kind == "DashStart") { // the start box's size: the dash is made again when it rests
+        float sz[3] = {ed.half[0] * 2.f, ed.half[1] * 2.f, ed.half[2] * 2.f};
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 16);
+        if (ImGui::DragFloat3("size (m)##dst", sz, 0.05f, 0.2f, 200.f, "%.2f") && finite(sz, 3)) {
+            {
+                std::lock_guard<std::mutex> lock(g_m);
+                for (Edit& e : g_edits)
+                    if (e.kind == "DashStart" && e.copyId == ed.copyId) {
+                        for (int k = 0; k < 3; ++k) e.half[k] = std::clamp(sz[k], 0.2f, 200.f) * 0.5f;
+                        g_dirty = true;
+                    }
+            }
+            std::lock_guard<std::mutex> lock(g_pfM);
+            g_pfMovedAt[ed.copyId] = GetTickCount();
+        }
+        ImGui::TextDisabled("width, height, depth: running into it starts the timer");
+        return;
+    }
     if (ed.kind != "PlacedBlocker") return;
     float size[3] = {ed.half[0] * 2.f, ed.half[1] * 2.f, ed.half[2] * 2.f};
     bool cant[4];
@@ -3613,6 +3833,218 @@ void drawBlockers() {
         }
     }
     drawPlacedList("PlacedBlocker");
+}
+
+// Server thread: a new dash at the crosshair, facing along the view: the marker where the ray hits, the start box
+// 8 m ahead, the end circle 40 m ahead (move each with the move keys). The marker is selected.
+gn_transform uprightAt(const float* pos, const float* dir) {
+    float fwd[3] = {dir[0], 0.f, dir[2]};
+    if (std::fabs(fwd[0]) + std::fabs(fwd[2]) < 1e-4f) fwd[2] = 1.f;
+    normalize(fwd);
+    gn_transform t{};
+    t.forward[0] = fwd[0], t.forward[2] = fwd[2];
+    t.up[1] = 1.f;
+    t.right[0] = fwd[2], t.right[2] = -fwd[0]; // up x forward
+    memcpy(t.trans, pos, sizeof(float) * 3);
+    t.trans[3] = 1.f;
+    return t;
+}
+bool crosshairPoint(const std::array<float, 6>& r, float* out) { // where the ray hits, or 10 m along it
+    const float to[3] = {r[0] + r[3] * 200.f, r[1] + r[4] * 200.f, r[2] + r[5] * 200.f};
+    gn_ray_hit hit{};
+    if (raycastObject(r.data(), to, &hit, nullptr, nullptr, nullptr) == GN_OK) {
+        memcpy(out, hit.position, sizeof(float) * 3);
+        return true;
+    }
+    for (int k = 0; k < 3; ++k) out[k] = r[k] + r[3 + k] * 10.f;
+    return false;
+}
+Edit dashPart(const char* kind, int dash, const gn_transform& t) {
+    Edit ed;
+    ed.kind = kind;
+    ed.dash = dash;
+    ed.to = ed.from = t;
+    ed.haveFrom = true;
+    memcpy(ed.at, t.trans, sizeof(ed.at));
+    return ed;
+}
+void selectPlaced(int copyId) {
+    clearSpecialSelection();
+    {
+        std::lock_guard<std::mutex> lock(g_selM);
+        g_haveSel = false, g_extra.clear();
+    }
+    g_placedSel = copyId;
+}
+void placeDash(std::string name, std::array<float, 6> r) {
+    float p[3];
+    crosshairPoint(r, p);
+    const float dir[3] = {r[3], r[4], r[5]};
+    const gn_transform marker = uprightAt(p, dir);
+    gn_transform start = marker, end = marker;
+    for (int k = 0; k < 3; ++k) start.trans[k] += marker.forward[k] * 8.f;
+    start.trans[1] += 2.5f; // the default box is 5 m high: standing on the ground
+    for (int k = 0; k < 3; ++k) end.trans[k] += marker.forward[k] * 40.f;
+    int id = 0, markerCopy = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        id = g_nextDashId++;
+        Edit m = dashPart("DashMarker", id, marker);
+        m.name = name.empty() ? "Custom dash " + std::to_string(id + 1) : name;
+        Edit st = dashPart("DashStart", id, start);
+        st.half[0] = 3.5f, st.half[1] = 2.5f, st.half[2] = 1.f;
+        Edit en = dashPart("DashEnd", id, end);
+        for (Edit* e : {&m, &st, &en}) e->copyId = g_nextCopyId++;
+        markerCopy = m.copyId;
+        g_edits.push_back(m), g_edits.push_back(st), g_edits.push_back(en);
+        g_dirty = true;
+    }
+    selectPlaced(markerCopy);
+    GN_LOG("layouts: placed custom dash %d \"%s\" at (%.1f, %.1f, %.1f)", id, name.c_str(), p[0], p[1], p[2]);
+    setStatus("Placed a custom dash: its marker is selected (the move keys move and turn it). Select its start and end circle in "
+              "the Custom dashes list to move them too.");
+}
+void placeDashArrow(int dash, std::array<float, 6> r) {
+    float p[3];
+    crosshairPoint(r, p);
+    // The arrow's model points along dashArrowAxis(), not always forward: its forward is turned so that axis
+    // points the way the camera looks (+forward until the first dash taught the axis).
+    const float d[3] = {r[3], 0.f, r[5]};
+    float dir[3] = {d[0], 0.f, d[2]};
+    switch (dashArrowAxis()) {
+    case 1: dir[0] = -d[2], dir[2] = d[0]; break; // right(f) = d
+    case 2: dir[0] = -d[0], dir[2] = -d[2]; break;
+    case 3: dir[0] = d[2], dir[2] = -d[0]; break; // -right(f) = d
+    default: break;
+    }
+    gn_transform t = uprightAt(p, dir);
+    t.trans[1] += 0.5f;
+    int copy = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        Edit a = dashPart("DashArrow", dash, t);
+        a.copyId = copy = g_nextCopyId++;
+        g_edits.push_back(a);
+        g_dirty = true;
+    }
+    selectPlaced(copy);
+    setStatus("Added a guide arrow (selected): it points the way the camera looked; turn it with the move keys.");
+}
+
+void drawDashes() {
+    if (!ImGui::CollapsingHeader("Custom dashes (experimental)")) return;
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("A dash of your own, run like the game's: its free-roam marker, a start box, the end circle and guide arrows, "
+                        "placed anywhere in the city. GridNode keeps the best time (saved with the layout); nothing goes to the "
+                        "game's stats or online. Made from one of the city's dashes, so only in the city in free roam.");
+    ImGui::PopTextWrapPos();
+    static char newName[64] = "";
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    ImGui::InputTextWithHint("##dashname", "name", newName, sizeof(newName));
+    ImGui::SameLine();
+    if (ImGui::Button("Place a new dash at the crosshair")) {
+        float ray[6];
+        if (centreRay(ray)) {
+            std::array<float, 6> r{};
+            memcpy(r.data(), ray, sizeof(ray));
+            std::string n = newName;
+            for (char& c : n)
+                if (c == '\n' || c == '\r') c = ' ';
+            server().post([n, r] { placeDash(n, r); });
+            newName[0] = 0;
+        }
+    }
+    std::vector<Edit> edits;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        edits = g_edits;
+    }
+    const auto dashes = dashParts(edits);
+    const int sel = g_placedSel.load();
+    for (const auto& [id, parts] : dashes) {
+        const Edit* marker = nullptr;
+        for (const Edit& p : parts)
+            if (p.kind == "DashMarker") marker = &p;
+        std::string status;
+        int64_t last = -1;
+        {
+            std::lock_guard<std::mutex> lock(g_pfM);
+            const auto it = g_dashLive.find(id);
+            if (it != g_dashLive.end()) status = it->second.status, last = it->second.last;
+        }
+        ImGui::PushID(id);
+        ImGui::Separator();
+        ImGui::Text("%s", marker ? marker->name.c_str() : "(no marker)");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s; best %s%s", status.empty() ? "waiting" : status.c_str(), dashTime(marker ? marker->best : -1).c_str(),
+                            last > 0 ? (", last " + dashTime(last)).c_str() : "");
+        if (marker) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%s", marker->name.c_str());
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+            if (ImGui::InputText("name##dn", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                std::string n = buf;
+                for (char& c : n)
+                    if (c == '\n' || c == '\r') c = ' ';
+                {
+                    std::lock_guard<std::mutex> lock(g_m);
+                    for (Edit& e : g_edits)
+                        if (e.kind == "DashMarker" && e.dash == id) e.name = n, g_dirty = true;
+                }
+                std::lock_guard<std::mutex> lock(g_pfM);
+                g_dashRebuild.insert(id); // the name is in the dash's data: made again to show it
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(Enter; shown in game after the next Rebuild)");
+        }
+        int arrow = 0;
+        int removeCopy = -1;
+        for (const Edit& p : parts) {
+            const std::string label = p.kind == "DashMarker" ? "free-roam marker" : p.kind == "DashStart" ? "start box" : p.kind == "DashEnd" ? "end circle"
+                                                                                                                                              : "guide arrow " + std::to_string(++arrow);
+            ImGui::PushID(p.copyId);
+            if (ImGui::Selectable(label.c_str(), sel == p.copyId, 0, ImVec2(ImGui::GetFontSize() * 12, 0.f))) selectPlaced(sel == p.copyId ? -1 : p.copyId);
+            if (p.kind == "DashArrow") {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("x")) removeCopy = p.copyId;
+            }
+            if (sel == p.copyId) drawPlacedControls(p);
+            ImGui::PopID();
+        }
+        if (ImGui::SmallButton("Add a guide arrow at the crosshair")) {
+            float ray[6];
+            if (centreRay(ray)) {
+                std::array<float, 6> r{};
+                memcpy(r.data(), ray, sizeof(ray));
+                server().post([id = id, r] { placeDashArrow(id, r); });
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Rebuild")) {
+            std::lock_guard<std::mutex> lock(g_pfM);
+            g_dashRebuild.insert(id);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear the best time")) {
+            std::lock_guard<std::mutex> lock(g_m);
+            for (Edit& e : g_edits)
+                if (e.kind == "DashMarker" && e.dash == id) e.best = -1, g_dirty = true;
+        }
+        ImGui::SameLine();
+        bool removeDash = ImGui::SmallButton("Remove the dash");
+        if (removeCopy >= 0 || removeDash) {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(),
+                                         [&](const Edit& e) { return isDashPart(e) && e.dash == id && (removeDash || e.copyId == removeCopy); }),
+                          g_edits.end());
+            g_dirty = true;
+            if (removeDash || g_placedSel == removeCopy) g_placedSel = -1;
+        }
+        ImGui::PopID();
+    }
+    if (!dashes.empty())
+        ImGui::TextDisabled("Select a part here or click it in the world (while flying the free camera); the move keys move and turn it. "
+                            "Save the layout to keep the dash.");
 }
 
 void drawPrefabs() {
@@ -3916,6 +4348,7 @@ void serverTick() {
     if (now - lastPrefabs >= 250) {
         lastPrefabs = now;
         prefabSync();
+        dashSync();
     }
 }
 
@@ -5727,6 +6160,7 @@ void draw(bool* open) {
     drawLibrary();
     drawBlockers();
     drawPrefabs();
+    drawDashes();
     drawKeys();
     ImGui::End();
 }
@@ -6672,7 +7106,12 @@ bool pickBarrier(const float* ray) {
 // The box a placed object is picked and drawn by, in its own frame: a blocker's size, a prefab a small box
 // about its origin (its parts are not known here).
 void placedBox(const Edit& ed, float* half) {
-    for (int k = 0; k < 3; ++k) half[k] = ed.kind == "PlacedBlocker" ? std::max(ed.half[k], 0.05f) : 0.4f;
+    for (int k = 0; k < 3; ++k)
+        half[k] = ed.kind == "PlacedBlocker" || ed.kind == "DashStart" ? std::max(ed.half[k], 0.05f)
+                  : ed.kind == "DashMarker"                             ? 1.f
+                  : ed.kind == "DashEnd"                                ? 1.5f
+                  : ed.kind == "DashArrow"                              ? 0.6f
+                                                                        : 0.4f;
 }
 
 // A click on a placed prefab or blocker selects it (before barriers and objects: a blocker is a barrier too).
@@ -6719,7 +7158,11 @@ bool pickPlaced(const float* ray) {
         g_haveSel = false, g_extra.clear();
     }
     g_placedSel = hit;
-    setStatus("Selected a placed object: the move keys move and turn it (its row in the editor has its place and size).");
+    std::string what = "a placed object";
+    for (const Edit& ed : placed)
+        if (ed.copyId == hit && isDashPart(ed))
+            what = ed.kind == "DashMarker" ? "the dash's free-roam marker" : ed.kind == "DashStart" ? "the dash's start box" : ed.kind == "DashEnd" ? "the dash's end circle" : "a guide arrow";
+    setStatus("Selected " + what + ": the move keys move and turn it (its row in the editor has its place and size).");
     return true;
 }
 
@@ -6753,15 +7196,51 @@ void drawPlaced() {
                 c[i][k] = ed.to.trans[k] + ((i & 1) ? 1.f : -1.f) * half[0] * rows[0][k] + ((i & 2) ? 1.f : -1.f) * half[1] * rows[1][k] +
                           ((i & 4) ? 1.f : -1.f) * half[2] * rows[2][k];
         const bool isSel = ed.copyId == sel;
-        const ImU32 col = isSel ? IM_COL32(255, 255, 80, 255) : ed.kind == "PlacedBlocker" ? IM_COL32(255, 80, 200, 220) : IM_COL32(80, 200, 255, 220);
+        const ImU32 col = isSel                       ? IM_COL32(255, 255, 80, 255)
+                          : ed.kind == "PlacedBlocker" ? IM_COL32(255, 80, 200, 220)
+                          : ed.kind == "DashStart"     ? IM_COL32(80, 255, 80, 230)
+                          : ed.kind == "DashEnd"       ? IM_COL32(255, 80, 80, 230)
+                          : isDashPart(ed)             ? IM_COL32(255, 170, 40, 230)
+                                                       : IM_COL32(80, 200, 255, 220);
         const int edges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3}, {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
         for (const auto& e2 : edges) line3d(dl, v, c[e2[0]], c[e2[1]], col, isSel ? 2.5f : 1.5f);
-        float f[3]; // which way it faces
-        for (int k = 0; k < 3; ++k) f[k] = ed.to.trans[k] + rows[2][k] * (half[2] + 0.5f);
+        float way[3] = {rows[2][0], rows[2][1], rows[2][2]}; // which way it faces; a dash arrow: where its model points
+        if (ed.kind == "DashArrow")
+            switch (dashArrowAxis()) {
+            case 1: memcpy(way, rows[0], sizeof(way)); break;
+            case 2: for (int k = 0; k < 3; ++k) way[k] = -rows[2][k]; break;
+            case 3: for (int k = 0; k < 3; ++k) way[k] = -rows[0][k]; break;
+            default: break;
+            }
+        float f[3];
+        for (int k = 0; k < 3; ++k) f[k] = ed.to.trans[k] + way[k] * (half[2] + (isDashPart(ed) ? 3.f : 0.5f)); // a dash part's way: longer
         line3d(dl, v, ed.to.trans, f, IM_COL32(80, 120, 255, 255), 2.f);
+        float groundY = NAN;
+        if (isDashPart(ed)) { // a dash part: a line down to the ground, with its height above it
+            std::lock_guard<std::mutex> lock(g_pfM);
+            const auto gy = g_partGround.find(ed.copyId);
+            if (gy != g_partGround.end()) groundY = gy->second;
+        }
+        if (std::isfinite(groundY)) {
+            const float g[3] = {ed.to.trans[0], groundY, ed.to.trans[2]};
+            line3d(dl, v, ed.to.trans, g, IM_COL32(200, 200, 200, 160), 1.f);
+            const float r = 0.5f; // a cross on the ground
+            const float a0[3] = {g[0] - r, g[1], g[2]}, a1[3] = {g[0] + r, g[1], g[2]}, b0[3] = {g[0], g[1], g[2] - r}, b1[3] = {g[0], g[1], g[2] + r};
+            line3d(dl, v, a0, a1, IM_COL32(200, 200, 200, 200), 1.5f);
+            line3d(dl, v, b0, b1, IM_COL32(200, 200, 200, 200), 1.5f);
+        }
         if (depthOf(v, ed.to.trans) > kNear) {
             const size_t slash = ed.asset.find_last_of('/');
-            const std::string name = ed.kind == "PlacedBlocker" ? "blocker" : slash == std::string::npos ? ed.asset : ed.asset.substr(slash + 1);
+            std::string name = ed.kind == "PlacedBlocker" ? "blocker" : slash == std::string::npos ? ed.asset : ed.asset.substr(slash + 1);
+            if (ed.kind == "DashMarker") name = "dash: " + ed.name;
+            else if (ed.kind == "DashStart") name = "dash start";
+            else if (ed.kind == "DashEnd") name = "dash end";
+            else if (ed.kind == "DashArrow") name = "dash arrow";
+            if (std::isfinite(groundY)) {
+                char h[48];
+                snprintf(h, sizeof(h), "  %+.1f m, facing %.0f", ed.to.trans[1] - groundY, std::atan2(way[0], way[2]) * 57.29578f);
+                name += h;
+            }
             const ImVec2 at = project(v, ed.to.trans);
             dl->AddText(ImVec2(at.x + 6.f, at.y - 18.f), col, name.c_str());
         }
@@ -6781,6 +7260,7 @@ void frame(bool menuOpen, bool editor) {
     // even with the Layout editor tool on (the first version showed the editor's whole camera, 2026-11-01).
     const bool modCam = g_camByMod && (g_cam.enabled || g_cam.active);
     g_editorOn = editor && !modCam;
+    g_camFlying = g_editorOn && g_cam.active;
     if (g_editorOn) {
         drawOutline();
         drawBarriers();

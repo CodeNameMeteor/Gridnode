@@ -366,6 +366,27 @@ int prefabState(uint32_t handle, uint32_t* live, uint32_t* entities);
 int prefabDestroy(uint32_t handle);
 void forgetBundles(const CodeRange& r); // a mod unloading: its prefabs destroyed, its bundles released
 
+// Custom dashes (dashes.cpp, experimental, not in the API yet): the game's own dash with a free-roam marker (the
+// dash prefab's place), a start box, an end circle and guide arrows, copied from one of the city's dashes and
+// placed so the client gets it from the network. Times are kept by GridNode: nothing reaches the game's stats or
+// goes online. Server work is posted; dashState says when it is up.
+struct DashSpec {
+    gn_transform marker{};               // the dash prefab: its free-roam marker sits here
+    gn_transform start{};                // the start box's centre
+    float startHalf[3] = {3.5f, 2.5f, 1.f};
+    gn_transform end{};                  // the end circle (an end arrow: its EndVolume is the finish)
+    std::vector<gn_transform> arrows;    // guide arrows
+    std::string name;                    // the dash's name (not shown yet: research dash-name)
+};
+int dashSpawn(const DashSpec& spec, uint32_t* handle);
+int dashState(uint32_t handle, uint32_t* live, std::string* status); // GN_ERR_UNAVAILABLE: failed (status says why)
+bool dashFinished(uint32_t handle, int64_t* centiseconds);           // a finish since the last call, and its time
+int dashArrowAxis(); // the axis an arrow's model points along: 0 +forward, 1 +right, 2 -forward, 3 -right; -1 not known yet
+bool dashBusy(uint32_t handle);  // a run is on (chosen, running or at its end screen): not to be made again now
+int dashDestroy(uint32_t handle);
+void dashesRelease();    // unload: every dash taken away
+void dashesReleaseIds(); // unload, a few ticks later: our data out of the game's data registry
+
 // Layouts (layouts.cpp, M7): level edits applied at runtime, and their editor.
 namespace layouts {
 void start(const std::wstring& gridnodeDir);
