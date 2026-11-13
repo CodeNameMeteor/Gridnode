@@ -239,6 +239,10 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "camera") == 0) return layouts::cameraCommand(rest); // GridNode's own (layouts.cpp)
     if (_stricmp(word.c_str(), "replay") == 0) return replayCommand();          // GridNode's own (replay.cpp)
     if (_stricmp(word.c_str(), "data") == 0) return dataCommand(rest);           // GridNode's own (data_registry.cpp)
+    if (_stricmp(word.c_str(), "prop") == 0) return propCommand(rest);           // GridNode's own (properties.cpp)
+    if (_stricmp(word.c_str(), "msg") == 0) return msgCommand(rest);             // GridNode's own (messages.cpp)
+    if (_stricmp(word.c_str(), "shape") == 0) return shapeCommand(rest);         // GridNode's own (bodies.cpp)
+    if (_stricmp(word.c_str(), "census") == 0) return censusCommand(rest);       // GridNode's own (census.cpp)
     if (_stricmp(word.c_str(), "perf") == 0) return perfCommand(rest);            // GridNode's own (sampler.cpp)
     if (_stricmp(word.c_str(), "sample") == 0) return sampleCommand(rest);      // GridNode's own (sampler.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";

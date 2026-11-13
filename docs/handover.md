@@ -1,8 +1,32 @@
 # Handover (for the next agent)
 
-Written 2026-11-04, brought up to date on 2026-11-05 (midday) (replaces the 2026-10-27 handover). Short status and the release plan:
-[progress.md](progress.md). The full design: [PLAN.md](PLAN.md). Rules for working in the repository:
-`CLAUDE.md`.
+Written 2026-11-04, brought up to date on 2026-11-05 and 2026-11-13 (night). Short status, the test waiting and what
+is left: [progress.md](progress.md) (its first section). The full design: [PLAN.md](PLAN.md). Rules for working in
+the repository: `CLAUDE.md`. Sections 4 and 5 below are history (1.0.0 was released 2026-11-06).
+
+## 0. Now (2026-11-13 night)
+
+- Released: 1.0.0 (2026-11-06). Since: API 35 to 38 (mixer, hook_virtual, batched detours, bundles and prefabs),
+  the layout editor's volumes, blockers, prefabs from any area and custom dashes (PR #16, merged).
+- The engine audits (two Gemini reports, the user's): every claim is checked in Ghidra before it goes in. Verdicts:
+  `docs/research/engine-audit-2026-11-13.md` (second report) and the PC's `scratch\audit-2026-11-13\*-verified.md`
+  (first report, four checkers). The user finds Gemini about 90% right: check quickly by hand or with cheaper agents.
+- PR #17 (`gn/audit-findings`, API 39): the data registry (`data_of_class`, `on_data`), the trainer's jump tuning
+  found by class. Game-tested; waiting for the user's merge.
+- `gn/entity-properties` (API 40, from `gn/audit-findings`, not committed, untested): properties and watching,
+  sending messages, physics shapes with the native box fix, the creation census. The 22-step test is in progress.md.
+  Commit and push only when the user asks; open the PR with `gh api` (GraphQL is refused in the cloud session).
+- Learned this round (also in the annotations):
+  - `PhysicsBoxDesc_vtable` was the sphere's (0x141b41a00 returns 2): read a vtable's slot before trusting its name.
+  - `EntityBus_findProperty` is not a pure lookup: a slot without a value gets the TypeInfo passed and a default
+    (a null TypeInfo crashes). An entity's data: its index among its bus's peers (bus interface at entity +0x20,
+    peers +0x38, template +0x60, ids +0xd0 / +0xf8) is its data's index in the template's id list.
+  - `PropertyListener_detach` does not check what it removes; GridNode checks its entry is listed first.
+  - Message static instances are complete default messages (header in place); executeMessage never frees.
+  - Data registry listeners run on the loading thread under the registry lock, also at unload (objects still
+    allocated); the table's key holds the class id, so loaded data is found by class in one pass.
+- Ghidra: the user's `~/ghidra_scripts` has five old broken inline scripts that print compile errors before every
+  inline run; harmless (the run itself works). The PC device shell still does not start: list / stage / commit only.
 
 ## 1. The projects
 

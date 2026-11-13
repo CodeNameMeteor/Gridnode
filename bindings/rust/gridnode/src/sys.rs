@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 39;
+pub const GN_API_VERSION: u32 = 40;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -83,6 +83,7 @@ pub type gn_event_fn = Option<unsafe extern "C" fn(entity: *mut c_void, type_: *
 pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_progress_flag_fn = Option<unsafe extern "C" fn(flag: *const gn_progress_flag, user: *mut c_void)>;
 pub type gn_data_fn = Option<unsafe extern "C" fn(objects: *mut *mut c_void, count: u32, bundle: u32, loaded: c_int, user: *mut c_void)>;
+pub type gn_property_fn = Option<unsafe extern "C" fn(entity: *mut c_void, name: *const c_char, value: *const c_void, type_: *const gn_type, user: *mut c_void)>;
 pub type gn_mod_load2_fn = Option<unsafe extern "C" fn(api: *const gn_api, self_: *mut gn_mod) -> c_int>;
 
 #[repr(C)]
@@ -557,6 +558,13 @@ pub struct gn_api {
     pub prefab_spawn_m: Option<unsafe extern "C" fn(self_: *mut gn_mod, asset: *const c_char, at: *const gn_transform, bundle: u32, handle: *mut u32) -> c_int>,
     pub data_of_class: Option<unsafe extern "C" fn(cls: *const c_char, subclasses: c_int, out: *mut *mut c_void, max: u32) -> c_int>,
     pub on_data: Option<unsafe extern "C" fn(mod_: *const c_char, fn_: gn_data_fn, user: *mut c_void) -> c_int>,
+    pub property_get: Option<unsafe extern "C" fn(entity: *mut c_void, name: *const c_char, out: *mut c_void, size: u32, type_: *mut *const gn_type) -> c_int>,
+    pub property_set: Option<unsafe extern "C" fn(entity: *mut c_void, name: *const c_char, value: *const c_void, size: u32) -> c_int>,
+    pub property_watch: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, name: *const c_char, fn_: gn_property_fn, user: *mut c_void, handle: *mut u32) -> c_int>,
+    pub property_unwatch: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub message_init: Option<unsafe extern "C" fn(type_: *const c_char, out: *mut c_void, size: u32) -> c_int>,
+    pub message_send: Option<unsafe extern "C" fn(manager: c_int, message: *const c_void) -> c_int>,
+    pub shape_add: Option<unsafe extern "C" fn(mod_: *const c_char, shape: u32, at: *const gn_transform, size: *const f32, motion: u32, mass: f32, handle: *mut u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -586,4 +594,4 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1616);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1672);

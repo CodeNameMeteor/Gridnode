@@ -418,6 +418,9 @@ GN_NOINLINE int apiViewGetEx(gn_view* out, uint32_t size) {
 GN_NOINLINE int apiSetGravity(int realm, const float* g) { return physicsSetGravity(realm, g, GN_CALLER); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
+GN_NOINLINE int apiShapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out) {
+    return shapeAdd(mod, shape, at, size, motion, mass, out, GN_CALLER);
+}
 GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out) {
     return soundPlay(mod, path, event, pos, out, GN_CALLER);
 }
@@ -665,6 +668,15 @@ const gn_api* api() {
         a.prefab_spawn_m = mPrefabSpawn;
         a.data_of_class = dataOfClass;
         a.on_data = [](const char* mod, gn_data_fn fn, void* user) { return onData(mod ? mod : "?", fn, user); };
+        a.property_get = propertyGet;
+        a.property_set = propertySet;
+        a.property_watch = [](const char* mod, void* entity, const char* name, gn_property_fn fn, void* user, uint32_t* handle) {
+            return propertyWatch(mod ? mod : "?", entity, name, fn, user, handle);
+        };
+        a.property_unwatch = propertyUnwatch;
+        a.message_init = messageInit;
+        a.message_send = messageSend;
+        a.shape_add = apiShapeAdd;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

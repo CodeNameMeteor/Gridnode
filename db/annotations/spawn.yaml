@@ -288,9 +288,15 @@ functions:
     va: 0x143167120
     signature: "void*(EntityCreationInfo* ci, void* propertyContext)"
     note: >-
-      Pure research (to be confirmed in game). Core entity instantiation engine called by entityCreator_spawnIntoBus and ClientEntity_spawnIntoBus.
-      Resolves creator via ci->data vtable slot +0x28 (vtable[5]), applies ci->transform and propertyContext transforms, and calls creator vtable slot +8.
-    confidence: hypothesis
+      Where entities made from data are created: blueprint contents (0x143361260), entityCreator_spawnIntoBus,
+      ClientEntity_spawnIntoBus and five more call it (18 call sites). creator = (*(ci + 0xd0))->vtable +0x28(data,
+      *(u32*)(ci + 0x20)); 0 -> returns 0; else creator->vtable +8(creator, ci), whose entity it returns. The
+      creator's u32 at +0x28 is a mode (1: skips the data when its property says so; 2: composes the data's
+      transform into ci +0x40 for the call and puts it back; 3: skips when data +0x60 is set). ci +0xd0 the data,
+      ci +0x40 a 4x4 transform (the placement before the data's own). Not every entity comes through here:
+      ServerPlaceHolderEntity is built inline in 0x143361260. Prologue position independent (push x4, push r14,
+      lea rbp, sub rsp). Checked in Ghidra 2026-11-13 (audit, entity-props C1 to C11).
+    confidence: inferred
     sources: [ghidra, research]
   - name: fb_Blueprint_instantiateImpl
     va: 0x14335e400

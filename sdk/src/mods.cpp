@@ -234,6 +234,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetLevel(code);
     forgetLevelReady(code);
     forgetData(code);
+    forgetProperties(code);
     forgetMessages(code);
     forgetMovement(code);
     forgetEvents(code);

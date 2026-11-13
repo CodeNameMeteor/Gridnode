@@ -3,6 +3,104 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Where things stand (2026-11-13, 21:55)
+
+- `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
+  user to merge.
+- Branch `gn/entity-properties` (from `gn/audit-findings`; **not committed**, all untested in game): API 40 =
+  properties, property watching, sending messages, physics shapes; the native box fix; the creation census. Deployed:
+  `bin\gridnode.dll` md5 7834c4e1... (mods unchanged: the trainer built for API 38 loads on it).
+- The user has not been able to test since PR #17. Nothing more is added until the test below comes back.
+
+### The test waiting (developer build; inject, load the city, GridNode console)
+
+Properties (`prop`):
+1. Inspector: addresses of a TimelineEntity, a DelayEntity or CompareBoolEntity, a trigger or barrier, Faith (the log's
+   client character). `prop ADDR` each: `prop: <class>, data <data class> ...; connected:` then `Field = Type value`
+   lines, or "on no bus list" / "none".
+2. A connected Boolean with a visible effect (`Enabled` near Faith): `prop ADDR Enabled false` logs `prop: Enabled of
+   ... set to false` and the thing reacts; `true` puts it back.
+3. A connected Float32: set, read back.
+4. `prop watch ADDR NAME`: `watching ... (watch 1)`; changes by `prop` and by the level itself log
+   `prop: NAME of ... changed`.
+5. Watch something, stream its district out or reload the checkpoint: no crash, no more lines from it.
+6. Watch one, full unload: `unload: done; gridnode.dll is being freed`, no "property watch could not be taken out";
+   move around after.
+7. `prop 0 Foo`: an error, no crash.
+Messages (`msg`):
+8. Minimap open, `msg UIHudToggleMapZoomMessage`: `sent`, a log line, the map zoom toggles (a guess); again: back.
+9. The inspector's message monitor shows it.
+10. `msg NotAType`: "not a message type".
+11. Main menu, no level: `msg UIHudToggleMapZoomMessage client`: "not sent (5)" or "did not tick", no crash.
+Shapes (`shape`), in an open area of the city with barriers around:
+12. `shape box 1 1 1`: log `shape 1: made as a game physics object`; an invisible solid 2 m cube 3 m ahead, 1 m up.
+13. `shape sphere 1`: round, you slide off it. 14. `shape capsule 0.5 3`: a 3 m capsule across the view.
+15. `shape box 0.4 0.4 0.4 dynamic 50`: falls and can be pushed (hanging in the air = made keyframed: report it).
+16. `shape remove`: all gone. 17. `box_backend 1` then a box the old way: a box now, not a sphere.
+18. Checkpoint reload: the console's shapes are made again; full unload clean.
+Census (`census`):
+19. `census on`, teleport far or start a mission. 20. `census`: calls, made, "not seen by GridNode's creator hooks",
+   the 15 classes most missed. 21. `census reset`, checkpoint reload, `census` again. 22. Full unload clean.
+Send: console output of each step, what each write / shape did in game, `gridnode.log`, crash notes.
+
+### Still to implement (after that test)
+
+Research questions for Gemini (the user's, running): `scratch\gemini-questions-2026-11-13.md` on the PC (A-H: native
+bodies, queries and contact events, what bypasses the creation function, string / reference properties, update passes,
+the camera override state, queued messages, the second report's unchecked parts). Answers land in
+`scratch\research-2026-11-14\`: check them in Ghidra before use. The first wording was blocked by Gemini's filters
+(likely the dump file name and words like hook / bypass); the reworded file sends one block at a time.
+
+
+- **Creation hook instead of the creator pool** (entities.cpp's 2,048 slots and the 1 s refresh): only if the census
+  shows nothing missed (or only the known gap, ServerPlaceHolderEntity); keep the pool as a fallback at first.
+- **Physics, more:** shape queries (cast a shape, closest points: `docs/research/engine-audit-2026-11-13.md` and the PC's
+  `scratch\audit-2026-11-13\physics-verified.md`), contact events per body (signals 1/2/5/6/10; the callback's
+  arguments and the detach are not read yet), body velocity for shapes, motion type changes (0x1434f7ad0).
+- **Properties:** strings and object references writable (arena copy, reference counts); unconnected fields (read
+  the data, clearly marked; Gemini's override registry 0x14236e680 works only before an entity is made: not checked).
+- **Messages:** queued (delayed) sending through the game's allocator.
+- **Second report, checked but not taken:** update-pass registration (hookless ticks; the updater's vtable and
+  unregistering not read), deferred-destroy bit for ray casts (does not fix the freed-component crash), freeze-world /
+  override camera (0x142401cb8, layout not read), PhysicsManager vtable copy instead of the two physics detours.
+- **Not checked at all:** the rest of the second report (TypeInfo hash maps, SettingsManager_getByType, camera
+  callback list +0x1b90, the WeakPtr trees, DX11 swap chain, VFS, synthetic input, SubLevelManager states, the visual
+  environment state stack, Lua): hypotheses until read in Ghidra.
+- **First audit, from the 2026-11-13 handover plan:** time scale notes (GameTimeSettings +0x48, SlowMotionEntity
+  only), DebugRender2 and time-of-day claim-lab experiments.
+- Doc follow-up from PR #16: `layout-editor.md` and `research/custom-dashes.md` still call star times, the second start
+  box and unload untested; they were game-tested 2026-11-13.
+
+## Audit findings, part 2: entity properties (2026-11-13 night, branch gn/entity-properties, untested in game)
+
+- API 40 (`sdk/src/properties.cpp`): `property_get` / `property_set` by the data's field name (or the id as hex:
+  djb2-xor, matched against the game's constants for `ItemName` and `Team`). Entity -> its bus interface (+0x20)
+  -> its index among the bus's peers -> its data in the template's id list; then `EntityBus_findProperty`
+  (0x1431462a0) with the field's TypeInfo (a null one would crash: the lookup makes missing values), and
+  `PropertyValue_set` (0x142a464e0) to write. Realm thread only. Strings and object references read-only.
+  Console `prop ADDRESS [NAME [VALUE]]` (runs on the entity's realm, waits 2 s). entity.yaml: both checked.
+- Watch (`property_watch` / `_unwatch`): the game's listener list on the slot; detach 0x142a41440 found (Gemini's
+  second answer, checked in Ghidra: careless, so GridNode checks its entry is there first). Detached when the entity
+  is about to be destroyed (GridNode's destructor listener, bus still alive), by unwatch or the mod's unload (on the
+  realm thread, slot looked up again), and at GridNode's unload before its tick wait (queued deliveries drain);
+  a watch left attached keeps gridnode.dll in memory. Console `prop watch ADDRESS NAME`.
+- Sending messages (`message_init`, `message_send`, messages.cpp): a copy of the type's static instance is a default
+  message (header in place: checked in a dump), sent with MessageManager_executeMessage (synchronous, never frees it;
+  the game sends stack messages). No queued sending (the pump frees through the type's allocator). Console `msg TYPE
+  [core|client|server]`. messages.yaml: execute and queue checked (queue takes a float delay).
+- Physics shapes (`shape_add`, bodies.cpp): box / sphere / capsule, static / keyframed / dynamic, through the game's
+  factory with a barrier's steps. Found on the way: `PhysicsBoxDesc_vtable` was 0x141b41a00, the SPHERE description
+  (slot 0 returns 2; the factory: 1 box, 2 sphere, 3 capsule, 7 shape), so `box_backend(1)` boxes were spheres. Now
+  0x141afb4b8 (PamOBBCollision_enable's). The native path also skipped two steps the barrier takes before enabling
+  (PhysicsManager_dispatchBodyMethod258 with its +0x94 flag bytes, PhysicsManager_initBodyEntity) and used layer 1
+  instead of the RigidBodyData's +0x1c: all as the barrier now. Capsule: GridNode's own description vtable (none found
+  in the game). Dynamic sets the creation info's +0x10 (else the factory makes it keyframed). Console `shape`.
+- Creation census (console `census on` / `census` / `census reset`, census.cpp): an opt-in detour on
+  entityCreator_spawnEntityWithContext (0x143167120, now inferred) counting what it makes and how many of those the
+  creator pool did not see. Its numbers decide whether it replaces the pool. Off unless asked.
+- Unconnected fields (no slot): the entity reads its data (often through a reader that points into it); a slot added
+  after spawn is never looked at again (Gemini; not checked). Not offered: writing shared data affects every instance.
+
 ## Audit findings, part 1: the data registry (2026-11-13 night, branch gn/audit-findings, game-tested)
 
 - The second Gemini report (offset-free hooking) checked in Ghidra: `docs/research/engine-audit-2026-11-13.md`

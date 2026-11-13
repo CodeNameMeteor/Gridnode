@@ -241,15 +241,51 @@ functions:
     sources: [ghidra, user]
   - name: EntityBus_getPropertyContext
     va: 0x143149080
-    signature: "u64(void* self, u64)"
-    note: "The user's name. It calls one of two functions by the bus's realm bit (+0x34 bit 27) and returns its second argument unchanged; what it does is not clear yet; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
+    signature: "u64(void* busPeer, u64 context)"
+    note: "Fills a 3-qword property context for a bus peer (the bus interface, bus + 8, that every entity keeps at +0x20): +0x34 bit 27 picks the peer variant (0x14314e260), else the bus's own (0x14314e1e0: ctx[0] = the bus's property table at bus + 0x48, ctx[2] = the parent). Returns its second argument. Read in Ghidra 2026-11-13 (audit, entity-props P3)."
+    confidence: inferred
     sources: [ghidra, user]
+  - name: EntityBus_findProperty
+    va: 0x1431462a0
+    signature: "void**(void* busPeer, void** slotOut, void* entityData, u32 propertyId, void* typeInfo, const void* value)"
+    note: >-
+      An entity's property slot (a 0x20-byte RuntimeProperty: +0 the value, +8 its TypeInfo, +0x10 listeners,
+      +0x1c flags, bit 0 the realm) by the entity's data and the property id (djb2-xor of the field name, as
+      event ids: CString ItemName and TeamId Team match the constants the game passes). EntityBus_getPropertyContext,
+      then 0x142a86030 (the bus key: the data unless remapped), then 0x142a87b60 (binary search of the bus
+      template's properties). *slotOut = 0 when the bus has no such property (only connected properties have
+      slots). Not a pure lookup: a slot with no value yet gets typeInfo and a default value made in the bus's
+      arena (so never pass a null typeInfo, and call it on the entity's realm thread); a non-null value is
+      written (PropertyValue_set). Entity constructors call it with their own data. Read in Ghidra 2026-11-13.
+    confidence: inferred
+    sources: [ghidra]
+  - name: PropertyListener_attach
+    va: 0x142a462f0
+    signature: "void(void* property, void* listener, u32 tag)"
+    note: >-
+      Adds a listener to a property slot (EntityBus_findProperty): one inline at +0x10 with its tag at +0x18,
+      or (flag +0x1c bit 2) an array of 16-byte {listener, u32 tag} with the count at +0x18, reallocated in
+      the bus's arena (so the slot's realm thread only). PropertyDispatcher_deliver calls listener->vtable
+      +0x10(listener, &message) per change: message +0 the tag, +8 the value (the slot's +0), +0x10 its
+      TypeInfo, +0x18 a flag byte. Read in Ghidra 2026-11-13.
+    confidence: inferred
+    sources: [ghidra]
+  - name: PropertyListener_detach
+    va: 0x142a41440
+    signature: "void(void* property, void* listener, u32 tag)"
+    note: >-
+      Takes a listener out, carelessly: with one listener it clears +0x10 whoever is there; with two it keeps
+      the first entry that does not match (without checking the other); with more it copies all but the first
+      match into a smaller array, and with no match drops the last entry. Check the list holds (listener,
+      tag) before calling. A bus's teardown detaches and frees its slots itself. Deliveries queued while the
+      game defers them keep the listener's address until the realm drains them. Read in Ghidra 2026-11-13.
+    confidence: inferred
+    sources: [ghidra]
   - name: PropertyValue_set
     va: 0x142a464e0
     signature: "void(void* property, const void* value)"
-    note: "The user's research names it Entity_postPropertyChange. Copies the value (0x142a47650, 0x40 bytes max) and delivers the change now, or queues it when deliveries are deferred. Its first argument is a property object, not an entity."
-    confidence: hypothesis
+    note: "The user's research names it Entity_postPropertyChange. Writes a property slot (EntityBus_findProperty) through 0x142a47650 with flag 0x40: a string (TypeInfo category 6 or 7) from *(char**)value into the bus arena; a class reference (category 3) takes value as the object (reference counted); anything else is a copy of the type's size from value. Then delivers the change now, or queues it when deliveries are deferred (per-realm counter 0x14215d060, TLS +0x230). Read in Ghidra 2026-11-13 (audit, entity-props P7)."
+    confidence: inferred
     sources: [ghidra, user]
   - name: PropertyDispatcher_deliver
     va: 0x142a42890

@@ -287,6 +287,56 @@ void messageTap(MessageRecorder rec) {
     g_tap = rec;
 }
 
+// ---- sending -----------------------------------------------------------------------------------------
+// A message type's static instance (reflection) is a default message: vtable, category, type id and
+// realm 0xff already in place (read in a dump, 2026-11-13). A copy, with the mod's fields set, is sent
+// with MessageManager_executeMessage, which runs the listeners now and never frees the message (the game
+// sends stack messages the same way). Queued sending is not offered: the pump frees through the
+// type's deleting destructor, which needs the game's allocator.
+int messageInit(const char* type, void* out, uint32_t size) {
+    if (!type || !out) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().find(type);
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance) return GN_ERR_NOT_FOUND;
+    if (size < t->size || t->size < e::st::Message::off::category + 12) return GN_ERR_ARGUMENT;
+    std::memset(out, 0, size);
+    return mem::read(static_cast<uintptr_t>(t->staticInstance), out, t->size) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+int messageSend(int manager, const void* message) {
+    if (!message || manager < 0 || manager > 2) return GN_ERR_ARGUMENT;
+    // Its vtable must be a message type's (a copy from message_init): the dispatch reads its header.
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(message));
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance) return GN_ERR_ARGUMENT;
+    if (manager == 1 && !isClientThread()) return GN_ERR_THREAD;
+    if (manager == 2 && !isServerThread()) return GN_ERR_THREAD;
+    if (manager == 0 && !isClientThread() && !isServerThread()) return GN_ERR_THREAD;
+    if (!available()) return GN_ERR_UNAVAILABLE;
+    const uintptr_t handle = managerHandle(manager);
+    if (!handle || !mem::readOr<uintptr_t>(handle)) return GN_ERR_UNAVAILABLE; // no level for that realm
+    using ExecFn = void (*)(uintptr_t, const void*);
+    reinterpret_cast<ExecFn>(mem::rva(e::function::MessageManager_executeMessage))(handle, message);
+    return GN_OK;
+}
+
+// The console's "msg TYPE [core|client|server]": sends a default message of that type (its static
+// instance) on the realm's thread, to see who reacts (the inspector's message monitor shows it).
+std::string msgCommand(const std::string& rest) {
+    char type[160] = {}, which[16] = "client";
+    if (sscanf(rest.c_str(), "%159s %15s", type, which) < 1) return "msg TYPE [core|client|server]: sends a default message of that type";
+    const int manager = !_stricmp(which, "core") ? 0 : !_stricmp(which, "server") ? 2 : 1;
+    const std::string typeS = type;
+    return "msg: " + runOnRealmAndWait(manager != 1, [typeS, manager]() -> std::string {
+        const reflect::Type* t = registry().find(typeS);
+        if (!t || !t->size || t->size > 4096) return typeS + ": not a message type";
+        std::vector<uint64_t> buf((t->size + 7) / 8 + 1);
+        int r = messageInit(typeS.c_str(), buf.data(), static_cast<uint32_t>(buf.size() * 8));
+        if (r == GN_OK) r = messageSend(manager, buf.data());
+        if (r != GN_OK) return typeS + ": not sent (" + std::to_string(r) + ")";
+        GN_LOG("msg: %s sent to the %s message manager", typeS.c_str(), manager == 0 ? "core" : manager == 1 ? "client" : "server");
+        return typeS + " sent";
+    });
+}
+
 bool messagesAvailable() { return available(); }
 
 void forgetMessages(const CodeRange& r) {

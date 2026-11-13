@@ -60,12 +60,20 @@ struct Box {
     uint32_t nid = kNoBody;
     uintptr_t parent = 0;        // the barrier it was made from: the game keeps its pointer, so the box goes when the barrier does
     gn_transform* ntf = nullptr; // where the game reads its transform from: kept (the game holds the pointer), never freed
+    // shape_add (API 40): always made by the factory. kind: the description's vtable[0]() (1 box, 2 sphere, 3 capsule);
+    // motion: its +0x14 (2 static, 5 keyframed, 6 dynamic). half: a box's half extents, a sphere's radius in [0],
+    // a capsule's radius and length in [0], [1].
+    bool shape = false;
+    uint32_t kind = 1, motion = 2;
+    float mass = 0.f;
+    uint8_t* flags = nullptr; // the 2 bytes a barrier keeps at +0x94 for its body (0 when made): kept, never freed
 };
 
 std::mutex g_m;
 std::vector<Box> g_boxes; // (g_m)
 uint32_t g_next = 1;      // (g_m)
 std::atomic<bool> g_native{false}; // box_backend: boxes made from now on in the client world are native
+std::atomic<int> g_factoryShapes{0}; // shapes (shape_add) waiting or alive: the factory's setup is needed for them too
 uintptr_t g_world[2] = {}; // (g_m) the client and server physics worlds (PhysicsWorld, 0xBB0) the bodies are in
 struct Donor {
     uint64_t userData = 0;
@@ -443,18 +451,33 @@ uintptr_t ownedRigid(uintptr_t src) {
     return reinterpret_cast<uintptr_t>(p);
 }
 
+// A capsule's description: the game's factory only calls vtable[0] (the kind) while it makes the body, and
+// keeps nothing of the description (a barrier's is a local). No capsule description vtable was found in the
+// game, so this one is GridNode's.
+int capsuleKind(const void*) { return 3; }
+const void* const kCapsuleDescVtable[1] = {reinterpret_cast<const void*>(&capsuleKind)};
+
 bool nativeMake(const NativeCtx& c, Box& b) {
     const uintptr_t rigid = ownedRigid(c.rigid);
     if (!rigid) return false;
-    alignas(16) uint8_t desc[0x40] = {}; // a box's description: vtable[0]() is 1; kind 2 (static), layer, half extents
-    const uintptr_t vt = mem::rva(c::PhysicsBoxDesc_vtable);
+    // The description, as PamOBBCollision_enable builds a barrier's (Ghidra 2026-11-13): vtable[0]() the shape
+    // (1 box: vtable 0x141afb4b8; 2 sphere: 0x141b41a00), +0x08 mass (< 0: the data's +0xd4), +0x14 motion (2
+    // static), +0x1c the body's layer from its RigidBodyData +0x1c, +0x20 the size.
+    alignas(16) uint8_t desc[0x40] = {};
+    const uintptr_t vt = b.kind == 2 ? mem::rva(c::PhysicsSphereDesc_vtable) : b.kind == 3 ? reinterpret_cast<uintptr_t>(kCapsuleDescVtable)
+                                                                                         : mem::rva(c::PhysicsBoxDesc_vtable);
     memcpy(desc, &vt, 8);
-    const uint32_t kind = 2, layer = 1;
-    memcpy(desc + 0x14, &kind, 4);
+    const float mass = b.mass;
+    const uint32_t motion = b.motion, layer = mem::readOr<uint32_t>(c.rigid + 0x1c);
+    memcpy(desc + 0x08, &mass, 4);
+    memcpy(desc + 0x14, &motion, 4);
     memcpy(desc + 0x1c, &layer, 4);
     memcpy(desc + 0x20, b.half, 12);
     alignas(16) uint8_t info[0x100] = {};
     reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::unverified::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
+    // A dynamic body needs the creation info's +0x10 set, else the factory makes it keyframed (it moves only
+    // when placed).
+    if (motion == 6) *reinterpret_cast<int32_t*>(info + 0x10) = 1;
     uint32_t id = kNoBody;
     const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::unverified::PhysicsEntityFactory_create))(
         c.factory, &id, info, rigid, desc);
@@ -462,6 +485,21 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     if (id == kNoBody || id == 0xffffffffu) return false;
     nativePlace(b, c.owner, id);
     if (!b.ntf) return false;
+    // The two steps a barrier takes between placing and enabling its body: the body object's vtable +0x258 with
+    // the address of the barrier's two flag bytes at +0x94 (0 in a new barrier; kept for the body's life, as the
+    // barrier's are), then its entity init with {vtable 0x141a5bdb8, 0, 0, 0, realm, 1}.
+    if (!b.flags) {
+        b.flags = static_cast<uint8_t*>(_aligned_malloc(16, 16)); // leaked on purpose (see flags)
+        if (!b.flags) return false;
+        memset(b.flags, 0, 16);
+    }
+    uint32_t t0 = id, t3 = id;
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, uint8_t*)>(mem::rva(e::function::PhysicsManager_dispatchBodyMethod258))(c.owner, &t0, b.flags);
+    alignas(16) uint8_t init[0x30] = {};
+    const uintptr_t ivt = mem::rva(c::PhysicsBodyInitDesc_vtable);
+    memcpy(init, &ivt, 8);
+    init[0x24] = 1; // realm 0 at +0x20 (the client's)
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*, void*)>(mem::rva(e::function::PhysicsManager_initBodyEntity))(c.owner, &t3, init);
     uint32_t t1 = id, t2 = id;
     reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_enable))(c.owner, &t1);
     reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_registerSpatial))(c.owner, &t2);
@@ -542,24 +580,25 @@ void afterFlushLocked(uintptr_t world, int r, const NativeCtx* nat) {
             }
             // Gone from both worlds (or never made in the other): forgotten.
             if (b.body[0] == kNoBody && b.body[1] == kNoBody && b.nid == kNoBody) {
+                if (b.shape) g_factoryShapes.fetch_sub(1);
                 it = g_boxes.erase(it);
                 continue;
             }
-        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && made < 32 && r == 0 && g_native.load()) {
+        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && made < 32 && r == 0 && (g_native.load() || b.shape)) {
             // A new world: the level is still loading (a box made then crashed the game when Faith touched it). Wait 3 s.
             if (nat && GetTickCount64() - g_worldSince[0] >= 3000) { // else it waits for a barrier to copy the setup from
                 bool ok = false;
                 guardHook("native box make", [&] { ok = nativeMake(*nat, b); });
                 b.moved[r] = false;
                 if (ok) {
-                    GN_LOG("[%s] box %u: made as a game physics object (id %x)", b.mod.c_str(), b.handle, b.nid);
+                    GN_LOG("[%s] %s %u: made as a game physics object (id %x)", b.mod.c_str(), b.shape ? "shape" : "box", b.handle, b.nid);
                 } else {
                     b.failed[r] = true;
                     GN_LOG("[%s] box %u: the game's factory did not make it", b.mod.c_str(), b.handle);
                 }
                 ++made;
             }
-        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && donor.ok && made < 32) {
+        } else if (b.body[r] == kNoBody && b.nid == kNoBody && !b.failed[r] && donor.ok && made < 32 && !b.shape) {
             b.body[r] = makeBody(world, donor, b);
             b.moved[r] = false;
             if (b.body[r] == kNoBody) {
@@ -596,7 +635,7 @@ void flushHook(uintptr_t world) {
     // The setup for native boxes is found before g_m: it takes the entity lists' lock.
     NativeCtx nat;
     bool haveNat = false;
-    if (r == 0 && g_native.load()) {
+    if (r == 0 && (g_native.load() || g_factoryShapes.load() > 0)) {
         guardHook("native setup", [&] { haveNat = nativeContext(nat); });
         static ULONGLONG lastSaid = 0;
         static int said = 0;
@@ -702,6 +741,33 @@ int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t*
     b.at = *at;
     memcpy(b.half, half, sizeof(b.half));
     g_boxes.push_back(b);
+    *out = b.handle;
+    return GN_OK;
+}
+
+int shapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out,
+             const void* caller) {
+    if (!at || !size || !out || !usable(*at) || shape < 1 || shape > 3 || motion > 2) return GN_ERR_ARGUMENT;
+    const int used = shape == 1 ? 3 : shape == 2 ? 1 : 2;
+    for (int k = 0; k < used; ++k)
+        if (!(size[k] >= 0.01f && size[k] <= 1000.f)) return GN_ERR_ARGUMENT;
+    if (motion == 2 && !(mass > 0.f && mass <= 100000.f)) return GN_ERR_ARGUMENT;
+    if (!g_ready || g_off.load() || !g_followOk) return GN_ERR_UNAVAILABLE;
+    std::lock_guard<std::mutex> lock(g_m);
+    if (g_boxes.size() >= 4096) return GN_ERR_FULL;
+    Box b;
+    b.handle = g_next++;
+    b.mod = mod ? mod : "?";
+    b.owner = reinterpret_cast<uintptr_t>(caller);
+    b.at = *at;
+    for (int k = 0; k < used; ++k) b.half[k] = size[k];
+    b.shape = true;
+    b.kind = shape;
+    b.motion = motion == 0 ? 2u : motion == 1 ? 5u : 6u;
+    b.mass = motion == 2 ? mass : 0.f;
+    b.body[1] = kNoBody; // client world only (what Faith collides with)
+    g_boxes.push_back(b);
+    g_factoryShapes.fetch_add(1);
     *out = b.handle;
     return GN_OK;
 }
@@ -812,4 +878,45 @@ bool bodyFilter(uintptr_t object, uint32_t& filter, uint32_t& material) {
     return true;
 }
 
+} // namespace gn::host
+
+namespace gn::host {
+// The console's "shape box X Y Z | sphere R | capsule R L [keyframed | dynamic MASS]": one 3 m in front of
+// Faith, 1 m up, facing her way; "shape remove" takes the console's away.
+std::string shapeCommand(const std::string& rest) {
+    static std::vector<uint32_t> made;
+    char kind[16] = {}, a[16] = {}, b[16] = {}, c[16] = {}, d[16] = {}, e2[16] = {};
+    const int n = sscanf(rest.c_str(), "%15s %15s %15s %15s %15s %15s", kind, a, b, c, d, e2);
+    if (n >= 1 && !_stricmp(kind, "remove")) {
+        for (uint32_t h : made) boxRemove(h);
+        const size_t k = made.size();
+        made.clear();
+        return "shape: " + std::to_string(k) + " removed";
+    }
+    const uint32_t shape = !_stricmp(kind, "box") ? 1 : !_stricmp(kind, "sphere") ? 2 : !_stricmp(kind, "capsule") ? 3 : 0;
+    const int sizes = shape == 1 ? 3 : shape == 3 ? 2 : 1;
+    if (!shape || n < 1 + sizes) return "shape box X Y Z | sphere R | capsule R L [keyframed | dynamic MASS]; shape remove";
+    const char* args[5] = {a, b, c, d, e2};
+    float size[3] = {};
+    for (int k = 0; k < sizes; ++k) size[k] = strtof(args[k], nullptr);
+    uint32_t motion = 0;
+    float mass = 0.f;
+    if (n > 1 + sizes) {
+        const char* m = args[sizes];
+        if (!_stricmp(m, "keyframed")) motion = 1;
+        else if (!_stricmp(m, "dynamic")) motion = 2, mass = n > 2 + sizes ? strtof(args[sizes + 1], nullptr) : 50.f;
+    }
+    gn_transform faith{};
+    if (!entityTransform(localClientCharacter(), faith)) return "shape: no Faith";
+    gn_transform at = faith;
+    for (int k = 0; k < 3; ++k) at.trans[k] = faith.trans[k] + faith.forward[k] * 3.f + faith.up[k] * 1.f;
+    uint32_t h = 0;
+    const int r = shapeAdd("GridNode", shape, &at, size, motion, mass, &h, reinterpret_cast<const void*>(&shapeCommand));
+    if (r != GN_OK) return "shape: refused (" + std::to_string(r) + ")";
+    made.push_back(h);
+    char out[160];
+    snprintf(out, sizeof(out), "shape: %s %u queued at %.1f %.1f %.1f (%s); made at the next physics update (see gridnode.log)", kind, h, at.trans[0], at.trans[1],
+             at.trans[2], motion == 0 ? "static" : motion == 1 ? "keyframed" : "dynamic");
+    return out;
+}
 } // namespace gn::host
