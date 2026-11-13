@@ -16,9 +16,8 @@
 #include "gridnode/mem.hpp"
 #include "host.hpp"
 
-// unverified: ResourceGroup_Count (assets by name, asset_find, API 7): a hypothesis in db/annotations; confirm in
-// Ghidra, then mark it confirmed. (getCompartment and Partition_findByName are game-tested since 2026-11-12;
-// DataContainer_release checked in Ghidra by the runtime-data run.)
+// getCompartment and Partition_findByName are game-tested since 2026-11-12; DataContainer_release and
+// ResourceGroup_Count checked in Ghidra (runtime-data, registry-hardening).
 
 namespace gn::host {
 namespace {
@@ -54,7 +53,18 @@ void* assetFind(const char* path, uint32_t* groupOut) {
     const auto compartment = reinterpret_cast<CompartmentFn>(mem::rva(e::function::getCompartment));
     const auto find = reinterpret_cast<FindFn>(mem::rva(e::function::Partition_findByName));
     const uintptr_t table = mem::rva(e::global::ResourceGroups);
-    for (uint32_t id = 0; id < k::unverified::ResourceGroup_Count; ++id) {
+    // The resource manager's lock (+0x26300, a CRITICAL_SECTION) while the groups are walked: a bundle loading or
+    // going on the streaming or server thread adds or frees a group under it (ResourceManager_registerBundleGroup,
+    // its unregister), and a group freed mid-walk is read after it is gone (the 2026-11-13 audit).
+    auto* lock = reinterpret_cast<CRITICAL_SECTION*>(mem::rva(e::global::ResourceManager) + 0x26300);
+    struct Held {
+        CRITICAL_SECTION* cs;
+        ~Held() { LeaveCriticalSection(cs); }
+    };
+    if (!lock->DebugInfo && !lock->SpinCount) return nullptr; // not made yet (the game is still starting): nothing is loaded
+    EnterCriticalSection(lock);
+    const Held held{lock};
+    for (uint32_t id = 0; id < k::ResourceGroup_Count; ++id) {
         // Only groups that exist; the game's own getter gives the group's compartment (its +0x68).
         if (!mem::readOr<uintptr_t>(table + id * 8ull)) continue;
         void* comp = compartment(static_cast<uint16_t>(id));

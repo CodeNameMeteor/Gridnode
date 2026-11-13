@@ -330,8 +330,8 @@ void destroyBodies(uintptr_t world, const std::vector<uint32_t>& ids) {
 // ---- standalone boxes (box_backend 1) ----------------------------------------------------------------
 // The calls a barrier (PamOBBCollisionEntity) makes to build its body (PamOBBCollision_enableClient),
 // with a box's size in the description. Needs a live client barrier for the setup the factory reads
-// (its bus, its data's first RigidBodyData); nothing of it is kept by the new object but the parent
-// pointer (the barrier's +0x30), so a box can outlive it only if the game does not read that again.
+// (its bus, its data's first RigidBodyData, copied: ownedRigid); the parent pointer (the barrier's +0x30) is
+// still the barrier's.
 struct NativeCtx {
     uintptr_t gw = 0, ent = 0, bus = 0, rigid = 0, owner = 0, factory = 0;
     char why[200] = {}; // when nothing is usable: where it stopped (logged, a few times)
@@ -426,7 +426,26 @@ void nativePlace(Box& b, uintptr_t owner, uint32_t id) {
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, const gn_transform*, bool)>(mem::rva(e::function::RigidBody_setTransformNative))(owner, &n, b.ntf, true);
 }
 
+// The body keeps the RigidBodyData it was made from (Entity ctor 0x143160100: +0x28, a reference at +8) and reads
+// only plain values from it (+0x40 scale, +0xd4 mass, +0xd8..+0xec material and damping; physics audit 2026-11-13).
+// The donor barrier's data goes when its part of the level unloads, so each box gets its own copy, never freed
+// (a few hundred bytes a box). A data object with flag 0x100 at +0x0a has its GUID in the 16 bytes before it.
+uintptr_t ownedRigid(uintptr_t src) {
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), src);
+    if (!t || t->size < 0x10 || t->size > 0x1000) return 0;
+    uint8_t* block = static_cast<uint8_t*>(_aligned_malloc(0x10 + t->size, 16));
+    if (!block) return 0;
+    memset(block, 0, 0x10 + t->size);
+    uint8_t* p = block + 0x10;
+    if (!mem::read(src, p, t->size)) return 0;
+    if (mem::readOr<uint16_t>(src + 0x0a) & 0x100) mem::read(src - 0x10, block, 0x10);
+    *reinterpret_cast<uint16_t*>(p + 8) = 1; // ours: never released to 0
+    return reinterpret_cast<uintptr_t>(p);
+}
+
 bool nativeMake(const NativeCtx& c, Box& b) {
+    const uintptr_t rigid = ownedRigid(c.rigid);
+    if (!rigid) return false;
     alignas(16) uint8_t desc[0x40] = {}; // a box's description: vtable[0]() is 1; kind 2 (static), layer, half extents
     const uintptr_t vt = mem::rva(c::PhysicsBoxDesc_vtable);
     memcpy(desc, &vt, 8);
@@ -438,7 +457,7 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::unverified::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
     uint32_t id = kNoBody;
     const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::unverified::PhysicsEntityFactory_create))(
-        c.factory, &id, info, c.rigid, desc);
+        c.factory, &id, info, rigid, desc);
     if (made) id = *made;
     if (id == kNoBody || id == 0xffffffffu) return false;
     nativePlace(b, c.owner, id);

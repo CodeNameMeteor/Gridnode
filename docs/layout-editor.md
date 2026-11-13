@@ -168,6 +168,28 @@ then move and turn it, as any object (Shift: 4 steps, Ctrl: a quarter). It is dr
 and spawned again there when the keys rest. The selected one's row also takes a typed position and turn, and
 a blocker's size and flags. Undo does not cover them yet.
 
+## Custom dashes (experimental)
+
+A dash of your own, run like the game's, in the city in free roam. Under **Custom dashes**, type a name and press
+**Place a new dash at the crosshair**: its free-roam marker goes where the crosshair points, the start box 8 m
+ahead and the end circle 40 m ahead. **Add a guide arrow at the crosshair** adds an arrow pointing the way the
+camera looks. While you fly the free camera the parts show as boxes (marker orange, start green, end red, arrows
+orange) with a line to the ground, their height above it and the way they face; click one, or its row, and move it
+with the move keys. The start box's row takes its size.
+
+Moving parts does not rebuild the dash while you fly: it is made again when you leave the free camera, or with
+**Rebuild**, and never during a run. Renaming rebuilds it (the free-roam marker shows the name).
+
+Guide arrows come in four kinds (medium, small, turn left, turn right: turn left mirrored) with a size each: pick
+the kind before **Add a guide arrow at the crosshair**, or change it on a selected arrow. **Add a start box** adds
+another start box (some of the city's dashes have several; experimental). **Place the start line on its own** places
+the start arrow apart from the start box (without one it sits beside the first start box). The start box's size is
+on its row when it is selected. **stars 1 / 2 / 3** sets the star times in seconds (0: the template dash's).
+
+GridNode keeps your best time per dash, saved with the layout; nothing reaches the game's stats or goes online.
+The dash's own screens show that best, a run is compared with it, and the dash has a map icon at its marker.
+A custom dash is made from one of the city's dashes (`docs/research/custom-dashes.md`).
+
 ## Teleport
 
 **T** teleports Faith to where the crosshair points, facing the way the camera looks, and leaves

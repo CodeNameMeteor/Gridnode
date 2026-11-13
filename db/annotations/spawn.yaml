@@ -103,6 +103,37 @@ functions:
       and the drone needs the manager's DroneAvailable input (+0xe8) in all three places
       (docs/research/city-alert.md). The trainer's No KSEC drops the drone event in free roam.
       Read in Ghidra 2026-11-05.
+  - name: DataRegistry_register
+    va: 0x143119500
+    signature: "void(void* partition, u16 bundleId)"
+    confidence: confirmed
+    sources: [ghidra, game]
+    note: >-
+      Puts every object of a partition (its objects array at +0x18) in the data registry under a bundle id
+      (3..2003; 2005..3004 are skipped): an rb-tree keyed by each object's address (head 0x1421054e0, root
+      +0x10; node +0x20 address, +0x28 slot, +0x2a index) and a (slot, class id, index) -> object vector. The
+      network sends a ghost's data as (slot, class id, index) found here by exact address (0x143138aa0);
+      data not in it writes nothing and the stream goes out of step. One registry for both realms. Bundles
+      fill it through a message (0x143138e00). GridNode registers its custom dashes' data with it
+      (dashes.cpp, game-tested 2026-11-13).
+  - name: DataRegistry_unregister
+    va: 0x14311b8e0
+    signature: "void(u16 bundleId)"
+    confidence: confirmed
+    sources: [ghidra, game]
+    note: >-
+      Takes a bundle id's objects out of the data registry and frees its slot. An id left in at game exit
+      crashed the registry's destructor (FUN_143117990, 2026-11-13).
+  - name: SpatialPrefabReference_create
+    va: 0x143360db0
+    signature: "u64*(void* creator, u64* result, EntityCreationInfo* ci)"
+    confidence: confirmed
+    sources: [ghidra, game]
+    note: >-
+      The server creator of a SpatialPrefabReferenceObjectData (ci +0xd0): StreamRealm (+0x68) 2 makes a
+      ServerBlueprintEntity under the creation info's bus (it instantiates the Blueprint at its stream-in
+      event 0xd27bc17e; stream-out 0x21f3f677); 1, or no Blueprint, makes nothing; else
+      fb_Blueprint_instantiateImpl.
   - name: Entity_requestDestroy
     va: 0x143167700
     signature: "void(void* entity, void* ownerRef)"
@@ -503,6 +534,24 @@ functions:
     sources: [research]
 
 globals:
+  - name: DataRegistry_SlotOfId
+    va: 0x1423e5740
+    type: "u16[2001]"
+    confidence: confirmed
+    sources: [ghidra]
+    note: "Bundle id - 3 -> registry slot; 0x7d3 = free (DataRegistry_register / _unregister)."
+  - name: DataRegistry_IdOfSlot
+    va: 0x1423e66f0
+    type: "u16[2001]"
+    confidence: confirmed
+    sources: [ghidra]
+    note: "Registry slot -> bundle id - 3; 0x7d2 = free."
+  - name: DataRegistry_TreeHead
+    va: 0x1421054e0
+    type: "void*"
+    confidence: confirmed
+    sources: [ghidra]
+    note: "The registry's rb-tree head (root at +0x10; node +0x00 / +0x08 children, +0x20 address, +0x28 slot u16, +0x2a index u16)."
   - name: BlueprintInstantiationEnabled
     va: 0x1425476c0
     type: bool

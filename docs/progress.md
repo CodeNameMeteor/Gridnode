@@ -3,6 +3,44 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Custom dash parts and stars (2026-11-13 evening, built, untested in game)
+
+- Game-tested first (afternoon build): map icon, the screens showing GridNode's best. Not right: a run was compared
+  with the template's best (fixed: the stats hook swaps GridNode's best in for the call).
+- Added: arrow kinds and sizes, more start boxes, the start line on its own, star times (layout fields `stars`,
+  `scale`, kind in `asset`, edit kind `DashStartLine`). `docs/research/custom-dashes.md`.
+
+## Research results and the audit of 2026-11-13 (afternoon; game-tested in part)
+
+- Custom dashes: a map marker of their own (own ContentId, added on the client before the dash is placed, hidden
+  when it goes) and GridNode's best on the dash's screens (`storeResult` detoured); `docs/research/custom-dashes.md`.
+- `inspector::noteCreated`: entities GridNode spawns are tracked even when the creator hook misses them and their
+  address was marked dead (entity-liveness c3, c7); the dash and the layout editor's spawns use it.
+- `assetFind` holds the resource manager's lock (+0x26300) while it walks the groups (a group freed mid-walk);
+  `ResourceGroup_Count` confirmed (0xbbd).
+- Annotations: `PamClientSharedContentManager`, `PamClientNamedChallengeEntity_storeResult`,
+  `PamNamedChallengeMapMarker_refresh` (ui.yaml), checked in Ghidra.
+- The Gemini audit (`gridnode_engine_audit_and_opportunities.md`, the user's): checked so far: the resource lock and
+  the group count (right), `PhysicsBody +0x28` keeping its RigidBodyData (right: a native box keeps the donor's
+  data pointer). Not yet checked: the rest; candidates in the handover.
+
+## Custom dashes of 2026-11-13 (branch gn/custom-dashes, game-tested in part)
+
+- The networked spawn is solved (`docs/research/custom-dashes.md`): every object of ours in the data registry
+  (`DataRegistry_register`, spawn.yaml), the ServerBlueprintEntity under Faith's root bus (its owner has a ghost),
+  every copy with its GUID before it. Claim-lab `networked-dash` (git-ignored) proved it; the dash ran, restart
+  worked.
+- `sdk/src/dashes.cpp` (internal, not in the API): a dash copied from one of the city's (marker, start box, area box,
+  start arrow, end circle, guide arrows, challenge with a new GUID, nothing online), registered, placed, streamed in;
+  ids out 5 s after, at level end and unload; the stats detour keeps the game's bests (index 1 off, bests put back).
+  Name = the challenge's Sid. The arrows' pointing axis is learnt from the city's.
+- Layout editor **Custom dashes**: place, move (free camera), size the start, guide arrows, name, Rebuild, best time
+  per dash in the layout. Game-tested 2026-11-13: placing, moving, running, the best time, restart and exit (on a
+  dash not remade during the run). Untested: the name in game, the arrow axis, full unload with a dash placed.
+- Research briefs queued (`.workflow/queue-2026-11-13.md`): dash-map-register (map icon; the real dash's ContentId),
+  dash-end-screen-best, dash-ghost, networked-prefab-api, registry-hardening, custom-trigger-volumes,
+  ugc-time-trials, fbmod-dash-export, entity-liveness.
+
 ## Layout editor research of 2026-11-12: volumes, dashes, runtime bundle loading
 
 Goal (user): place any volume (blockers, dash start / finish, mission parts, teleports), move and resize it, and
