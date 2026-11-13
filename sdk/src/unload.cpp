@@ -66,6 +66,7 @@ bool unloadEverything() {
     sampleRelease();
     faithRelease();
     messagesRelease();
+    dataRelease(); // the game's data listener out, before anything else of ours goes
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below
     forgetAudioMix(CodeRange{}); // offsets to 0 and a recompute while the hook is still in; the hook goes with the rest below
     waitTicks(3, 3000);

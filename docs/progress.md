@@ -3,6 +3,22 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## Audit findings, part 1: the data registry (2026-11-13 night, branch gn/audit-findings, game-tested)
+
+- The second Gemini report (offset-free hooking) checked in Ghidra: `docs/research/engine-audit-2026-11-13.md`
+  (taken, checked but not taken, not checked). Its `ServerSubLevelManager` "bug" was already fixed in `main`.
+- `JumpTuningRoot` (0x142105510) is the data registry's object table (`DataRegistry_Entries`, spawn.yaml, with
+  `DataRegistry`, `_Lock`, `_addListener`, `_removeListener`). The trainer's jump tuning now finds Faith's
+  `PamCharacterBlueprint` there by vtable, not as entry 164 (+0xa48). `Speed_DriveGlobal` noted as audio.
+- API 39 (`sdk/src/data_registry.cpp`): `data_of_class` (loaded data by class) and `on_data` (the game's own
+  load / unload listener, added when a mod first asks, removed at GridNode's unload). Console `data`,
+  `data CLASS`, `data listen`. gridnode.dll deployed (md5 2a4e4dd7...).
+- Game-tested 2026-11-13: `data` 3,618 objects in the city; `data PamCharacterBlueprint` 1 (Faith's); the trainer's
+  jump height works through the registry; `data listen` logged districts streaming and a level reload (bundle ids
+  stay the same for the same data); full unload: `data: listener removed`, gridnode.dll freed.
+- Next from the earlier audit (handover plan): entity properties (needs entity -> bus peer + data), the
+  single creation hook, messages, physics.
+
 ## Custom dash parts and stars (2026-11-13 evening, built, untested in game)
 
 - Game-tested first (afternoon build): map icon, the screens showing GridNode's best. Not right: a run was compared

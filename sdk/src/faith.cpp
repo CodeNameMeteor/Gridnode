@@ -64,7 +64,8 @@ struct Hop {
 struct Tuning {
     const char* name;
     const char* group;
-    uint64_t root; // global VA
+    uint64_t root; // global VA; 0: the loaded data object with vtable dataVtable (the data registry)
+    uint64_t dataVtable = 0;
     std::vector<Hop> hops;
     uint32_t field;
     float def;
@@ -73,10 +74,14 @@ struct Tuning {
 
 // MEC_Trainer's movement properties (src/Features/MovementProperties.cpp), with the vtables the
 // probe saw on the way. Defaults are the game's own values.
-constexpr uint64_t kRun = e::global::AntMovementTuning, kJump = e::global::JumpTuningRoot, kAnt = e::global::AntAssetDatabase;
+// Jumping: Faith's PamCharacterBlueprint (vtable 0x141c882f0) is found in the data registry by its
+// vtable. The old path read the registry's table at +0xa48 (entry 164: that blueprint only in the
+// usual load order; db/annotations/spawn.yaml, DataRegistry_Entries).
+constexpr uint64_t kRun = e::global::AntMovementTuning, kJump = 0, kAnt = e::global::AntAssetDatabase;
+constexpr uint64_t kCharacterBlueprintVtable = 0x141c882f0;
 const std::vector<Hop> kRunHops = {{0x408, 0}, {0x380, 0}};
 const std::vector<Hop> kRunEnd = {{0, 0x141ab8278}};
-const std::vector<Hop> kJumpHops = {{0xa48, 0x141c882f0}, {0x120, 0x141acd428}};
+const std::vector<Hop> kJumpHops = {{0x120, 0x141acd428}};
 const std::vector<Hop> kWcHops = {{0, 0x141abae70}, {0x22b0, 0x141a9bfa8}, {0x30, 0x141a1eb68}};
 const std::vector<Hop> kFwcHops = {{0, 0x141abae70}, {0x26f0, 0x141a9bfa8}, {0x58, 0x141a435c8}};
 const std::vector<Hop> kWrHops = {{0, 0x141abae70}, {0x1a78, 0x141aaa8c8}};
@@ -94,6 +99,7 @@ std::deque<Tuning>& tunings() {
             x.name = n;
             x.group = g;
             x.root = root;
+            x.dataVtable = root ? 0 : kCharacterBlueprintVtable;
             x.hops = hops;
             x.field = field;
             x.def = def;
@@ -150,8 +156,23 @@ std::deque<Tuning>& tunings() {
 
 // The field's address, or 0 when a hop is null or not the object expected. A hop {0, vt} checks
 // the object reached so far without moving.
+// The loaded data object with this vtable: the one found last while it still has it, else a new
+// search of the registry (at most twice a second: it walks the whole table).
+uintptr_t dataRoot(uint64_t vtableVa) {
+    static std::mutex m;
+    static uintptr_t found = 0;
+    static ULONGLONG lastSearch = 0;
+    std::lock_guard<std::mutex> lock(m);
+    if (found && vtableIs(found, vtableVa)) return found;
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastSearch < 500) return 0;
+    lastSearch = now;
+    found = dataFirstWithVtable(vtableVa);
+    return found;
+}
+
 uintptr_t resolve(const Tuning& t) {
-    uintptr_t obj = ptr(mem::rva(t.root));
+    uintptr_t obj = t.root ? ptr(mem::rva(t.root)) : dataRoot(t.dataVtable);
     for (const Hop& h : t.hops) {
         if (!obj) return 0;
         if (h.offset) obj = ptr(obj + h.offset);
