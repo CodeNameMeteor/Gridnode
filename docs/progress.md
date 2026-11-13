@@ -34,6 +34,14 @@ place any object from any area without that area streaming in.
   can't stand / climb / vault / wallrun; `PlacedBlocker` edits, saved). Placed prefabs and blockers show as
   boxes while the free camera flies, are picked by a click or their row, and move with the move keys (spawned
   again there when the keys rest). `bundles.cpp` `blockerSpawn` builds the data (internal, not in the API).
+- Blueprints wired in memory (claim-lab `blueprint-wiring`, game-tested 2026-11-13): our SpatialPrefabBlueprint
+  holding a reference to `pf_runnersroute` and two OBBData, with LinkConnections (reference, "StartGeometry" /
+  "StopGeometry" / "ChallengeSelector") -> ours, spawns the dash (111 server entities) and its area triggers take
+  our boxes as their geometry. Needed: the reference's Flags realm bits (0x60000000: a link is followed only from
+  a source marked for the bus's realm), a network container at creationInfo+0x90 (networked entities register
+  in it; null crashed), and a challenge of the dash's own type. Open: right after the spawn the client character
+  went and the level ended (then a crash in teardown). Later tries and the next step (`bus-network-ids`):
+  [handover-2026-11-13.md](handover-2026-11-13.md).
 - Mods menu: **Reload all** reloads the reloadable mods and loads mod DLLs added since startup (untested in game).
 
 ## Findings and implementation plan of 2026-11-11: fixes, performance, API 36 (branch, untested in game)
