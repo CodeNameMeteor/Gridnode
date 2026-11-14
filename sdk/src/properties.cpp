@@ -17,6 +17,7 @@
 #include <functional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
@@ -44,10 +45,13 @@ uint32_t djb2(const char* s) {
     return h;
 }
 
+// "0x1a2b3c4d", or eight hex digits as the console's listing prints ids ("af350988").
 bool parseId(const char* name, uint32_t& id) {
-    if (name[0] != '0' || (name[1] != 'x' && name[1] != 'X') || !name[2]) return false;
+    const char* digits = name;
+    if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X') && name[2]) digits = name + 2;
+    else if (strlen(name) != 8 || strspn(name, "0123456789abcdefABCDEF") != 8) return false;
     char* end = nullptr;
-    const unsigned long long v = strtoull(name + 2, &end, 16);
+    const unsigned long long v = strtoull(digits, &end, 16);
     if (*end || v > 0xffffffffull) return false;
     id = static_cast<uint32_t>(v);
     return true;
@@ -58,6 +62,9 @@ struct Property {
     const reflect::Type* dataType = nullptr;
     reflect::FieldInfo field;
     uint32_t id = 0, category = 0, size = 0;
+    bool input = false;   // the slot is another property's (the source this one is connected from)
+    uint64_t srcKey = 0;  // that source: its key in the template and its id
+    uint32_t srcId = 0;
 };
 
 // The field of t (or a base) whose name hashes to id.
@@ -71,11 +78,21 @@ bool fieldById(const reflect::Type* t, uint32_t id, reflect::FieldInfo& out) {
     return false;
 }
 
-// The entity's bus peer and data: its place in its bus's peer array. 0 when it is on no list (a
-// bus lists only the entities its data connects; those have no property slots either).
+// The entity's bus peer and data. The data is the entity's own +0x28: Entity's constructor (0x143160100, read in
+// Ghidra 2026-11-14) keeps the bus at +0x20 and the data at +0x28 (a reference), and DelayEntity, BoolEntity and
+// TimelineEntity pass that +0x28 as the key of every property they read (Gemini block K). The first version looked
+// the entity up in its bus's peer array instead, and a DelayEntity or CompareBoolEntity there is on none ("on no bus
+// list", game test 2026-11-14) although its inputs are connected; the peer array stays the fallback.
 int entityData(uintptr_t entity, uintptr_t& peer, uintptr_t& data) {
     peer = mem::readOr<uintptr_t>(entity + kEntityBus);
     if (!peer || (peer & 7)) return GN_ERR_NOT_FOUND;
+    static const reflect::Type* dataBase = registry().find("DataContainer");
+    const uintptr_t own = mem::readOr<uintptr_t>(entity + 0x28);
+    const reflect::Type* ot = own && !(own & 7) ? registry().typeOf(mem::ProcessMemory(), own) : nullptr;
+    if (ot && dataBase && registry().isKindOf(ot, dataBase) && ot->name.size() > 4 && ot->name.compare(ot->name.size() - 4, 4, "Data") == 0) {
+        data = own;
+        return GN_OK;
+    }
     const uintptr_t peers = mem::readOr<uintptr_t>(peer + kPeers), tmpl = mem::readOr<uintptr_t>(peer + kTemplate);
     if (!peers || !tmpl) return GN_ERR_NOT_FOUND;
     const uintptr_t ids = tmpl + ((mem::readOr<uint32_t>(peer + kFlags) & kOtherBit) ? kIdsOther : kIds);
@@ -109,6 +126,61 @@ uintptr_t templateSlot(uintptr_t peer, uintptr_t data, uint32_t id) {
     return 0;
 }
 
+// An input property: what the entity reads when the level connects a value into it (DelayEntity's Delay,
+// TimelineEntity's StartTime, ...). The game's read (0x142a46f80 -> InputConnection_findSourceSlot 0x142a42d70, read
+// in Ghidra 2026-11-14): only when the data's realm bits (+0x10 bits 27..28) meet the table's (+0x10 & 3); then a
+// binary search of the template's input connections (+0x00..+0x08, 0x28-byte entries {u64 key, i32 id, u64 source
+// key, i32 source id}) for (key, id), and the source's slot in the property array (+0x90..+0x98, the table's +0x08
+// in the same order). So an input has no slot of its own: it is the source's output. 0 when not connected (the
+// entity then reads its data's field). (The game first asks an override registry when the table's +0x18 bit 0 is
+// set: not read, not followed here.)
+uintptr_t inputSlot(uintptr_t peer, uintptr_t data, uint32_t id, uint64_t& srcKey, uint32_t& srcId) {
+    uintptr_t ctx[4] = {};
+    reinterpret_cast<uint64_t (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::EntityBus_getPropertyContext))(peer, reinterpret_cast<uintptr_t>(ctx));
+    const uintptr_t table = ctx[0];
+    if (!table) return 0;
+    const uint8_t realms = static_cast<uint8_t>(mem::readOr<uint32_t>(data + 0x10) >> 27) & mem::readOr<uint8_t>(table + 0x10) & 3;
+    if (!realms) return 0;
+    const uintptr_t key = (ctx[2] == data && ctx[1]) ? ctx[1] : data; // PropertyContext_resolveBusKey
+    const uintptr_t tmpl = mem::readOr<uintptr_t>(table + 0x20), slots = mem::readOr<uintptr_t>(table + 0x08);
+    if (!tmpl || !slots) return 0;
+    const uintptr_t i0 = mem::readOr<uintptr_t>(tmpl), i1 = mem::readOr<uintptr_t>(tmpl + 8);
+    const uintptr_t b0 = mem::readOr<uintptr_t>(tmpl + 0x90), b1 = mem::readOr<uintptr_t>(tmpl + 0x98);
+    if (i1 <= i0 || (i1 - i0) % 0x28 || b1 <= b0 || (b1 - b0) % 0x18) return 0;
+    for (size_t i = 0, n = (i1 - i0) / 0x28; i < n && i < 200000; ++i) {
+        const uintptr_t c = i0 + i * 0x28;
+        if (mem::readOr<uintptr_t>(c) != key || mem::readOr<uint32_t>(c + 8) != id) continue;
+        srcKey = mem::readOr<uint64_t>(c + 0x10);
+        srcId = mem::readOr<uint32_t>(c + 0x18);
+        for (size_t j = 0, m = (b1 - b0) / 0x18; j < m && j < 200000; ++j)
+            if (mem::readOr<uint64_t>(b0 + j * 0x18) == srcKey && mem::readOr<uint32_t>(b0 + j * 0x18 + 8) == srcId)
+                return mem::readOr<uintptr_t>(slots + j * 8) & ~uintptr_t(3);
+        return 0;
+    }
+    return 0;
+}
+
+// The ids of the input connections under the entity's key (the console listing): id -> source.
+struct InputConn {
+    uint32_t id, srcId;
+    uint64_t srcKey;
+};
+std::vector<InputConn> inputsOf(uintptr_t peer, uintptr_t data) {
+    std::vector<InputConn> out;
+    uintptr_t ctx[4] = {};
+    reinterpret_cast<uint64_t (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::EntityBus_getPropertyContext))(peer, reinterpret_cast<uintptr_t>(ctx));
+    const uintptr_t tmpl = ctx[0] ? mem::readOr<uintptr_t>(ctx[0] + 0x20) : 0;
+    if (!tmpl) return out;
+    const uintptr_t key = (ctx[2] == data && ctx[1]) ? ctx[1] : data;
+    const uintptr_t i0 = mem::readOr<uintptr_t>(tmpl), i1 = mem::readOr<uintptr_t>(tmpl + 8);
+    if (i1 <= i0 || (i1 - i0) % 0x28) return out;
+    for (size_t i = 0, n = (i1 - i0) / 0x28; i < n && i < 200000 && out.size() < 64; ++i) {
+        const uintptr_t c = i0 + i * 0x28;
+        if (mem::readOr<uintptr_t>(c) == key) out.push_back({mem::readOr<uint32_t>(c + 8), mem::readOr<uint32_t>(c + 0x18), mem::readOr<uint64_t>(c + 0x10)});
+    }
+    return out;
+}
+
 bool onRealm(uintptr_t entity) {
     return (mem::readOr<uint32_t>(entity + 0x18) & 1) ? isServerThread() : isClientThread();
 }
@@ -124,17 +196,26 @@ int find(void* entityPtr, const char* name, Property& p) {
     if (int r = entityData(entity, p.peer, p.data); r != GN_OK) return r;
     p.dataType = registry().typeOf(mem::ProcessMemory(), p.data);
     if (!p.dataType) return GN_ERR_NOT_FOUND;
-    if (!parseId(name, p.id)) p.id = djb2(name);
+    // The id is the hash of the exact field name: a name typed in another case ("playbackrate") is taken as the field's.
+    if (!parseId(name, p.id)) {
+        p.id = djb2(name);
+        for (const reflect::Type* t = p.dataType; t; t = registry().super(t))
+            for (const reflect::Field& f : t->fields)
+                if (!_stricmp(f.name.c_str(), name)) p.id = djb2(f.name.c_str());
+    }
     if (!fieldById(p.dataType, p.id, p.field) || !p.field.field || !p.field.field->typeTi) {
         // No field of that name or id: a property only the bus knows (by id), if it already has a value.
         p.field = reflect::FieldInfo{};
         p.slot = templateSlot(p.peer, p.data, p.id);
-        if (!p.slot) return GN_ERR_NOT_FOUND;
     } else {
     using FindFn = void** (*)(uintptr_t, uintptr_t*, uintptr_t, uint32_t, uintptr_t, const void*);
     reinterpret_cast<FindFn>(mem::rva(e::function::EntityBus_findProperty))(p.peer, &p.slot, p.data, p.id,
                                                                             static_cast<uintptr_t>(p.field.field->typeTi), nullptr);
-    if (!p.slot) return GN_ERR_NOT_FOUND; // not connected: the entity reads its data, not a slot
+    }
+    if (!p.slot) { // not an output of this entity: an input connected from another's output?
+        p.slot = inputSlot(p.peer, p.data, p.id, p.srcKey, p.srcId);
+        if (!p.slot || !mem::readOr<uintptr_t>(p.slot + 8)) return GN_ERR_NOT_FOUND; // not connected: the entity reads its data
+        p.input = true;
     }
     const uintptr_t ti = mem::readOr<uintptr_t>(p.slot + 8);
     const uintptr_t tid = ti ? mem::readOr<uintptr_t>(ti) : 0;
@@ -496,7 +577,7 @@ std::string propCommand(const std::string& rest) {
             uintptr_t peer = 0, data = 0;
             const reflect::Type* et = registry().typeOf(mem::ProcessMemory(), entity);
             if (!et || !inspector::alive(entity, et)) { out = "prop: not a live entity"; return out; }
-            if (entityData(entity, peer, data) != GN_OK) { out = "prop: " + et->name + " is on no bus list (nothing connects to it: no property slots)"; return out; }
+            if (entityData(entity, peer, data) != GN_OK) { out = "prop: " + et->name + " has no bus or data (+0x20 / +0x28)"; return out; }
             const reflect::Type* dt = registry().typeOf(mem::ProcessMemory(), data);
             out = "prop: " + et->name + ", data " + (dt ? dt->name : "?");
             char b[48];
@@ -515,6 +596,11 @@ std::string propCommand(const std::string& rest) {
                         else mem::read(value, v, p.size);
                     }
                     out += "\n  " + f.name + " = " + (value ? describeValue(p, v) : std::string("(no value)"));
+                    if (p.input) {
+                        char sb[96];
+                        snprintf(sb, sizeof(sb), "  (input, from %llx:%08x: a write sets that source)", static_cast<unsigned long long>(p.srcKey), p.srcId);
+                        out += sb;
+                    }
                     ++found;
                 }
             if (!found) out += " none";
@@ -553,16 +639,56 @@ std::string propCommand(const std::string& rest) {
                 snprintf(ib, sizeof(ib), " %08x%s%s%s", id, named ? "=" : "", named ? fi.field->name.c_str() : "", extra.c_str());
                 if (++mine <= 24) ids += ib;
             }
-            char tb[200];
-            snprintf(tb, sizeof(tb), "\n  (bus template: %llu properties, %llu under this entity's key %llx%s)", static_cast<unsigned long long>(total),
-                     static_cast<unsigned long long>(mine), static_cast<unsigned long long>(key), key != data ? ", remapped from its data" : "");
+            const uintptr_t i0 = tmpl ? mem::readOr<uintptr_t>(tmpl) : 0, i1 = tmpl ? mem::readOr<uintptr_t>(tmpl + 8) : 0;
+            const size_t inputs = (i1 > i0 && (i1 - i0) % 0x28 == 0) ? (i1 - i0) / 0x28 : 0;
+            char tb[240];
+            snprintf(tb, sizeof(tb), "\n  (bus template: %llu properties and %llu input connections; %llu properties under this entity's key %llx%s)",
+                     static_cast<unsigned long long>(total), static_cast<unsigned long long>(inputs), static_cast<unsigned long long>(mine),
+                     static_cast<unsigned long long>(key), key != data ? ", remapped from its data" : "");
             out += tb;
             if (!ids.empty()) out += "\n  ids:" + ids;
+            const std::vector<InputConn> ins = inputsOf(peer, data);
+            if (!ins.empty()) {
+                out += "\n  inputs (connected into it):";
+                for (const InputConn& c : ins) {
+                    reflect::FieldInfo fi;
+                    char ib[160];
+                    const bool named = fieldById(dt, c.id, fi) && fi.field;
+                    snprintf(ib, sizeof(ib), " %08x%s%s<-%llx:%08x", c.id, named ? "=" : "", named ? fi.field->name.c_str() : "",
+                             static_cast<unsigned long long>(c.srcKey), c.srcId);
+                    out += ib;
+                }
+            }
             return out;
         }
         Property p;
         int r = find(reinterpret_cast<void*>(entity), name, p);
-        if (r != GN_OK) { out = "prop: " + std::string(name) + ": " + (r == GN_ERR_NOT_FOUND ? "no such connected property" : "error " + std::to_string(r)); return out; }
+        if (r == GN_ERR_NOT_FOUND) { // a field nothing connects: the entity reads its data (shared by every entity made from it)
+            uintptr_t peer = 0, data = 0;
+            const reflect::Type* dt = entityData(entity, peer, data) == GN_OK ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+            reflect::FieldInfo fi;
+            bool has = false;
+            for (const reflect::Type* t = dt; t && !has; t = registry().super(t))
+                for (const reflect::Field& f : t->fields)
+                    if (!_stricmp(f.name.c_str(), name) && registry().findField(dt, f.name, fi) && fi.field) {
+                        has = true;
+                        break;
+                    }
+            if (!has) { out = "prop: " + std::string(name) + ": no such field or connected property"; return out; }
+            std::string v;
+            const std::string tn = fi.type ? fi.type->name : "?";
+            const uintptr_t at = data + fi.field->offset;
+            char b[96] = {};
+            if (tn == "Boolean") snprintf(b, sizeof(b), "%s", mem::readOr<uint8_t>(at) ? "true" : "false");
+            else if (tn == "Float32") snprintf(b, sizeof(b), "%g", mem::readOr<float>(at));
+            else if (tn == "Int32" || tn == "Uint32") snprintf(b, sizeof(b), "%d", mem::readOr<int32_t>(at));
+            else snprintf(b, sizeof(b), "(a %s)", tn.c_str());
+            out = "prop: " + fi.field->name + " is not connected on this entity: it reads its data's value " + b + " (" + (dt ? dt->name : "?") +
+                  " +0x" + [&] { char h[16]; snprintf(h, sizeof(h), "%x", static_cast<unsigned>(fi.field->offset)); return std::string(h); }() +
+                  ", shared by every entity made from that data; GridNode does not write data)";
+            return out;
+        }
+        if (r != GN_OK) { out = "prop: " + std::string(name) + ": " + (r == GN_ERR_ARGUMENT ? "not a live entity" : "error " + std::to_string(r)); return out; }
         if (n == 3) {
             uint8_t v[8] = {};
             const reflect::Type* t = registry().byTi(mem::readOr<uintptr_t>(p.slot + 8));
@@ -573,7 +699,8 @@ std::string propCommand(const std::string& rest) {
             else { out = "prop: writing a " + tn + " from the console is not supported"; return out; }
             r = propertySet(reinterpret_cast<void*>(entity), name, v, p.size);
             if (r != GN_OK) { out = "prop: write refused (" + std::to_string(r) + ")"; return out; }
-            GN_LOG("prop: %s of %p set to %s", name, reinterpret_cast<void*>(entity), val);
+            GN_LOG("prop: %s of %p set to %s%s", name, reinterpret_cast<void*>(entity), val,
+                   p.input ? " (an input: its source's output was set, so every entity connected to that source gets it)" : "");
         }
         uint8_t v[64] = {};
         if (p.size > sizeof(v) || propertyGet(reinterpret_cast<void*>(entity), name, v, p.size, nullptr) != GN_OK) { out = "prop: " + std::string(name) + " has no value yet"; return out; }

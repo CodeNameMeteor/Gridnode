@@ -10,7 +10,7 @@ functions:
       The fall check (Ant RayCastCollisionProcessorAsset, vtable 0x141a62ee0, slot 4): ground contact
       from the RayCastBus hits; on contact DistanceFromLastGroundHeight = 0, else it adds dt x the
       downward speed; HasFallenPastThreshold = -FallThreshold (+0x40, f32, 10 m in the constructor) >
-      distance (written at 0x142ce864c). The animation graph does the death fall from that flag. From
+      distance (written at 0x142ce864c). Not run for Faith (game test 2026-11-14): her fall damage comes from a DamageProcessorAsset (ClientHealth_applyAntDamage). From
       the cinematic tools' research (Research_Ground_Level_2026-11-01 2.2); checked in Ghidra 2026-11-03.
     confidence: confirmed
     sources: [research, ghidra]
@@ -794,7 +794,7 @@ hooks:
     offset: 0x20
     original: 0x142ce8200
     signature: "void(void* asset, void* updateInfo)"
-    note: "The fall check's slot 4 (RayCastCollisionProcessor_update; RSI = the asset, its +0x40 FallThreshold read at 0x142ce8632). Read from the game image 2026-11-14. In game (2026-11-14) a hook on this slot never ran: the update is not reached through it; fall_threshold_set detours the function instead."
+    note: "The fall check's slot 4 (RayCastCollisionProcessor_update; RSI = the asset, its +0x40 FallThreshold read at 0x142ce8632). Read from the game image 2026-11-14. In game (2026-11-14) neither a hook on this slot nor a detour on the function ran during Faith's falls: her graph does not use this processor (Gemini block J: only ANT data decides who does). Fall damage goes through ClientHealth_applyAntDamage."
     confidence: confirmed
     sources: [ghidra]
 

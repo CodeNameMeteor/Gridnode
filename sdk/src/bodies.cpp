@@ -528,15 +528,20 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     return true;
 }
 
-// What PamOBBCollision_disable and _deinit do.
+// What PamOBBCollision_disable and _deinit do, then the deferred destroy a game object's full removal ends with
+// (0x1430590e0, Gemini block N, read in Ghidra 2026-11-14): RigidBody_destroy alone frees nothing, so every
+// removed shape used to stay in the owner's table and in Havok. The next physics step frees the body.
 void nativeDestroy(uintptr_t gw, uint32_t id) {
     const uintptr_t owner = nativeOwner(gw, id);
     if (!owner) return;
-    uint32_t a = id, d = id, k = id;
+    uint32_t a = id, d = id, k = id, q = id;
+    const uintptr_t table = mem::readOr<uintptr_t>(owner + c::PhysicsOwner_Objects);
+    if (const uintptr_t rb = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8ull) : 0) contactsBodyGoing(rb);
     reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_unregisterSpatial))(owner, &a);
     reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_disable))(owner, &d);
     const uint32_t args[2] = {0, 1}; // {realm, 1}
     reinterpret_cast<void (*)(uintptr_t, uint32_t*, const uint32_t*)>(mem::rva(e::function::RigidBody_destroy))(owner, &k, args);
+    reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::RigidBody_destroyDeferred))(owner, &q);
 }
 
 // After the game's flush of one realm's world, on its thread (g_m held). `nat`: a barrier's setup for

@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 41 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add); 41: static model group members (static_member_set), the fall threshold and kill volumes, effects, assets by GUID, shape queries, contact events */
+#define GN_API_VERSION 41 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add); 41: static model group members (static_member_set), fall damage and kill volumes, effects, assets by GUID, shape queries, contact events */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1344,14 +1344,17 @@ typedef struct gn_api {
      * sets, a float a timeline drives). The entity's bus keeps a slot for each, and the entity reads the
      * slot, not its data, so writing its data does nothing: these read and write the slot, as a
      * connection does, and listeners hear the change. name: the field's name in the entity's data class
-     * ("Enabled") or its id as hex ("0x1a2b3c4d": djb2-xor of the name, as event ids).
+     * ("Enabled", any case) or its id as hex ("0x1a2b3c4d" or "1a2b3c4d": djb2-xor of the exact name, as event ids).
      *
      * property_get: *type (if not null) the property's type; with out null only that. Otherwise size must
      * be the type's size and the value is copied to out; a class reference gives the object (8 bytes), a
      * string the game's char* (8 bytes, valid until the property changes). property_set copies size
      * bytes from value (the type's size); strings and class references are refused (GN_ERR_ARGUMENT).
      * GN_ERR_NOT_FOUND: no such field, or nothing connects to it (the bus has no slot: then the entity
-     * reads its data and the property is not live), or the entity is on no bus list.
+     * reads its data and the property is not live), or the entity is on no bus list. An input (a value
+     * the level connects into the entity, like a DelayEntity's Delay) has no slot of its own: it is the
+     * source's output, so get reads that, and set and watch act on it (every entity connected to the same
+     * source gets the change).
      * The entity's own realm thread only (GN_ERR_THREAD): the lookup can make the slot's default value.
      *
      * property_watch calls fn whenever the property changes (any writer: the level's logic, the game,
@@ -1384,7 +1387,7 @@ typedef struct gn_api {
      * own physics factory, with the steps a barrier takes (PamOBBCollision_enable). shape: 1 box (size =
      * half extents x, y, z), 2 sphere (size[0] = radius), 3 capsule (size[0] radius, size[1] length, along
      * at's first row). Sizes 0.01 .. 1000 m. motion: 0 static, 1 keyframed (moves only when placed),
-     * 2 dynamic (falls and can be pushed; mass in kg, > 0). It is made at the client world's next physics
+     * 2 dynamic (mass in kg, > 0; in game it is active but does not fall or move: not pursued). It is made at the client world's next physics
      * update once a client barrier exists to copy the setup from (its bus and body data) and the level has
      * been loaded 3 s; again in a new level's world. box_move / box_remove / box_state take its handle
      * (box_move places it: a dynamic one is teleported). A mod's shapes go when it unloads; one goes with
@@ -1404,12 +1407,13 @@ typedef struct gn_api {
      * GN_ERR_NOT_FOUND: no such member or copy. The layout editor uses it for group copies it replaces. Untested. */
     int (*static_member_set)(void* group, uint32_t member, uint32_t copy, uint32_t what, int value);
 
-    /* ---- the fall that kills, kill volumes -------------------------------------------------------------
-     * fall_threshold_set: the distance a character may fall before the fall kills (the game's 10 m), held in the
-     * fall check's assets (ANT RayCastCollisionProcessorAsset; they are shared, so every character using one falls
-     * by it); < 0 gives the game's value back. kill_volume_set: one PamServerKillVolumeEntity off (enabled 0: it
+    /* ---- fall damage, kill volumes ---------------------------------------------------------------------
+     * fall_threshold_set: Faith's fall damage passes only from drops of at least `metres` (measured by GridNode
+     * from her highest point in the fall; the damage itself is the game's, decided by her animation graph, so this
+     * can only spare falls, never make a short one hurt); < 0 gives the game's back. Other characters are not
+     * changed. kill_volume_set: one PamServerKillVolumeEntity off (enabled 0: it
      * answers "not inside" for every character) or back on; volume null: all of them. Both are undone when the mod
-     * unloads. Any thread. Console: fall [METRES | off], killvol off|on [ADDRESS]. Untested in game. */
+     * unloads. Any thread. Console: fall [METRES | off | log], killvol off|on [ADDRESS]. Untested in game. */
     int (*fall_threshold_set)(float metres);
     int (*kill_volume_set)(void* volume, int enabled);
 
@@ -1447,7 +1451,9 @@ typedef struct gn_api {
      * contact_watch calls fn for a physics entity's body (its id from entity_bodies) on each Havok event in
      * `types` (bits 1 << GN_CONTACT_*): contact impulses with other bodies, waking and sleeping. Havok raises
      * them during the physics step on its worker threads; fn hears them on the entity's realm thread, a moment
-     * later. Whether a static or keyframed body raises impulses at all is untested. A watch ends when the
+     * later. Havok raises impulses only for bodies with its contact impulse flag: a watch for them sets it on
+     * the body while it lasts (contacts already touching start reporting once they part and touch again).
+     * Whether a static or keyframed body raises impulses at all is untested. A watch ends when the
      * entity is destroyed, by contact_unwatch, or when the mod unloads. The entity's realm thread only
      * (contact_unwatch: any). At most 1024. Console: contact ADDRESS [BODY]. Untested in game. */
     int (*contact_watch)(const char* mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle);

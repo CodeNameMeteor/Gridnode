@@ -5,6 +5,8 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 
 ## Where things stand (2026-11-14, evening)
 
+- 2026-11-14 night: Gemini blocks J-N checked and taken (fall damage detour, input properties, effect notes, body
+  teardown, impulse flag; api41r, game-tested 19:30-19:48). See "Gemini J-L taken" below.
 - `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
   user to merge.
 - Branch `gn/entity-properties` (from `gn/audit-findings`): API 40 (cf0be17, committed, untested in game: properties,
@@ -144,31 +146,69 @@ its stack as above. api41i also shows unset properties as "(not set yet)" (slot 
   the background, bring it back within 60 s, check the log says "gridnode.dll is being freed" and the file can be
   deleted; inject and unload again.
 
-### Still to implement (after that test)
+### Gemini J-L taken (2026-11-14, night; api41m, untested)
 
-Research questions for Gemini (the user's, running): `scratch\gemini-questions-2026-11-13.md` on the PC (A-H: native
-bodies, queries and contact events, what bypasses the creation function, string / reference properties, update passes,
-the camera override state, queued messages, the second report's unchecked parts). Answers land in
-`scratch\research-2026-11-14\`: check them in Ghidra before use. The first wording was blocked by Gemini's filters
-(likely the dump file name and words like hook / bypass); the reworded file sends one block at a time.
+- **Fall damage** (block J, checked in Ghidra): no C++ compares a fall height; Faith's graph runs an ANT
+  DamageProcessorAsset that hands a record to `ClientHealth_applyAntDamage` (0x1439196b0; record +0x28's value 1 =
+  PamDamageType_Fall). `fall_threshold_set` now detours that function (the RayCast detour is gone) and spares Faith's
+  fall damage when her drop (GridNode measures it each client tick: her highest point since she last stood 30 ticks on
+  the ground) is under the held distance. It can spare falls, never make a short one hurt. `fall log` logs every fall
+  damage (amount, whose component, the drop). Unknown: whether a very long fall kills through this damage at all.
+- **Input properties** (block K, checked): an entity reads connected inputs (Delay, StartTime, ...) through the
+  template's input connections (`InputConnection_findSourceSlot` 0x142a42d70) from the source's slot, not a slot of its
+  own: why the DelayEntity said "connected: none". `prop` now finds inputs (get, set, watch act on the source's slot,
+  so every entity connected to that source gets a write) and lists `inputs (connected into it)`.
+- **Effects** (block L, checked): the manager stops a level's effects when the sublevel is destroyed
+  (0x14329af20), but a bundle unload stops nothing, so GridNode's own stop on the blueprint's group stays.
+  `EffectManager_spawn`'s arguments annotated (float[3] velocity, byte apply it, position only with flags & 4).
+- Game test (api41m, 19:30): `fall 50` spared Faith's fall damage (10000, lethal) from 23-24 m drops and passed it from
+  172 m; `killvol off` works. The game's long "uncontrollable fall" death still kills (not fall damage; not followed).
+  `prop` said "on no bus list" for a DelayEntity and a CompareBoolEntity: the data was looked up in the bus's peer
+  array; now the entity's own +0x28 (Entity's constructor 0x143160100), the peer array as fallback (api41o).
+- Game test (api41o, 19:35): `shape remove` frees bodies now (shape 2 got shape 1's freed id 1000849; 30 made and
+  removed, no crash; a watched shape removed cleanly). The dynamic shape is active (flag 8), in the world, inverse
+  mass 1/50, yet velocity 0 and the same height after 3 s, then sleeps: something stops it, not activation.
+  Dropped (user, 2026-11-14): no game object needs it; dynamic shapes stay documented as not falling, the check removed.
+- Game test (api41q, 19:42): `prop` finds data now; a TimelineEntity listed `PlaybackRate` as an input from another
+  entity's output. Writes failed only on the name: ids are the hash of the exact field name (`Playbackrate` missed)
+  and a bare `af350988` was read as a name. api41r: names match in any case, eight hex digits are an id, and an
+  unconnected field answers with its data's value (read only). `squery near`, `member` on/off, `msg NotAType` fine.
+- Game test (api41r, 19:48): `prop` works: an unconnected DelayEntity `Delay` reads its data (0.1); a TimelineEntity's
+  `playbackrate 10` / `1` wrote its input's source, a watch attached, and `af350988` read it back as 4 a moment later:
+  the source entity (2d9d5c3f0, output c32c52a0) writes its own value again, so a write lasts until its next update.
+  The watch logged no change when it went back to 4: that source writes its value without the listener list (a watch
+  misses such changes; not followed further).
+- **Physics** (blocks M, N, checked; api41n, untested): `shape remove` now ends with `RigidBody_destroyDeferred`
+  (RigidBody_destroy alone freed nothing: the bodies leaked); contact watches on a removed shape go first.
+  `contact_watch` sets Havok's contact impulse flag (hknpBody +0x58 bit 0x80) on a watched body: without it no
+  impulse events come. The client world does step its own bodies; a dynamic shape now logs its Havok state 1 s and
+  3 s after it is made (active flag 8, in the world, motion, inverse mass, velocity, height) and is woken if added but
+  asleep (that check was removed again: see the game test above).
 
+### Still to implement
 
-- **Creation hook instead of the creator pool** (entities.cpp's 2,048 slots and the 1 s refresh): only if the census
-  shows nothing missed (or only the known gap, ServerPlaceHolderEntity); keep the pool as a fallback at first.
-- **Physics, more:** shape queries (cast a shape, closest points: `docs/research/engine-audit-2026-11-13.md` and the PC's
-  `scratch\audit-2026-11-13\physics-verified.md`), contact events per body (signals 1/2/5/6/10; the callback's
-  arguments and the detach are not read yet), body velocity for shapes, motion type changes (0x1434f7ad0).
-- **Properties:** strings and object references writable (arena copy, reference counts); unconnected fields (read
-  the data, clearly marked; Gemini's override registry 0x14236e680 works only before an entity is made: not checked).
-- **Messages:** queued (delayed) sending through the game's allocator.
-- **Second report, checked but not taken:** update-pass registration (hookless ticks; the updater's vtable and
-  unregistering not read), deferred-destroy bit for ray casts (does not fix the freed-component crash), freeze-world /
-  override camera (0x142401cb8, layout not read), PhysicsManager vtable copy instead of the two physics detours.
+Research of 2026-11-14 is all in (blocks A-N, `research/gemini-2026-11-14.md`). Done since: shape queries, contact
+events (with the impulse flag), body teardown, input properties, unconnected fields read, fall damage, effects.
+Dropped: dynamic shapes (user, 2026-11-14: nothing in the game needs one).
+
+- **Creation hook instead of the creator pool** (entities.cpp's 2,048 slots and the 1 s refresh): the census missed
+  48 of 104,738 (ClientAIActionStationBase 46, SkyCelestialMultiComponent 2) that the creation hook sees; switch to the
+  hook, keep the pool as a fallback at first.
+- **Properties:** strings and object references writable (block D: copy into the slot's arena; never assign the same
+  object at reference count 1). Optional: hold a value against its source rewriting it (by user request only).
+- **Messages:** queued (delayed) sending through the game's allocator (block G: poolAlloc on the arena 0x1423606d0,
+  no string or array fields).
+- **Second report, checked but not taken:** update-pass registration (block E: hookless ticks), freeze-world /
+  override camera (block F: a photo mode for the trainer), PhysicsManager vtable copy instead of the two physics
+  detours.
 - **Not checked at all:** the rest of the second report (TypeInfo hash maps, SettingsManager_getByType, camera
-  callback list +0x1b90, the WeakPtr trees, DX11 swap chain, VFS, synthetic input, SubLevelManager states, the visual
-  environment state stack, Lua): hypotheses until read in Ghidra.
+  callback list +0x1b90 (block H: FOV override), the WeakPtr trees, DX11 swap chain, VFS, synthetic input,
+  SubLevelManager states, the visual environment state stack): hypotheses until read in Ghidra.
 - **First audit, from the 2026-11-13 handover plan:** time scale notes (GameTimeSettings +0x48, SlowMotionEntity
   only), DebugRender2 and time-of-day claim-lab experiments.
+- **Not followed:** the game's uncontrollable-fall death (not fall damage; needs research if wanted).
+- **Tests waiting:** the layout editor's group prop after a late inject, and the unload with the game in the
+  background (api41k).
 - Doc follow-up from PR #16: `layout-editor.md` and `research/custom-dashes.md` still call star times, the second start
   box and unload untested; they were game-tested 2026-11-13.
 

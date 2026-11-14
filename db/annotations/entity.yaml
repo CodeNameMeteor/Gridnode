@@ -259,6 +259,19 @@ functions:
       written (PropertyValue_set). Entity constructors call it with their own data. Read in Ghidra 2026-11-13.
     confidence: inferred
     sources: [ghidra]
+  - name: InputConnection_findSourceSlot
+    va: 0x142a42d70
+    signature: "u64*(u64* out, void* context, void* entityData, u32 propertyId)"
+    note: >-
+      An input property's slot: PropertyContext_resolveBusKey, then a binary search of the bus template's
+      input connections (template +0x00..+0x08, 0x28-byte entries {u64 key, i32 id, u64 source key, i32
+      source id}) and of its properties (+0x90..+0x98) for the source; *out = the source's slot (context
+      table +0x08, same order, low 2 bits flags). Called by 0x142a46f80 (an entity reading an input, e.g.
+      DelayEntity's Delay, TimelineEntity's StartTime) only when the data's +0x10 bits 27..28 meet the table's
+      +0x10 & 3; that first asks an override registry (0x14236e680) when the table's +0x18 bit 0 is set.
+      Gemini block K, read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [research, ghidra]
   - name: PropertyListener_attach
     va: 0x142a462f0
     signature: "void(void* property, void* listener, u32 tag)"

@@ -1,8 +1,5 @@
-// Two of the game's rules a mod can change (API 41): the fall that kills, and kill volumes one by one.
-// - The fall check is ANT's RayCastCollisionProcessorAsset: HasFallenPastThreshold = -FallThreshold (+0x40, 10 m
-//   by default) > the distance fallen (RayCastCollisionProcessor_update, read in Ghidra 2026-11-03 and -14). A
-//   hold is written into each asset as its update runs (a detour on the update), and each asset's own value is
-//   put back when the hold goes. The assets are shared: every character using one falls by it.
+// Two of the game's rules a mod can change (API 41): fall damage, and kill volumes one by one.
+// - Fall damage (below): Faith's fall damage passes only from drops of at least a held distance.
 // - A kill volume tests each character in it (KillVolume_testCharacter, returns "inside" in al); a volume
 //   switched off answers "not inside". The trainer's own "kill volumes off" hooks the same function (both stack).
 
@@ -13,7 +10,6 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "gridnode/engine.hpp"
@@ -25,58 +21,64 @@ namespace gn::host {
 namespace {
 
 namespace e = gn::engine;
-namespace k = gn::engine::constant;
 
-// ---- the fall threshold ----------------------------------------------------------------------------
-using FallUpdateFn = void (*)(void* asset, void* updateInfo);
-FallUpdateFn g_fallOrig = nullptr; // written by the hook table
+// ---- fall damage ------------------------------------------------------------------------------------
+// The damage a landing does comes from Faith's animation graph: an ANT DamageProcessorAsset (update 0x142f26cc0)
+// builds a damage record from authored values and the client health component's ClientHealth_applyAntDamage
+// (0x1439196b0) turns it into a PamClientDamageInfo, type Fall when the record's damage type value (+0x28, its +0x1c)
+// is 1, and sends it on to the server. No C++ compares a fall height (Gemini block J, checked in Ghidra 2026-11-14);
+// RayCastCollisionProcessor_update, the first guess, never runs for Faith (game test 2026-11-14). So GridNode
+// measures the drop itself (Faith's highest point since she last stood still on the ground, each client tick) and
+// lets the fall damage through only from drops of at least the held distance.
+using ApplyAntDamageFn = void (*)(void* healthComponent, const void* damage);
+ApplyAntDamageFn g_fallOrig = nullptr; // written by the hook table
 std::atomic<bool> g_fallHooked{false};
-std::atomic<float> g_fall{-1.f};    // the held threshold, < 0: none
+std::atomic<float> g_fall{-1.f}; // the held distance, < 0: the game's (fall damage passes as it comes)
 std::atomic<uintptr_t> g_fallOwner{0};
-std::mutex g_fallM;
-std::unordered_map<uintptr_t, float> g_fallSeen; // asset -> its own value (g_fallM)
+std::atomic<uintptr_t> g_faithHealth{0}; // Faith's client health component (client tick)
+std::atomic<float> g_top{0.f}, g_y{0.f}; // her highest point in the current fall, and where she is now
+std::atomic<bool> g_topValid{false};
+std::atomic<uint32_t> g_fallSeenN{0}, g_fallSpared{0};
+int g_groundTicks = 0; // client thread only
 
-// ANT's update thread(s): the held value into the asset before the game reads it.
-void fallUpdateHook(void* asset, void* info) {
-    if (!unloaded() && g_fall.load(std::memory_order_relaxed) >= 0.f)
-        guardHook("fall threshold", [&] {
-            const uintptr_t a = reinterpret_cast<uintptr_t>(asset);
-            float* at = reinterpret_cast<float*>(a + k::RayCastCollisionProcessorAsset_FallThreshold);
-            if (*at == g_fall.load(std::memory_order_relaxed)) return; // the usual case: nothing to take
-            std::lock_guard<std::mutex> lock(g_fallM);
-            const float hold = g_fall.load(); // again under the lock: a release may have put the value back
-            if (hold < 0.f) return;
-            if (g_fallSeen.size() < 4096 && g_fallSeen.emplace(a, *at).second)
-                GN_LOG("rules: fall threshold %.1f m written into the fall check asset %llx (it had %.1f)", hold, static_cast<unsigned long long>(a), *at);
-            *at = hold;
+constexpr uint64_t kDamage_TypeValue = 0x28; // the record's damage type value (an enum asset; its +0x1c the value)
+constexpr uint64_t kTypeValue_Value = 0x1c;
+constexpr int32_t kDamageType_Fall = 1;      // -> PamDamageType_Fall (0x68)
+
+void applyAntDamageHook(void* component, const void* damage) {
+    bool spare = false;
+    if (!unloaded() && component && damage)
+        guardHook("fall damage", [&] {
+            const uintptr_t tv = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(damage) + kDamage_TypeValue);
+            if (!tv || mem::readOr<int32_t>(tv + kTypeValue_Value, -1) != kDamageType_Fall) return;
+            const bool faith = reinterpret_cast<uintptr_t>(component) == g_faithHealth.load(std::memory_order_relaxed);
+            const float amount = mem::readOr<float>(reinterpret_cast<uintptr_t>(damage), 0.f);
+            const float drop = g_topValid.load() ? g_top.load() - g_y.load() : -1.f;
+            const float hold = g_fall.load();
+            spare = faith && hold >= 0.f && drop >= 0.f && drop < hold; // no measurement: the game decides
+            if (spare) g_fallSpared.fetch_add(1, std::memory_order_relaxed);
+            if (g_fallSeenN.fetch_add(1, std::memory_order_relaxed) < 200)
+                GN_LOG("rules: fall damage %.1f to %s health component %llx; drop %.1f m%s", amount, faith ? "Faith's" : "another",
+                       static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(component)), drop,
+                       spare ? " (spared: under the held distance)" : (hold >= 0.f && faith ? " (passed: at or over the held distance)" : ""));
         });
-    g_fallOrig(asset, info);
+    if (!spare) g_fallOrig(component, damage);
 }
 
-// A function detour, not the vtable slot: with the slot swapped the hold was never written (game test 2026-11-14:
-// no "written into" line), so the game does not reach the update through that slot.
 bool installFallHook() {
     if (g_fallHooked.load()) return true;
-    const int r = hookFunction("GridNode", e::function::RayCastCollisionProcessor_update, reinterpret_cast<void*>(&fallUpdateHook),
+    const int r = hookFunction("GridNode", e::function::ClientHealth_applyAntDamage, reinterpret_cast<void*>(&applyAntDamageHook),
                                reinterpret_cast<void**>(&g_fallOrig));
     if (r != GN_OK) {
-        GN_LOG("rules: the fall check could not be hooked (%d)", r);
+        GN_LOG("rules: the fall damage path could not be hooked (%d)", r);
         return false;
     }
     g_fallHooked = true;
     return true;
 }
 
-// Each asset's own value back, if it is still that asset.
 void restoreFalls() {
-    std::lock_guard<std::mutex> lock(g_fallM);
-    g_fall = -1.f;
-    const uintptr_t vt = mem::rva(k::RayCastCollisionProcessorAsset_vtable);
-    size_t n = 0;
-    for (const auto& [a, v] : g_fallSeen)
-        if (mem::readOr<uintptr_t>(a) == vt && mem::write(a + k::RayCastCollisionProcessorAsset_FallThreshold, v)) ++n;
-    if (!g_fallSeen.empty()) GN_LOG("rules: fall threshold back to the game's on %llu asset(s)", static_cast<unsigned long long>(n));
-    g_fallSeen.clear();
+    if (g_fall.exchange(-1.f) >= 0.f) GN_LOG("rules: fall damage as the game's (%u fall damages spared)", g_fallSpared.load());
 }
 
 // ---- kill volumes ------------------------------------------------------------------------------------
@@ -132,8 +134,39 @@ int fallThresholdSet(const void* caller, float metres) {
     if (!installFallHook()) return GN_ERR_UNAVAILABLE;
     g_fallOwner = reinterpret_cast<uintptr_t>(caller);
     g_fall = metres;
-    GN_LOG("rules: fall threshold held at %.1f m (the game's default is 10)", metres);
+    GN_LOG("rules: Faith's fall damage passes only from drops of %.1f m or more", metres);
     return GN_OK;
+}
+
+// Client thread: Faith's health component and her highest point in the current fall. The top is reset once she has
+// been on the ground for 30 ticks (half a second): the damage comes at the landing, a few ticks after touching down.
+void rulesClientTick() {
+    if (!g_fallHooked.load(std::memory_order_relaxed)) return;
+    void* faith = localClientCharacter();
+    gn_transform tr{};
+    gn_movement mv{};
+    if (!faith || !entityTransform(faith, tr) || movementGet(&mv) != GN_OK) {
+        g_topValid = false;
+        g_faithHealth = 0;
+        return;
+    }
+    static const reflect::Type* hc = registry().find("PamClientHumanHealthComponent");
+    g_faithHealth = hc ? reinterpret_cast<uintptr_t>(getComponent(faith, reinterpret_cast<const gn_type*>(hc))) : 0;
+    const float y = tr.trans[1];
+    g_y = y;
+    const bool inAir = mv.on_ground != 0; // 1 while in the air (gn_movement's historical name)
+    g_groundTicks = inAir ? 0 : g_groundTicks + 1;
+    if (!g_topValid.load() || g_groundTicks > 30) {
+        g_top = y;
+        g_topValid = true;
+    } else if (y > g_top.load()) {
+        g_top = y;
+    }
+}
+
+std::string fallLog() {
+    if (!installFallHook()) return "fall: the fall damage path could not be hooked (see gridnode.log)";
+    return "fall: logging every fall damage to gridnode.log (" + std::to_string(g_fallSeenN.load()) + " so far)";
 }
 
 int killVolumeSet(const void* caller, void* volume, int enabled) {
@@ -179,12 +212,14 @@ std::string fallCommand(const std::string& rest) {
     if (arg.empty()) {
         const float f = g_fall.load();
         char b[96];
-        snprintf(b, sizeof(b), "fall: %s (fall METRES | fall off)", f < 0.f ? "the game's threshold" : (std::to_string(f) + " m held").c_str());
+        snprintf(b, sizeof(b), "fall: %s; %u fall damages seen, %u spared (fall METRES | fall off | fall log)",
+                 f < 0.f ? "the game's fall damage" : (std::to_string(f) + " m held").c_str(), g_fallSeenN.load(), g_fallSpared.load());
         return b;
     }
+    if (!_stricmp(arg.c_str(), "log")) return fallLog();
     const float m = !_stricmp(arg.c_str(), "off") ? -1.f : strtof(arg.c_str(), nullptr);
     const int r = fallThresholdSet(reinterpret_cast<const void*>(&fallCommand), m);
-    return r == GN_OK ? (m < 0.f ? "fall: the game's threshold" : "fall: held at " + std::to_string(m) + " m") : "fall: error " + std::to_string(r);
+    return r == GN_OK ? (m < 0.f ? "fall: the game's fall damage" : "fall: Faith's fall damage only from drops of " + std::to_string(m) + " m or more") : "fall: error " + std::to_string(r);
 }
 
 std::string killVolumeCommand(const std::string& rest) {

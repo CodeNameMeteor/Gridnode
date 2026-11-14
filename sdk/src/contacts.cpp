@@ -47,7 +47,18 @@ struct Watch {
     bool server = false;
     bool live = true;     // calls go to the mod
     bool attached = true; // in Havok's lists (cleared on the realm thread by the detach)
+    bool impulseFlag = false; // GridNode set the body's contact impulse flag for this watch (cleared at the detach)
 };
+
+// Contact impulse events come only for a body whose hknpBody +0x58 has HavokBody_FlagContactImpulse (0x80): the
+// world's impulse modifier is registered under that mask and the narrowphase ORs the bodies' flags into each new
+// manifold (Gemini block M; the registration read in Ghidra 2026-11-14). Few bodies have it, which is why a watched
+// body gave activation lines and no impulses. Contacts already touching keep their old manifold until they part.
+constexpr uint32_t kImpulseFlag = static_cast<uint32_t>(e::constant::HavokBody_FlagContactImpulse);
+uint32_t* bodyFlags(uintptr_t world, int32_t index) {
+    const uintptr_t arr = mem::readOr<uintptr_t>(world + e::constant::HavokWorld_Bodies);
+    return arr ? reinterpret_cast<uint32_t*>(arr + uint64_t(index) * 0x90 + 0x58) : nullptr;
+}
 
 std::recursive_mutex g_m;
 std::unordered_map<uint32_t, Watch> g_watches; // by handle (g_m)
@@ -143,6 +154,17 @@ void detach(Watch& w) {
     if (!w.attached) return;
     w.attached = false;
     if (mem::readOr<uintptr_t>(w.owner + kOwnerWorld) != w.world) return;
+    if (w.impulseFlag) {
+        bool shared = false; // another watch of the same body still wants the flag
+        for (const auto& [h, o] : g_watches)
+            if (&o != &w && o.attached && o.world == w.world && o.index == w.index && o.impulseFlag) shared = true;
+        uint32_t* f = bodyFlags(w.world, w.index);
+        if (!shared && f) InterlockedAnd(reinterpret_cast<volatile LONG*>(f), static_cast<LONG>(~kImpulseFlag));
+        if (shared) // hand the flag over: that watch clears it when it goes
+            for (auto& [h, o] : g_watches)
+                if (&o != &w && o.attached && o.world == w.world && o.index == w.index) o.impulseFlag = true;
+        w.impulseFlag = false;
+    }
     const auto get = reinterpret_cast<GetSignalFn>(mem::rva(e::function::hknpWorld_getEventSignal));
     const auto off = reinterpret_cast<DetachFn>(mem::rva(e::function::hkSignal_detach));
     for (uint32_t type : kTypes) {
@@ -225,9 +247,33 @@ int contactWatchRigid(const std::string& mod, uintptr_t rigid, uintptr_t ent, bo
     const auto on = reinterpret_cast<AttachFn>(mem::rva(e::function::hkSignal_attach));
     for (uint32_t type : kTypes)
         if (types & (1u << type)) on(get(world, static_cast<uint16_t>(type), index), w.obj, reinterpret_cast<void*>(&contactEvent));
+    if (types & (1u << GN_CONTACT_IMPULSE))
+        if (uint32_t* f = bodyFlags(world, index)) {
+            const uint32_t was = static_cast<uint32_t>(InterlockedOr(reinterpret_cast<volatile LONG*>(f), static_cast<LONG>(kImpulseFlag)));
+            w.impulseFlag = !(was & kImpulseFlag);
+            GN_LOG("contacts: body %d's Havok flags %08x%s", index, was, w.impulseFlag ? "; contact impulse flag (0x80) set while watched" : "");
+        }
     g_watches.emplace(h, std::move(w));
     *handle = h;
     return GN_OK;
+}
+
+// A body GridNode removes itself (a shape, on the client thread before its deferred destroy): its watches go now,
+// while the Havok body is still there; the index can be reused by another body after the next step.
+void contactsBodyGoing(uintptr_t rigid) {
+    const uintptr_t owner = mem::readOr<uintptr_t>(rigid + kBodyOwner);
+    const uintptr_t world = owner ? mem::readOr<uintptr_t>(owner + kOwnerWorld) : 0;
+    const int32_t index = mem::readOr<int32_t>(rigid + kBodyIndex, -1);
+    if (!world || index < 0) return;
+    std::lock_guard<std::recursive_mutex> lock(g_m);
+    for (auto it = g_watches.begin(); it != g_watches.end();) {
+        if (it->second.world != world || it->second.index != index || it->second.server != isServerThread()) {
+            ++it;
+            continue;
+        }
+        detach(it->second);
+        it = g_watches.erase(it);
+    }
 }
 
 int contactUnwatch(uint32_t handle) {

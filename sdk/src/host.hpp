@@ -380,6 +380,7 @@ std::string msgCommand(const std::string& rest); // the console's "msg"
 int staticMemberSet(void* group, uint32_t member, uint32_t copy, uint32_t what, int value);
 // The fall threshold and kill volumes (gamerules.cpp): owner = the caller's return address.
 int fallThresholdSet(const void* caller, float metres);
+void rulesClientTick(); // client thread: Faith's highest point in a fall (fall damage hold)
 int killVolumeSet(const void* caller, void* volume, int enabled);
 void forgetRules(const CodeRange& r);
 void rulesRelease(); // GridNode's unload: the game's values back
@@ -405,6 +406,7 @@ int closestPoints(uint32_t shape, const float size[3], const gn_transform* at, f
 // Contact events (contacts.cpp): the entity's realm thread.
 int contactWatch(const std::string& mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle);
 int contactUnwatch(uint32_t handle);
+void contactsBodyGoing(uintptr_t rigid); // a RigidBody GridNode removes (its realm thread): its watches out first
 void forgetContacts(const CodeRange& r); // a mod's watches (by their callback), detached at the realms' next ticks
 void contactsRelease();  // GridNode's unload: detached on the realm threads (the ticks after)
 bool contactsReleased(); // all out of Havok's lists

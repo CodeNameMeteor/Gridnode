@@ -342,7 +342,24 @@ functions:
   - { name: RigidBody_registerSpatial, va: 0x1434e9270, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_unregisterSpatial, va: 0x1434f6610, confidence: hypothesis, sources: [mecmp] }
   - { name: RigidBody_disable, va: 0x1434f65f0, confidence: hypothesis, sources: [mecmp] }
-  - { name: RigidBody_destroyDeferred, va: 0x1434f5550, confidence: hypothesis, sources: [mecmp] }
+  - name: RigidBody_destroyDeferred
+    va: 0x1434f5550
+    signature: "void(void* owner, u32* id)"
+    note: >-
+      Queues a body for freeing (0x1434f53e0: under the owner's lock +0x20, flag 0x10 in the owner's state array
+      +0xb88 and the index onto the u16 list +0x1c8..+0x1d8). The next PhysicsManager_stepEntities (0x1434f4c80,
+      Gemini block N) frees the RigidBody object, clears its table slot (+0x130) and destroys the Havok body.
+      RigidBody_destroy alone frees nothing. A game object's full removal (0x1430590e0): RigidBody_disable,
+      0x1434f6440 (owner, id, the entity + 0x10), RigidBody_destroy with {flag, 1}, then 0x1435175d0(id,
+      manager), which finds the owner and calls this. Read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: hknpWorld_activateBody
+    va: 0x143f43fa0
+    signature: "void(void* hknpWorld, i32 bodyIndex)"
+    note: "Wakes a body that is already in the world (its hknpBody +0x70 not -1) through the activation manager (world +0x398, 0x143f70b90); nothing for a body not yet added. Velocity setters call it. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
   - name: RaycastQuery_execute
     va: 0x143a24890
     signature: "void(const RaycastQuery* query, void* world, void* physics, RaycastResult* result)"
@@ -476,6 +493,7 @@ constants:
   - { name: PhysicsWorld_RecordCount, value: 0xb80, confidence: confirmed, sources: [ghidra], note: "u32: the description's body count (PhysicsWorld_create)." }
   - { name: PhysicsWorld_EffectFlag, value: 0xb84, confidence: confirmed, sources: [ghidra], note: "u8: 1 for the client's effect world." }
   - { name: HavokWorld_Bodies, value: 0x20, confidence: confirmed, sources: [research, ghidra], note: "hknpBody array, 0x90 each: +0x58 flags, +0x5c collision filter info (layer in the low 5 bits), +0x60 id, +0x68 motion id (0 static), +0x6c material, +0x6e quality, +0x88 user data (low 32: the game's record id)." }
+  - { name: HavokBody_FlagContactImpulse, value: 0x80, confidence: inferred, sources: [research, ghidra], note: "hknpBody +0x58 bit that turns on contact impulse events (Havok event 5): every PhysicsWorld_create registers the impulse modifier (0x14351c720, vtable 0x141bb2440) with the world's modifier manager (+0x150) under mask 0x80; the narrowphase ORs both bodies' +0x58 and materials' +0x0c into a new manifold's flags (0x143f87c70, Gemini block M). Bits 4..19 come from the body cinfo's +0x18. Read in Ghidra 2026-11-14 (the registration)." }
   - { name: HavokWorld_Motions, value: 0xe0, confidence: confirmed, sources: [ghidra], note: "hknpMotion array, 0x80 each, by the body's motion id (+0x68): +0x10 orientation (quaternion), +0x40 linear velocity (world), +0x50 angular velocity (the motion's frame)." }
   - { name: HavokWorld_Gravity, value: 0x4c0, confidence: confirmed, sources: [ghidra], note: "hkVector4, from the world description's +0x50 (PhysicsWorld_create); read by every step (0x143f474f0 hands it to the solver info, 0x143f75c80), so a new value acts from the next step." }
   - { name: RigidBody_vtable, value: 0x141bac160, confidence: confirmed, sources: [research, gridnode], note: "The game's body record for a Havok body (seen on picks)." }

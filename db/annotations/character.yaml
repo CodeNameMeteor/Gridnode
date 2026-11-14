@@ -104,6 +104,21 @@ functions:
       Fast travel reaches it from ServerEventSync_onReachedClient (seen in a recording, 2026-10-20).
     confidence: inferred
     sources: [ghidra, recording]
+  - name: ClientHealth_applyAntDamage
+    va: 0x1439196b0
+    signature: "void(void* clientHealthComponent, const void* antDamage)"
+    note: >-
+      Damage from a character's animation graph (an ANT DamageProcessorAsset, update 0x142f26cc0, through
+      DamageFeature's handler) into a PamClientDamageInfo (built by 0x14390c370) sent on with 0x1434d94e0 (client
+      to server, then the server health component). The record: +0x00 f32 amount, +0x04 i32 heart amount, +0x08
+      byte allow last chance, +0x0c the attacker's id, +0x10 vec4 direction, +0x20 byte, +0x28 the damage type value
+      (an enum asset whose +0x1c is the value: 1 gives PamDamageType_Fall 0x68, 0 PamDamageType_Unkown 100, others
+      Melee 0x66), +0x30, +0x38 and +0x40 more enum values (+0x1c each). The PamClientHumanHealthComponent vtable
+      0x141c3d1c0 slot +0x120 holds it; PamClientAIHealthComponent's slot calls it. No fall height is compared in
+      C++: the graph decides when and how much. Gemini block J, checked in Ghidra 2026-11-14. GridNode's fall damage
+      hold detours it.
+    confidence: inferred
+    sources: [research, ghidra]
   - name: LocalClientCharacter
     va: 0x1439655f0
     signature: "PamClientCharacterEntity*()"
