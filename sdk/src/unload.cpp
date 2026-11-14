@@ -26,6 +26,7 @@ std::atomic<bool> g_requested{false};
 std::atomic<bool> g_unloading{false};
 std::atomic<bool> g_unloaded{false};
 std::atomic<int> g_busy{0}; // our short-lived threads still running
+constexpr int kResumeWaitS = 60;  // how long an unload waits for a game that is not ticking
 
 // Waits until each ticking realm ran `n` more ticks (a realm that is not ticking is not waited for
 // past the timeout: its hooks are idle).
@@ -77,6 +78,17 @@ bool unloadEverything() {
     dashesReleaseIds(); // after their entities went: an id left in the registry crashes the game at exit
     // Collision boxes leave the world at its next physics update, while the flush hook is still in.
     if (!bodiesRelease(2000)) GN_LOG("unload: collision boxes still in the physics world (no physics update ran); they stay");
+    // Listeners still registered come out only on their realm's thread. A game in the background or
+    // paused does not tick (an unload started while the game's window was not in front, 2026-11-14:
+    // GridNode stayed in memory and gridnode.dll stayed locked), so wait for it to run again before
+    // giving up.
+    if (!contactsReleased() || !propertiesReleased() || !messagesReleased()) {
+        GN_LOG("unload: waiting up to %d s for the game to run again (bring its window to the front, close a pause menu)", kResumeWaitS);
+        const ULONGLONG start = GetTickCount64();
+        while ((!contactsReleased() || !propertiesReleased() || !messagesReleased()) && GetTickCount64() - start < kResumeWaitS * 1000ull) Sleep(50);
+        if (contactsReleased() && propertiesReleased() && messagesReleased())
+            GN_LOG("unload: the game ran again after %.1f s; going on", (GetTickCount64() - start) / 1000.0);
+    }
     if (!contactsReleased()) {
         GN_LOG("unload: a contact watch could not be taken out (its realm was not ticking); GridNode stays in memory");
         canFree = false;

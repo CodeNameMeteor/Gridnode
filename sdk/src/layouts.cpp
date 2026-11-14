@@ -1094,7 +1094,15 @@ void onCreatedGroup(void* entity, void* ci, void*) {
 uintptr_t busOf(uintptr_t group) {
     std::lock_guard<std::mutex> lock(g_busM);
     const auto it = g_groupBus.find(group);
-    return it == g_groupBus.end() ? 0 : it->second;
+    if (it != g_groupBus.end()) return it->second;
+    // A group made before GridNode loaded (injected into a level already running) was never seen by
+    // onCreatedGroup: its bus is the one the entity keeps at +0x20, the pointer the creation info carried
+    // (+0x10) and Entity_dtor hands to EntityBus_release (read in Ghidra 2026-11-14).
+    const uintptr_t bus = group ? mem::readOr<uintptr_t>(group + 0x20) : 0;
+    uint32_t refs = 0;
+    if (bus < 0x10000 || !mem::read(bus + 0x30, &refs, 4) || !refs) return 0; // +0x30: its reference count
+    g_groupBus[group] = bus;
+    return bus;
 }
 
 uintptr_t memberType(uintptr_t member) {

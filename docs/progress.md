@@ -13,7 +13,8 @@ Update at the end of each session. Keep it short. The full handover for a new ag
   effects, assets by GUID, shape queries, contact events, visual environment holds on the render thread). Working:
   `member`, `killvol off`, `squery cast`, `effect`, `assetguid`, `contact shape`. Open: `fall` (see "Fall deaths"),
   the dynamic shape, contact impulse events, the shape remove teardown. The api41i test (prop "not set yet", a
-  recording of the death with `killvol off`) is waiting.
+  recording of the death with `killvol off`) and the api41k test (editor after a late inject, unload in the
+  background) are waiting.
 - Research of 2026-11-14 written up: `research/gemini-2026-11-14.md` (Gemini's blocks A-H) and
   `research/modder-notes-2026-11-14.md` (another modder's notes; what was taken and the rest for later).
 - API 40 test, first results (2026-11-14): `prop` and `msg` froze the game 2 s and said "did not tick": the console runs
@@ -129,6 +130,19 @@ recording yet, so its path is unknown; likely a hard landing. PamServerDamageInf
 kill above, the network damage handler 0x1439242f0, PamAIGroup); the client's PamClientDamageInfo in six (fields,
 radial, hits), none a landing. Next: a recording of that death (recording started just before the jump), then follow
 its stack as above. api41i also shows unset properties as "(not set yet)" (slot +0x1c bit 0x20) and logs `killvol`.
+
+### Layout editor and unload fixes (2026-11-14, evening; api41j, api41k; untested)
+
+- The editor could not move group props after GridNode was injected into a level already loaded: group buses were
+  only recorded when a group was created ("make standalone: ... server bus 0, client bus 0"), so no prop could be
+  made standalone. `busOf` now falls back to the group's own bus (entity +0x20, the pointer the creation info carried
+  and Entity_dtor releases; Ghidra 2026-11-14).
+- An unload while the game was not ticking (window in the background, a pause menu) left GridNode in memory and
+  gridnode.dll locked (a message listener comes out only on its realm's thread). The unload now waits up to 60 s for
+  the game to run again before giving up ("unload: waiting up to 60 s ...").
+- Test: inject into a running city, move a group prop (two presses: standalone, then move); unload with the game in
+  the background, bring it back within 60 s, check the log says "gridnode.dll is being freed" and the file can be
+  deleted; inject and unload again.
 
 ### Still to implement (after that test)
 
