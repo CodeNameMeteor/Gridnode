@@ -27,6 +27,10 @@ look, and left-click objects to pick them along the cursor.
 
 The keys listed on screen (top left) are the ones that work while the camera flies.
 
+**Draw lines with the game's debug renderer** (under Camera, experimental) draws the editor's lines (outlines,
+volumes, barriers, dash parts) through the game's own debug renderer instead of GridNode's overlay, so the world in
+front of them can hide them. Labels stay on the overlay.
+
 ## Picking and the outline
 
 Click, or press **R**, to pick what the crosshair points at. The selection gets an outline: a box

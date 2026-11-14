@@ -1,7 +1,6 @@
 // Two of the game's rules a mod can change (API 41): fall damage, and kill volumes one by one.
 // - Fall damage (below): Faith's fall damage passes only from drops of at least a held distance.
-// - A kill volume tests each character in it (KillVolume_testCharacter, returns "inside" in al); a volume
-//   switched off answers "not inside". The trainer's own "kill volumes off" hooks the same function (both stack).
+// - Kill volumes: one switched off leaves the kill volume manager's list, as when the level turns it off.
 
 #include <windows.h>
 
@@ -9,6 +8,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -21,6 +21,7 @@ namespace gn::host {
 namespace {
 
 namespace e = gn::engine;
+namespace k = gn::engine::constant;
 
 // ---- fall damage ------------------------------------------------------------------------------------
 // The damage a landing does comes from Faith's animation graph: an ANT DamageProcessorAsset (update 0x142f26cc0)
@@ -86,46 +87,73 @@ void restoreFalls() {
 }
 
 // ---- kill volumes ------------------------------------------------------------------------------------
-using KillTestFn = bool (*)(void* volume, void* character);
-KillTestFn g_killOrig = nullptr;
-std::atomic<bool> g_killHooked{false};
+// The game's own way (Gemini block Q, read in Ghidra 2026-11-14): the kill volume manager tests only the volumes in
+// its list, and a volume leaves it when its Enabled property turns off (EntityUpdateList_remove) and comes back when
+// it turns on (EntityUpdateList_add). GridNode queues the same remove for a volume switched off, and the add when it
+// is switched back on and the game still has it enabled (+0x62). No code is patched (until api41u: a detour on
+// KillVolume_testCharacter, shared with the trainer's). The manager has no lock: all of it on the server thread.
 struct Off {
     uintptr_t volume; // 0: all of them
     uintptr_t owner;
 };
 std::mutex g_killM;
-std::vector<Off> g_off;               // (g_killM)
-std::atomic<int> g_offCount{0};       // g_off.size(), read without the lock
-std::atomic<uint32_t> g_spared{0};
+std::vector<Off> g_off;                 // (g_killM) what is asked
+std::atomic<int> g_offCount{0};         // g_off.size(), read without the lock
+std::vector<uintptr_t> g_removed;       // server thread: volumes GridNode took out of the manager's list
+std::atomic<uint32_t> g_removals{0};
 
-bool killTestHook(void* volume, void* character) {
-    if (g_offCount.load(std::memory_order_relaxed) > 0 && !unloaded()) {
-        bool off = false;
-        {
-            std::lock_guard<std::mutex> lock(g_killM);
-            for (const Off& o : g_off)
-                if (!o.volume || o.volume == reinterpret_cast<uintptr_t>(volume)) off = true;
-        }
-        if (off) {
-            g_spared.fetch_add(1, std::memory_order_relaxed);
-            return false; // not inside
-        }
-    }
-    return g_killOrig(volume, character);
+uintptr_t killManager() { return mem::readOr<uintptr_t>(mem::rva(e::global::KillVolumeManager)); }
+
+bool killVolumeAlive(uintptr_t v) {
+    static const reflect::Type* kv = registry().find("PamServerKillVolumeEntity");
+    const reflect::Type* t = v ? registry().typeOf(mem::ProcessMemory(), v) : nullptr;
+    return t && kv && registry().isKindOf(t, kv) && inspector::alive(v, t);
 }
 
-bool installKillHook() {
-    if (g_killHooked.load()) return true;
-    // The hook table keeps writing the original into g_killOrig (another mod's hook below ours can come and go: the
-    // trainer hooks this function too), so it gets the variable itself, never a local copy (the crash of 2026-11-14).
-    const int r = hookFunction("GridNode", e::function::KillVolume_testCharacter, reinterpret_cast<void*>(&killTestHook), reinterpret_cast<void**>(&g_killOrig));
-    if (r != GN_OK) {
-        GN_LOG("rules: the kill volume test could not be hooked (%d)", r);
+// Server thread, each tick while anything is off or was taken out.
+} // namespace
+
+void killVolumesServerTick() {
+    if (g_offCount.load(std::memory_order_relaxed) == 0 && g_removed.empty()) return;
+    const uintptr_t mgr = killManager();
+    if (!mgr) return;
+    std::vector<Off> off;
+    {
+        std::lock_guard<std::mutex> lock(g_killM);
+        off = g_off;
+    }
+    const auto wanted = [&](uintptr_t v) {
+        for (const Off& o : off)
+            if (!o.volume || o.volume == v) return true;
         return false;
+    };
+    const auto remove = reinterpret_cast<void (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::EntityUpdateList_remove));
+    const auto add = reinterpret_cast<void (*)(uintptr_t, uintptr_t, uint16_t)>(mem::rva(e::function::EntityUpdateList_add));
+    // Out: every listed (or queued-in) volume asked off. The remove only queues when it is in or coming in.
+    const uintptr_t b0 = mem::readOr<uintptr_t>(mgr + 0x28), b1 = mem::readOr<uintptr_t>(mgr + 0x30);
+    const uintptr_t q0 = mem::readOr<uintptr_t>(mgr + 0x48), q1 = mem::readOr<uintptr_t>(mgr + 0x50);
+    std::vector<uintptr_t> candidates;
+    for (uintptr_t p = b0; b1 > b0 && p < b1 && candidates.size() < 4096; p += 0x10) candidates.push_back(mem::readOr<uintptr_t>(p));
+    for (uintptr_t p = q0; q1 > q0 && p < q1 && candidates.size() < 8192; p += 0x10)
+        if (mem::readOr<int32_t>(p + 0xc) == 1) candidates.push_back(mem::readOr<uintptr_t>(p));
+    for (uintptr_t v : candidates) {
+        if (!v || !wanted(v)) continue;
+        remove(mgr, v);
+        if (std::find(g_removed.begin(), g_removed.end(), v) == g_removed.end()) {
+            g_removed.push_back(v);
+            g_removals.fetch_add(1, std::memory_order_relaxed);
+        }
     }
-    g_killHooked = true;
-    return true;
+    // Back in: ones no longer asked off, if they still live and the game still has them enabled.
+    for (size_t i = g_removed.size(); i-- > 0;) {
+        const uintptr_t v = g_removed[i];
+        if (wanted(v)) continue;
+        if (killVolumeAlive(v) && mem::readOr<uint8_t>(v + k::KillVolume_EnabledByGame)) add(mgr, v, 1);
+        g_removed.erase(g_removed.begin() + static_cast<std::ptrdiff_t>(i));
+    }
 }
+
+namespace {
 
 } // namespace
 
@@ -174,12 +202,7 @@ std::string fallLog() {
 }
 
 int killVolumeSet(const void* caller, void* volume, int enabled) {
-    if (volume) {
-        static const reflect::Type* kv = registry().find("PamServerKillVolumeEntity");
-        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(volume));
-        if (!t || !kv || !registry().isKindOf(t, kv)) return GN_ERR_ARGUMENT;
-    }
-    if (!installKillHook()) return GN_ERR_UNAVAILABLE;
+    if (volume && !killVolumeAlive(reinterpret_cast<uintptr_t>(volume))) return GN_ERR_ARGUMENT;
     std::lock_guard<std::mutex> lock(g_killM);
     const uintptr_t v = reinterpret_cast<uintptr_t>(volume);
     for (size_t i = g_off.size(); i-- > 0;)
@@ -189,8 +212,8 @@ int killVolumeSet(const void* caller, void* volume, int enabled) {
         g_off.push_back({v, reinterpret_cast<uintptr_t>(caller)});
     }
     g_offCount = static_cast<int>(g_off.size());
-    GN_LOG("rules: kill volume %llx %s (%d off; %u tests answered 'not inside' so far)", static_cast<unsigned long long>(v), enabled ? "on" : "off",
-           g_offCount.load(), g_spared.load());
+    GN_LOG("rules: kill volume %llx %s (%d off; %u taken out of the game's list so far)", static_cast<unsigned long long>(v), enabled ? "on" : "off",
+           g_offCount.load(), g_removals.load());
     return GN_OK;
 }
 
@@ -231,7 +254,7 @@ std::string killVolumeCommand(const std::string& rest) {
     unsigned long long addr = 0;
     const int n = sscanf(rest.c_str(), " %15s %llx", word, &addr);
     if (n < 1 || (_stricmp(word, "off") && _stricmp(word, "on")))
-        return "killvol off [ADDRESS] | killvol on [ADDRESS] (no address: every kill volume); " + std::to_string(g_spared.load()) + " tests answered 'not inside' so far";
+        return "killvol off [ADDRESS] | killvol on [ADDRESS] (no address: every kill volume); " + std::to_string(g_removals.load()) + " taken out of the game's list so far";
     const int r = killVolumeSet(reinterpret_cast<const void*>(&killVolumeCommand), reinterpret_cast<void*>(static_cast<uintptr_t>(n > 1 ? addr : 0)), !_stricmp(word, "on"));
     if (r != GN_OK) return "killvol: error " + std::to_string(r) + (r == GN_ERR_ARGUMENT ? " (not a PamServerKillVolumeEntity)" : "");
     return std::string("killvol: ") + (n > 1 ? "that kill volume" : "every kill volume") + (_stricmp(word, "on") ? " off" : " back on (as far as GridNode goes)");

@@ -387,6 +387,7 @@ int staticMemberSet(void* group, uint32_t member, uint32_t copy, uint32_t what, 
 // The fall threshold and kill volumes (gamerules.cpp): owner = the caller's return address.
 int fallThresholdSet(const void* caller, float metres);
 void rulesClientTick(); // client thread: Faith's highest point in a fall (fall damage hold)
+void killVolumesServerTick(); // server thread: kill volumes switched off out of the game's list, and back
 int killVolumeSet(const void* caller, void* volume, int enabled);
 void forgetRules(const CodeRange& r);
 void rulesRelease(); // GridNode's unload: the game's values back

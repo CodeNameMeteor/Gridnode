@@ -174,6 +174,52 @@ its stack as above. api41i also shows unset properties as "(not set yet)" (slot 
   hooks), kill volumes by the game's own add / remove. R not answered.
 - Layout to `.fbmod`: not started (scope in the reply of 2026-11-14 late).
 
+### How a real map mod adds to the city (2026-11-14, night)
+
+TheNollz's Map Expansion 0.8 (`.fbmod`, FROSTY v5, read with `assets fbmod-info --extract`; the reader now passes the
+icon and screenshots through as they are): 57 EBX, all replacing existing assets, none added to bundles, no res or
+chunks. 51 are the city's zone layers (`levels/sp/sp_maincity/centralcityprops_zs_zs_NNN/layer0_..._layer`, a few
+CentralCityBuildings and Downtown layers): each layer's WorldPartData `Objects` gets new instances: placed prefabs
+(SpatialPrefabReferenceObjectData: Blueprint import, BlueprintTransform in world space; 1,606 across the mod), effects
+(EffectReferenceObjectData), barriers (PamOBBCollisionEntityData + RigidBodyData), magropes, climb splines, light probes
+and reflection volumes. Two `overridenassets/<guid>_subworlddata` change zone streaming; three climb pipe prefabs are
+edited. So the `.fbmod` export's first step is the same: put each placed prefab, blocker and magrope into the layer of
+the zone it stands in, as instances of the game's own data types, with the prefab as an import.
+
+### The game's debug switches (2026-11-14, night; api41w, untested)
+
+- Game test (20:41): `killvol` through the game's list works (all six steps). Moving on to the debug renderer and
+  `.fbmod` export (user).
+- Inspector, Settings tab, **Debug switches**: every Boolean field named Draw* / Debug* / Show* (or containing Debug)
+  in the settings objects the game registered, with a tick each (the exe names some 200: DrawDebugGBuffer,
+  DrawRunnersVisionDebug, ShowTriggerDebugText, DrawDebugVolumes, DrawDebugEntities, DrawDebugRayCastCollision,
+  DrawDebugGroundHeight, ...). Game test (20:50): none did anything. The names come from the type metadata; the shipped
+  exe has only 10 callers of the legacy DebugRenderer_getContext and 12 of DebugRender2_getThreadContext (frame timing
+  graphs, the streaming memory graph, the system info and console overlays, an fps graph gated by a settings byte +0x3a /
+  +0x3d, a GPU graph +0x39): the code behind the other switches was left out of the build. The value of the debug
+  renderer is GridNode's own drawing through it (`debug_line`: 3D lines in the game's renderer).
+- Layout editor, Camera: **Draw lines with the game's debug renderer (experimental)**: every line3d (outlines, volumes,
+  barriers, magropes, dash parts, handles) goes through `debug_line` instead of ImGui's overlay; labels stay on the
+  overlay. Game test (20:58): looks the same as the overlay (not hidden behind walls), a little more jagged. Neither
+  easier for GridNode nor faster, so the overlay stays the default (user); the switch and `debug_line` stay as options
+  (`debug_line` is the simpler call for a mod: world coordinates, any thread, no view or projection).
+
+### Gemini O-Q (2026-11-14, night; api41v, game-tested 20:41)
+
+- **Q taken:** `kill_volume_set` / `killvol` no longer detour KillVolume_testCharacter: a volume switched off is queued
+  out of the kill volume manager's list with the game's own remove (EntityUpdateList_remove 0x143174d30; checked in
+  Ghidra with the manager's update, the list functions and the volume's Enabled handler vf2), on the server tick, and
+  added back (EntityUpdateList_add) when switched on if the level still has it on (+0x62). "All off" also takes out
+  volumes that stream in later. Unload puts them back in the ticks before GridNode goes.
+- **O not taken:** the freed-body listener vector (owner +0x1a8) is empty and could hold a listener of ours, but it
+  is called only when bodies are freed, inside the free loop under the owner's lock. bodies.cpp needs a safe point
+  after every flush (it makes, moves and destroys boxes there), so the flush detour stays.
+- **P not taken:** the two ticks are already vtable slot swaps (ServerGameWorld / ClientGameWorld postUpdate), no
+  code patched; an Updater of GridNode's would be another object in the game's lists for the same result. Kept in the
+  research notes for mods that want a pass of their own.
+- Code patches GridNode itself makes now: the creation function, the physics flush, the world set-up, the mission
+  clean-up call (plus mods' own).
+
 ### Gemini J-L taken (2026-11-14, night; api41m, untested)
 
 - **Fall damage** (block J, checked in Ghidra): no C++ compares a fall height; Faith's graph runs an ANT

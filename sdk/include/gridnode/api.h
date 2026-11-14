@@ -1411,8 +1411,9 @@ typedef struct gn_api {
      * fall_threshold_set: Faith's fall damage passes only from drops of at least `metres` (measured by GridNode
      * from her highest point in the fall; the damage itself is the game's, decided by her animation graph, so this
      * can only spare falls, never make a short one hurt); < 0 gives the game's back. Other characters are not
-     * changed. kill_volume_set: one PamServerKillVolumeEntity off (enabled 0: it
-     * answers "not inside" for every character) or back on; volume null: all of them. Both are undone when the mod
+     * changed. kill_volume_set: one PamServerKillVolumeEntity off (enabled 0: it leaves the game's kill volume
+     * list, as when the level switches it off, at the next server tick) or back on (if the level still has it
+     * on); volume null: all of them, including ones that stream in later. Both are undone when the mod
      * unloads. Any thread. Console: fall [METRES | off | log], killvol off|on [ADDRESS]. Untested in game. */
     int (*fall_threshold_set)(float metres);
     int (*kill_volume_set)(void* volume, int enabled);

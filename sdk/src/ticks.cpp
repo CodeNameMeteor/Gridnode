@@ -54,6 +54,7 @@ void serverPostUpdate(void* world, void* updateInfo) {
     guarded("visual environment", [] { visualEnvTick(); });
     guarded("server messages", [] { messagesServerTick(); });
     guarded("layouts (server)", [] { layouts::serverTick(); });
+    guarded("kill volumes", [] { killVolumesServerTick(); });
     guarded("level ready", [] { levelReadyServerTick(); });
     guarded("server dispatch", [&] { server().dispatch(dtOf(updateInfo)); });
 }

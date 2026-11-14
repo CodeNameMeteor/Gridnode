@@ -4625,6 +4625,10 @@ bool g_gizmoShown = false;           // render thread: the handles are showing (
 int g_gizmoMode = 0;                 // render thread: 0 move, 1 rotate
 bool g_gizmoLocal = true;            // render thread: handles along the object's own axes (else the world's)
 int g_editorFrame = -10;             // last frame the Layout editor was drawn (render thread)
+// Lines through the game's own debug renderer (debugdraw.cpp, `debugrender on`): drawn in the game's render pass with
+// the world around them, one pixel wide, a frame later. Off: ImGui's overlay, over everything. ImU32 colours are
+// 0xAABBGGRR, as the debug renderer's. Falls back to the overlay while the renderer is not there (line3d).
+std::atomic<bool> g_gameLines{false};
 
 uintptr_t firstViewManager() {
     namespace cv = e::st::ClientCameraViewManagers::off;
@@ -6131,6 +6135,16 @@ void draw(bool* open) {
         ImGui::TextDisabled("(off: her first-person arms stay; for finding what costs frames)");
     }
     ImGui::TextDisabled("Left-click an object in the world to pick it.");
+    {
+        bool gl = g_gameLines.load();
+        if (ImGui::Checkbox("Draw lines with the game's debug renderer (experimental)", &gl)) {
+            g_gameLines = gl;
+            if (gl) debugRenderCommand("on"); // made (or found) at the next frame
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Outlines, volumes, barriers and dash parts are drawn by the game itself, with the world in front of them.\n"
+                              "One pixel wide; labels stay on the overlay. Off: GridNode's overlay, over everything.");
+    }
     ImGui::SeparatorText("Teleport");
     {
         static std::vector<TeleportPoint> points;
@@ -6761,6 +6775,7 @@ ImVec2 project(const View& v, const float* p) {
 }
 // A 3D line, cut at the near plane.
 void line3d(ImDrawList* dl, const View& v, const float* a, const float* b, ImU32 col, float thick) {
+    if (g_gameLines.load(std::memory_order_relaxed) && debugLine(a, b, col) == GN_OK) return;
     float p[3] = {a[0], a[1], a[2]}, q[3] = {b[0], b[1], b[2]};
     const float za = depthOf(v, p), zb = depthOf(v, q);
     if (za < kNear && zb < kNear) return;
