@@ -694,6 +694,7 @@ const gn_api* api() {
             return contactWatch(mod ? mod : "?", entity, body, types, fn, user, handle);
         };
         a.contact_unwatch = contactUnwatch;
+        a.debug_line = debugLine;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

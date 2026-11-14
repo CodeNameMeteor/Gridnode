@@ -6,7 +6,7 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 ## Where things stand (2026-11-14, evening)
 
 - 2026-11-14 night: Gemini blocks J-N checked and taken (fall damage detour, input properties, effect notes, body
-  teardown, impulse flag; api41r, game-tested 19:30-19:48). See "Gemini J-L taken" below.
+  teardown, impulse flag; api41r, game-tested 19:30-19:48). Then api41t (creation hook, fewer detours, debug renderer).
 - `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
   user to merge.
 - Branch `gn/entity-properties` (from `gn/audit-findings`): API 40 (cf0be17, committed, untested in game: properties,
@@ -146,6 +146,34 @@ its stack as above. api41i also shows unset properties as "(not set yet)" (slot 
   the background, bring it back within 60 s, check the log says "gridnode.dll is being freed" and the file can be
   deleted; inject and unload again.
 
+### Fewer detours, the creation hook, the game's debug renderer (2026-11-14, late; api41t / api41u)
+
+- **on_created** also through the creation function (entityCreator_spawnEntityWithContext, a detour put in with the
+  first listener): an entity it made that no creator slot passed on goes to the listeners there (the census's 48
+  missed). The pool stays: block C lists creations outside that function. `census` now counts both ways ("missed by
+  the slots", "outside the creation function"); if the second stays 0 in a few runs, the pool (1,092 slot hooks) can go.
+  Game test (20:17, a checkpoint reload): 135,257 made, 27,563 missed by the slots (mostly components: Part, StaticModel
+  Physics / Health, PlayerTag; half the static models), 0 outside. But the pool cannot simply go: the hook passes ci on
+  after the call, when a creator in mode 2 has put ci's transform back (the layout editor matches models by it). The
+  same test ran at ~110 fps instead of 165; a second run (20:27, api41u) was fine: `sample` showed GridNode at about 3%
+  of the render thread, the game's threads mostly waiting. Not reproduced (`census dispatch off` stays for comparing).
+- **Physics room through the Physics settings: tried and dropped** (game test 20:16): PhysicsManager vf6 (0x1434f3050)
+  copies settings +0x20 / +0x24 (BodyBufferCapacity, MotionBufferCapacity) into each world's description, but the game
+  sets the body count back to 16,384 during each level load, before the worlds are made. The detour stays (api41u).
+- **The flush detour stays.** A PhysicsManager vtable copy can only wrap the whole step (vf2), but bodies.cpp must act
+  between the deferred free (0x1434f4c80, where donor records die) and the collide step of the same step (block N).
+  Gemini block O asks for a listener list there (owner +0x1a8) that could replace it.
+- **Fall damage** through PamClientHumanHealthComponent's slot 41 (a pointer swap) instead of a function detour.
+- **The game's debug renderer** (debugdraw.cpp, experimental): `debugrender on` makes DebugRender2 as the game would
+  (Impl, vtable, registerGlobal, inline mode) on the render thread (in the test it was already there: the game's own); `debugrender test` draws a cage around Faith with
+  3D lines (game-tested 20:18: the cage shows); `debug_line` (API 41) for mods. No text (the font index buffer is the legacy renderer's). Open: whether
+  the game registers the "DebugRender" settings, its shaders' parameters and the depth state.
+- `prop unwatch WATCH`.
+- Research: `scratch\gemini-questions-2026-11-14d.md`; O, P, Q answered (`research/gemini-2026-11-14.md`, not checked
+  yet): an empty listener vector inside the deferred free (could replace the flush detour), update passes (ticks without
+  hooks), kill volumes by the game's own add / remove. R not answered.
+- Layout to `.fbmod`: not started (scope in the reply of 2026-11-14 late).
+
 ### Gemini J-L taken (2026-11-14, night; api41m, untested)
 
 - **Fall damage** (block J, checked in Ghidra): no C++ compares a fall height; Faith's graph runs an ANT
@@ -191,16 +219,14 @@ Research of 2026-11-14 is all in (blocks A-N, `research/gemini-2026-11-14.md`). 
 events (with the impulse flag), body teardown, input properties, unconnected fields read, fall damage, effects.
 Dropped: dynamic shapes (user, 2026-11-14: nothing in the game needs one).
 
-- **Creation hook instead of the creator pool** (entities.cpp's 2,048 slots and the 1 s refresh): the census missed
-  48 of 104,738 (ClientAIActionStationBase 46, SkyCelestialMultiComponent 2) that the creation hook sees; switch to the
-  hook, keep the pool as a fallback at first.
+- **Creator pool out** once the census shows nothing made outside the creation function (the hook is in since api41t).
 - **Properties:** strings and object references writable (block D: copy into the slot's arena; never assign the same
   object at reference count 1). Optional: hold a value against its source rewriting it (by user request only).
 - **Messages:** queued (delayed) sending through the game's allocator (block G: poolAlloc on the arena 0x1423606d0,
   no string or array fields).
-- **Second report, checked but not taken:** update-pass registration (block E: hookless ticks), freeze-world /
-  override camera (block F: a photo mode for the trainer), PhysicsManager vtable copy instead of the two physics
-  detours.
+- **Second report, checked but not taken:** update-pass registration (block E: hookless ticks; block P asks the
+  rest), freeze-world / override camera (block F: a photo mode for the trainer). The physics flush detour: no vtable
+  copy can replace it (api41t); block O may give another way.
 - **Not checked at all:** the rest of the second report (TypeInfo hash maps, SettingsManager_getByType, camera
   callback list +0x1b90 (block H: FOV override), the WeakPtr trees, DX11 swap chain, VFS, synthetic input,
   SubLevelManager states, the visual environment state stack): hypotheses until read in Ghidra.

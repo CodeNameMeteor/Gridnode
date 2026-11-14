@@ -187,19 +187,25 @@ void* physicsWorldCreate(void* world, void* desc) {
     return g_physicsWorldCreate(world, desc);
 }
 
-void physicsStart() {
+// The fallback: the description, as each world is made (a function detour).
+void physicsDetour(const char* why) {
     if (!build::codeMatches("PhysicsWorld_create")) {
-        GN_LOG("physics: the world set-up does not look as expected; worlds keep the game's room for bodies");
+        GN_LOG("physics: %s, and the world set-up does not look as expected; worlds keep the game's room for bodies", why);
         return;
     }
     // The variable itself: the hook table rewrites it when a mod's hook below ours goes (never a local copy).
     if (hookFunction("GridNode", e::function::PhysicsWorld_create, reinterpret_cast<void*>(&physicsWorldCreate), reinterpret_cast<void**>(&g_physicsWorldCreate)) != GN_OK) {
-        GN_LOG("physics: could not hook the world set-up; worlds keep the game's room for bodies");
+        GN_LOG("physics: %s, and the world set-up could not be hooked; worlds keep the game's room for bodies", why);
         return;
     }
-    // Worlds made before this (GridNode injected into a running level) keep their size until the next level.
-    GN_LOG("physics: new worlds get room for %u bodies (the next level load, if one is running)", kPhysicsBodies + 1);
+    GN_LOG("physics: %s: new worlds get room for %u bodies through a detour on the world set-up (the next level load)", why, kPhysicsBodies + 1);
 }
+
+// The room comes from the "Physics" settings (PhysicsManager vf6 0x1434f3050 copies their +0x20 / +0x24 into each
+// world's description; PhysicsSettings_BodyCapacity). Raising the settings instead of this detour was tried
+// (api41t, game test 2026-11-14): the game sets the body count back during each level load, before the worlds are
+// made, so the first world after it kept 16,384. The detour stays.
+void physicsStart() { physicsDetour("worlds made from now on (the next level load, if one is running)"); }
 } // namespace
 
 // Quitting during a Dash crashed the game in its own mission clean-up: FUN_1439e08f0 looks the mission

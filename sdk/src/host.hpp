@@ -62,6 +62,12 @@ bool isClientThread();
 // creators that appeared since (called about once a second).
 int onCreated(const std::string& owner, const std::string& className, gn_created_fn fn, void* user);
 void refreshCreators();
+bool spawnHookIn();      // the creation function's detour (entities the creator slots miss), in on first use
+uint64_t spawnCaught();  // entities passed on by it so far (the slots missed them)
+void spawnDispatch(bool on); // whether it passes them on (console "census dispatch on|off")
+bool spawnDispatching();
+void censusSpawn(void* entity, const reflect::Type* t, bool poolSaw); // census.cpp, from the creation hook
+void censusPoolOnly(const reflect::Type* t);                          // census.cpp, a creation outside it
 size_t boundCreatorCount();
 // Wraps every entity class's deleting destructor (vtable +0x38) so a destroyed entity is marked
 // dead at once (inspector::alive is false from then on). Once, at startup.
@@ -393,6 +399,11 @@ int effectStop(uint32_t handle);
 int effectAlive(uint32_t handle);
 void forgetEffects(const CodeRange& r, bool all); // a mod's (all: every one) stopped on the client thread
 std::string effectCommand(const std::string& rest); // the console's "effect"
+// The game's debug renderer (debugdraw.cpp, experimental).
+void debugDrawFrame();   // render thread, each frame (Present)
+int debugLine(const float* a, const float* b, uint32_t abgr); // any thread: a world-space line for the next frame
+void debugDrawRelease(); // GridNode's unload
+std::string debugRenderCommand(const std::string& rest); // the console's "debugrender"
 // An asset by GUID (assets.cpp).
 void* assetFindGuid(const uint8_t* guid, uint32_t* group);
 int assetGroupOf(uintptr_t obj); // the loaded resource group holding obj, or -1

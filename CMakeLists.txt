@@ -190,6 +190,7 @@ add_library(gridnode SHARED
   sdk/src/static_groups.cpp
   sdk/src/gamerules.cpp
   sdk/src/effects.cpp
+  sdk/src/debugdraw.cpp
   sdk/src/contacts.cpp
   sdk/src/dashes.cpp
   sdk/src/layouts.cpp

@@ -601,6 +601,7 @@ pub struct gn_api {
     pub closest_points: Option<unsafe extern "C" fn(shape: u32, size: *const f32, at: *const gn_transform, max_distance: f32, ignore: *const u32, ignore_count: u32, hits: *mut gn_shape_hit, max_hits: u32) -> c_int>,
     pub contact_watch: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, body: u32, types: u32, fn_: gn_contact_fn, user: *mut c_void, handle: *mut u32) -> c_int>,
     pub contact_unwatch: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub debug_line: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, abgr: u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -632,4 +633,4 @@ const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_shape_hit>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_contact>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1768);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1776);

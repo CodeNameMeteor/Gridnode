@@ -91,7 +91,55 @@ globals:
     note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
     confidence: confirmed
     sources: [reflected]
+  - name: DebugRender2_global
+    va: 0x1423745e0
+    type: "void*"
+    note: "The game's DebugRender2 (a 0x28 wrapper: +0 the Impl, +8 the \"DebugRender\" settings, +0x20 a flip index), set by DebugRender2_registerGlobal; null in the shipped game (its creation is gated off). Producers draw through DebugRender2_getThreadContext as soon as it is set, and RenderEngine_renderDebugOverlay (0x1435785c0) flips and draws it each frame. Audit 2026-11-13 (debugrender-verified), read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRenderer_fontIndexBuffer
+    va: 0x142563a20
+    type: "void*"
+    note: "Made only by the legacy DebugRenderer's constructor (0x14356c560); DebugRender2's text batches (Font2D) read it: null with the debug renderer off, so no text then. Audit 2026-11-13; not read here."
+    confidence: hypothesis
+    sources: [research]
 functions:
+  - name: SettingsManager_findByName
+    va: 0x142ab2120
+    signature: "void*(void* settingsManager, const i8* name)"
+    note: "A settings object by its registered name (\"Physics\", \"DebugRender\"): under the manager's lock (+0x40), a hash lookup in +0x70; null when none. PhysicsManager vf6 and DebugRender2Impl_ctor call it. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
+  - name: DebugRender2Impl_ctor
+    va: 0x143566a00
+    signature: "void*(void* impl)"
+    note: "Constructs the 0xa0-byte DebugRender2 Impl (base vtable 0x141bc3dd0; the creator then sets DebugRender2Impl_vtable): a lock at +0x10, three vectors on the global arena, +8 the \"DebugRender\" settings (SettingsManager_findByName, referenced). Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_registerGlobal
+    va: 0x142aa87c0
+    signature: "void(void* impl)"
+    note: "poolAllocs the 0x28 wrapper on the global arena, fills it (+0 impl, +8 the \"DebugRender\" settings, +0x20 0) and stores it in DebugRender2_global. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_getThreadContext
+    va: 0x142aa8790
+    signature: "void*()"
+    note: "0 while DebugRender2_global is null; else this thread's recorder (TLS +0x278, made the first time: 0x98 bytes, DebugRender2Recorder_ctor). Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_allocVertices
+    va: 0x142aae2d0
+    signature: "void*(void* ctx, i32 primType, u32 count)"
+    note: "count 0x20-byte vertices ({f32 x, y, z, u32 abgr at +0xc, uv +0x10}) in the recorder's staging buffer for a primitive type (0 Tri3D, 1 Line3D: 2 vertices a line, 2 Tri2D, 3 Line2D, 4 Font2D); more than the staging holds gets its own command. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_flushThread
+    va: 0x142aaa8f0
+    signature: "void(void* ctx, u32 a, u64 b)"
+    note: "Publishes this thread's recorder (staging, then its blocks through the allocator at ctx +0x18) to the Impl; the game calls it with (ctx, 0, 0) at its flush points. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
   - name: VisualEnvironmentManager_update
     va: 0x143705b30
     signature: "void(void* manager, void* updateContext)"
@@ -686,6 +734,8 @@ functions:
     confidence: inferred
     sources: [ghidra, user]
 constants:
+  - { name: DebugRender2Impl_vtable, value: 0x141bc3f68, confidence: inferred, sources: [research, ghidra], note: "Set on the Impl after DebugRender2Impl_ctor by the game's creator (7 slots: +0x20 drawFrame 0x14356dab0, +0x30 drawBatches 0x14356e530). Audit 2026-11-13." }
+  - { name: DebugRenderSettings_InlineMode, value: 0x1c, confidence: inferred, sources: [research], note: "i32 in the DebugRender settings: -1 (default) expands text and spheres in a job, 0 in drawFrame itself. Enable +0x28 (default 1), DrawStats +0x29. Audit 2026-11-13." }
   - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
   - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
   - { name: ClientStaticModel_vf_bounds, value: 0xb8, confidence: inferred, sources: [ghidra] }

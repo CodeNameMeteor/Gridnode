@@ -71,6 +71,7 @@ bool unloadEverything() {
     propertiesRelease(); // property watches detached in the ticks below (queued deliveries drain there too)
     contactsRelease();   // contact watches out of Havok's lists in the ticks below
     rulesRelease();      // the fall threshold back; kill volumes back on
+    debugDrawRelease();  // the game's debug renderer global cleared, if GridNode made it
     forgetEffects(CodeRange{}, true); // every effect GridNode spawned, stopped in the ticks below
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below
     forgetAudioMix(CodeRange{}); // offsets to 0 and a recompute while the hook is still in; the hook goes with the rest below

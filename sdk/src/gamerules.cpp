@@ -65,12 +65,16 @@ void applyAntDamageHook(void* component, const void* damage) {
     if (!spare) g_fallOrig(component, damage);
 }
 
+// A pointer swap on PamClientHumanHealthComponent's slot (the player's component; the AI's calls the function
+// directly), not a code patch: the function detour of api41m worked in game (2026-11-14) and showed only Faith's
+// component taking fall damage through this path.
 bool installFallHook() {
     if (g_fallHooked.load()) return true;
-    const int r = hookFunction("GridNode", e::function::ClientHealth_applyAntDamage, reinterpret_cast<void*>(&applyAntDamageHook),
-                               reinterpret_cast<void**>(&g_fallOrig));
-    if (r != GN_OK) {
-        GN_LOG("rules: the fall damage path could not be hooked (%d)", r);
+    std::string why;
+    const auto r = hooks().install("gridnode", mem::rva(e::hook::ClientHumanHealth_applyAntDamageSlot.slot), mem::rva(e::hook::ClientHumanHealth_applyAntDamageSlot.original),
+                                   reinterpret_cast<uint64_t>(&applyAntDamageHook), reinterpret_cast<uint64_t*>(&g_fallOrig), &why);
+    if (r != hook::Result::Ok) {
+        GN_LOG("rules: the fall damage slot could not be hooked (%s)", why.c_str());
         return false;
     }
     g_fallHooked = true;

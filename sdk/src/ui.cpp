@@ -778,6 +778,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
     if (flags & DXGI_PRESENT_TEST) return g_origPresent(sc, sync, flags);
     if (!g_ready && !g_swapChain) g_ready = init(sc);
     if (g_ready && sc == g_swapChain && g_rtv) {
+        debugDrawFrame(); // the game's debug renderer (on request): made and fed here, on the render thread
         const double perfStart = qpcUs();
         double perfLayouts = 0, perfHold = 0, perfMods = 0;
         ImGui::SetCurrentContext(g_imgui.load());

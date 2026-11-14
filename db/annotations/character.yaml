@@ -87,6 +87,15 @@ structs:
       - { offset: 0x18, name: skip, type: u8, note: "Non-zero: do nothing." }
 
 hooks:
+  - name: ClientHumanHealth_applyAntDamageSlot
+    kind: vtable-slot
+    vtable: 0x141c3d198
+    offset: 0x148
+    original: 0x1439196b0
+    signature: "void(void* clientHealthComponent, const void* antDamage)"
+    note: "PamClientHumanHealthComponent's slot 41 (ClientHealth_applyAntDamage): how the player's animation-graph damage reaches it (the AI component's own slot calls the function directly). The fall damage hold swaps this slot. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
   - name: PamClientCharacterEntity_factory
     kind: creator-slot
     slot: 0x141c3cd80
@@ -113,10 +122,10 @@ functions:
       to server, then the server health component). The record: +0x00 f32 amount, +0x04 i32 heart amount, +0x08
       byte allow last chance, +0x0c the attacker's id, +0x10 vec4 direction, +0x20 byte, +0x28 the damage type value
       (an enum asset whose +0x1c is the value: 1 gives PamDamageType_Fall 0x68, 0 PamDamageType_Unkown 100, others
-      Melee 0x66), +0x30, +0x38 and +0x40 more enum values (+0x1c each). The PamClientHumanHealthComponent vtable
-      0x141c3d1c0 slot +0x120 holds it; PamClientAIHealthComponent's slot calls it. No fall height is compared in
+      Melee 0x66), +0x30, +0x38 and +0x40 more enum values (+0x1c each). PamClientHumanHealthComponent's vtable
+      (0x141c3d198) slot 41 (+0x148) and PamClientHealthComponent's (0x141c3c5d0) hold it; PamClientAIHealthComponent's calls it. No fall height is compared in
       C++: the graph decides when and how much. Gemini block J, checked in Ghidra 2026-11-14. GridNode's fall damage
-      hold detours it.
+      hold swaps the human component's slot (ClientHealth_applyAntDamageSlot).
     confidence: inferred
     sources: [research, ghidra]
   - name: LocalClientCharacter

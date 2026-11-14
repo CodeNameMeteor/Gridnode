@@ -552,6 +552,11 @@ void logChange(void* entity, const char* name, const void* value, const gn_type*
 } // namespace
 
 std::string propCommand(const std::string& rest) {
+    if (rest.compare(0, 8, "unwatch ") == 0) {
+        const uint32_t h = static_cast<uint32_t>(strtoul(rest.c_str() + 8, nullptr, 0));
+        const int r = propertyUnwatch(h);
+        return r == GN_OK ? "prop: watch " + std::to_string(h) + " ends" : "prop: no watch " + std::to_string(h);
+    }
     if (rest.compare(0, 6, "watch ") == 0) {
         char addr[32] = {}, name[128] = {};
         if (sscanf(rest.c_str() + 6, "%31s %127s", addr, name) != 2) return "prop watch ADDRESS NAME: logs each change of the property to gridnode.log";
@@ -566,7 +571,7 @@ std::string propCommand(const std::string& rest) {
     }
     char addr[32] = {}, name[128] = {}, val[64] = {};
     const int n = sscanf(rest.c_str(), "%31s %127s %63s", addr, name, val);
-    if (n < 1) return "prop ADDRESS [NAME [VALUE]]: an entity's connected property (address from the inspector)";
+    if (n < 1) return "prop ADDRESS [NAME [VALUE]] | prop watch ADDRESS NAME | prop unwatch WATCH: an entity's properties (address from the inspector)";
     const uintptr_t entity = static_cast<uintptr_t>(strtoull(addr, nullptr, 16));
     const std::string nameS = name, valS = val;
     return onEntityRealm(entity, [entity, n, nameS, valS]() -> std::string {

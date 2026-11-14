@@ -246,6 +246,7 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "fall") == 0) return fallCommand(rest);           // GridNode's own (gamerules.cpp)
     if (_stricmp(word.c_str(), "killvol") == 0) return killVolumeCommand(rest);  // GridNode's own (gamerules.cpp)
     if (_stricmp(word.c_str(), "effect") == 0) return effectCommand(rest);       // GridNode's own (effects.cpp)
+    if (_stricmp(word.c_str(), "debugrender") == 0) return debugRenderCommand(rest); // GridNode's own (debugdraw.cpp)
     if (_stricmp(word.c_str(), "assetguid") == 0) return assetGuidCommand(rest); // GridNode's own (assets.cpp)
     if (_stricmp(word.c_str(), "contact") == 0) return contactCommand(rest);     // GridNode's own (contacts.cpp)
     if (_stricmp(word.c_str(), "squery") == 0) return shapeQueryCommand(rest);   // GridNode's own (world.cpp)
