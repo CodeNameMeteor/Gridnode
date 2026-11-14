@@ -210,6 +210,10 @@ deletes and unloads them; **Unload** puts the level back as the game has it. Wit
 used layout when a level starts* on, the layout you last used for a level comes back when it
 loads.
 
+To play a layout without GridNode, make it a Frosty mod (experimental, placed prefabs and blockers only):
+`python tools/gen/gridnode.py assets layout-fbmod layouts/<level>/<name>.yaml --data "<game>/Data"`, then
+install the `.fbmod` from `bin/assets/mods/` with Frosty's Mod Manager. See [tools](tools.md).
+
 ## Keys
 
 Every key can be changed in the editor under **Keys** (saved in `layouts/settings.txt`). Escape

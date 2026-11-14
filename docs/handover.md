@@ -23,6 +23,8 @@ the repository: `CLAUDE.md`. Sections 4 and 5 below are history (1.0.0 was relea
   `research/modder-notes-2026-11-14.md`; Gemini briefs J-N wait on the PC in `scratch\gemini-2026-11-14\`.
 - Fixed 2026-11-14 evening (api41k, untested): the editor after a late inject (group buses read from the entity,
   +0x20) and an unload while the game is not ticking (waits up to 60 s for it instead of staying in memory).
+- 2026-11-14 late night: `assets layout-fbmod` (a layout as a Frosty mod: placed prefabs and blockers into the zone
+  layers, preloads for prefabs from other areas). Untested on the install; progress.md "Layout to Frosty mod".
 - Hook rule learned 2026-11-14: `hookFunction`'s original must be the address of a global (the hook table rewrites
   it as other mods' hooks come and go); a local copy crashed on unload with the trainer.
 - `gn/entity-properties` (API 40, from `gn/audit-findings`, committed cf0be17, untested): properties and watching,

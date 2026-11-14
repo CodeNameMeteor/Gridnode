@@ -5,6 +5,9 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 
 ## Where things stand (2026-11-14, evening)
 
+- 2026-11-14 late night: the game's line renderer was tried against ours (same look, less clear): ours stays the
+  default. `assets layout-fbmod` started (placed prefabs and blockers into the zone layers; untested in game).
+
 - 2026-11-14 night: Gemini blocks J-N checked and taken (fall damage detour, input properties, effect notes, body
   teardown, impulse flag; api41r, game-tested 19:30-19:48). Then api41t (creation hook, fewer detours, debug renderer).
 - `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
@@ -186,6 +189,20 @@ and reflection volumes. Two `overridenassets/<guid>_subworlddata` change zone st
 edited. So the `.fbmod` export's first step is the same: put each placed prefab, blocker and magrope into the layer of
 the zone it stands in, as instances of the game's own data types, with the prefab as an import.
 
+### Layout to Frosty mod (2026-11-14, night; untested with the game's files)
+
+`gridnode.py assets layout-fbmod LAYOUT.yaml --data DIR` (`tools/assets/gridnode_assets/layoutmod.py`) writes a layout
+as a `.fbmod` the way Map Expansion does it: each placed prefab and blocker goes into the WorldPartData `Objects` of the
+zone layer it stands in (the smallest layer box holding it, else the layer with the nearest object; `--layer` forces
+one), as a copy of a reference object or barrier already in some layer (its type copied into the file if missing). A
+prefab the zone does not load gets its bundle and that bundle's parents added to the zone's `PreloadedBundleNames`
+in the level file that streams it in. Each edited file is read back before it goes in; the YAML is kept in
+`bin/assets/layout-fbmod/<title>/`. The layer index is cached by SHA-1 in `bin/assets/index/`.
+
+Done: PlacedPrefab, PlacedBlocker. Not yet: moves and copies of the level's objects, magropes and barrier copies,
+custom dashes, prefabs needing res or chunks of their own. Tested only on Map Expansion's layers (a prefab and a
+blocker added, read back the same) and made-up files (`tests/test_layoutmod.py`); not on the install, not in game.
+
 ### The game's debug switches (2026-11-14, night; api41w, untested)
 
 - Game test (20:41): `killvol` through the game's list works (all six steps). Moving on to the debug renderer and
@@ -265,6 +282,7 @@ Research of 2026-11-14 is all in (blocks A-N, `research/gemini-2026-11-14.md`). 
 events (with the impulse flag), body teardown, input properties, unconnected fields read, fall damage, effects.
 Dropped: dynamic shapes (user, 2026-11-14: nothing in the game needs one).
 
+- **Layout to Frosty mod:** moves, copies, magropes, dashes (see "Layout to Frosty mod"); first the user's test.
 - **Creator pool out** once the census shows nothing made outside the creation function (the hook is in since api41t).
 - **Properties:** strings and object references writable (block D: copy into the slot's arena; never assign the same
   object at reference count 1). Optional: hold a value against its source rewriting it (by user request only).
