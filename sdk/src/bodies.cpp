@@ -468,7 +468,10 @@ bool nativeMake(const NativeCtx& c, Box& b) {
                                                                                          : mem::rva(c::PhysicsBoxDesc_vtable);
     memcpy(desc, &vt, 8);
     const float mass = b.mass;
-    const uint32_t motion = b.motion, layer = mem::readOr<uint32_t>(c.rigid + 0x1c);
+    // The description's +0x1c replaces the layer the factory picks (PhysicsEntityFactory_createBody, read in Ghidra
+    // 2026-11-14): a dynamic body keeps the factory's (2, dynamic) instead of the barrier's; the game test of
+    // 2026-11-14 had a dynamic shape hanging in the air with the barrier's layer.
+    const uint32_t motion = b.motion, layer = motion == 6 ? 0u : mem::readOr<uint32_t>(c.rigid + 0x1c);
     memcpy(desc + 0x08, &mass, 4);
     memcpy(desc + 0x14, &motion, 4);
     memcpy(desc + 0x1c, &layer, 4);
@@ -476,7 +479,9 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     alignas(16) uint8_t info[0x100] = {};
     reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(mem::rva(e::function::unverified::PhysicsCreationInfo_ctor))(info, c.bus, 0, c.owner, c.ent + 0x30);
     // A dynamic body needs the creation info's +0x10 set, else the factory makes it keyframed (it moves only
-    // when placed).
+    // when placed). +0x10 is the realm (0 client, 1 server: PhysicsCreationInfo_ctor's callers pass the entity's
+    // realm bit; the factory gives only a server body a dynamic motion), so this claims a server body in the
+    // client world (Gemini's answer A; the factory's branch read in Ghidra 2026-11-14).
     if (motion == 6) *reinterpret_cast<int32_t*>(info + 0x10) = 1;
     uint32_t id = kNoBody;
     const uint32_t* made = reinterpret_cast<const uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, void*)>(mem::rva(e::function::unverified::PhysicsEntityFactory_create))(
@@ -505,6 +510,21 @@ bool nativeMake(const NativeCtx& c, Box& b) {
     reinterpret_cast<void (*)(uintptr_t, uint32_t*)>(mem::rva(e::function::unverified::RigidBody_registerSpatial))(c.owner, &t2);
     b.nid = id;
     b.parent = c.ent;
+    if (motion == 6) {
+        // What Havok holds for it (RigidBody +0x30 -> owner, owner +0xe0 the world, +0x58 the Havok index; body
+        // +0x58 flags, +0x68 motion id, +0x88 user data): for a dynamic shape that does not fall.
+        const uintptr_t table = mem::readOr<uintptr_t>(c.owner + e::constant::PhysicsOwner_Objects);
+        const uintptr_t rb = table ? mem::readOr<uintptr_t>(table + (id & 0xffff) * 8ull) : 0;
+        const uintptr_t owner = rb ? mem::readOr<uintptr_t>(rb + 0x30) : 0;
+        const uintptr_t hk = owner ? mem::readOr<uintptr_t>(owner + 0xe0) : 0;
+        const int32_t index = rb ? mem::readOr<int32_t>(rb + 0x58, -1) : -1;
+        const uintptr_t arr = hk ? mem::readOr<uintptr_t>(hk + e::constant::HavokWorld_Bodies) : 0;
+        if (arr && index >= 0) {
+            const uintptr_t hb = arr + uint64_t(index) * kBodySize;
+            GN_LOG("bodies: dynamic shape %u: Havok body %d, flags %08x, motion %u, user data %016llx", b.handle, index, mem::readOr<uint32_t>(hb + 0x58),
+                   mem::readOr<uint32_t>(hb + 0x68), static_cast<unsigned long long>(mem::readOr<uint64_t>(hb + 0x88)));
+        }
+    }
     return true;
 }
 
@@ -711,12 +731,11 @@ void bodiesStart() {
             GN_LOG("bodies: %s does not look as expected; collision boxes are off", f);
             return;
         }
-    void* original = nullptr;
-    if (hookFunction("GridNode", e::function::PhysicsWorld_flush, reinterpret_cast<void*>(&flushHook), &original) != GN_OK) {
+    // The variable itself: the hook table rewrites it when a mod's hook below ours goes (never a local copy).
+    if (hookFunction("GridNode", e::function::PhysicsWorld_flush, reinterpret_cast<void*>(&flushHook), reinterpret_cast<void**>(&g_flush)) != GN_OK) {
         GN_LOG("bodies: could not hook the physics flush; collision boxes are off");
         return;
     }
-    g_flush = reinterpret_cast<FlushFn>(original);
     g_ready = true;
     if (onDestroyed("GridNode", "PamOBBCollisionEntity", &barrierDestroyed, nullptr) != GN_OK) GN_LOG("bodies: standalone boxes cannot follow their barrier's destruction; they are off"), g_followOk = false;
 }
@@ -919,4 +938,18 @@ std::string shapeCommand(const std::string& rest) {
              at.trans[2], motion == 0 ? "static" : motion == 1 ? "keyframed" : "dynamic");
     return out;
 }
+// The RigidBody of a shape the game's factory made (client world), or 0 (client thread: its records change there).
+uintptr_t shapeRigidBody(uint32_t handle) {
+    std::lock_guard<std::mutex> lock(g_m);
+    for (const Box& b : g_boxes) {
+        if (b.handle != handle || b.removed || b.nid == kNoBody) continue;
+        const uintptr_t gw = mem::readOr<uintptr_t>(mem::rva(e::global::GameWorlds));
+        const uintptr_t owner = nativeOwner(gw, b.nid);
+        const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + c::PhysicsWorld_Records) : 0;
+        const uintptr_t rec = table ? mem::readOr<uintptr_t>(table + uint64_t(b.nid & 0xffff) * 8) : 0;
+        return rec > 0x10000 ? rec : 0;
+    }
+    return 0;
+}
+
 } // namespace gn::host

@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 40 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add) */
+#define GN_API_VERSION 41 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add); 41: static model group members (static_member_set), the fall threshold and kill volumes, effects, assets by GUID, shape queries, contact events */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -52,7 +52,7 @@ extern "C" {
 #define GN_VE_DEPTH_OF_FIELD 0xa50u
 #define GN_VE_VIGNETTE 0xac0u
 #define GN_VE_FILM_GRAIN 0xb00u
-#define GN_VE_SIZE 0xb30u
+#define GN_VE_SIZE 0x1bf0u /* 0xb30 before API 41 */
 #define GN_VE_ALL 0xffffffffu
 
 #if defined(_WIN32)
@@ -421,6 +421,31 @@ typedef void (*gn_data_fn)(void* const* objects, uint32_t count, uint32_t bundle
 /* A watched property changed (API 40): value as property_get gives it (the bytes; for a class reference a
  * pointer to the object pointer, for a string a pointer to the char*), valid during the call only. */
 typedef void (*gn_property_fn)(void* entity, const char* name, const void* value, const gn_type* type, void* user);
+
+/* API 41: what static_member_set changes. */
+#define GN_MEMBER_ENABLED 0u /* the copy's render object and collision (the client group), its collision (the server's) */
+#define GN_MEMBER_VISIBLE 2u /* its render object only (client group) */
+
+/* A body a shape query met (shape_cast, closest_points; API 41). */
+typedef struct gn_shape_hit {
+    uint32_t body;        /* the collision body's id, as raycast_object gives it; 0xffffffff: none */
+    uint32_t part;        /* within the body (a group's prop, a compound's piece); 0xffffffff: none */
+    void* physics_object; /* the game's object for the body (a RigidBody, or a group's body) */
+    gn_ray_hit hit;       /* cast: where and when along the way; closest points: the point on the body, its
+                             normal, the distance between the shapes (fraction 0) */
+} gn_shape_hit;
+
+/* A physics body's event (contact_watch; API 41), on the body's realm thread. */
+#define GN_CONTACT_IMPULSE 5u     /* Havok's contact impulse: body_a and body_b touched with impulse */
+#define GN_CONTACT_ACTIVATION 10u /* body_a woke (activated 1) or went to sleep (0); dynamic bodies only */
+typedef struct gn_contact {
+    uint32_t type;      /* GN_CONTACT_* */
+    uint32_t body_a;    /* Havok body indices (not the body ids above) */
+    uint32_t body_b;    /* 0xffffffff for an activation */
+    float impulse;      /* GN_CONTACT_IMPULSE */
+    uint32_t activated; /* GN_CONTACT_ACTIVATION */
+} gn_contact;
+typedef void (*gn_contact_fn)(const gn_contact* contact, void* user);
 
 typedef struct gn_api {
     uint32_t version;         /* GN_API_VERSION of the host */
@@ -1055,10 +1080,10 @@ typedef struct gn_api {
      * The game's current visual environment state: sun, tonemap, colour correction, sky, wind, depth of
      * field, vignette, film grain. Offsets are within the state (GN_VE_* below, from the cinematic
      * tools; the fields inside each block are in docs/research/visual-environment.md). The game
-     * recomputes the state every frame, so a value set here is a hold: it is written back after each
-     * server and each client world update until released. At most 64 holds; one per (offset, size);
-     * the last call wins. All are released when the mod that set them unloads. Experimental: whether a
-     * held value is steady on screen (not flickering) is untested.
+     * recomputes the state every frame, so a value set here is a hold: since API 41 it is written on the
+     * render thread just before the state is uploaded (and into the copy Enlighten's lighting reads), so
+     * no frame shows the game's value; before, after each world update. At most 64 holds; one per (offset,
+     * size); the last call wins. All are released when the mod that set them unloads. Experimental.
      * visual_env_get reads the state now; visual_env_set holds `size` bytes at `offset`;
      * visual_env_release drops the hold at `offset` (GN_VE_ALL: every hold, whoever set it). offset + size must
      * be within GN_VE_SIZE. Any thread. GN_ERR_UNAVAILABLE: no level yet (a hold set then waits);
@@ -1366,6 +1391,67 @@ typedef struct gn_api {
      * the barrier its setup came from. Any thread. Console: shape box|sphere|capsule SIZE... [dynamic MASS].
      * Untested in game. */
     int (*shape_add)(const char* mod, uint32_t shape, const gn_transform* at, const float size[3], uint32_t motion, float mass, uint32_t* handle);
+
+    /* ==== GN_API_VERSION 41 =================================================================== */
+
+    /* ---- static model group members ---------------------------------------------------------------------
+     * Most of the city's props are copies inside static model groups (one entity holds many). static_member_set
+     * switches one copy, as the level's own logic does (the group's property handler): what GN_MEMBER_ENABLED
+     * (value 0: its render object and collision out; 1: made again) or GN_MEMBER_VISIBLE (render object only;
+     * the client group). group: a ClientStaticModelGroupEntity or ServerStaticModelGroupEntity; member: the index
+     * in its data's MemberDatas; copy: the index among that member's copies (InstanceCount). Faith collides with
+     * the client group's copy, AI with the server's: switch both. The group's realm thread only (GN_ERR_THREAD).
+     * GN_ERR_NOT_FOUND: no such member or copy. The layout editor uses it for group copies it replaces. Untested. */
+    int (*static_member_set)(void* group, uint32_t member, uint32_t copy, uint32_t what, int value);
+
+    /* ---- the fall that kills, kill volumes -------------------------------------------------------------
+     * fall_threshold_set: the distance a character may fall before the fall kills (the game's 10 m), held in the
+     * fall check's assets (ANT RayCastCollisionProcessorAsset; they are shared, so every character using one falls
+     * by it); < 0 gives the game's value back. kill_volume_set: one PamServerKillVolumeEntity off (enabled 0: it
+     * answers "not inside" for every character) or back on; volume null: all of them. Both are undone when the mod
+     * unloads. Any thread. Console: fall [METRES | off], killvol off|on [ADDRESS]. Untested in game. */
+    int (*fall_threshold_set)(float metres);
+    int (*kill_volume_set)(void* volume, int enabled);
+
+    /* ---- effects ------------------------------------------------------------------------------------------
+     * effect_spawn plays an effect (an EffectBlueprint asset: asset_find's object) at `at` through the client's
+     * effect manager, as the game spawns sparks and smoke; *handle for effect_move (place it again), effect_stop
+     * (end it) and effect_alive (1 while it plays). A mod's effects stop when it unloads, and an effect stops by itself
+     * when the bundle holding its blueprint unloads (the district streams out: the blueprint is freed). Client thread
+     * (GN_ERR_THREAD; effect_alive any). GN_ERR_UNAVAILABLE: no level or Faith yet, or the manager refused it.
+     * Console: effect ASSET_PATH (3 m ahead), effect stop. Untested in game. */
+    int (*effect_spawn)(const void* blueprint, const gn_transform* at, uint32_t* handle);
+    int (*effect_move)(uint32_t handle, const gn_transform* at);
+    int (*effect_stop)(uint32_t handle);
+    int (*effect_alive)(uint32_t handle);
+
+    /* ---- an asset by its GUID ---------------------------------------------------------------------------
+     * As asset_find, by the asset's 16-byte GUID (as stored: the bytes in memory order) through the game's own
+     * lookup in each loaded resource group; release it with asset_release. Null if no loaded group has it. Any
+     * thread. Console: assetguid GUID. Untested in game. */
+    void* (*asset_find_guid)(const uint8_t guid[16], uint32_t* group);
+
+    /* ---- shape queries ----------------------------------------------------------------------------------
+     * shape_cast sweeps a sphere (shape 2: size[0] radius) or capsule (3: size[0] radius, size[1] length along
+     * from's first row) from `from` to `to` through the server's physics world (what AI and the server's rays
+     * see; the client's has the same level) and gives the bodies it meets, nearest first; closest_points gives
+     * the bodies within max_distance of that shape placed at `at`, with the closest point on each. ignore: up to
+     * 12 body ids to pass through. Returns how many (at most max_hits, at most 32), or -GN_ERR_*. Server thread
+     * (-GN_ERR_THREAD). Untested in game. */
+    int (*shape_cast)(uint32_t shape, const float size[3], const gn_transform* from, const float to[3], const uint32_t* ignore, uint32_t ignore_count,
+                      gn_shape_hit* hits, uint32_t max_hits);
+    int (*closest_points)(uint32_t shape, const float size[3], const gn_transform* at, float max_distance, const uint32_t* ignore, uint32_t ignore_count,
+                          gn_shape_hit* hits, uint32_t max_hits);
+
+    /* ---- contact events -----------------------------------------------------------------------------------
+     * contact_watch calls fn for a physics entity's body (its id from entity_bodies) on each Havok event in
+     * `types` (bits 1 << GN_CONTACT_*): contact impulses with other bodies, waking and sleeping. Havok raises
+     * them during the physics step on its worker threads; fn hears them on the entity's realm thread, a moment
+     * later. Whether a static or keyframed body raises impulses at all is untested. A watch ends when the
+     * entity is destroyed, by contact_unwatch, or when the mod unloads. The entity's realm thread only
+     * (contact_unwatch: any). At most 1024. Console: contact ADDRESS [BODY]. Untested in game. */
+    int (*contact_watch)(const char* mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle);
+    int (*contact_unwatch)(uint32_t handle);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

@@ -3,14 +3,60 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
-## Where things stand (2026-11-13, 21:55)
+## Where things stand (2026-11-14, evening)
 
 - `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
   user to merge.
-- Branch `gn/entity-properties` (from `gn/audit-findings`; **not committed**, all untested in game): API 40 =
-  properties, property watching, sending messages, physics shapes; the native box fix; the creation census. Deployed:
-  `bin\gridnode.dll` md5 7834c4e1... (mods unchanged: the trainer built for API 38 loads on it).
-- The user has not been able to test since PR #17. Nothing more is added until the test below comes back.
+- Branch `gn/entity-properties` (from `gn/audit-findings`): API 40 (cf0be17, committed, untested in game: properties,
+  messages, physics shapes, the creation census; its 22-step test below) and API 41 on top (committed 2026-11-14 evening,
+  game-tested in part with `gridnode-api41a`..`i`: static model group members, the fall threshold and kill volumes,
+  effects, assets by GUID, shape queries, contact events, visual environment holds on the render thread). Working:
+  `member`, `killvol off`, `squery cast`, `effect`, `assetguid`, `contact shape`. Open: `fall` (see "Fall deaths"),
+  the dynamic shape, contact impulse events, the shape remove teardown. The api41i test (prop "not set yet", a
+  recording of the death with `killvol off`) is waiting.
+- Research of 2026-11-14 written up: `research/gemini-2026-11-14.md` (Gemini's blocks A-H) and
+  `research/modder-notes-2026-11-14.md` (another modder's notes; what was taken and the rest for later).
+- API 40 test, first results (2026-11-14): `prop` and `msg` froze the game 2 s and said "did not tick": the console runs
+  its commands on the client thread, and the 2 s wait for a realm was a wait on itself (fixed: run at once on that
+  thread, queued with the result printed later from the other realm's). Shapes: box, sphere, capsule, remove and
+  checkpoint fine; `dynamic 50` hung in the air (now keeps the factory's dynamic layer, and logs its Havok body).
+  Census: 104,738 entities in a level reload, 48 not seen by the creator pool (ClientAIActionStationBase 46,
+  SkyCelestialMultiComponent 2): the creation hook sees more than the pool, so it can replace it (pool kept as fallback).
+- Second run (2026-11-14, 14:30): console commands no longer freeze; `killvol off` works; `squery cast` gives sensible
+  hits (4.6 m to a wall ahead). `fall 50`: she died, but the fall was about 90 m (y 59 to -32), past 50 (a log line now
+  says when the hold is written into an asset). Crash at unload while tabbed out: GridNode's kill volume hook kept a
+  local copy of its "original", which was the trainer's hook; the trainer unloaded first and the hook called its freed
+  code. Fixed in all four places GridNode hooked a function that way (kill volumes, census, physics flush, world
+  set-up): the hook table now gets the variable itself. Added `member pick` and `contact shape N`.
+- Third run (2026-11-14, 14:47): `member pick` / `member ... off` worked. `contact shape 1` logged activated and
+  deactivated (no impulses yet). `fall 50` never wrote its hold: the fall check is not reached through its vtable
+  slot, so it is now a function detour. `data EffectBlueprint` gives 0 (effects are not in the data registry): `effect
+  list [TEXT]` collects the blueprints the level's EffectEntities point to. `assetguid` found nothing for a Frosty GUID
+  (unknown whether it was loaded or which GUID Frosty shows): `data CLASS` now prints each object's own GUID to test
+  it with. `prop` on a TimelineEntity and a DelayEntity: "connected: none" (not yet known if right). An unload while
+  the game was not ticking took ~8 s and kept GridNode in memory (a contact watch and a message listener left in).
+- Fourth run (2026-11-14, 15:00): the fall detour on 0x142ce8200 went in but never ran during a ~100 m fall: that
+  processor is not what kills Faith (the "proven" claim in ct-research does not hold here); a Recorder capture of a
+  fall death will show which ANT value does. `effect list` found nothing through EffectEntities (nothing points from
+  them to their blueprint): now a memory scan for EffectBlueprint's vtable. `assetguid` did not find Faith's blueprint
+  by its own instance GUID through Compartment_findByGuid: now a walk of the compartments' partitions (partition and
+  instance GUIDs). `prop` listings now say what the bus template holds under the entity's key.
+- Fifth run (2026-11-14, 15:10): `effect list` found 197 blueprints (FX/Ambient/Smoke/..., FX/Weapons/...);
+  `assetguid` found Faith's blueprint by its instance GUID (group 3): the partition walk works. `effect 0x...` was refused
+  (5): the level came from the bus interface minus 8, whose first word is a vtable; now the entity's +0x28 bus as the
+  game's own call passes it, and each refusal logs why. The fall recording (20261114-151300-fall-recording) shows the
+  death came from a kill volume (OnTookDamage under the kill volume update 0x143972397 -> 0x14392334c, same tick as
+  ServerPlayerChangedCharacter), not a fall rule: both fall tests landed in a street (y 3).
+- Sixth run (2026-11-14, 15:26): `effect 0x...` spawned smoke (works). A crash ~20 s later on the client thread in the
+  effect update (FUN_1430fa0fb reading memory next to that blueprint) after jumping off a building: the blueprint's
+  bundle most likely streamed out under the looping effect; effects now remember their blueprint's resource group and
+  stop when it goes. `prop` on two TimelineEntities: 1 property each in the bus template under the entity's key, with ids
+  (02add2f4, 350f21ea) that hash no field name of the whole dump: a timeline's track properties. `prop ADDRESS 0xID` now
+  reads (and sets, watches) such properties through the template's slot.
+- Learned: the cast's hit record is the ray hit's (normal +0x20, position +0x30; Gemini had them swapped); the
+  messages `UIHudToggleMapZoomMessage` and three others have no listener in the game, so the API 40 test's step 8 shows
+  nothing in game; `PhysicsCreationInfo +0x10` is the realm (A), so the dynamic shape is made as a server body in the
+  client world (API 40 step 15/16: watch removal); `RigidBody_destroy` frees nothing (A): `shape remove` likely leaks.
 
 ### The test waiting (developer build; inject, load the city, GridNode console)
 
@@ -42,6 +88,47 @@ Census (`census`):
 19. `census on`, teleport far or start a mission. 20. `census`: calls, made, "not seen by GridNode's creator hooks",
    the 15 classes most missed. 21. `census reset`, checkpoint reload, `census` again. 22. Full unload clean.
 Send: console output of each step, what each write / shape did in game, `gridnode.log`, crash notes.
+
+### API 41's test (after API 40's; same developer build, `gridnode-api41.dll` swapped in)
+
+Visual environment:
+1. A mod or the trainer's World tab "Look" holding a value (sun colour, vignette): the log says `visual environment: holds
+   are written on the render thread`; the value stays with no flicker while you turn the camera and run.
+Static model groups (`member`), near a prop that is part of a group (the inspector shows ClientStaticModelGroupEntity):
+2. `member CLIENT_GROUP_ADDRESS 0 0 hide`: one prop disappears, collision stays (walk into it); `show` brings it back.
+3. `member CLIENT_GROUP_ADDRESS 0 0 off`: gone and you walk through it; `on` back. Then the same on the server group:
+   no visible change (AI collision only), no crash. A member or copy past the end: `error 4` (not found), no crash.
+4. Layout editor: make a group prop standalone and move it: the log says `group copy ... switched off on the server: 0`
+   and `... on the client: 0`; the original spot is empty (no copy 15 km down). Unload the layout: the prop is back.
+Fall and kill volumes:
+5. `fall 50`, jump from 20-30 m: you live (stumble or roll). `fall off`, same jump: you die as usual.
+6. `killvol off`, walk into a street kill floor: nothing happens; `killvol on`: it kills again. `killvol off ADDRESS`
+   on one PamServerKillVolumeEntity (Volumes tab): only that one is off.
+Effects:
+7. Find an effect: `gridnode.py assets list` or the inspector (an `EffectBlueprint` path), then `effect PATH`: `spawned
+   (handle N)`, and something plays 3 m ahead; `effect stop` stops it. A non-effect path: `not an EffectBlueprint`.
+Assets by GUID:
+8. `assetguid GUID` for an asset you know (Frosty shows GUIDs): the log line `assets: by GUID: group N gave ...: a data
+   object` or `a partition`; the console names its class. Send that line (it says what the game's lookup returns).
+Shape queries (server thread):
+9. Facing a wall 5 m away: `squery cast 0.5`: one or more hits, the first about 4.5 m away, a normal pointing at you.
+10. Standing against a wall: `squery near 0.5`: the wall (and the ground) with a distance under 1.
+Contact events:
+11. Find a dynamic body (a ragdoll part or a `shape box 0.4 0.4 0.4 dynamic 50` is client-side; the server needs one: any
+    ServerPhysicsEntity that falls): `contact ADDRESS`: `watching body ...`; push or drop it: `contact: bodies ... impulse`
+    and `activated` / `deactivated` lines. A static prop: likely no lines (report).
+12. Full unload after 5, 6, 7 and 11: `fall threshold back`, no "contact watch could not be taken out", gridnode.dll freed.
+Send: console output of each step, what you saw, `gridnode.log`, crash notes.
+
+### Fall deaths (2026-11-14, evening; api41i)
+
+`fall 50` does nothing in the city: ANT's fall check (RayCastCollisionProcessor_update) never runs for Faith. The fall
+recording (15:13) shows what killed her there: a kill volume (KillVolumeManager_update 0x143972370 ->
+KillVolume_testCharacter -> the character's vtable +0x370, the server kill). The later death with `killvol off` has no
+recording yet, so its path is unknown; likely a hard landing. PamServerDamageInfo is built in only three places (the
+kill above, the network damage handler 0x1439242f0, PamAIGroup); the client's PamClientDamageInfo in six (fields,
+radial, hits), none a landing. Next: a recording of that death (recording started just before the jump), then follow
+its stack as above. api41i also shows unset properties as "(not set yet)" (slot +0x1c bit 0x20) and logs `killvol`.
 
 ### Still to implement (after that test)
 

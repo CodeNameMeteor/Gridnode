@@ -368,12 +368,50 @@ int onData(const std::string& mod, gn_data_fn fn, void* user);
 void forgetData(const CodeRange& r);
 void dataRelease(); // GridNode's unload: the game's listener out
 std::string dataCommand(const std::string& rest); // the console's "data"
-// Runs fn on the server (or client) thread and waits up to 2 s for its text (the console's commands).
+// Runs fn on the server (or client) thread for the console's commands: at once when called there; from the other
+// realm's thread it is queued and its text goes to the console window and the log when it runs (the caller gets
+// a "queued" line: waiting would block the game); from any other thread it waits up to 2 s.
 std::string runOnRealmAndWait(bool serverRealm, std::function<std::string()> fn);
 // Sending engine messages (messages.cpp, API 40).
 int messageInit(const char* type, void* out, uint32_t size);
 int messageSend(int manager, const void* message);
 std::string msgCommand(const std::string& rest); // the console's "msg"
+// API 41. Static model group members (static_groups.cpp): the group's realm thread.
+int staticMemberSet(void* group, uint32_t member, uint32_t copy, uint32_t what, int value);
+// The fall threshold and kill volumes (gamerules.cpp): owner = the caller's return address.
+int fallThresholdSet(const void* caller, float metres);
+int killVolumeSet(const void* caller, void* volume, int enabled);
+void forgetRules(const CodeRange& r);
+void rulesRelease(); // GridNode's unload: the game's values back
+std::string fallCommand(const std::string& rest);       // the console's "fall"
+std::string killVolumeCommand(const std::string& rest); // the console's "killvol"
+// Effects (effects.cpp): the client thread.
+int effectSpawn(const void* caller, const void* blueprint, const gn_transform* at, uint32_t* handle);
+int effectMove(uint32_t handle, const gn_transform* at);
+int effectStop(uint32_t handle);
+int effectAlive(uint32_t handle);
+void forgetEffects(const CodeRange& r, bool all); // a mod's (all: every one) stopped on the client thread
+std::string effectCommand(const std::string& rest); // the console's "effect"
+// An asset by GUID (assets.cpp).
+void* assetFindGuid(const uint8_t* guid, uint32_t* group);
+int assetGroupOf(uintptr_t obj); // the loaded resource group holding obj, or -1
+void effectsClientTick();       // effects.cpp: stops GridNode's effects whose blueprint's group is going
+std::string assetGuidCommand(const std::string& rest); // the console's "assetguid"
+// Shape queries (world.cpp): the server thread; how many hits, or -GN_ERR_*.
+int shapeCast(uint32_t shape, const float size[3], const gn_transform* from, const float to[3], const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+              uint32_t maxHits);
+int closestPoints(uint32_t shape, const float size[3], const gn_transform* at, float maxDistance, const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+                  uint32_t maxHits);
+// Contact events (contacts.cpp): the entity's realm thread.
+int contactWatch(const std::string& mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle);
+int contactUnwatch(uint32_t handle);
+void forgetContacts(const CodeRange& r); // a mod's watches (by their callback), detached at the realms' next ticks
+void contactsRelease();  // GridNode's unload: detached on the realm threads (the ticks after)
+bool contactsReleased(); // all out of Havok's lists
+std::string contactCommand(const std::string& rest); // the console's "contact"
+uintptr_t shapeRigidBody(uint32_t handle); // bodies.cpp: a factory-made shape's RigidBody, or 0 (client thread)
+std::string shapeQueryCommand(const std::string& rest); // the console's "squery"
+std::string memberCommand(const std::string& rest);     // the console's "member"
 // An entity's connected properties (properties.cpp, API 40): the entity's realm thread only.
 int propertyGet(void* entity, const char* name, void* out, uint32_t size, const gn_type** type);
 int propertySet(void* entity, const char* name, const void* value, uint32_t size);
@@ -438,6 +476,7 @@ void dashesReleaseIds(); // unload, a few ticks later: our data out of the game'
 namespace layouts {
 void start(const std::wstring& gridnodeDir);
 void onLevel(const std::string& level); // GridNode's thread, when a level starts
+std::string memberPick(); // server thread: the static model group copy ahead of Faith (the console's "member pick")
 void serverTick();
 void clientTick();
 void draw(bool* open); // render thread
@@ -597,6 +636,7 @@ namespace inspector {
 void start();
 void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
+void consolePrint(const std::string& text); // adds lines to the console window (any thread)
 std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
 std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base); // the same, only that class and its subclasses (no full copy)
 bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type

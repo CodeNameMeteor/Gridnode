@@ -89,6 +89,26 @@ int entityData(uintptr_t entity, uintptr_t& peer, uintptr_t& data) {
     return GN_ERR_NOT_FOUND;
 }
 
+// A slot straight from the bus template (BusTemplate_findPropertySlot's table, read in Ghidra 2026-11-14): context
+// table +0x20 the template, whose +0x90..+0x98 holds sorted 0x18-byte {u64 key, i32 id}; the table's +0x08 holds the
+// slots in the same order (low 2 bits flags). For properties no data field names (a timeline's tracks): the slot's
+// own TypeInfo (+8) says what it holds. 0 when the template has no such entry or its slot has no value yet.
+uintptr_t templateSlot(uintptr_t peer, uintptr_t data, uint32_t id) {
+    uintptr_t ctx[4] = {};
+    reinterpret_cast<uint64_t (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::EntityBus_getPropertyContext))(peer, reinterpret_cast<uintptr_t>(ctx));
+    const uintptr_t key = (ctx[2] == data && ctx[1]) ? ctx[1] : data;
+    const uintptr_t tmpl = ctx[0] ? mem::readOr<uintptr_t>(ctx[0] + 0x20) : 0;
+    const uintptr_t slots = ctx[0] ? mem::readOr<uintptr_t>(ctx[0] + 0x08) : 0;
+    const uintptr_t b0 = tmpl ? mem::readOr<uintptr_t>(tmpl + 0x90) : 0, b1 = tmpl ? mem::readOr<uintptr_t>(tmpl + 0x98) : 0;
+    if (!slots || b1 <= b0 || (b1 - b0) % 0x18) return 0;
+    for (size_t i = 0, n = (b1 - b0) / 0x18; i < n && i < 200000; ++i)
+        if (mem::readOr<uintptr_t>(b0 + i * 0x18) == key && mem::readOr<uint32_t>(b0 + i * 0x18 + 8) == id) {
+            const uintptr_t slot = mem::readOr<uintptr_t>(slots + i * 8) & ~uintptr_t(3);
+            return slot && mem::readOr<uintptr_t>(slot) && mem::readOr<uintptr_t>(slot + 8) ? slot : 0;
+        }
+    return 0;
+}
+
 bool onRealm(uintptr_t entity) {
     return (mem::readOr<uint32_t>(entity + 0x18) & 1) ? isServerThread() : isClientThread();
 }
@@ -105,11 +125,17 @@ int find(void* entityPtr, const char* name, Property& p) {
     p.dataType = registry().typeOf(mem::ProcessMemory(), p.data);
     if (!p.dataType) return GN_ERR_NOT_FOUND;
     if (!parseId(name, p.id)) p.id = djb2(name);
-    if (!fieldById(p.dataType, p.id, p.field) || !p.field.field || !p.field.field->typeTi) return GN_ERR_NOT_FOUND;
+    if (!fieldById(p.dataType, p.id, p.field) || !p.field.field || !p.field.field->typeTi) {
+        // No field of that name or id: a property only the bus knows (by id), if it already has a value.
+        p.field = reflect::FieldInfo{};
+        p.slot = templateSlot(p.peer, p.data, p.id);
+        if (!p.slot) return GN_ERR_NOT_FOUND;
+    } else {
     using FindFn = void** (*)(uintptr_t, uintptr_t*, uintptr_t, uint32_t, uintptr_t, const void*);
     reinterpret_cast<FindFn>(mem::rva(e::function::EntityBus_findProperty))(p.peer, &p.slot, p.data, p.id,
                                                                             static_cast<uintptr_t>(p.field.field->typeTi), nullptr);
     if (!p.slot) return GN_ERR_NOT_FOUND; // not connected: the entity reads its data, not a slot
+    }
     const uintptr_t ti = mem::readOr<uintptr_t>(p.slot + 8);
     const uintptr_t tid = ti ? mem::readOr<uintptr_t>(ti) : 0;
     if (!tid) return GN_ERR_UNAVAILABLE;
@@ -124,6 +150,20 @@ int find(void* entityPtr, const char* name, Property& p) {
 // render thread). The result lives in the shared state: a task that runs after the wait gave up writes
 // there, not into a caller that has returned.
 std::string runOnRealmAndWait(bool serverRealm, std::function<std::string()> fn) {
+    // The console runs its commands on the client thread (inspector conRun): waiting there for the client is a
+    // wait on itself, and for the server it can be one too (the server ticks from the same frame when it has no
+    // job of its own). Both froze the game for 2 s and then said "did not tick" (2026-11-14).
+    if (serverRealm ? isServerThread() : isClientThread()) return fn();
+    if (isClientThread() || isServerThread()) {
+        auto task = [fn = std::move(fn)] {
+            const std::string r = fn();
+            GN_LOG("%s", r.c_str());
+            inspector::consolePrint(r);
+        };
+        if (serverRealm) server().post(task);
+        else client().post(task);
+        return std::string("(queued on the ") + (serverRealm ? "server" : "client") + " thread; the result follows)";
+    }
     struct State {
         std::mutex m;
         std::condition_variable cv;
@@ -382,6 +422,9 @@ std::string onEntityRealm(uintptr_t entity, std::function<std::string()> fn) {
 std::string describeValue(const Property& p, const uint8_t* v) {
     const reflect::Type* t = registry().byTi(mem::readOr<uintptr_t>(p.slot + 8));
     const std::string tn = t ? t->name : "?";
+    // POD storage is taken from an arena uninitialised; the slot's flag 0x20 (+0x1c) says a value was assigned
+    // (RuntimeProperty_initValue, Ghidra 2026-11-14). Until then the bytes are leftovers, not a value.
+    if (p.category != kCatClass && !(mem::readOr<uint32_t>(p.slot + 0x1c) & 0x20)) return tn + " (not set yet)";
     char b[160];
     if (p.category == kCatString || p.category == kCatCString) {
         uintptr_t chars = 0;
@@ -475,6 +518,46 @@ std::string propCommand(const std::string& rest) {
                     ++found;
                 }
             if (!found) out += " none";
+            // What the bus's template holds (BusTemplate_findPropertySlot, read in Ghidra 2026-11-14): a sorted array of
+            // 0x18-byte {u64 key, i32 property id} at template +0x90..+0x98, the template at table +0x20, the table the
+            // context's first word; the key is the entity's data unless the context remaps it (ctx[1] when ctx[2] is the
+            // data). Lists the ids under this entity's key with their field names, to tell "nothing connected" from a
+            // wrong key.
+            uintptr_t ctx[4] = {};
+            reinterpret_cast<uint64_t (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::EntityBus_getPropertyContext))(peer, reinterpret_cast<uintptr_t>(ctx));
+            const uintptr_t key = (ctx[2] == data && ctx[1]) ? ctx[1] : data;
+            const uintptr_t tmpl = ctx[0] ? mem::readOr<uintptr_t>(ctx[0] + 0x20) : 0;
+            const uintptr_t b0 = tmpl ? mem::readOr<uintptr_t>(tmpl + 0x90) : 0, b1 = tmpl ? mem::readOr<uintptr_t>(tmpl + 0x98) : 0;
+            const size_t total = (b1 > b0 && (b1 - b0) % 0x18 == 0) ? (b1 - b0) / 0x18 : 0;
+            size_t mine = 0;
+            std::string ids;
+            for (size_t i = 0; i < total && i < 200000; ++i) {
+                if (mem::readOr<uintptr_t>(b0 + i * 0x18) != key) continue;
+                const uint32_t id = mem::readOr<uint32_t>(b0 + i * 0x18 + 8);
+                reflect::FieldInfo fi;
+                char ib[160];
+                const bool named = fieldById(dt, id, fi) && fi.field;
+                std::string extra;
+                if (!named) { // its value through the template slot (prop ADDRESS 0xID reads, sets and watches it)
+                    char hx[16];
+                    snprintf(hx, sizeof(hx), "0x%08x", id);
+                    Property q;
+                    if (find(reinterpret_cast<void*>(entity), hx, q) == GN_OK) {
+                        const reflect::Type* qt = registry().byTi(mem::readOr<uintptr_t>(q.slot + 8));
+                        uint8_t v[64] = {};
+                        const uintptr_t value = mem::readOr<uintptr_t>(q.slot);
+                        if (value && q.size <= sizeof(v) && q.category != kCatClass && q.category != kCatString && q.category != kCatCString) mem::read(value, v, q.size);
+                        extra = std::string("(") + (value ? describeValue(q, v) : std::string((qt ? qt->name : "?")) + " no value") + ")";
+                    }
+                }
+                snprintf(ib, sizeof(ib), " %08x%s%s%s", id, named ? "=" : "", named ? fi.field->name.c_str() : "", extra.c_str());
+                if (++mine <= 24) ids += ib;
+            }
+            char tb[200];
+            snprintf(tb, sizeof(tb), "\n  (bus template: %llu properties, %llu under this entity's key %llx%s)", static_cast<unsigned long long>(total),
+                     static_cast<unsigned long long>(mine), static_cast<unsigned long long>(key), key != data ? ", remapped from its data" : "");
+            out += tb;
+            if (!ids.empty()) out += "\n  ids:" + ids;
             return out;
         }
         Property p;

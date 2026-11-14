@@ -13,6 +13,18 @@ functions:
       Research_Ground_Level_2026-11-01 section 9). Checked in Ghidra 2026-11-04.
     confidence: confirmed
     sources: [research, ghidra]
+  - name: KillVolumeManager_update
+    va: 0x143972370
+    signature: "void(void* manager)"
+    note: >-
+      The server's kill volume pass, run by the update manager each frame: for each volume in its list
+      (+0x28..+0x30, 16-byte entries {volume, u16 period, u16 counter}) whose data flags (+0x18) have bit 3,
+      every period-th frame it tests the local player's character (data +0x60) and/or every
+      PamServerCharacterEntity (data +0x61) with KillVolume_testCharacter, and kills one inside through the
+      character's vtable +0x370 with the damage type at *(data+0x28)+0x18. The fall recording of 2026-11-14
+      (Faith killed in the city) has this frame under the kill. Read in Ghidra 2026-11-14.
+    confidence: confirmed
+    sources: [ghidra, recording]
   - name: areaTriggerGeometry_contains
     va: 0x14330d320
     signature: "bool(void* cache, void* dataAndField, void* busInterface, const f32* position)"

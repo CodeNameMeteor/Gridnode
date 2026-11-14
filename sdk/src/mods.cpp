@@ -235,6 +235,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetLevelReady(code);
     forgetData(code);
     forgetProperties(code);
+    forgetContacts(code);
     forgetMessages(code);
     forgetMovement(code);
     forgetEvents(code);
@@ -252,6 +253,8 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetGravity(code);
     forgetTimeOfDay(code);
     forgetVisualEnv(code);
+    forgetRules(code);
+    forgetEffects(code, false);
     layouts::forgetStreamingFocus(code);
     forgetBundles(code);
     return hooksOut;

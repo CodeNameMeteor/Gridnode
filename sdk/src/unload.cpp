@@ -68,12 +68,19 @@ bool unloadEverything() {
     messagesRelease();
     dataRelease(); // the game's data listener out, before anything else of ours goes
     propertiesRelease(); // property watches detached in the ticks below (queued deliveries drain there too)
+    contactsRelease();   // contact watches out of Havok's lists in the ticks below
+    rulesRelease();      // the fall threshold back; kill volumes back on
+    forgetEffects(CodeRange{}, true); // every effect GridNode spawned, stopped in the ticks below
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below
     forgetAudioMix(CodeRange{}); // offsets to 0 and a recompute while the hook is still in; the hook goes with the rest below
     waitTicks(3, 3000);
     dashesReleaseIds(); // after their entities went: an id left in the registry crashes the game at exit
     // Collision boxes leave the world at its next physics update, while the flush hook is still in.
     if (!bodiesRelease(2000)) GN_LOG("unload: collision boxes still in the physics world (no physics update ran); they stay");
+    if (!contactsReleased()) {
+        GN_LOG("unload: a contact watch could not be taken out (its realm was not ticking); GridNode stays in memory");
+        canFree = false;
+    }
     if (!propertiesReleased()) {
         GN_LOG("unload: a property watch could not be taken out (its realm was not ticking); GridNode stays in memory");
         canFree = false;

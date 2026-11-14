@@ -2,6 +2,12 @@
 # Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
 defaults: { confidence: hypothesis, sources: [ghidra] }
 globals:
+  - name: EffectManager
+    va: 0x142416160
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra, research]
+    note: "The client's effect manager: a command queue (lock-free blocks at +0x10, counter +0x118, handle counter +0x4950) taken by its update. The game's callers pass it to EffectManager_spawn / _move / _stop (Ghidra 2026-11-14; a modder's notes, section 26)."
   - name: g_visualEnvironmentManager
     va: 0x142568cd8
     type: "void*"
@@ -110,6 +116,46 @@ functions:
     confidence: inferred
     sources: [ghidra]
     note: "Hashes a mesh asset (asset - 0x10, when its +10 u16 has 0x100; else null) with the quantised position, rotation and scale; the 16 bytes go in a group member's render update at +0x78. See docs/research/render-objects.md."
+  - name: EffectManager_spawn
+    va: 0x14329b860
+    signature: "u32(void* manager, void* effectBlueprint, const LinearTransform* at, void* level, u32 flags, const f32* velocity, const f32* scale3, u8 flag)"
+    note: >-
+      Queues an effect (an EffectBlueprint asset) and returns its handle (0: refused: a NaN in the transform,
+      no blueprint, or the level's +0x30 bit 0 set). level: EntityBus_getLevel(an entity's bus). velocity is
+      read only with flags & 4 (else the transform's position); scale3 (three floats) is always read. Thread
+      safe (locked counters). Read in Ghidra 2026-11-14; callers 0x143185490, 0x142d592c0.
+    confidence: inferred
+  - name: EffectManager_move
+    va: 0x14329f9a0
+    signature: "void(void* manager, u32 handle, const LinearTransform* at)"
+    note: "Queues a new transform for a live effect (handle 0: nothing). Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: EffectManager_stop
+    va: 0x1432a2080
+    signature: "void(void* manager, u32 handle)"
+    note: "Queues the effect's stop (handle 0: nothing). Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: EffectManager_isDone
+    va: 0x1432973f0
+    signature: "bool(void* manager, u32 handle)"
+    note: "True for handle 0, a handle not yet issued (>= +0x4954), or one no longer in the live tree (+0x4918); the game drops its effects when it says so. Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: ClientStaticModelGroupEntity_propertyChanged
+    va: 0x14318dc70
+    signature: "void(void* group, const void* change)"
+    note: >-
+      The client group's vtable slot 2 (0x141afbe90 + 0x10). Besides the transform (0xe790f446) it takes a
+      member copy's packed property: hash & 3 = 0 Enabled (false: render object and collision out,
+      0x1431856e0; true: made again), 1 ObjectVariation (0x14318fb30), 2 Visible (render object only,
+      0x14318f730); (hash >> 2) & 0x7ff = member index + 1 (not checked against the count here);
+      (hash >> 13) & 0x7ff = the copy. The value is a bool behind change+8. Read in Ghidra 2026-11-14
+      (a modder's notes, section 23). GridNode's static_member_set (API 41) calls it.
+    confidence: confirmed
+  - name: ServerStaticModelGroupEntity_propertyChanged
+    va: 0x1433e6430
+    signature: "void(void* group, const void* change)"
+    note: "The server group's vtable slot 2 (0x141b5e3a0 + 0x10): the same packing; only Enabled (kind 0) does anything, for a member index below its member count (+0x98..+0xa0, 0xb8 each). Read in Ghidra 2026-11-14."
+    confidence: confirmed
   - name: ClientStaticModelGroup_makeMemberObject
     va: 0x143185940
     signature: "void(void* block, void* group, void* a3, u32 copy, void* a5)"
@@ -639,7 +685,7 @@ structs:
     size: 0x3c2000
     opaque: true
     members:
-      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0xb30 bytes)." }
+      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0x1bf0 bytes; a second copy follows at 0x87060)." }
   - name: VisualEnvironmentState
     size: 0xb30
     members:
@@ -730,7 +776,8 @@ hooks:
     slot: 0x141bfaca8
     original: 0x14373e5d0
     signature: "void(void* worldRenderer, void* context)"
-    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to shader constants upload. Hook point for overriding visual environment state without flicker."
+    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to the constant upload (0x1436fab20, 0x1436f80c0) and wr + 0x87060 (the second copy) to Enlighten's update and 0x1436fad40. Slot and function read in Ghidra 2026-11-14; GridNode writes the visual environment holds here (API 41)."
+    confidence: confirmed
 classes:
   - name: ClientStaticModelGroupEntity
     vtable: 0x141afbe90

@@ -418,6 +418,9 @@ GN_NOINLINE int apiViewGetEx(gn_view* out, uint32_t size) {
 GN_NOINLINE int apiSetGravity(int realm, const float* g) { return physicsSetGravity(realm, g, GN_CALLER); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
+GN_NOINLINE int apiFallThresholdSet(float metres) { return fallThresholdSet(GN_CALLER, metres); }
+GN_NOINLINE int apiKillVolumeSet(void* volume, int enabled) { return killVolumeSet(GN_CALLER, volume, enabled); }
+GN_NOINLINE int apiEffectSpawn(const void* blueprint, const gn_transform* at, uint32_t* handle) { return effectSpawn(GN_CALLER, blueprint, at, handle); }
 GN_NOINLINE int apiShapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out) {
     return shapeAdd(mod, shape, at, size, motion, mass, out, GN_CALLER);
 }
@@ -677,6 +680,20 @@ const gn_api* api() {
         a.message_init = messageInit;
         a.message_send = messageSend;
         a.shape_add = apiShapeAdd;
+        a.static_member_set = staticMemberSet;
+        a.fall_threshold_set = apiFallThresholdSet;
+        a.kill_volume_set = apiKillVolumeSet;
+        a.effect_spawn = apiEffectSpawn;
+        a.effect_move = effectMove;
+        a.effect_stop = effectStop;
+        a.effect_alive = effectAlive;
+        a.asset_find_guid = [](const uint8_t* guid, uint32_t* group) { return assetFindGuid(guid, group); };
+        a.shape_cast = shapeCast;
+        a.closest_points = closestPoints;
+        a.contact_watch = [](const char* mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle) {
+            return contactWatch(mod ? mod : "?", entity, body, types, fn, user, handle);
+        };
+        a.contact_unwatch = contactUnwatch;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

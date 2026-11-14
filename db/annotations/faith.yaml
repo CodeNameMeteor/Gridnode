@@ -98,7 +98,8 @@ constants:
   - { name: VisualEnv_C, value: 0x1c0 }
   - { name: VisualEnv_D, value: 0x30 }
   - { name: VisualEnv_State, value: 0x85470, note: "The current visual environment state in the manager. Blocks in it (from the cinematic tools; untested here): outdoor light +0x000, tonemap +0x1d0, colour correction +0x330, sky and clouds +0x390, wind +0x6e0, depth of field +0xa50, vignette +0xac0, film grain +0xb00." }
-  - { name: VisualEnv_StateSize, value: 0xb30, note: "Our bound for visual_env_set: the end of the film grain block (0xb00 + 0x30)." }
+  - { name: VisualEnv_StateSize, value: 0x1bf0, note: "The state's size: WorldRenderer_renderView hands wr + 0x85470 and wr + 0x87060 (0x1bf0 further) to the render code, and the per-view state at 0x88c50 follows (Ghidra 2026-11-14). visual_env_set's bound since API 41 (0xb30 before)." }
+  - { name: VisualEnv_Future, value: 0x87060, confidence: inferred, sources: [ghidra, research], note: "The second copy of the state in the world renderer, given to Enlighten's update by WorldRenderer_renderView (Ghidra 2026-11-14; a modder's notes call it the future state). Holds are written into both." }
   - { name: Timeline_SetTime, value: 0x143691120, note: "void(TimelineEntity*, f32 time, bool force): force writes the time and updates what the timeline drives at once (checked in Ghidra 2026-11-06: current time +0x98, +0x60 an external time connection, which makes it return unless forced)." }
   - { name: Timeline_Time, value: 0x98, note: "f32 current time in a TimelineEntity (vtable 0x141beab28)." }
   - { name: SharedContent_Manager, value: 0x28 }

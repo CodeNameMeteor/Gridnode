@@ -1166,6 +1166,25 @@ uintptr_t spawnClient(uintptr_t data, uintptr_t bus, const gn_transform& at) {
 
 void selectSpawned(uintptr_t serverEnt, uintptr_t clientEnt, const gn_transform& orig, const gn_transform& now);
 
+// Server thread: the group copy switched on or off in both groups (the client's on the client thread, later). The
+// member index is the client block's (blocks follow the data's MemberDatas, as both groups' handlers index them).
+bool switchGroupCopy(const GroupProp& g, bool on) {
+    namespace c = e::constant;
+    const uintptr_t blocks = g.clientGroup ? mem::readOr<uintptr_t>(g.clientGroup + c::ClientStaticModelGroup_Members) : 0;
+    if (!blocks || g.block < blocks || (g.block - blocks) % c::GroupMemberBlock_Size) return false;
+    const uint32_t member = static_cast<uint32_t>((g.block - blocks) / c::GroupMemberBlock_Size);
+    const int r = staticMemberSet(reinterpret_cast<void*>(g.serverGroup), member, g.copy, GN_MEMBER_ENABLED, on ? 1 : 0);
+    GN_LOG("layouts: group copy (member %u, copy %u) switched %s on the server: %d", member, g.copy, on ? "on" : "off", r);
+    if (r != GN_OK) return false;
+    const GroupProp gc = g;
+    client().post([gc, member, on] {
+        if (!inspector::alive(gc.clientGroup, gc.clientType)) return;
+        const int rc = staticMemberSet(reinterpret_cast<void*>(gc.clientGroup), member, gc.copy, GN_MEMBER_ENABLED, on ? 1 : 0);
+        GN_LOG("layouts: group copy (member %u, copy %u) switched %s on the client: %d", member, gc.copy, on ? "on" : "off", rc);
+    });
+    return true;
+}
+
 // Server thread: hide the group copy (whose own placement is `orig`) and put a standalone entity of
 // its member type at `to`; `select` makes it the editor's selection.
 void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_transform& to, bool select) {
@@ -1195,10 +1214,13 @@ void makeStandalone(const GroupProp& g, const gn_transform& orig, const gn_trans
         if (select) setStatus("Make standalone: the server did not create the entity");
         return;
     }
-    // Hide the group copy: its collision and render object far below the level.
-    gn_transform away = orig;
-    away.trans[1] -= kParkDepth;
-    moveGroupProp(g, away);
+    // Hide the group copy: switched off as the level's logic does it (static_member_set, API 41: render object and
+    // collision out, on each group's own thread); parked far below the level as before if that is refused.
+    if (!switchGroupCopy(g, false)) {
+        gn_transform away = orig;
+        away.trans[1] -= kParkDepth;
+        moveGroupProp(g, away);
+    }
     alignas(16) gn_transform o = orig, w = to;
     client().post([g, data, cbus, o, w, se, select] {
         // Later, on the client thread: the client group (its data and bus) may be gone by now.
@@ -1302,6 +1324,42 @@ bool findGroupProp(const float* at, GroupProp& out, gn_transform& orig) {
         }
     }
     return false;
+}
+
+// "member pick" (server thread): the group copy 50 m ahead of Faith's eyes, for the console's "member": a ray to its
+// body and part, the server group that owns that body, its client group (same data) and the copy.
+std::string memberPickText() {
+    namespace c = e::constant;
+    static const reflect::Type* sg = registry().find("ServerStaticModelGroupEntity");
+    static const reflect::Type* cg = registry().find("ClientStaticModelGroupEntity");
+    void* faith = localServerCharacter();
+    gn_transform at{};
+    if (!faith || !entityTransform(faith, at) || !sg || !cg) return "member pick: no Faith on the server";
+    const float from[3] = {at.trans[0], at.trans[1] + 1.6f, at.trans[2]};
+    const float to[3] = {from[0] + at.forward[0] * 50.f, from[1] + at.forward[1] * 50.f, from[2] + at.forward[2] * 50.f};
+    gn_ray_hit hit{};
+    uintptr_t object = 0;
+    uint32_t body = 0, part = 0;
+    if (raycastObject(from, to, &hit, &object, &body, &part, nullptr, 0) != GN_OK) return "member pick: the ray hit nothing (face a prop)";
+    uintptr_t server = 0, client = 0;
+    const reflect::Type* clientType = nullptr;
+    for (const auto& [p, t] : inspector::tracked())
+        if (t && registry().isKindOf(t, sg) && inspector::alive(p, t) && groupBodyOf(p) == object) server = p;
+    if (!server) return "member pick: what the ray hit is not a static model group's prop";
+    const uintptr_t data = dataOf(server, "StaticModelGroupEntityData");
+    for (const auto& [p, t] : inspector::tracked())
+        if (t && registry().isKindOf(t, cg) && inspector::alive(p, t) && dataOf(p, "StaticModelGroupEntityData") == data) client = p, clientType = t;
+    uintptr_t member = 0, block = 0;
+    uint32_t copy = 0;
+    if (!client || !memberOf(client, part, member, copy, block)) return "member pick: its client group or member was not found";
+    const uintptr_t blocks = mem::readOr<uintptr_t>(client + c::ClientStaticModelGroup_Members);
+    const uint32_t index = static_cast<uint32_t>((block - blocks) / c::GroupMemberBlock_Size);
+    (void)clientType;
+    char b[300];
+    snprintf(b, sizeof(b), "member pick: %.1f m ahead: client group %llx, server group %llx, member %u, copy %u\n  member %llx %u %u off  (and on / hide / show)",
+             hit.distance, static_cast<unsigned long long>(client), static_cast<unsigned long long>(server), index, copy, static_cast<unsigned long long>(client),
+             index, copy);
+    return b;
 }
 
 // ---- copies: new objects made from an existing one --------------------------------------------------
@@ -7645,5 +7703,7 @@ void release() {
     GN_LOG("layouts: released (%d copies removed, %d magropes given back their transforms)", static_cast<int>(copies.size()),
            static_cast<int>(ropes.size()));
 }
+
+std::string memberPick() { return memberPickText(); }
 
 } // namespace gn::host::layouts

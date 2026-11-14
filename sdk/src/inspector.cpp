@@ -1358,4 +1358,6 @@ void draw(bool* open) {
     ImGui::End();
 }
 
+void consolePrint(const std::string& text) { conPrint(text); }
+
 } // namespace gn::host::inspector

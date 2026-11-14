@@ -90,10 +90,9 @@ std::string censusCommand(const std::string& rest) {
     const std::string arg = a == std::string::npos ? std::string() : rest.substr(a);
     if (!_strnicmp(arg.c_str(), "on", 2)) {
         if (g_on.load()) return "census: already on";
-        void* original = nullptr;
-        const int r = hookFunction("GridNode", e::function::entityCreator_spawnEntityWithContext, reinterpret_cast<void*>(&spawnHook), &original);
+        // The variable itself: the hook table rewrites it when a hook below ours goes (never a local copy).
+        const int r = hookFunction("GridNode", e::function::entityCreator_spawnEntityWithContext, reinterpret_cast<void*>(&spawnHook), reinterpret_cast<void**>(&g_original));
         if (r != GN_OK) return "census: the creation function could not be hooked (" + std::to_string(r) + ")";
-        g_original = reinterpret_cast<SpawnFn>(original);
         g_on = true;
         GN_LOG("census: counting entity creations (entityCreator_spawnEntityWithContext)");
         return "census: on. Load a level or stream districts, then type census";

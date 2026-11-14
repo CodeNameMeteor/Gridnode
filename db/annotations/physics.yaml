@@ -257,8 +257,62 @@ functions:
   - name: hknpWorld_getEventSignal
     va: 0x143f44e00
     signature: "void*(void* hknpWorld, u16 eventType, u32 bodyId)"
-    note: "Retrieves the hkSignal2 event signal from hknpEventManager (world + 0x540). Event types: 1 = manifoldStatus, 2 = manifoldProcess, 5 = contactImpulse, 6 = contactImpulseClipped, 10 = bodyActivation."
-    confidence: hypothesis
+    note: >-
+      Retrieves (making it if missing) a Havok body's signal for one event type from hknpEventManager
+      (world + 0x540, 0x143f7d0b0); bodyId is the Havok body index (RigidBody +0x58). Event types: 1
+      manifoldStatus, 2 manifoldProcess, 5 contactImpulse, 6 contactImpulseClipped, 10 bodyActivation (only
+      for a body whose hknpBody +0x58 bit 0 is clear: PhysicsManager_detachBodySignals 0x1434f9e70, which
+      detaches the game's five handlers this way). Read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [ghidra]
+  - name: hkSignal_attach
+    va: 0x1434b5990
+    signature: "void(u64* signal, void* object, void* fn)"
+    note: >-
+      Prepends a 0x20-byte node {vtable 0x141ba35c0, next, object, fn} (from the calling thread's Havok
+      heap) to a signal's list, keeping its two low flag bits. The node's call slot (+0x10, 0x1434c0160) jumps
+      to fn(object, context, event). Read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [ghidra]
+  - name: hkSignal_detach
+    va: 0x143f4a140
+    signature: "void*(u64* signal, u8* removed, void* object, void* fn)"
+    note: "Removes the node with that object and fn (0x143cccd30): unlinked and freed at once, or marked for later while the signal is being emitted. *removed says whether one was found. As the game's PhysicsManager_detachBodySignals calls it. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
+  - name: PhysicsManager_castShape
+    va: 0x14351a3a0
+    signature: "i32(void* physics, const void* query, void* hits, u32 maxHits)"
+    note: >-
+      Casts a shape (query +0x60: a shape holder, its hknpShape at +0x08) from query +0xa0 to +0xb0 with the
+      rotation rows at +0x70 / +0x80 / +0x90; filter +0x08, skipped bodies as the ray input's list (+0x10..
+      +0x20, inline +0x30), +0xc0 a flag. Hits (0x50 each, the ray hit's layout: same collector add 0x143512f10)
+      go into a vector {begin, end, capacity end, allocator, inline}, sorted; returns their count. The
+      physics object is the one Physics_castRay takes (+0x08 the manager, +0x10 the Havok world). Read in
+      Ghidra 2026-11-14 (Gemini's answer B, offsets checked in the disassembly).
+    confidence: inferred
+    sources: [ghidra]
+  - name: PhysicsManager_getClosestPoints
+    va: 0x14351a000
+    signature: "i32(void* physics, const void* query, void* hits, u32 maxHits)"
+    note: >-
+      The closest points between a shape (query +0x60, placed by the transform at +0x70..+0xaf, orthonormalised
+      by 0x142a6a9d0) and the world's bodies within query +0xb0 metres; filter +0x08, skipped bodies as above.
+      Hits are 0x60 bytes: +0x00 body, +0x20 and +0x30 the two points, +0x40 the normal, +0x50 the distance
+      (the game's sphere query 0x1434dcbb0 reports +0x20 with the normal negated). Read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [ghidra]
+  - name: ShapeHolder_makeSphere
+    va: 0x143516d60
+    signature: "void*(void* physics, void* arena, f32 radius, u8 compound)"
+    note: "A 0x18-byte shape holder {vtable 0x141bb19c0, hknpSphereShape*, 0} from the arena (compound 0). The game frees one with its vtable slot 0 (flags 0) and poolFree. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
+  - name: ShapeHolder_makeCapsule
+    va: 0x143514d80
+    signature: "void*(void* physics, void* arena, const f32* a, const f32* b, f32 radius, u8 compound)"
+    note: "As ShapeHolder_makeSphere for a capsule between points a and b (vec4s). Read in Ghidra 2026-11-14."
+    confidence: inferred
     sources: [ghidra]
   - name: HavokRigidBodyHook_registerSignals
     va: 0x1434f9580

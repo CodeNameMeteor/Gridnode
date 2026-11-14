@@ -1,10 +1,10 @@
 # Handover (for the next agent)
 
-Written 2026-11-04, brought up to date on 2026-11-05 and 2026-11-13 (night). Short status, the test waiting and what
+Written 2026-11-04, brought up to date on 2026-11-05, 2026-11-13 (night) and 2026-11-14. Short status, the test waiting and what
 is left: [progress.md](progress.md) (its first section). The full design: [PLAN.md](PLAN.md). Rules for working in
 the repository: `CLAUDE.md`. Sections 4 and 5 below are history (1.0.0 was released 2026-11-06).
 
-## 0. Now (2026-11-13 night)
+## 0. Now (2026-11-14 evening)
 
 - Released: 1.0.0 (2026-11-06). Since: API 35 to 38 (mixer, hook_virtual, batched detours, bundles and prefabs),
   the layout editor's volumes, blockers, prefabs from any area and custom dashes (PR #16, merged).
@@ -13,7 +13,17 @@ the repository: `CLAUDE.md`. Sections 4 and 5 below are history (1.0.0 was relea
   (first report, four checkers). The user finds Gemini about 90% right: check quickly by hand or with cheaper agents.
 - PR #17 (`gn/audit-findings`, API 39): the data registry (`data_of_class`, `on_data`), the trainer's jump tuning
   found by class. Game-tested; waiting for the user's merge.
-- `gn/entity-properties` (API 40, from `gn/audit-findings`, not committed, untested): properties and watching,
+- 2026-11-14: API 41 on `gn/entity-properties` (committed on top of API 40; game-tested in part with
+  `gridnode-api41a`..`i`): static model group members, kill volumes, effects (they stop when their blueprint's bundle
+  goes), assets by GUID, shape queries, contact events (activation seen; impulse not yet), visual environment holds on
+  the render thread. Working in game: `member`, `killvol off`, `squery cast`, `effect`, `assetguid`, `contact shape`.
+  Not working: `fall` (ANT's fall check never runs for Faith; what kills her after `killvol off` is unknown: the next
+  test is a recording of that death), the dynamic shape (hangs in the air), `prop` watch by name on Timeline
+  properties (use the id). progress.md's "Fall deaths" has the details. Research: `research/gemini-2026-11-14.md`,
+  `research/modder-notes-2026-11-14.md`; Gemini briefs J-N wait on the PC in `scratch\gemini-2026-11-14\`.
+- Hook rule learned 2026-11-14: `hookFunction`'s original must be the address of a global (the hook table rewrites
+  it as other mods' hooks come and go); a local copy crashed on unload with the trainer.
+- `gn/entity-properties` (API 40, from `gn/audit-findings`, committed cf0be17, untested): properties and watching,
   sending messages, physics shapes with the native box fix, the creation census. The 22-step test is in progress.md.
   Commit and push only when the user asks; open the PR with `gh api` (GraphQL is refused in the cloud session).
 - Learned this round (also in the annotations):

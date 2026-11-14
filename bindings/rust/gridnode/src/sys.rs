@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 40;
+pub const GN_API_VERSION: u32 = 41;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -12,7 +12,7 @@ pub const GN_VE_WIND: u32 = 0x6e0;
 pub const GN_VE_DEPTH_OF_FIELD: u32 = 0xa50;
 pub const GN_VE_VIGNETTE: u32 = 0xac0;
 pub const GN_VE_FILM_GRAIN: u32 = 0xb00;
-pub const GN_VE_SIZE: u32 = 0xb30;
+pub const GN_VE_SIZE: u32 = 0x1bf0;
 pub const GN_VE_ALL: u32 = 0xffffffff;
 pub const GN_OK: u32 = 0;
 pub const GN_ERR_ARGUMENT: u32 = 1;
@@ -42,6 +42,10 @@ pub const GN_MOVE_EVENT_LANDED: u32 = 2;
 pub const GN_MOVE_EVENT_AIRBORNE: u32 = 3;
 pub const GN_CAMERA_BODY: u32 = 1;
 pub const GN_ACTION_JUMP: u32 = 0xb5a0a981;
+pub const GN_MEMBER_ENABLED: u32 = 0;
+pub const GN_MEMBER_VISIBLE: u32 = 2;
+pub const GN_CONTACT_IMPULSE: u32 = 5;
+pub const GN_CONTACT_ACTIVATION: u32 = 10;
 
 pub const GN_CATEGORY_UNKNOWN: c_int = 0;
 pub const GN_CATEGORY_PRIMITIVE: c_int = 1;
@@ -84,6 +88,7 @@ pub type gn_hotkey_fn = Option<unsafe extern "C" fn(user: *mut c_void)>;
 pub type gn_progress_flag_fn = Option<unsafe extern "C" fn(flag: *const gn_progress_flag, user: *mut c_void)>;
 pub type gn_data_fn = Option<unsafe extern "C" fn(objects: *mut *mut c_void, count: u32, bundle: u32, loaded: c_int, user: *mut c_void)>;
 pub type gn_property_fn = Option<unsafe extern "C" fn(entity: *mut c_void, name: *const c_char, value: *const c_void, type_: *const gn_type, user: *mut c_void)>;
+pub type gn_contact_fn = Option<unsafe extern "C" fn(contact: *const gn_contact, user: *mut c_void)>;
 pub type gn_mod_load2_fn = Option<unsafe extern "C" fn(api: *const gn_api, self_: *mut gn_mod) -> c_int>;
 
 #[repr(C)]
@@ -354,6 +359,25 @@ pub struct gn_progress_flag {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct gn_shape_hit {
+    pub body: u32,
+    pub part: u32,
+    pub physics_object: *mut c_void,
+    pub hit: gn_ray_hit,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct gn_contact {
+    pub type_: u32,
+    pub body_a: u32,
+    pub body_b: u32,
+    pub impulse: f32,
+    pub activated: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct gn_api {
     pub version: u32,
     pub size: u32,
@@ -565,6 +589,18 @@ pub struct gn_api {
     pub message_init: Option<unsafe extern "C" fn(type_: *const c_char, out: *mut c_void, size: u32) -> c_int>,
     pub message_send: Option<unsafe extern "C" fn(manager: c_int, message: *const c_void) -> c_int>,
     pub shape_add: Option<unsafe extern "C" fn(mod_: *const c_char, shape: u32, at: *const gn_transform, size: *const f32, motion: u32, mass: f32, handle: *mut u32) -> c_int>,
+    pub static_member_set: Option<unsafe extern "C" fn(group: *mut c_void, member: u32, copy: u32, what: u32, value: c_int) -> c_int>,
+    pub fall_threshold_set: Option<unsafe extern "C" fn(metres: f32) -> c_int>,
+    pub kill_volume_set: Option<unsafe extern "C" fn(volume: *mut c_void, enabled: c_int) -> c_int>,
+    pub effect_spawn: Option<unsafe extern "C" fn(blueprint: *const c_void, at: *const gn_transform, handle: *mut u32) -> c_int>,
+    pub effect_move: Option<unsafe extern "C" fn(handle: u32, at: *const gn_transform) -> c_int>,
+    pub effect_stop: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub effect_alive: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
+    pub asset_find_guid: Option<unsafe extern "C" fn(guid: *const u8, group: *mut u32) -> *mut c_void>,
+    pub shape_cast: Option<unsafe extern "C" fn(shape: u32, size: *const f32, from: *const gn_transform, to: *const f32, ignore: *const u32, ignore_count: u32, hits: *mut gn_shape_hit, max_hits: u32) -> c_int>,
+    pub closest_points: Option<unsafe extern "C" fn(shape: u32, size: *const f32, at: *const gn_transform, max_distance: f32, ignore: *const u32, ignore_count: u32, hits: *mut gn_shape_hit, max_hits: u32) -> c_int>,
+    pub contact_watch: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, body: u32, types: u32, fn_: gn_contact_fn, user: *mut c_void, handle: *mut u32) -> c_int>,
+    pub contact_unwatch: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -594,4 +630,6 @@ const _: () = assert!(core::mem::size_of::<gn_hotkey_info>() == 236);
 const _: () = assert!(core::mem::size_of::<gn_tuning>() == 32);
 const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1672);
+const _: () = assert!(core::mem::size_of::<gn_shape_hit>() == 48);
+const _: () = assert!(core::mem::size_of::<gn_contact>() == 20);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1768);

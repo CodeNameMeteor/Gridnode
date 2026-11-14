@@ -187,6 +187,10 @@ add_library(gridnode SHARED
   sdk/src/data_registry.cpp
   sdk/src/properties.cpp
   sdk/src/census.cpp
+  sdk/src/static_groups.cpp
+  sdk/src/gamerules.cpp
+  sdk/src/effects.cpp
+  sdk/src/contacts.cpp
   sdk/src/dashes.cpp
   sdk/src/layouts.cpp
   $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>

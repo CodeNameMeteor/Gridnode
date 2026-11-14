@@ -618,9 +618,12 @@ void forgetTimeOfDay(const CodeRange& r) {
 }
 
 // ---- the visual environment and timelines (API 29, untested in game) -------------------------------
-// The state is recomputed by the game every frame, so a mod's value is a hold written back after each
-// server and client world update, like the clock above. Offsets are the cinematic tools' (docs/research/
-// visual-environment.md); no field is checked here, only that the range lies inside the state.
+// The state is recomputed by the game every frame, so a mod's value is a hold. API 41: it is written on
+// the render thread just before the world renderer uploads the state (WorldRenderer_renderView, vtable slot
+// 21, checked in Ghidra 2026-11-14: it hands wr + 0x85470 to the constant upload 0x1436fab20 and wr + 0x87060,
+// the next 0x1bf0 bytes, to Enlighten's update), into both copies; the write after each world update stays
+// as the fallback while that hook is not in. Offsets are the cinematic tools' (docs/research/
+// visual-environment.md); no field is checked here, only that the range lies inside the 0x1bf0-byte state.
 namespace {
 struct VeHold {
     uint32_t offset = 0;
@@ -630,6 +633,7 @@ struct VeHold {
 std::mutex g_veM;
 std::vector<VeHold> g_ve;
 constexpr size_t kMaxVeHolds = 64;
+void installRenderHook(); // below
 
 uintptr_t visualEnvState() {
     uintptr_t p = ptr(mem::rva(e::global::VisualEnvMain));
@@ -666,6 +670,7 @@ int visualEnvSet(const void* caller, uint32_t offset, const void* data, uint32_t
         hold->owner = reinterpret_cast<uintptr_t>(caller);
         hold->bytes.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
     }
+    installRenderHook();
     return visualEnvState() ? GN_OK : GN_ERR_UNAVAILABLE; // kept: it applies once there is a level
 }
 
@@ -676,7 +681,46 @@ int visualEnvRelease(uint32_t offset) {
     return GN_OK;
 }
 
+namespace {
+using RenderViewFn = void (*)(void* worldRenderer, void* context);
+uint64_t g_renderOrig = 0;               // the slot's previous function (the hook table writes it)
+std::atomic<bool> g_renderHook{false};   // the render hook is in: the post-update writes stop
+std::atomic<bool> g_renderTried{false};
+
+// Render thread, inside the game's view render: the holds into the state about to be uploaded and into the
+// copy Enlighten reads. try_lock: a mod setting a hold at that moment costs one frame of the game's value,
+// never a stall of the render thread.
+void renderViewHook(void* worldRenderer, void* context) {
+    if (!unloaded())
+        guardHook("visual environment (render)", [&] {
+            std::unique_lock<std::mutex> lock(g_veM, std::try_to_lock);
+            if (!lock.owns_lock() || g_ve.empty()) return;
+            const uintptr_t wr = reinterpret_cast<uintptr_t>(worldRenderer);
+            for (const VeHold& h : g_ve) {
+                memcpy(reinterpret_cast<void*>(wr + k::VisualEnv_State + h.offset), h.bytes.data(), h.bytes.size());
+                memcpy(reinterpret_cast<void*>(wr + k::VisualEnv_Future + h.offset), h.bytes.data(), h.bytes.size());
+            }
+        });
+    reinterpret_cast<RenderViewFn>(g_renderOrig)(worldRenderer, context);
+}
+
+// Once, when the first hold is set: the slot must still hold the game's function (or a hook over it).
+void installRenderHook() {
+    if (g_renderTried.exchange(true)) return;
+    std::string why;
+    const auto r = hooks().install("gridnode", mem::rva(e::hook::WorldRenderer_renderView.slot), mem::rva(e::hook::WorldRenderer_renderView.original),
+                                   reinterpret_cast<uint64_t>(&renderViewHook), &g_renderOrig, &why);
+    if (r != hook::Result::Ok) {
+        GN_LOG("visual environment: the render hook could not go in (%s); holds are written after each world update instead", why.c_str());
+        return;
+    }
+    g_renderHook = true;
+    GN_LOG("visual environment: holds are written on the render thread (WorldRenderer_renderView)");
+}
+} // namespace
+
 void visualEnvTick() {
+    if (g_renderHook.load(std::memory_order_relaxed)) return;
     std::lock_guard<std::mutex> lock(g_veM);
     if (g_ve.empty()) return;
     const uintptr_t state = visualEnvState();

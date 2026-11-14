@@ -788,6 +788,15 @@ hooks:
     signature: "void(void* writer, void* state, u64 value)"
     note: "The bool output writer of an ANT binding (IsSoftLanding). Slot read from the game image 2026-11-03."
     confidence: inferred
+  - name: RayCastCollisionProcessor_updateSlot
+    kind: vtable-slot
+    vtable: 0x141a62ee0
+    offset: 0x20
+    original: 0x142ce8200
+    signature: "void(void* asset, void* updateInfo)"
+    note: "The fall check's slot 4 (RayCastCollisionProcessor_update; RSI = the asset, its +0x40 FallThreshold read at 0x142ce8632). Read from the game image 2026-11-14. In game (2026-11-14) a hook on this slot never ran: the update is not reached through it; fall_threshold_set detours the function instead."
+    confidence: confirmed
+    sources: [ghidra]
 
 constants:
   - { name: RayCastCollisionProcessorAsset_vtable, value: 0x141a62ee0, confidence: confirmed, sources: [research, ghidra], note: "The fall check asset's vtable (made by 0x142cd15f0, 0x50 bytes)." }

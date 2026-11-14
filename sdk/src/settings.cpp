@@ -243,6 +243,13 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "msg") == 0) return msgCommand(rest);             // GridNode's own (messages.cpp)
     if (_stricmp(word.c_str(), "shape") == 0) return shapeCommand(rest);         // GridNode's own (bodies.cpp)
     if (_stricmp(word.c_str(), "census") == 0) return censusCommand(rest);       // GridNode's own (census.cpp)
+    if (_stricmp(word.c_str(), "fall") == 0) return fallCommand(rest);           // GridNode's own (gamerules.cpp)
+    if (_stricmp(word.c_str(), "killvol") == 0) return killVolumeCommand(rest);  // GridNode's own (gamerules.cpp)
+    if (_stricmp(word.c_str(), "effect") == 0) return effectCommand(rest);       // GridNode's own (effects.cpp)
+    if (_stricmp(word.c_str(), "assetguid") == 0) return assetGuidCommand(rest); // GridNode's own (assets.cpp)
+    if (_stricmp(word.c_str(), "contact") == 0) return contactCommand(rest);     // GridNode's own (contacts.cpp)
+    if (_stricmp(word.c_str(), "squery") == 0) return shapeQueryCommand(rest);   // GridNode's own (world.cpp)
+    if (_stricmp(word.c_str(), "member") == 0) return memberCommand(rest);       // GridNode's own (static_groups.cpp)
     if (_stricmp(word.c_str(), "perf") == 0) return perfCommand(rest);            // GridNode's own (sampler.cpp)
     if (_stricmp(word.c_str(), "sample") == 0) return sampleCommand(rest);      // GridNode's own (sampler.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";

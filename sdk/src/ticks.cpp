@@ -71,6 +71,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     guarded("movement events", [] { movementEventsClientTick(); });
     guarded("layouts (client)", [] { layouts::clientTick(); });
     guarded("ant types", [] { antTick(); });
+    guarded("effects", [] { effectsClientTick(); });
     guarded("client dispatch", [&] { client().dispatch(dtOf(updateInfo)); });
 }
 
