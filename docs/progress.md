@@ -3,6 +3,54 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)
+
+The research of 2026-11-15 (blocks A-Z on the PC, `scratch\unverified\`) checked in Ghidra and taken:
+[research/engine-2026-11-15.md](research/engine-2026-11-15.md) has the verdicts and faults; the plan is
+`scratch\unverified\blocks-2026-11-15-plan.md`. Annotations added (entity flags, updaters, destroy queue, physics
+destroy queue, camera override, ToD clock, recording format, debug render state, spawner fields; fingerprints read
+from the Ghidra program, `required: false`).
+
+- **Safety:** physics queries wait while bodies are queued for destroy (world.cpp); `prop`, `member`, `contact`
+  refuse an entity being destroyed (`entityGoing`); the time of day is no longer written from the client tick;
+  console `threads` counts how often the two realms' ticks overlap (job mode, block X).
+- **The game's own ways:** `time_of_day_hold` through the clock's hold byte (server tick; client by replication),
+  `time_of_day_rate`; `entity_destroy`; `ui_pause_request`; `debug_line_ex` (depth); `character_look`;
+  `spawner_spawn`; `camera_override` / `camera_fov_hold` (experimental; `camera_set` untouched); `message_queue`;
+  `property_set` writes strings and object references; `prop` names timeline pins by track (`trackN`).
+- **Tools:** `tools/replay/replay_format.py` reads and writes the game's v5 recordings (own round trip tested only).
+- **Not done:** pass ticks (no way found to take an updater out of a pass), pose override, zone holds, photo mode
+  (phase 4: research). No change needed: events from any thread (event_send already posts), mixer unload (the patch
+  removal pauses every thread), the localizer race (the game's UI makes the first call), game console commands
+  (already run trusted).
+- **Open:** manager `+0x80`: MECMP and the layout editor read it as the live FOV; block P says it is the override's
+  FOV. Kept as it was; `gcam` will show which.
+
+### API 42's test (developer build; swap in `gridnode-api42a.dll`; console in the GridNode window)
+
+1. Load the city. Log: no new errors. Console `threads` after a minute: send the line (overlaps > 0 means the two
+   ticks do run at once).
+2. `pause full`: the world stops, no menu opens, the mouse still moves the camera? (report). `pause off`: it runs.
+   `pause on`: nothing should stop. `pause off`.
+3. A mod or the trainer holding the time of day (World tab "Look" or `time_of_day_hold`): the sky stays still for a
+   minute with no flicker; release: time moves again from where it was. Then hold it and do a full unload: time moves.
+4. `debugrender on`, `debugrender test`: the cage at Faith, over walls. `debugrender depth`: walk so a wall is
+   between the camera and the cage: hidden behind it now. Screenshot both.
+5. Inspector: a prop or KSEC address. `destroy ADDRESS`: it goes (a KSEC disappears); `destroy` on Faith's address:
+   refused (1).
+6. A ServerCharacterSpawnEntity (Volumes tab or inspector, e.g. a KSEC spawner): `spawn ADDRESS`: one spawns within a
+   second, or "refused (5)" if it is disabled.
+7. Faith's client character address (the log names it): `look ADDR ghost 1`: she is drawn as a ghost (blue
+   projection) in third person / mirrors; `look ADDR off`: back. Same on a KSEC.
+8. `gcam fov 30`: the view zooms in; `gcam fov off`: back. `gcam here`: the view freezes where it is while Faith
+   moves (or nothing changes: report which); `gcam off`.
+9. `prop ADDRESS` on a TimelineEntity: the ids show `=trackN(...)`; `prop ADDRESS track0` reads that pin.
+10. A property that is a string or an object on some entity, if `prop` lists one: `prop ADDR NAME text` / an address.
+11. `squery cast 0.5` while streaming (run fast across districts): no crash; the log may say "a physics query
+    waits".
+12. Full unload: "gridnode.dll is being freed", no "FOV node or pause requests" line.
+Send: console output of each step, what you saw, `gridnode.log`, screenshots for 4 and 7.
+
 ## Where things stand (2026-11-14, evening)
 
 - 2026-11-14 late night: the game's line renderer was tried against ours (same look, less clear): ours stays the

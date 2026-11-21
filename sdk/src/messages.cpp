@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -27,6 +28,7 @@
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/mod_call.hpp"
+#include "gridnode/reflect/layout.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -291,8 +293,7 @@ void messageTap(MessageRecorder rec) {
 // A message type's static instance (reflection) is a default message: vtable, category, type id and
 // realm 0xff already in place (read in a dump, 2026-11-13). A copy, with the mod's fields set, is sent
 // with MessageManager_executeMessage, which runs the listeners now and never frees the message (the game
-// sends stack messages the same way). Queued sending is not offered: the pump frees through the
-// type's deleting destructor, which needs the game's allocator.
+// sends stack messages the same way). Queued sending (message_queue, API 42) copies it into the game's arena.
 int messageInit(const char* type, void* out, uint32_t size) {
     if (!type || !out) return GN_ERR_ARGUMENT;
     const reflect::Type* t = registry().find(type);
@@ -315,6 +316,48 @@ int messageSend(int manager, const void* message) {
     if (!handle || !mem::readOr<uintptr_t>(handle)) return GN_ERR_UNAVAILABLE; // no level for that realm
     using ExecFn = void (*)(uintptr_t, const void*);
     reinterpret_cast<ExecFn>(mem::rva(e::function::MessageManager_executeMessage))(handle, message);
+    return GN_OK;
+}
+
+namespace {
+// Only fields that own no memory: enums, Boolean..SHA1 (type codes 10..22), value types made of those (nested a few deep).
+bool ownsNothing(const reflect::Type* t, int depth) {
+    if (!t || depth > 4) return false;
+    for (const reflect::Field& f : t->fields) {
+        const uint32_t code = gn::layout::typeCode(f.flags);
+        if (code == 8 || (code >= 10 && code <= 22)) continue;
+        if (code == 2 && ownsNothing(registry().byTi(f.typeTi), depth + 1)) continue;
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+// Queued (API 42): delivered at the manager's next pump at least `delay` seconds on, then freed by the pump through the
+// message's deleting destructor (MessageManagerImpl_pumpQueue; a message type's deleting destructor frees through the
+// engine's page table, so it must live in a game arena: the copy is made in the engine's default arena 0x1423606d0,
+// checked in Ghidra 2026-11-20). Fields that own memory (strings, arrays, references) would be freed or released by
+// that destructor as well; types with any such field are refused. Any thread: the queue has its own lock.
+int messageQueue(int manager, const void* message, float delay) {
+    if (!message || manager < 0 || manager > 2 || !std::isfinite(delay) || delay < 0.f || delay > 3600.f) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(message));
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance || !t->size || t->size > 4096) return GN_ERR_ARGUMENT;
+    if (!ownsNothing(t, 0)) return GN_ERR_ARGUMENT;
+    if (!available()) return GN_ERR_UNAVAILABLE;
+    static const bool ok = [] {
+        const bool b = build::codeMatches("MessageManager_queueMessage") && build::codeMatches("Arena_allocAligned");
+        if (!b) GN_LOG("messages: the queue or the arena allocator does not look as expected; message_queue is off");
+        return b;
+    }();
+    if (!ok) return GN_ERR_UNAVAILABLE;
+    const uintptr_t handle = managerHandle(manager);
+    if (!handle || !mem::readOr<uintptr_t>(handle)) return GN_ERR_UNAVAILABLE;
+    using AllocFn = void* (*)(void*, uint64_t, uint64_t);
+    void* copy = reinterpret_cast<AllocFn>(mem::rva(e::function::Arena_allocAligned))(reinterpret_cast<void*>(mem::rva(e::global::GlobalArena)), t->size, 16);
+    if (!copy) return GN_ERR_UNAVAILABLE;
+    std::memcpy(copy, message, t->size);
+    using QueueFn = void (*)(uintptr_t, void*, float);
+    reinterpret_cast<QueueFn>(mem::rva(e::function::MessageManager_queueMessage))(handle, copy, delay);
     return GN_OK;
 }
 

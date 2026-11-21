@@ -4,6 +4,11 @@ Written 2026-11-04, brought up to date on 2026-11-05, 2026-11-13 (night) and 202
 is left: [progress.md](progress.md) (its first section). The full design: [PLAN.md](PLAN.md). Rules for working in
 the repository: `CLAUDE.md`. Sections 4 and 5 below are history (1.0.0 was released 2026-11-06).
 
+## 0. Now (2026-11-20)
+
+- API 42 on `gn/entity-properties` (not committed): the blocks of 2026-11-15 checked in Ghidra and taken; built,
+  untested in game. progress.md's first section has what changed and the 12-step test.
+
 ## 0. Now (2026-11-14 evening)
 
 - Released: 1.0.0 (2026-11-06). Since: API 35 to 38 (mixer, hook_virtual, batched detours, bundles and prefabs),

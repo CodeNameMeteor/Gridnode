@@ -57,6 +57,60 @@ bool parseId(const char* name, uint32_t& id) {
     return true;
 }
 
+// A TimelineEntity's tracks (API 42): its pin ids are hashes made when the timeline was cooked, and the game keeps no
+// names for them (SchematicPinTrackData has SourcePinId +0x28, TargetPinId +0x2c, TargetPinNameHash +0x30; block N of
+// 2026-11-15, field offsets from the reflected dump). So a pin is told by its track: its place among the timeline's
+// tracks (depth first through Children) and the track's class. The entity binds SourcePinId when the track's
+// ExposePins is set, TargetPinId when not; both are listed.
+struct TimelinePin {
+    uint32_t index;
+    uint32_t source, target;
+    std::string cls;
+};
+
+std::vector<TimelinePin> timelinePins(uintptr_t data) {
+    std::vector<TimelinePin> out;
+    reflect::FieldInfo fi;
+    const reflect::Type* dt = data ? registry().typeOf(mem::ProcessMemory(), data) : nullptr;
+    if (!dt || !registry().findField(dt, "TimelineData", fi) || !fi.field) return out;
+    uint32_t next = 0;
+    std::function<void(uintptr_t, int)> walk = [&](uintptr_t obj, int depth) {
+        if (!obj || depth > 8 || out.size() > 4096) return;
+        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
+        if (!t) return;
+        reflect::FieldInfo src, dst, kids;
+        const bool pin = registry().findField(t, "SourcePinId", src) && src.field && registry().findField(t, "TargetPinId", dst) && dst.field;
+        if (depth > 0) {
+            const uint32_t index = next++;
+            if (pin) out.push_back({index, mem::readOr<uint32_t>(obj + src.field->offset), mem::readOr<uint32_t>(obj + dst.field->offset), t->name});
+        }
+        if (!registry().findField(t, "Children", kids) || !kids.field) return;
+        const uintptr_t arr = mem::readOr<uintptr_t>(obj + kids.field->offset);
+        const uint32_t n = arr ? mem::readOr<uint32_t>(arr - 4) : 0;
+        for (uint32_t i = 0; i < n && i < 1024; ++i) walk(mem::readOr<uintptr_t>(arr + i * 8ull), depth + 1);
+    };
+    walk(mem::readOr<uintptr_t>(data + fi.field->offset), 0);
+    return out;
+}
+
+// "trackN": the pin of the timeline's track N (its source pin when it has one, else its target pin).
+bool trackPin(uintptr_t data, const char* name, uint32_t& id) {
+    if (_strnicmp(name, "track", 5) != 0 || !name[5] || strspn(name + 5, "0123456789") != strlen(name + 5)) return false;
+    const uint32_t want = static_cast<uint32_t>(strtoul(name + 5, nullptr, 10));
+    for (const TimelinePin& p : timelinePins(data))
+        if (p.index == want) {
+            id = p.source ? p.source : p.target;
+            return id != 0;
+        }
+    return false;
+}
+
+std::string pinLabel(const std::vector<TimelinePin>& pins, uint32_t id) {
+    for (const TimelinePin& p : pins)
+        if (id && (p.source == id || p.target == id)) return "=track" + std::to_string(p.index) + "(" + p.cls + (p.source == id ? ", source" : ", target") + ")";
+    return {};
+}
+
 struct Property {
     uintptr_t peer = 0, data = 0, slot = 0;
     const reflect::Type* dataType = nullptr;
@@ -192,12 +246,13 @@ int find(void* entityPtr, const char* name, Property& p) {
     const reflect::Type* et = registry().typeOf(mem::ProcessMemory(), entity);
     const reflect::Type* base = registry().find("Entity");
     if (!et || !base || !registry().isKindOf(et, base) || !inspector::alive(entity, et)) return GN_ERR_ARGUMENT;
+    if (entityGoing(entity)) return GN_ERR_UNAVAILABLE; // queued for destroy: its bus may already be gone
     if (!onRealm(entity)) return GN_ERR_THREAD;
     if (int r = entityData(entity, p.peer, p.data); r != GN_OK) return r;
     p.dataType = registry().typeOf(mem::ProcessMemory(), p.data);
     if (!p.dataType) return GN_ERR_NOT_FOUND;
     // The id is the hash of the exact field name: a name typed in another case ("playbackrate") is taken as the field's.
-    if (!parseId(name, p.id)) {
+    if (!trackPin(p.data, name, p.id) && !parseId(name, p.id)) {
         p.id = djb2(name);
         for (const reflect::Type* t = p.dataType; t; t = registry().super(t))
             for (const reflect::Field& f : t->fields)
@@ -291,11 +346,32 @@ int propertySet(void* entity, const char* name, const void* value, uint32_t size
     if (!value) return GN_ERR_ARGUMENT;
     Property p;
     if (const int r = find(entity, name, p); r != GN_OK) return r;
-    // Strings would be copied into the bus's arena and objects reference counted: not offered yet.
-    if (p.category == kCatClass || p.category == kCatString || p.category == kCatCString) return GN_ERR_ARGUMENT;
     if (size != p.size || !p.size) return GN_ERR_ARGUMENT;
     using SetFn = void (*)(uintptr_t, const void*);
-    reinterpret_cast<SetFn>(mem::rva(e::function::PropertyValue_set))(p.slot, value);
+    const auto set = reinterpret_cast<SetFn>(mem::rva(e::function::PropertyValue_set));
+    // API 42. RuntimeProperty_assignValue (under PropertyValue_set; read in Ghidra 2026-11-20) takes an object value as the
+    // pointer itself: it stores it, releases the old one (DataContainer_release) and takes a reference on the new one,
+    // so GridNode takes none. The same object again would be released before it is taken: at a reference count of 1 it
+    // would be freed, so that write is skipped. A string value is a pointer to the C string: copied by the game.
+    if (p.category == kCatClass) {
+        const auto obj = *static_cast<const uintptr_t*>(value);
+        if (obj == mem::readOr<uintptr_t>(p.slot)) return GN_OK;
+        if (obj) {
+            const reflect::Type* want = registry().byTi(mem::readOr<uintptr_t>(p.slot + 8));
+            const reflect::Type* got = registry().typeOf(mem::ProcessMemory(), obj);
+            const reflect::Type* dc = registry().find("DataContainer");
+            if (!got || !dc || !registry().isKindOf(got, dc) || (want && !registry().isKindOf(got, want))) return GN_ERR_ARGUMENT;
+        }
+        set(p.slot, reinterpret_cast<const void*>(obj));
+        return GN_OK;
+    }
+    if (p.category == kCatString || p.category == kCatCString) {
+        const char* text = *static_cast<const char* const*>(value);
+        if (!text || std::strlen(text) > 4096) return GN_ERR_ARGUMENT;
+        set(p.slot, value); // a pointer to the char pointer, as the game's own callers pass a string
+        return GN_OK;
+    }
+    set(p.slot, value);
     return GN_OK;
 }
 
@@ -622,6 +698,7 @@ std::string propCommand(const std::string& rest) {
             const size_t total = (b1 > b0 && (b1 - b0) % 0x18 == 0) ? (b1 - b0) / 0x18 : 0;
             size_t mine = 0;
             std::string ids;
+            const std::vector<TimelinePin> pins = timelinePins(data); // empty unless it is a timeline
             for (size_t i = 0; i < total && i < 200000; ++i) {
                 if (mem::readOr<uintptr_t>(b0 + i * 0x18) != key) continue;
                 const uint32_t id = mem::readOr<uint32_t>(b0 + i * 0x18 + 8);
@@ -641,6 +718,7 @@ std::string propCommand(const std::string& rest) {
                         extra = std::string("(") + (value ? describeValue(q, v) : std::string((qt ? qt->name : "?")) + " no value") + ")";
                     }
                 }
+                if (!named) extra = pinLabel(pins, id) + extra;
                 snprintf(ib, sizeof(ib), " %08x%s%s%s", id, named ? "=" : "", named ? fi.field->name.c_str() : "", extra.c_str());
                 if (++mine <= 24) ids += ib;
             }
@@ -700,6 +778,8 @@ std::string propCommand(const std::string& rest) {
             const std::string tn = t ? t->name : "";
             if (tn == "Boolean") v[0] = (!_stricmp(val, "true") || !strcmp(val, "1")) ? 1 : 0;
             else if (tn == "Float32") { const float f = strtof(val, nullptr); std::memcpy(v, &f, 4); }
+            else if (p.category == kCatString || p.category == kCatCString) { const char* text = val; std::memcpy(v, &text, 8); }
+            else if (p.category == kCatClass) { const uintptr_t obj = !_stricmp(val, "null") ? 0 : static_cast<uintptr_t>(strtoull(val, nullptr, 16)); std::memcpy(v, &obj, 8); }
             else if (p.size == 4) { const int32_t i = static_cast<int32_t>(strtol(val, nullptr, 0)); std::memcpy(v, &i, 4); }
             else { out = "prop: writing a " + tn + " from the console is not supported"; return out; }
             r = propertySet(reinterpret_cast<void*>(entity), name, v, p.size);

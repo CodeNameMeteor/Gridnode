@@ -733,6 +733,12 @@ functions:
     note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
     confidence: inferred
     sources: [ghidra, user]
+  - name: DebugRender2_flushStaging
+    va: 0x142aaa9a0
+    signature: "void(void* ctx)"
+    note: "Turns the recorder's staged vertices (+0x4c count, +0x50 primitive type, +0x58 buffer) into a command (0x142aa9c80); the command's flags byte is copied from **(ctx + 0x10) when it is made. DebugRenderer_drawBatches2 reads it: bit 0x2 no culling, 0x4 depth test, 0x8 depth write (with 0x4)."
+    confidence: confirmed
+    sources: [ghidra, research]
 constants:
   - { name: DebugRender2Impl_vtable, value: 0x141bc3f68, confidence: inferred, sources: [research, ghidra], note: "Set on the Impl after DebugRender2Impl_ctor by the game's creator (7 slots: +0x20 drawFrame 0x14356dab0, +0x30 drawBatches 0x14356e530). Audit 2026-11-13." }
   - { name: DebugRenderSettings_InlineMode, value: 0x1c, confidence: inferred, sources: [research], note: "i32 in the DebugRender settings: -1 (default) expands text and spheres in a job, 0 in drawFrame itself. Enable +0x28 (default 1), DrawStats +0x29. Audit 2026-11-13." }
@@ -746,6 +752,7 @@ constants:
   - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
   - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
   - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }
+  - { name: DebugRender2Recorder_State, value: 0x10, confidence: confirmed, sources: [ghidra], note: "u8* : the state byte each new command copies as its flags (DebugRender2_flushStaging; 0x142aa9c80 copies **(ctx + 0x10) into the command's +0x04). Read in Ghidra 2026-11-20." }
 structs:
   - name: WorldRenderer
     size: 0x3c2000

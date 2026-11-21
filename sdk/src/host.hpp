@@ -327,7 +327,9 @@ int tuningSet(const char* name, float value);
 int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
 int timeOfDayHold(const void* caller, float seconds);            // API 28: < 0 releases
-void timeOfDayTick();                                             // server and client post-update: puts a held clock back
+void timeOfDayTick();                                             // server post-update: the clock's own hold byte and the time
+int timeOfDayRate(const void* caller, float scale);               // API 42: the clock's rate scale held (< 0 gives it back)
+void timeOfDayReleaseAll();                                       // GridNode's unload: hold and rate given back at the next server ticks
 void forgetTimeOfDay(const CodeRange& r);
 int visualEnvGet(uint32_t offset, void* out, uint32_t size);                 // API 29
 int visualEnvSet(const void* caller, uint32_t offset, const void* data, uint32_t size);
@@ -403,6 +405,7 @@ std::string effectCommand(const std::string& rest); // the console's "effect"
 // The game's debug renderer (debugdraw.cpp, experimental).
 void debugDrawFrame();   // render thread, each frame (Present)
 int debugLine(const float* a, const float* b, uint32_t abgr); // any thread: a world-space line for the next frame
+int debugLineEx(const float* a, const float* b, uint32_t abgr, uint32_t flags); // API 42: with the command's flags (0x2 no cull, 0x4 depth test, 0x8 depth write)
 void debugDrawRelease(); // GridNode's unload
 std::string debugRenderCommand(const std::string& rest); // the console's "debugrender"
 // An asset by GUID (assets.cpp).
@@ -657,5 +660,27 @@ bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: n
 void noteCreated(uintptr_t entity); // GridNode made it: tracked from now on, even if the creator hook missed it
 void markDead(uintptr_t entity); // GridNode is destroying it: alive() is false from now on (until a new entity is made there)
 } // namespace inspector
+
+// Entities (world.cpp, API 42).
+bool entityGoing(uintptr_t entity); // queued for destroy or being destroyed (flags +0x18: 0x400, 0x2000000)
+int entityDestroy(void* entity);    // the game's own destroy request; the entity's realm thread
+// The game's own ways (actions.cpp, API 42).
+int uiPauseRequest(const void* caller, int on, int full); // any thread; applied at the next client tick
+int characterLook(const void* caller, void* character, int ghost, int mask); // client thread; -1 leaves one as it is; both -1: given back
+int spawnerSpawn(void* spawner);                          // server thread
+int cameraOverride(const void* caller, const gn_transform* view, float fovDegrees); // any thread; null view: given back
+int cameraFovHold(const void* caller, float fovDegrees);  // any thread; <= 0 gives it back
+void actionsClientTick();
+void forgetActions(const CodeRange& r);
+void actionsRelease();
+bool actionsReleased();
+std::string pauseCommand(const std::string& rest);
+std::string lookCommand(const std::string& rest);
+std::string spawnCommand(const std::string& rest);
+std::string destroyCommand(const std::string& rest);
+std::string gcamCommand(const std::string& rest);
+std::string threadsCommand(); // ticks.cpp
+// Messages (messages.cpp, API 42).
+int messageQueue(int manager, const void* message, float delay);
 
 } // namespace gn::host

@@ -156,6 +156,7 @@ hooks:
 
 constants:
   - { name: MaxReplayBones, value: 32 }
+  - { name: Recording_Version, value: 5, note: "ReplayPlayback_ReadRecordingHeader: u32 version 5, u32 ignored, u32 bone count, count x u32, count x u32, u8 translation-bone count, that many u8 bone indices; MSB-first in big-endian words. A keyframe: f32 time, 2 flag bits (1 full, 2 no interpolation), per bone a translation (full: 3 x f32 for translation bones; delta: BitReader_readDeltaVec3(10, 5.0)) and BitReader_readQuat(11). Checked in Ghidra 2026-11-20." }
 
 functions:
   - name: GhostProjectionShader_init
@@ -399,3 +400,27 @@ functions:
     note: "Vtable +0x140: advances the playback at +0x30."
     confidence: inferred
     sources: [ghidra]
+  - name: BitReader_readQuat
+    va: 0x142a9d9a0
+    signature: "f32*(void* reader, f32* out, i32 bits)"
+    note: "Recording quaternions (bits 11): 1 bit w sign, then x, y, z each 1 sign bit + (bits-1) magnitude bits over 2^(bits-1)-1; w = sqrt(1 - x2 - y2 - z2) with its sign; renormalised when w is 0. 34 bits for bits 11."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: BitReader_readUnitFloat
+    va: 0x142a9db00
+    signature: "f32(void* reader, u32 bits)"
+    note: "bits < 24: an unsigned bits-wide value over 2^bits - 1."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: BitReader_readDeltaVec3
+    va: 0x142a9d7d0
+    signature: "f32*(void* reader, f32* out, u32 bits, f32 scale)"
+    note: "bits < 25: per axis a 1-bit present flag and, when set, a value (0x142aa26d0: sign + bits-1 magnitude, times scale); keyframe deltas use bits 10, scale 5.0."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: BitWriter_rewind
+    va: 0x142aa39f0
+    signature: "void(void* writer, u32 bitPosition)"
+    note: "ReplayKeyframe_Write's rewind to just after the time when a delta does not fit (> 5 m): the frame is then written full."
+    confidence: confirmed
+    sources: [ghidra, research]

@@ -71,6 +71,7 @@ bool unloadEverything() {
     propertiesRelease(); // property watches detached in the ticks below (queued deliveries drain there too)
     contactsRelease();   // contact watches out of Havok's lists in the ticks below
     rulesRelease();      // the fall threshold back; kill volumes back on
+    actionsRelease();    // pause requests, looks, the camera override and FOV node taken back in the ticks below
     debugDrawRelease();  // the game's debug renderer global cleared, if GridNode made it
     forgetEffects(CodeRange{}, true); // every effect GridNode spawned, stopped in the ticks below
     forgetSounds(CodeRange{}); // every one, released on the client thread in the ticks below
@@ -83,11 +84,11 @@ bool unloadEverything() {
     // paused does not tick (an unload started while the game's window was not in front, 2026-11-14:
     // GridNode stayed in memory and gridnode.dll stayed locked), so wait for it to run again before
     // giving up.
-    if (!contactsReleased() || !propertiesReleased() || !messagesReleased()) {
+    if (!contactsReleased() || !propertiesReleased() || !messagesReleased() || !actionsReleased()) {
         GN_LOG("unload: waiting up to %d s for the game to run again (bring its window to the front, close a pause menu)", kResumeWaitS);
         const ULONGLONG start = GetTickCount64();
-        while ((!contactsReleased() || !propertiesReleased() || !messagesReleased()) && GetTickCount64() - start < kResumeWaitS * 1000ull) Sleep(50);
-        if (contactsReleased() && propertiesReleased() && messagesReleased())
+        while ((!contactsReleased() || !propertiesReleased() || !messagesReleased() || !actionsReleased()) && GetTickCount64() - start < kResumeWaitS * 1000ull) Sleep(50);
+        if (contactsReleased() && propertiesReleased() && messagesReleased() && actionsReleased())
             GN_LOG("unload: the game ran again after %.1f s; going on", (GetTickCount64() - start) / 1000.0);
     }
     if (!contactsReleased()) {
@@ -100,6 +101,10 @@ bool unloadEverything() {
     }
     if (!messagesReleased()) {
         GN_LOG("unload: a message manager was not ticking; its listener registration stays, so GridNode stays in memory");
+        canFree = false;
+    }
+    if (!actionsReleased()) {
+        GN_LOG("unload: GridNode's FOV node or pause requests are still in the game's lists (the client was not ticking); GridNode stays in memory");
         canFree = false;
     }
 

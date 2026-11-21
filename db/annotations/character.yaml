@@ -185,6 +185,24 @@ functions:
     note: "Named in Ghidra as HealthComponent_connectIsImmortal; checked in the decompiler (2026-10-30): binds the property IsImmortal (hash 0xa1b7b692, checked) as a bool at +0x88."
     confidence: inferred
     sources: [ghidra]
+  - name: CharacterView_isThirdPerson
+    va: 0x143912b50
+    signature: "u8(void* clientCharacter)"
+    note: "0 first person, 1 third person: the camera override (0x142401cb8) first, then the local player's view state, then character +0x1d8's vtable +0x78 (0x14390ed90: 0 only for the local human player)."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: PamClientCharacterEntity_initLooks
+    va: 0x143916b40
+    signature: "void(void* self, void* initInfo)"
+    note: "vf65: copies the data's +0xe8 to +0x334 (ghost shader) and +0xe9 to +0x335."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: PamClientCharacterEntityRenderer_buildPrims
+    va: 0x143947e10
+    signature: "void(void* self, void* ctx)"
+    note: "Vtable 0x141c484b8 +0x70, every frame: each mesh instance's +0x100 = character +0x334 (the draw at +0x80, 0x14394a720, binds the ghost projection shader then); +0x335 set forces the view mask 0x80. A change shows on the next frame."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 constants:
   - { name: ClientCharacter_ViewModeInterface, value: 0x1d8, note: "Embedded interface whose getViewMode (slot 0x141c3cc68 -> 0x14390ed90, int(iface)) picks the body mesh: 1 = third-person body with head (MECMP)." }
@@ -192,3 +210,5 @@ constants:
   - { name: ClientCharacter_GetViewMode, value: 0x14390ed90 }
   - { name: PlayerBlueprint, value: "Characters/FaithCharacter" }
   - { name: GhostBlueprint, value: "Characters/Projection/ProjectionCharacter" }
+  - { name: PamClientCharacter_GhostShader, value: 0x334, note: "u8: drawn with Shaders/SpecialUseCase/GhostProjectionVSFAsset (read every frame by PamClientCharacterEntityRenderer_buildPrims)." }
+  - { name: PamClientCharacter_GhostMask, value: 0x335, note: "u8: non-zero forces the render view mask 0x80." }

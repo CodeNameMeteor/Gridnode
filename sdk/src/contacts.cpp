@@ -218,6 +218,7 @@ int contactWatch(const std::string& mod, void* entity, uint32_t body, uint32_t t
     const bool isServer = t && serverType && registry().isKindOf(t, serverType);
     const bool isClient = t && clientType && registry().isKindOf(t, clientType);
     if ((!isServer && !isClient) || !inspector::alive(ent, t)) return GN_ERR_ARGUMENT;
+    if (entityGoing(ent)) return GN_ERR_UNAVAILABLE;
     if (isServer ? !isServerThread() : !isClientThread()) return GN_ERR_THREAD;
     uintptr_t rigid = 0;
     for (const auto& [id, rb] : physicsBodies(ent))

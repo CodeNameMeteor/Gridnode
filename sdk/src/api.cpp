@@ -340,6 +340,11 @@ GN_NOINLINE int apiTimeOfDayHold(float seconds) { return timeOfDayHold(GN_CALLER
 GN_NOINLINE int apiStreamingFocusAdd(const float pos[3], uint32_t* handle) { return layouts::streamingFocusAdd(GN_CALLER, pos, handle); }
 GN_NOINLINE int apiVisualEnvSet(uint32_t offset, const void* data, uint32_t size) { return visualEnvSet(GN_CALLER, offset, data, size); }
 GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
+GN_NOINLINE int apiTimeOfDayRate(float scale) { return timeOfDayRate(GN_CALLER, scale); }
+GN_NOINLINE int apiUiPauseRequest(int on, int full) { return uiPauseRequest(GN_CALLER, on, full); }
+GN_NOINLINE int apiCharacterLook(void* character, int ghost, int mask) { return characterLook(GN_CALLER, character, ghost, mask); }
+GN_NOINLINE int apiCameraOverride(const gn_transform* view, float fov) { return cameraOverride(GN_CALLER, view, fov); }
+GN_NOINLINE int apiCameraFovHold(float fov) { return cameraFovHold(GN_CALLER, fov); }
 GN_NOINLINE int apiBundleLoad(const char* name, uint32_t* handle) { return bundleLoad(GN_CALLER, name, handle); }
 GN_NOINLINE int apiPrefabSpawn(const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
     return prefabSpawn(GN_CALLER, asset, at, bundle, handle);
@@ -695,6 +700,15 @@ const gn_api* api() {
         };
         a.contact_unwatch = contactUnwatch;
         a.debug_line = debugLine;
+        a.entity_destroy = entityDestroy;
+        a.time_of_day_rate = apiTimeOfDayRate;
+        a.debug_line_ex = debugLineEx;
+        a.ui_pause_request = apiUiPauseRequest;
+        a.character_look = apiCharacterLook;
+        a.spawner_spawn = spawnerSpawn;
+        a.camera_override = apiCameraOverride;
+        a.camera_fov_hold = apiCameraFovHold;
+        a.message_queue = messageQueue;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

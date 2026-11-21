@@ -34,6 +34,14 @@ to make a GridNodeSync import from what a recording saw.
 shows as hex. Every input is optional (an EBX XML dump, your reflected dump, the game exe, recordings); the
 header of the script has the command. The output comes from the game: do not commit it.
 
+## The game's replay recordings
+
+`tools/replay/replay_format.py` reads and writes the game's own ghost recordings (version 5: the header, full and
+delta keyframes, the 34-bit quaternions), as `ReplayPlayback_ReadRecordingHeader` and `ReplayPlayback_DecodeKeyframe`
+read them (docs/research/engine-2026-11-15.md). `python tools/replay/replay_format.py info FILE` gives the bones and
+keyframes, `dump FILE --frames N` the poses. Its own round trip is tested (`python3 -m unittest discover -s
+tools/replay/tests -t tools/replay`); it has not read a recording taken from the game yet.
+
 ## Ghidra
 
 | File | Use |

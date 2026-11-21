@@ -468,6 +468,12 @@ functions:
     note: "Pure research (to be confirmed in game). Constructs hknpWorld (vtable 0x141d51418, size 0x5a0). Initializes broadphase, island manager, body manager (+0x10), and motions (+0xe0)."
     confidence: hypothesis
     sources: [ghidra, research]
+  - name: PhysicsOwner_queueDestroy
+    va: 0x1434f53e0
+    signature: "void(void* owner, const u16* id)"
+    note: "Under the owner's lock (+0x20): +0xb88[id] |= 0x10 and the id appended to +0x1c8..+0x1d0. The body stays in the Havok world, and +0x130[id] keeps pointing at the RigidBody, until the step's 0x1434f4c80 frees it: a query in between can hit a body whose RigidBody is being torn down (block O, 2026-11-20)."
+    confidence: confirmed
+    sources: [ghidra, research]
 constants:
   - { name: PhysicsBoxDesc_vtable, value: 0x141afb4b8, confidence: inferred, sources: [ghidra], note: "A box's description for PhysicsEntityFactory_create, as PamOBBCollision_enable builds it (its local): vtable[0]() = 1 (a box), +0x08 mass, +0x14 motion (2 static, 5 keyframed, 6 dynamic, others dynamic), +0x1c layer (the RigidBodyData's +0x1c), +0x20 half extents. Was 0x141b41a00 until 2026-11-13: that one returns 2, a sphere (PhysicsSphereDesc_vtable), so native boxes were spheres. Checked in Ghidra 2026-11-13 (the factory: 1 box, 2 sphere, 3 capsule, 7 a shape slot)." }
   - { name: PhysicsSphereDesc_vtable, value: 0x141b41a00, confidence: inferred, sources: [ghidra], note: "A sphere's description (the sphere collision's enable, 0x143333590): vtable[0]() = 2, radius f32 at +0x20; the rest as PhysicsBoxDesc_vtable. A capsule (3) takes radius +0x20 and length +0x24 along X; no description vtable for it was found. Checked in Ghidra 2026-11-13." }
@@ -558,3 +564,6 @@ constants:
   - { name: CharacterSupport_Unsupported, value: 0, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 0: mid-air / free fall." }
   - { name: CharacterSupport_Supported, value: 1, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 1: walkable ground (<= 45 deg)." }
   - { name: CharacterSupport_Sliding, value: 2, confidence: hypothesis, sources: [ghidra], note: "SupportInfo state 2: steep slope (> 45 deg)." }
+  - { name: PhysicsOwner_BodyFlags, value: 0xb88, note: "u32[] per body id; bit 0x10: queued for destroy (PhysicsOwner_queueDestroy), bit 0x02: enabled." }
+  - { name: PhysicsOwner_DestroyQueueBegin, value: 0x1c8, note: "u16 ids queued for destroy (begin); equal to +0x1d0 when none." }
+  - { name: PhysicsOwner_DestroyQueueEnd, value: 0x1d0 }

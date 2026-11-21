@@ -535,6 +535,7 @@ int godModeSet(int on) {
 }
 
 void faithRelease() {
+    timeOfDayReleaseAll(); // the hold byte and rate go back at the server's next ticks (unload waits for them)
     client().post([] {
         {
             std::lock_guard<std::mutex> lock(g_actM);
@@ -555,10 +556,17 @@ void faithRelease() {
 
 // ---- game state -------------------------------------------------------------------------------------
 namespace {
+// The server clock: the server realm's TimeOfDayClockUpdater ticks it (+0x28, set by the clock's Enable event;
+// TimeOfDayClockEntity_ctor, checked in Ghidra 2026-11-20). The old path (a Cheat Engine chain through the updater
+// list, block W of 2026-11-15: it only worked because that updater happened to be the next one registered) stays
+// as the fallback.
 uintptr_t timeOfDayClock() {
+    const uintptr_t updater = ptr(mem::rva(e::global::TimeOfDayClockUpdaters) + 8); // [1]: the server realm
+    const uintptr_t clock = updater ? ptr(updater + k::TimeOfDayUpdater_Clock) : 0;
+    if (typeIs(clock, "ServerTimeOfDayClockEntity")) return clock;
     const uintptr_t m = ptr(mem::rva(e::global::TimeOfDayManager));
-    const uintptr_t clock = ptr(ptr(m + k::TimeOfDay_Clock1) + k::TimeOfDay_Clock2);
-    return typeIs(clock, "ServerTimeOfDayClockEntity") ? clock : 0;
+    const uintptr_t old = ptr(ptr(m + k::TimeOfDay_Clock1) + k::TimeOfDay_Clock2);
+    return typeIs(old, "ServerTimeOfDayClockEntity") ? old : 0;
 }
 uintptr_t sharedContent() {
     const uintptr_t c = ptr(ptr(mem::rva(e::global::SharedContentManagerHolder)) + k::SharedContent_Manager);
@@ -586,14 +594,20 @@ int timeOfDaySet(float seconds) {
     return mem::write(clock + k::Clock_Time, seconds) ? GN_OK : GN_ERR_UNAVAILABLE;
 }
 
-// A held clock (API 28). The game's server update moves the clock on and the visual environment
-// follows what it reads, so one write per frame leaves the lighting chasing a sawtooth; this writes it
-// back after each server and client world update, as the cinematic tools do around the visual
-// environment's update (their VisualsManager, 2026-11-06). Whether the lighting is now steady is
-// untested; the exact point they write at (around the visual environment update) is not hooked yet.
+// A held clock (API 28). Since 2026-11-20 through the clock's own hold, as a mission's
+// ServerTimeOfDayClockControllerEntity does it (its Pause event sets clock +0xf8; SetTime writes +0x30): the server's
+// update then leaves the time alone and the client's copy follows by the game's replication (the server marks the
+// clock dirty every tick). On the server tick only. The hold byte the level had is put back on release. The rate
+// scale (+0xec, the controller's TimeScaleMultiplier) is a hold of the same kind (time_of_day_rate, API 42).
 namespace {
 std::atomic<float> g_todHold{-1.f};
 std::atomic<uintptr_t> g_todOwner{0};
+std::atomic<float> g_todRate{-1.f};
+std::atomic<uintptr_t> g_todRateOwner{0};
+uintptr_t g_heldClock = 0;      // server thread: the clock whose hold byte GridNode set
+uint8_t g_heldClockWas = 0;     // what it had
+uintptr_t g_ratedClock = 0;     // server thread: the clock whose rate GridNode set
+float g_ratedClockWas = 1.f;
 } // namespace
 
 int timeOfDayHold(const void* caller, float seconds) {
@@ -603,18 +617,59 @@ int timeOfDayHold(const void* caller, float seconds) {
         return GN_OK;
     }
     g_todOwner = reinterpret_cast<uintptr_t>(caller);
-    g_todHold = seconds;
+    g_todHold = std::fmod(seconds, 86400.f);
     return timeOfDayClock() ? GN_OK : GN_ERR_UNAVAILABLE; // kept: it applies once the clock exists
 }
 
+int timeOfDayRate(const void* caller, float scale) {
+    if (!std::isfinite(scale) || scale > 100000.f) return GN_ERR_ARGUMENT;
+    if (scale < 0.f) {
+        g_todRate = -1.f;
+        return GN_OK;
+    }
+    g_todRateOwner = reinterpret_cast<uintptr_t>(caller);
+    g_todRate = scale;
+    return timeOfDayClock() ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+// Server tick.
 void timeOfDayTick() {
+    const uintptr_t clock = timeOfDayClock();
+    if (g_heldClock && g_heldClock != clock) g_heldClock = 0; // a level change: that clock is gone
+    if (g_ratedClock && g_ratedClock != clock) g_ratedClock = 0;
     const float hold = g_todHold.load(std::memory_order_relaxed);
-    if (hold < 0.f) return;
-    if (const uintptr_t clock = timeOfDayClock()) mem::write(clock + k::Clock_Time, hold);
+    if (hold >= 0.f && clock) {
+        if (!g_heldClock) {
+            g_heldClockWas = mem::readOr<uint8_t>(clock + k::Clock_Hold);
+            g_heldClock = clock;
+        }
+        mem::write<uint8_t>(clock + k::Clock_Hold, 1);
+        mem::write(clock + k::Clock_Time, hold);
+    } else if (hold < 0.f && g_heldClock) {
+        mem::write<uint8_t>(g_heldClock + k::Clock_Hold, g_heldClockWas);
+        g_heldClock = 0;
+    }
+    const float rate = g_todRate.load(std::memory_order_relaxed);
+    if (rate >= 0.f && clock) {
+        if (!g_ratedClock) {
+            g_ratedClockWas = mem::readOr<float>(clock + k::Clock_RateScale, 1.f);
+            g_ratedClock = clock;
+        }
+        mem::write(clock + k::Clock_RateScale, rate);
+    } else if (rate < 0.f && g_ratedClock) {
+        mem::write(g_ratedClock + k::Clock_RateScale, g_ratedClockWas);
+        g_ratedClock = 0;
+    }
+}
+
+void timeOfDayReleaseAll() {
+    g_todHold = -1.f;
+    g_todRate = -1.f;
 }
 
 void forgetTimeOfDay(const CodeRange& r) {
     if (g_todHold.load() >= 0.f && r.has(reinterpret_cast<void*>(g_todOwner.load()))) g_todHold = -1.f;
+    if (g_todRate.load() >= 0.f && r.has(reinterpret_cast<void*>(g_todRateOwner.load()))) g_todRate = -1.f;
 }
 
 // ---- the visual environment and timelines (API 29, untested in game) -------------------------------

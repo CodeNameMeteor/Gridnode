@@ -11,6 +11,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -20,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "gridnode/build.hpp"
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
@@ -34,11 +36,13 @@ namespace k = gn::engine::constant;
 struct Line {
     float a[3], b[3];
     uint32_t abgr;
+    uint8_t flags = 0; // GN_DEBUG_* (debug_line_ex): the command's state byte
 };
 
 std::atomic<int> g_want{0};       // 1 on, -1 off (asked from the console; done on the render thread)
 std::atomic<bool> g_ours{false};  // GridNode made the global (so it clears it at unload)
 std::atomic<bool> g_test{false};  // a test cage around Faith every frame
+std::atomic<uint8_t> g_testFlags{0}; // the cage's flags ("debugrender depth")
 std::mutex g_m;
 std::vector<Line> g_lines;        // (g_m) drawn once, at the next frame
 std::atomic<uint64_t> g_drawn{0}, g_frames{0};
@@ -104,9 +108,10 @@ void cage(std::vector<Line>& out) {
     const float c[4][2] = {{-h, -h}, {h, -h}, {h, h}, {-h, h}};
     for (int i = 0; i < 4; ++i) {
         const int j = (i + 1) % 4;
-        out.push_back({{p[0] + c[i][0], y0, p[2] + c[i][1]}, {p[0] + c[j][0], y0, p[2] + c[j][1]}, 0xff00ff00u});
-        out.push_back({{p[0] + c[i][0], y1, p[2] + c[i][1]}, {p[0] + c[j][0], y1, p[2] + c[j][1]}, 0xff00ff00u});
-        out.push_back({{p[0] + c[i][0], y0, p[2] + c[i][1]}, {p[0] + c[i][0], y1, p[2] + c[i][1]}, 0xff0000ffu});
+        const uint8_t f = g_testFlags.load();
+        out.push_back({{p[0] + c[i][0], y0, p[2] + c[i][1]}, {p[0] + c[j][0], y0, p[2] + c[j][1]}, 0xff00ff00u, f});
+        out.push_back({{p[0] + c[i][0], y1, p[2] + c[i][1]}, {p[0] + c[j][0], y1, p[2] + c[j][1]}, 0xff00ff00u, f});
+        out.push_back({{p[0] + c[i][0], y0, p[2] + c[i][1]}, {p[0] + c[i][0], y1, p[2] + c[i][1]}, 0xff0000ffu, f});
     }
 }
 
@@ -130,17 +135,46 @@ void debugDrawFrame() {
         if (!ctx) return;
         using VertsFn = uint8_t* (*)(void*, int32_t, uint32_t);
         const auto verts = reinterpret_cast<VertsFn>(mem::rva(e::function::DebugRender2_allocVertices));
+        // Each command copies the recorder's state byte (**(ctx + 0x10)) as its flags when it is made
+        // (DebugRender2_flushStaging; read in Ghidra 2026-11-20): 0x2 no culling, 0x4 depth test, 0x8 depth write.
+        // Lines with flags are staged in their own run: the staged vertices before them are flushed with the byte as it
+        // was, ours with ours, then the byte is put back.
+        static const bool flagsOk = build::codeMatches("DebugRender2_flushStaging");
+        const auto flushStaging = reinterpret_cast<void (*)(void*)>(mem::rva(e::function::DebugRender2_flushStaging));
+        uint8_t* state = flagsOk ? reinterpret_cast<uint8_t*>(mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(ctx) + k::DebugRender2Recorder_State)) : nullptr;
+        uint8_t probe = 0;
+        if (state && !mem::read(reinterpret_cast<uintptr_t>(state), probe)) state = nullptr;
+        std::stable_sort(lines.begin(), lines.end(), [](const Line& x, const Line& y) { return x.flags < y.flags; });
         for (size_t i = 0; i < lines.size();) {
-            const uint32_t n = static_cast<uint32_t>(std::min<size_t>(lines.size() - i, 1024));
-            uint8_t* v = verts(ctx, 1, n * 2); // Line3D: two vertices a line
-            if (!v) break;
-            for (uint32_t j = 0; j < n; ++j, ++i) {
-                uint8_t* a = v + j * 0x40;
-                std::memset(a, 0, 0x40);
-                std::memcpy(a, lines[i].a, 12);
-                std::memcpy(a + 0x0c, &lines[i].abgr, 4);
-                std::memcpy(a + 0x20, lines[i].b, 12);
-                std::memcpy(a + 0x2c, &lines[i].abgr, 4);
+            const uint8_t flags = lines[i].flags;
+            size_t runEnd = i;
+            while (runEnd < lines.size() && lines[runEnd].flags == flags) ++runEnd;
+            const bool own = state && flags != *state;
+            uint8_t was = 0;
+            if (own) {
+                flushStaging(ctx);
+                was = *state;
+                *state = flags;
+            }
+            while (i < runEnd) {
+                const uint32_t n = static_cast<uint32_t>(std::min<size_t>(runEnd - i, 1024));
+                uint8_t* v = verts(ctx, 1, n * 2); // Line3D: two vertices a line
+                if (!v) {
+                    i = runEnd;
+                    break;
+                }
+                for (uint32_t j = 0; j < n; ++j, ++i) {
+                    uint8_t* a = v + j * 0x40;
+                    std::memset(a, 0, 0x40);
+                    std::memcpy(a, lines[i].a, 12);
+                    std::memcpy(a + 0x0c, &lines[i].abgr, 4);
+                    std::memcpy(a + 0x20, lines[i].b, 12);
+                    std::memcpy(a + 0x2c, &lines[i].abgr, 4);
+                }
+            }
+            if (own) {
+                flushStaging(ctx);
+                *state = was;
             }
         }
         // The render engine publishes the render thread's recorder before it draws; whether the Present thread is that
@@ -153,14 +187,17 @@ void debugDrawFrame() {
 
 // Any thread: one line for the next frame (world space; colour 0xAABBGGRR). Lines from several frames are kept up
 // to 65,536; a mod draws its lines every frame.
-int debugLine(const float* a, const float* b, uint32_t abgr) {
-    if (!a || !b) return GN_ERR_ARGUMENT;
+int debugLine(const float* a, const float* b, uint32_t abgr) { return debugLineEx(a, b, abgr, 0); }
+
+// API 42: with the command's flags (GN_DEBUG_NO_CULL 0x2, GN_DEBUG_DEPTH_TEST 0x4, GN_DEBUG_DEPTH_WRITE 0x8 with 0x4).
+int debugLineEx(const float* a, const float* b, uint32_t abgr, uint32_t flags) {
+    if (!a || !b || (flags & ~0x0eu)) return GN_ERR_ARGUMENT;
     for (int i = 0; i < 3; ++i)
         if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return GN_ERR_ARGUMENT;
     if (!global()) return GN_ERR_UNAVAILABLE;
     std::lock_guard<std::mutex> lock(g_m);
     if (g_lines.size() >= 65536) return GN_ERR_FULL;
-    g_lines.push_back({{a[0], a[1], a[2]}, {b[0], b[1], b[2]}, abgr});
+    g_lines.push_back({{a[0], a[1], a[2]}, {b[0], b[1], b[2]}, abgr, static_cast<uint8_t>(flags)});
     return GN_OK;
 }
 
@@ -186,13 +223,17 @@ std::string debugRenderCommand(const std::string& rest) {
         g_test = false;
         return "debugrender: off at the next frame";
     }
+    if (!_stricmp(arg.c_str(), "depth")) {
+        g_testFlags = g_testFlags.load() ? 0 : 0x04;
+        return std::string("debugrender: test cage ") + (g_testFlags.load() ? "with depth test (hidden behind walls)" : "without depth test (over everything)");
+    }
     if (!_stricmp(arg.c_str(), "test")) {
         g_test = !g_test.load();
         return std::string("debugrender: test cage ") + (g_test.load() ? "on (green square at her feet and head, blue posts)" : "off");
     }
     std::lock_guard<std::mutex> lock(g_m);
     char b[200];
-    snprintf(b, sizeof(b), "debugrender: %s; %llu lines drawn in %llu frames (debugrender on | off | test)", g_status.c_str(),
+    snprintf(b, sizeof(b), "debugrender: %s; %llu lines drawn in %llu frames (debugrender on | off | test | depth)", g_status.c_str(),
              static_cast<unsigned long long>(g_drawn.load()), static_cast<unsigned long long>(g_frames.load()));
     return b;
 }

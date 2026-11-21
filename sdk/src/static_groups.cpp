@@ -50,6 +50,7 @@ int staticMemberSet(void* group, uint32_t member, uint32_t copy, uint32_t what, 
     const bool isClient = t && client && registry().isKindOf(t, client);
     const bool isServer = t && server && registry().isKindOf(t, server);
     if ((!isClient && !isServer) || !inspector::alive(g, t)) return GN_ERR_ARGUMENT;
+    if (entityGoing(g)) return GN_ERR_UNAVAILABLE;
     if (what != GN_MEMBER_ENABLED && !(what == GN_MEMBER_VISIBLE && isClient)) return GN_ERR_ARGUMENT; // the server group only switches
     if (isClient ? !isClientThread() : !isServerThread()) return GN_ERR_THREAD;
     // The game's handlers check neither index (the client's not the member, neither the copy): both here.

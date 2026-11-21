@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define GN_API_VERSION 41 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add); 41: static model group members (static_member_set), fall damage and kill volumes, effects, assets by GUID, shape queries, contact events, debug_line (the game's debug renderer) */
+#define GN_API_VERSION 42 /* 2: world, levels and UI (M4); 3: settings and console (M4.5); 4: messages, 5: ray casts (M5); 6: keys, movement, tuning, game state; 7: assets by name (M7); 8: landing prediction; 9: mod settings, hotkeys, movement events; 10: the view, for drawing in the world; 11: events between entities; 12: sending events; 13: the free camera; 14: entities of a class; 15: unloading, code patches; 16: function detours, mod manifests and functions between mods; 17: declared settings; 18: what a ray hit, collision bodies; 19: collision boxes, sounds, despawning characters, ray hit layers; 20: a mod's folder; 21: body velocities, gravity; 22: health, the waypoint, the checkpoint, progression (the save's flags, missions); 23: online services on purpose (online_allow), view_get_ex; 24: the player's own input (action_held); 25: ANT types by name, Faith's move tracker; 26: destroyed entities, the level ready, ANT fields in live objects; 27: the camera for mods, Faith's last 15 seconds, mods open the menu; 28: holding the time of day; 29: the visual environment, timelines; 30: streaming focus points; 31: localize; 32: pause state; 33: ray casts that skip bodies; 34: standalone collision boxes (box_backend); 35: the mixer's groups (bus_volume_get, bus_volume_set, bus_duck); 36: hooking a class's virtual by name, any entity's components, the game's data folder, mods' views in the inspector; 37: detours batched (hooks_begin, hooks_commit), the mod's handle (gn_mod_load2 and the _m calls); 38: loading bundles and spawning prefabs from them; 39: the game's loaded data by class (data_of_class, on_data); 40: entities' connected properties (property_get, property_set, property_watch), sending messages (message_init, message_send), physics shapes (shape_add); 41: static model group members (static_member_set), fall damage and kill volumes, effects, assets by GUID, shape queries, contact events, debug_line (the game's debug renderer); 42: the game's own ways: entity_destroy, time_of_day_rate, debug_line_ex (depth), ui_pause_request, character_look, spawner_spawn, camera_override, camera_fov_hold, message_queue; property_set writes strings and object references */
 /* Offsets in the visual environment state (visual_env_*); GN_VE_SIZE bounds them. */
 #define GN_VE_OUTDOOR_LIGHT 0x000u
 #define GN_VE_TONEMAP 0x1d0u
@@ -1349,7 +1349,9 @@ typedef struct gn_api {
      * property_get: *type (if not null) the property's type; with out null only that. Otherwise size must
      * be the type's size and the value is copied to out; a class reference gives the object (8 bytes), a
      * string the game's char* (8 bytes, valid until the property changes). property_set copies size
-     * bytes from value (the type's size); strings and class references are refused (GN_ERR_ARGUMENT).
+     * bytes from value (the type's size). Since API 42 also strings (value points to a const char*: the game
+     * copies the text) and class references (value points to the object pointer, which must be a DataContainer of
+     * the property's type, or null; the game takes and drops the references itself).
      * GN_ERR_NOT_FOUND: no such field, or nothing connects to it (the bus has no slot: then the entity
      * reads its data and the property is not live), or the entity is on no bus list. An input (a value
      * the level connects into the entity, like a DelayEntity's Delay) has no slot of its own: it is the
@@ -1466,6 +1468,57 @@ typedef struct gn_api {
      * in the shipped game: the console's `debugrender on` makes it (GN_ERR_UNAVAILABLE until then). Any thread.
      * Experimental, untested in game; no text. */
     int (*debug_line)(const float from[3], const float to[3], uint32_t abgr);
+
+    /* ==== GN_API_VERSION 42 =================================================================== */
+    /* The game's own ways of doing things GridNode did by hand, and a few new ones (blocks of 2026-11-15, checked in
+     * Ghidra 2026-11-20). All untested in game. */
+
+    /* entity_destroy: the game's own destroy request for any entity (deinit now, freed in its world's next update), as
+     * a spawner's Unspawn does for its characters. Not Faith (either realm), not a PamServerCharacterSpawnEntity, and
+     * GN_OK at once for one already being destroyed. The entity's realm thread (GN_ERR_THREAD). Console: destroy ADDRESS. */
+    int (*entity_destroy)(void* entity);
+
+    /* time_of_day_rate: the clock's rate scale held (1 normal, 0 stopped; what a mission's TimeScaleMultiplier sets);
+     * < 0 gives the level's back. Undone when the mod unloads. time_of_day_hold now uses the clock's own hold (as a
+     * mission's Pause does) on the server tick, and the client follows by replication. Any thread. */
+    int (*time_of_day_rate)(float scale);
+
+    /* debug_line_ex: debug_line with the game's draw state for the line (flags GN_DEBUG_*): depth tested lines hide
+     * behind walls. Any thread; the console's `debugrender depth` draws the test cage that way. */
+#define GN_DEBUG_NO_CULL 0x2u
+#define GN_DEBUG_DEPTH_TEST 0x4u
+#define GN_DEBUG_DEPTH_WRITE 0x8u /* with GN_DEBUG_DEPTH_TEST */
+    int (*debug_line_ex)(const float from[3], const float to[3], uint32_t abgr, uint32_t flags);
+
+    /* ui_pause_request: the mod asks the UI to pause (on 1) or takes it back (on 0), through the same pause controller
+     * the game's menus use. full 1 pauses the world; full 0 counts as a menu but pauses only while a screen's timescale
+     * is 0. No screen opens, input is not rerouted. One request per mod and kind; taken back when the mod unloads.
+     * Any thread; applied at the next client tick. ui_pause_state shows the counts. Console: pause on|full|off. */
+    int (*ui_pause_request)(int on, int full);
+
+    /* character_look: a PamClientCharacterEntity drawn with the ghost projection shader (ghost 1) and/or the render
+     * view mask the game gives ghosts (mask 1); -1 leaves that one as it is; both -1 gives the character's own back.
+     * The renderer reads them every frame. Taken back when the mod unloads. Client thread. Console: look ADDRESS
+     * ghost|mask|off [0|1]. */
+    int (*character_look)(void* character, int ghost, int mask);
+
+    /* spawner_spawn: a ServerCharacterSpawnEntity asked to spawn, as its Spawn event does: its next tick spawns if the
+     * game allows it (enabled, under its max count, a free spawn point). GN_ERR_UNAVAILABLE: the spawner is disabled.
+     * Server thread. Console: spawn ADDRESS. */
+    int (*spawner_spawn)(void* spawner);
+
+    /* camera_override: the view (and FOV in degrees, <= 0: the camera's) through the camera view manager's own override,
+     * set again each client tick; null view gives it back. camera_fov_hold: only the FOV, through the view manager's
+     * listener list; <= 0 gives it back. Both undone when the mod unloads. Experimental: camera_set (API 27) stays the
+     * tested way. Any thread. Console: gcam here|off, gcam fov DEGREES|off. */
+    int (*camera_override)(const gn_transform* view, float fov_degrees);
+    int (*camera_fov_hold)(float fov_degrees);
+
+    /* message_queue: a message (from message_init) delivered at the manager's next pump at least `delay` seconds on,
+     * as the game queues its own; GridNode copies it into the game's memory and the game frees it after delivery.
+     * Message types with fields that own memory (strings, arrays, references) are refused (GN_ERR_ARGUMENT). Any
+     * thread. */
+    int (*message_queue)(int manager, const void* message, float delay);
 } gn_api;
 
 typedef int (*gn_mod_load_fn)(const gn_api* api);

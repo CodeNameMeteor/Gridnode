@@ -252,6 +252,7 @@ size_t takeOut(const CodeRange& code, const std::string& id, std::vector<std::st
     forgetAudioMix(code);
     forgetGravity(code);
     forgetTimeOfDay(code);
+    forgetActions(code);
     forgetVisualEnv(code);
     forgetRules(code);
     forgetEffects(code, false);

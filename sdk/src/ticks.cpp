@@ -4,7 +4,9 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
 #include <exception>
+#include <string>
 
 #include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
@@ -26,6 +28,23 @@ static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t) && std::atomic<u
               "the hook table writes these as plain 8-byte values");
 std::atomic<DWORD> g_serverThread{0};
 std::atomic<DWORD> g_clientThread{0};
+
+// Whether the two realms' ticks overlap (block X, 2026-11-15: in the game's job mode updateGameFrame can run the
+// client's frame while the server's runs as a job). Measured over GridNode's own part of each tick: how many
+// client ticks began while a server tick of ours was still running (and the reverse), and how often the server
+// tick moved to another thread. Read by the console's "threads".
+std::atomic<int> g_inServer{0};
+std::atomic<int> g_inClient{0};
+std::atomic<uint64_t> g_serverTicks{0}, g_clientTicks{0}, g_overlaps{0}, g_serverMoves{0};
+
+struct InTick {
+    std::atomic<int>& mine;
+    InTick(std::atomic<int>& m, const std::atomic<int>& other) : mine(m) {
+        mine.fetch_add(1, std::memory_order_acq_rel);
+        if (other.load(std::memory_order_acquire) > 0) g_overlaps.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~InTick() { mine.fetch_sub(1, std::memory_order_acq_rel); }
+};
 
 float dtOf(void* updateInfo) {
     float dt = 0;
@@ -49,7 +68,9 @@ template <class F> void guarded(const char* what, F&& f) {
 void serverPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_serverOrig.load(std::memory_order_acquire))(world, updateInfo);
     if (unloaded()) return; // kept in place by a hook over it: the game's update only
-    g_serverThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    InTick in(g_inServer, g_inClient);
+    g_serverTicks.fetch_add(1, std::memory_order_relaxed);
+    if (g_serverThread.exchange(GetCurrentThreadId(), std::memory_order_relaxed) != GetCurrentThreadId()) g_serverMoves.fetch_add(1, std::memory_order_relaxed);
     guarded("time of day", [] { timeOfDayTick(); }); // before anything of ours reads the clock
     guarded("visual environment", [] { visualEnvTick(); });
     guarded("server messages", [] { messagesServerTick(); });
@@ -62,8 +83,11 @@ void serverPostUpdate(void* world, void* updateInfo) {
 void clientPostUpdate(void* world, void* updateInfo) {
     reinterpret_cast<UpdateFn>(g_clientOrig.load(std::memory_order_acquire))(world, updateInfo);
     if (unloaded()) return;
+    InTick in(g_inClient, g_inServer);
+    g_clientTicks.fetch_add(1, std::memory_order_relaxed);
     g_clientThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
-    guarded("time of day", [] { timeOfDayTick(); });
+    // The time of day is held on the server tick only: the clock is the server's entity (2026-11-20; it was
+    // written from both ticks, which in the game's job mode can run at once).
     guarded("visual environment", [] { visualEnvTick(); });
     guarded("world", [] { worldClientTick(); });
     guarded("client messages", [] { messagesClientTick(); });
@@ -74,6 +98,7 @@ void clientPostUpdate(void* world, void* updateInfo) {
     guarded("ant types", [] { antTick(); });
     guarded("effects", [] { effectsClientTick(); });
     guarded("rules", [] { rulesClientTick(); });
+    guarded("actions", [] { actionsClientTick(); });
     guarded("client dispatch", [&] { client().dispatch(dtOf(updateInfo)); });
 }
 
@@ -102,6 +127,17 @@ TickStatus installTicks() {
     s.server = install(engine::hook::ServerGameWorld_postUpdate, &serverPostUpdate, reinterpret_cast<uint64_t*>(&g_serverOrig));
     s.client = install(engine::hook::ClientGameWorld_postUpdate, &clientPostUpdate, reinterpret_cast<uint64_t*>(&g_clientOrig));
     return s;
+}
+
+std::string threadsCommand() {
+    char b[400];
+    const uint64_t moves = g_serverMoves.load();
+    snprintf(b, sizeof(b),
+             "threads: %llu server ticks, %llu client ticks; %llu began while the other realm's tick (GridNode's part) was running; "
+             "the server tick changed thread %llu times (more than once: it runs as a job, so the realms can overlap)",
+             static_cast<unsigned long long>(g_serverTicks.load()), static_cast<unsigned long long>(g_clientTicks.load()),
+             static_cast<unsigned long long>(g_overlaps.load()), static_cast<unsigned long long>(moves));
+    return b;
 }
 
 bool isServerThread() { return g_serverThread.load(std::memory_order_relaxed) == GetCurrentThreadId(); }

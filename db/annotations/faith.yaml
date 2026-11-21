@@ -50,6 +50,12 @@ globals:
     va: 0x1423dd0b8
     type: "void*"
     note: ANT asset database, created after AntSettings by 0x142fbe900. Movement tuning assets hang off it.
+  - name: TimeOfDayClockUpdaters
+    va: 0x142598ac0
+    type: "void*[2]"
+    note: "One TimeOfDayClockUpdater per realm (index = entity flags & 1), made by TimeOfDayClockEntity_ctor 0x143bc3be0; +0x28 = the clock entity it ticks, set by the clock's Enable event (0x143bc4b60). [1] +0x28 is the ServerTimeOfDayClockEntity."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 structs:
   - name: InputDevices
@@ -111,3 +117,6 @@ constants:
   - { name: AnimatableOwner_Animatable, value: 0x128 }
   - { name: Animatable_Pose, value: 0x30 }
   - { name: Pose_Position, value: 0x50 }
+  - { name: TimeOfDayUpdater_Clock, value: 0x28 }
+  - { name: Clock_Hold, value: 0xf8, note: "u8 on ServerTimeOfDayClockEntity: non-zero stops vf23 (0x143bc78e0) moving +0x30; what the level's ServerTimeOfDayClockControllerEntity sets on its Pause event 0x0dd8ddf7 (0 on 0xc44b5c3c, SetTime 0xa4259012 writes +0x30). The server marks the clock's net state dirty every tick, so the client copy follows." }
+  - { name: Clock_RateScale, value: 0xec, note: "f32 on ServerTimeOfDayClockEntity: TimeScaleMultiplier from the controller; scales the rate (0x143bc4cb0)." }

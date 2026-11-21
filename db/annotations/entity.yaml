@@ -204,9 +204,9 @@ functions:
     sources: [ghidra]
   - name: Updater_ctor
     va: 0x143170780
-    signature: "void*(void* self, i32, u64, u32)"
-    note: "Named in Ghidra as Updater_ctor; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
+    signature: "void*(void* self, i32 list, const i8* name, u32 priority)"
+    note: "A plain updater in a realm's list (0x1423ff8a8); TimeOfDayClockEntity_ctor makes its 0x30-byte TimeOfDayClockUpdater with it (realm, name, priority 0xb). Checked 2026-11-20."
+    confidence: confirmed
     sources: [ghidra]
   - name: fb_UpdateManager_runPass
     va: 0x143176840
@@ -306,6 +306,43 @@ functions:
     note: "The user's research names it Entity_deliverPropertyChange. Calls each listener's vtable +0x10 with the change; the dispatcher is one of two globals (0x14215d050)."
     confidence: hypothesis
     sources: [ghidra, user]
+  # Blocks A and B of 2026-11-15, checked in Ghidra 2026-11-20 (docs/research/engine-2026-11-15.md).
+  - name: EntityUpdater_ctor
+    va: 0x14316ff10
+    signature: "void*(void* self, i32 realm, i32 pass, const i8* name, u32 priority)"
+    note: "An entity updater (0xa0+ bytes): name +0x18, realm +0x20, priority +0x24, pass +0x94; links itself at the head of the realm's updater list (0x1423ff8a8: +0x10 next, +0x08 prev) and into the pass manager [realm][pass] (0x1423ffc90, 9 per realm) through 0x143172680. No inverse of that registration is known yet."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: EntityUpdater_add
+    va: 0x143174360
+    signature: "void(void* updater, void* entity)"
+    note: "Queues an entity for the updater (pending-add vector +0x48), unless it is already in its list (+0x28..+0x30) or pending. The game calls it from the realm's thread (e.g. ServerSpawnEntity vf2 with the spawner updater 0x142548128)."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: EntityUpdater_remove
+    va: 0x143174c80
+    signature: "void(void* updater, void* entity)"
+    note: "The inverse of EntityUpdater_add."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: EntityUpdater_contains
+    va: 0x143174f20
+    signature: "u8(void* updater, void* entity)"
+    note: "Whether the entity is in the updater's list."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: GameWorld_drainDestroyQueue
+    va: 0x14311ea50
+    signature: "void(void* gameWorld)"
+    note: "Each Level_update (client 0x1431a121b, server 0x1433434c3) right after fb_GameWorld_update: for each entity queued at world +0x10/+0x18 calls vtable +0x30 (destroy) and frees it through its ClassInfo +0x50 + realm*8, or, with flags bit 0x100, vtable +0xa0 and keeps it queued."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: EntityOwner_removeEntity
+    va: 0x143125180
+    signature: "void(void* owner, void* entity)"
+    note: "EntityOwner vtable 0x141ae33b8 slot +0x10 (what Entity_requestDestroy jumps to): deinit (0x143163460), unlink from the owner, flags |= 0x400, append to (&GameWorlds)[realm]'s destroy queue (+0x10/+0x18)."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 constants:
   - { name: Entity_OwnerLink, value: 0x8, confidence: inferred, sources: [ghidra, game], note: "Node {prev node, next node} in the entity's EntityOwner list (the owner destroys its entities when it goes, e.g. a sublevel streaming out). Entity_dtor does not unlink it: unlink before deleting an entity yourself. Moved between owners by 0x143161be0 (flag 0x4000); EntityOwnerRange markers (flags 0x802) bound ranges in it (0x143163270)." }
@@ -314,3 +351,11 @@ constants:
   - { name: Entity_vf_destroy, value: 0x30, confidence: inferred, sources: [ghidra], note: "SpatialEntity_destroy for spatial entities." }
   - { name: Entity_vf_delete, value: 0x38, confidence: inferred, sources: [ghidra], note: "Scalar deleting destructor: (entity, 1) destroys and frees." }
   - { name: Entity_FlagDestroyed, value: 0x2000000, confidence: inferred, sources: [ghidra], note: "In the flags at +0x18, set by vtable +0x30." }
+  # Entity +0x18 flags (block B, checked 2026-11-20): what GridNode tests before acting on an entity.
+  - { name: EntityFlag_Server, value: 0x1, note: "Realm: 1 server, 0 client." }
+  - { name: EntityFlag_Initialised, value: 0x8, note: "Set with 0x1000 by init; cleared by deinit (0x143168760)." }
+  - { name: EntityFlag_InWorldList, value: 0x10, note: "ClassInfo +0x60/+0x70 (in the world) when set, +0x80/+0x90 (pending) when clear." }
+  - { name: EntityFlag_DeferDestroy, value: 0x100, note: "GameWorld_drainDestroyQueue calls vtable +0xa0 and keeps it." }
+  - { name: EntityFlag_DestroyQueued, value: 0x400, note: "Queued on its GameWorld's destroy queue (EntityOwner_removeEntity); Entity_requestDestroy returns at once." }
+  - { name: EntityFlag_SpatialInWorld, value: 0x800000, note: "Set entering the world (0x1432e41a0), cleared leaving it (0x1432e4260)." }
+  - { name: EntityFlag_Destroyed, value: 0x2000000, note: "SpatialEntity_destroy entered." }

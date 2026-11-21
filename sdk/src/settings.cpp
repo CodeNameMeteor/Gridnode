@@ -253,6 +253,12 @@ std::string consoleRun(const std::string& line) {
     if (_stricmp(word.c_str(), "member") == 0) return memberCommand(rest);       // GridNode's own (static_groups.cpp)
     if (_stricmp(word.c_str(), "perf") == 0) return perfCommand(rest);            // GridNode's own (sampler.cpp)
     if (_stricmp(word.c_str(), "sample") == 0) return sampleCommand(rest);      // GridNode's own (sampler.cpp)
+    if (_stricmp(word.c_str(), "threads") == 0) return threadsCommand();        // GridNode's own (ticks.cpp)
+    if (_stricmp(word.c_str(), "pause") == 0) return pauseCommand(rest);       // GridNode's own (actions.cpp)
+    if (_stricmp(word.c_str(), "look") == 0) return lookCommand(rest);         // GridNode's own (actions.cpp)
+    if (_stricmp(word.c_str(), "spawn") == 0) return spawnCommand(rest);       // GridNode's own (actions.cpp)
+    if (_stricmp(word.c_str(), "destroy") == 0) return destroyCommand(rest);   // GridNode's own (actions.cpp)
+    if (_stricmp(word.c_str(), "gcam") == 0) return gcamCommand(rest);         // GridNode's own (actions.cpp)
     if (!known(word)) return "Unknown console command \"" + word + "\" (type list to see them all)";
     EngineString s{};
     reinterpret_cast<void (*)(EngineString*, const char*, uint8_t)>(mem::rva(e::function::Console_executeCommand))(&s, line.c_str(), 1);

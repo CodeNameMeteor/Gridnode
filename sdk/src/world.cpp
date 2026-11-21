@@ -231,6 +231,13 @@ void worldStart() {
     bodiesStart();
 }
 
+// Queued for destroy (EntityOwner_removeEntity sets 0x400) or its destroy entered (0x2000000): what GridNode must not
+// start anything on (entity +0x18, block B of 2026-11-15, checked in Ghidra 2026-11-20).
+bool entityGoing(uintptr_t entity) {
+    const uint32_t f = mem::readOr<uint32_t>(entity + 0x18, e::constant::EntityFlag_Destroyed);
+    return (f & (e::constant::EntityFlag_DestroyQueued | e::constant::EntityFlag_Destroyed)) != 0;
+}
+
 int characterDespawn(void* entity) {
     const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
     if (!p || !kindOf(entity, "ServerCharacterEntity")) return GN_ERR_ARGUMENT;
@@ -242,6 +249,28 @@ int characterDespawn(void* entity) {
     // As the spawner's Unspawn passes it: [character +0x28], whose first field is the owner that
     // queues the destruction (its vtable +0x10, in the game's code).
     const uintptr_t ref = mem::readOr<uintptr_t>(p + 0x28);
+    const uintptr_t owner = ref ? mem::readOr<uintptr_t>(ref) : 0;
+    const uintptr_t vt = owner ? mem::readOr<uintptr_t>(owner) : 0;
+    if (!vt || !mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) return GN_ERR_UNAVAILABLE;
+    reinterpret_cast<void (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::Entity_requestDestroy))(p, ref);
+    return GN_OK;
+}
+
+// Any entity, either realm (API 42): the game's own destroy request, as characterDespawn above (deinit now, freed by the
+// world's next Level_update; GameWorld_drainDestroyQueue). Not Faith (either realm), not a safe spawn (her
+// PamServerCharacterSpawnEntity kind), not one already going. The entity's realm thread.
+int entityDestroy(void* entity) {
+    const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
+    if (!p || !kindOf(entity, "Entity")) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), p);
+    if (!inspector::alive(p, t)) return GN_ERR_ARGUMENT;
+    if (entityGoing(p)) return GN_OK; // already queued: the game's request would return at once too
+    const bool server = (mem::readOr<uint32_t>(p + 0x18) & e::constant::EntityFlag_Server) != 0;
+    if (server ? !isServerThread() : !isClientThread()) return GN_ERR_THREAD;
+    if (entity == localServerCharacter() || entity == localClientCharacter()) return GN_ERR_ARGUMENT;
+    if (kindOf(entity, "PamServerCharacterSpawnEntity")) return GN_ERR_ARGUMENT; // Faith's safe spawn is one
+    if (!build::codeMatches("Entity_requestDestroy")) return GN_ERR_UNAVAILABLE;
+    const uintptr_t ref = mem::readOr<uintptr_t>(p + 0x28); // the entity's bus; its first field is the owner
     const uintptr_t owner = ref ? mem::readOr<uintptr_t>(ref) : 0;
     const uintptr_t vt = owner ? mem::readOr<uintptr_t>(owner) : 0;
     if (!vt || !mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) return GN_ERR_UNAVAILABLE;
@@ -543,6 +572,24 @@ uintptr_t serverPhysics(uintptr_t world) {
 }
 } // namespace
 
+namespace {
+// Bodies queued for destroy (PhysicsOwner_queueDestroy: flag 0x10, the id in +0x1c8..+0x1d0) stay in the Havok world
+// until the next step frees them, while their RigidBody is being torn down: a query that hits one makes the game's
+// hit collector call into it (block O, checked in Ghidra 2026-11-20). Queries wait while any is queued; the step
+// empties the queue, so this normally passes at the server's post-update.
+bool physicsDestroyPending(uintptr_t phys) {
+    namespace c = e::constant;
+    const uintptr_t owner = mem::readOr<uintptr_t>(phys + c::Physics_Owner);
+    if (!owner) return false;
+    const uintptr_t b = mem::readOr<uintptr_t>(owner + c::PhysicsOwner_DestroyQueueBegin);
+    const uintptr_t en = mem::readOr<uintptr_t>(owner + c::PhysicsOwner_DestroyQueueEnd);
+    if (b == en) return false;
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 5) GN_LOG("world: a physics query waits: %llu bodies queued for destroy", static_cast<unsigned long long>((en - b) / 2));
+    return true;
+}
+} // namespace
+
 int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out) {
     if (!from || !to || !finite(from, 3) || !finite(to, 3) || !std::isfinite(radius) || radius < 0.f || radius > 100.f)
         return GN_ERR_ARGUMENT;
@@ -557,6 +604,7 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
     const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
     const uintptr_t phys = world ? serverPhysics(world) : 0;
     if (!phys) return GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
     RayQuery q;
     RayResult r;
     memcpy(q.from, from, 12);
@@ -629,6 +677,7 @@ int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintp
     const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
     const uintptr_t phys = world ? serverPhysics(world) : 0;
     if (!phys) return GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
     PhysRayInput in;
     in.ignoreBegin = in.ignoreEnd = in.ignoreInline;
     in.ignoreCapacityEnd = in.ignoreInline + 12;
@@ -849,6 +898,7 @@ int shapeQuery(bool cast, uint32_t shape, const float* size, const gn_transform*
     const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
     const uintptr_t phys = world ? serverPhysics(world) : 0;
     if (!phys) return -GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return -GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
     const uint32_t n = std::min<uint32_t>(std::max<uint32_t>(maxHits, 1u), kMaxShapeHits);
     ShapeQuery q;
     q.filter = cast ? 9u : 0x15u; // as the game's own: a sweep's filter 9, the closest point queries' 0x15

@@ -32,13 +32,13 @@ Ghidra sync). Read [docs/progress.md](docs/progress.md) first (current state, ne
 | Path | What |
 |---|---|
 | `sdk/include/gridnode/` | public headers (`gridnode.hpp`, `api.h` = the C ABI mods use); `engine.hpp` is GENERATED |
-| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `bundles.cpp` (bundles and prefabs at runtime), `effects.cpp`, `debugdraw.cpp` (the game's debug renderer), `contacts.cpp` (physics body events), `gamerules.cpp` (fall damage, kill volumes), `static_groups.cpp`, `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
+| `sdk/src/` | `gridnode.dll`: `recorder.cpp`, `inspector.cpp`, `layouts.cpp`, `entities.cpp`, `reflect/`, `api.cpp`, `bundles.cpp` (bundles and prefabs at runtime), `effects.cpp`, `debugdraw.cpp` (the game's debug renderer), `contacts.cpp` (physics body events), `gamerules.cpp` (fall damage, kill volumes), `static_groups.cpp`, `actions.cpp` (pause requests, looks, spawners, the view manager's override), `config.cpp`, `hotkeys.cpp`, `events.cpp`, ... |
 | `sdk/loader/` | `version.dll` proxy loader and `gridnode_inject.exe` |
 | `db/annotations/*.yaml` | our findings (committed): addresses, members, virtuals; source of `engine.hpp` |
 | `db/reflected/` | the user's own dump: git-ignored, huge |
 | `tools/gen/`, `tools/assets/` | `gridnode.py`: validate, `check --dump`, generators, `setup`, `docs`, Ghidra export/import, fingerprints; `assets check/list/extract/ebx/ebx-check/ebx-build/deps/used-by/bundle-parents/usage/fbmod-info/fbmod-build/layout-fbmod` (the game's data store, read in place; EBX to and from lossless YAML; what an asset needs; Frosty mods) |
 | `tools/ghidra/` | `GridNodeSync.java` (annotations and recordings into Ghidra, names out), `FrostbiteTypeDumper.java`, `FrostbiteVTableLengthFinder.java` / `vtable_finder.py` (every vtable's exact length; docs/research/vtables.md) |
-| `tools/recording/summarize.py` | reads recordings (below) |
+| `tools/recording/summarize.py`, `tools/replay/` | reads recordings (below); the game's own replay recordings (v5), read and written |
 | `tools/events/`, `tools/mesh/`, `tools/offline_dump/` | event names, mesh tools, offline dump tester |
 | `examples/` | `hello`, `hello-rust`, `trainer`, `mec-trainer`, `probe`, `world-draw`, `detour-demo`; `templates/`: new mods (docs/packaging.md) |
 | `bindings/rust/gridnode` | Rust bindings, generated from `api.h` |

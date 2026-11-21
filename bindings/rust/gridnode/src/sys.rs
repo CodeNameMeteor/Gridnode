@@ -3,7 +3,7 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
-pub const GN_API_VERSION: u32 = 41;
+pub const GN_API_VERSION: u32 = 42;
 pub const GN_VE_OUTDOOR_LIGHT: u32 = 0x000;
 pub const GN_VE_TONEMAP: u32 = 0x1d0;
 pub const GN_VE_COLOR_CORRECTION: u32 = 0x330;
@@ -46,6 +46,9 @@ pub const GN_MEMBER_ENABLED: u32 = 0;
 pub const GN_MEMBER_VISIBLE: u32 = 2;
 pub const GN_CONTACT_IMPULSE: u32 = 5;
 pub const GN_CONTACT_ACTIVATION: u32 = 10;
+pub const GN_DEBUG_NO_CULL: u32 = 0x2;
+pub const GN_DEBUG_DEPTH_TEST: u32 = 0x4;
+pub const GN_DEBUG_DEPTH_WRITE: u32 = 0x8;
 
 pub const GN_CATEGORY_UNKNOWN: c_int = 0;
 pub const GN_CATEGORY_PRIMITIVE: c_int = 1;
@@ -602,6 +605,15 @@ pub struct gn_api {
     pub contact_watch: Option<unsafe extern "C" fn(mod_: *const c_char, entity: *mut c_void, body: u32, types: u32, fn_: gn_contact_fn, user: *mut c_void, handle: *mut u32) -> c_int>,
     pub contact_unwatch: Option<unsafe extern "C" fn(handle: u32) -> c_int>,
     pub debug_line: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, abgr: u32) -> c_int>,
+    pub entity_destroy: Option<unsafe extern "C" fn(entity: *mut c_void) -> c_int>,
+    pub time_of_day_rate: Option<unsafe extern "C" fn(scale: f32) -> c_int>,
+    pub debug_line_ex: Option<unsafe extern "C" fn(from: *const f32, to: *const f32, abgr: u32, flags: u32) -> c_int>,
+    pub ui_pause_request: Option<unsafe extern "C" fn(on: c_int, full: c_int) -> c_int>,
+    pub character_look: Option<unsafe extern "C" fn(character: *mut c_void, ghost: c_int, mask: c_int) -> c_int>,
+    pub spawner_spawn: Option<unsafe extern "C" fn(spawner: *mut c_void) -> c_int>,
+    pub camera_override: Option<unsafe extern "C" fn(view: *const gn_transform, fov_degrees: f32) -> c_int>,
+    pub camera_fov_hold: Option<unsafe extern "C" fn(fov_degrees: f32) -> c_int>,
+    pub message_queue: Option<unsafe extern "C" fn(manager: c_int, message: *const c_void, delay: f32) -> c_int>,
 }
 
 /// The mod's entry point: `#[no_mangle] pub unsafe extern "C" fn gn_mod_load(api: *const gn_api) -> c_int`.
@@ -633,4 +645,4 @@ const _: () = assert!(core::mem::size_of::<gn_game_state>() == 20);
 const _: () = assert!(core::mem::size_of::<gn_progress_flag>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_shape_hit>() == 48);
 const _: () = assert!(core::mem::size_of::<gn_contact>() == 20);
-const _: () = assert!(core::mem::size_of::<gn_api>() == 1776);
+const _: () = assert!(core::mem::size_of::<gn_api>() == 1848);

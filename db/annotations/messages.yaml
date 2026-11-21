@@ -188,6 +188,12 @@ functions:
     confidence: hypothesis
     sources: [ghidra]
     note: "Constructor for PamSocialPlayRestartChallengeMessage (typeId 0x72f865f9). Sets vtable 0x141c39458."
+  - name: MessageManagerImpl_pumpQueue
+    va: 0x142a397a0
+    signature: "void(void* impl)"
+    note: "Delivers due queued messages (sorted by +0x18, next +0x20) and then frees each with its deleting destructor, vtable +0x08 (msg, 1). A message type's deleting destructor frees through the page table (0x142a3a9e0: any game arena works; memory no arena owns hits its INT3). Core: updateGameFrame; client: ClientWorld_tickFrame; server: levelWorld_tickFrame (block M, 2026-11-20)."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 constants:
   - { name: MessageCategory_SocialPlay, value: 0x54776fc6, confidence: hypothesis, sources: [mecmp, ghidra] }

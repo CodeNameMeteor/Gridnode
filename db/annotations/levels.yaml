@@ -553,12 +553,6 @@ functions:
     note: "Named in Ghidra as levelStateMachine_handleMessage; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
-  - name: UIPauseController_request
-    va: 0x143b16210
-    signature: "void(void* self, i8, i8)"
-    note: "Named in Ghidra as UIPauseController_request; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
-    sources: [ghidra]
   - name: TimeOfDayClockEntity_ctor
     va: 0x143bc3be0
     signature: "void*(void* self)"
