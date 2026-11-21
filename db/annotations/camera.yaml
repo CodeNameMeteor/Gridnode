@@ -19,14 +19,17 @@ structs:
     size: 0x1ba0
     opaque: true
     members:
-      - { offset: 0x80, name: fovYDegrees, type: f32, note: "Final vertical FOV, including the player's FOV setting." }
+      - { offset: 0x24, name: fovScale, type: f32, note: "Multiplies the manager's FOV (vtable +0x18, 0x143279c00); 1.0 from the constructor.", confidence: confirmed, sources: [ghidra] }
+      - { offset: 0x40, name: overrideTransform, type: LinearTransform, note: "The view while +0x84 is set (ClientCameraViewManager_setOverride).", confidence: confirmed, sources: [ghidra] }
+      - { offset: 0x80, name: fovYDegrees, type: f32, note: "Final vertical FOV, including the player's FOV setting (MECMP; the layout editor's world-to-screen reads it and works in game). Block P (2026-11-15) calls it the override's FOV: the constructor writes -1, ClientCameraViewManager_setOverride writes it and ClientCameraViewManager_snapshotView reads it only while +0x84 is set. Both cannot be the whole story: unresolved 2026-11-20." }
+      - { offset: 0x84, name: overrideActive, type: u8, note: "Set by ClientCameraViewManager_setOverride, cleared by postSimUpdate every frame and by _clearOverride.", confidence: confirmed, sources: [ghidra] }
       - { offset: 0x90, name: transform, type: LinearTransform, note: "right, up, forward, position. Looks along MINUS forward (MECMP). Copies at +0xd0, +0x120, +0x160, +0x1140." }
       - { confidence: hypothesis, offset: 0x120, name: viewTransform, type: LinearTransform, note: "Camera view transform matrix constructed each frame in ClientCameraViewManager_frameUpdate." }
       - { confidence: hypothesis, offset: 0x160, name: renderTransform, type: LinearTransform, note: "Camera render transform matrix copied to render pipeline." }
       - { offset: 0x208, name: activeCamera, type: "CameraObject*" }
       - { confidence: hypothesis, offset: 0x10f0, name: worldBasisMatrix, type: LinearTransform, note: "Identity world basis matrix combined with camera modifiers/shakes in 0x14327e850; multiplied with raw head transform in FPSCamera_computeTransforms." }
       - { offset: 0x1b8e, name: updating, type: u8, note: "postSimUpdate does nothing while 0.", confidence: inferred, sources: [research] }
-      - { offset: 0x1b90, name: postUpdateListeners, type: "void*", note: "Singly linked list of {vtable, next}; after the active camera's update (vtable +0x60) each node's vtable[0](node, updateInfo) is called (ClientCameraViewManager_postSimUpdate).", confidence: inferred, sources: [research] }
+      - { offset: 0x1b90, name: postUpdateListeners, type: "void*", note: "Singly linked list of {vtable, next}; after the active camera's update (vtable +0x60) each node's vtable[0](node, updateInfo) is called (postSimUpdate 0x14327c5e7); frameUpdate (0x14327bcfc, while +0x124c is 0) asks each node's vtable[1](node) for an FOV in degrees and takes the first > 0. Nothing in the game adds a node.", confidence: confirmed, sources: [ghidra, research] }
   - name: CameraObject
     size: 0xb0
     opaque: true
@@ -73,3 +76,21 @@ functions:
     note: "Named in Ghidra as ClientCameraViewManager_postSimUpdate; checked in the decompiler (2026-10-30): its strings ('ClientCameraViewManager::postSimUpdate sequence')."
     confidence: inferred
     sources: [ghidra]
+  - name: ClientCameraViewManager_setOverride
+    va: 0x14327d7f0
+    signature: "void(void* manager, const LinearTransform* t, f32 fovDegrees, u8 a, u8 b)"
+    note: "Copies t to +0x40, fovDegrees to +0x80, sets +0x84 (and +0x85, +0x86 from a, b). Only caller 0x1439438b0. postSimUpdate clears +0x84 each frame (0x14327c5d2), so an override is set again every frame."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: ClientCameraViewManager_clearOverride
+    va: 0x143277bb0
+    signature: "void(void* manager)"
+    note: "+0x84 = 0."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: ClientCameraViewManager_snapshotView
+    va: 0x143277100
+    signature: "void(void* manager, void* renderView)"
+    note: "At frame submission (0x1431a40e0): copies the render views; with +0x84 set the view is +0x40 and, if +0x80 > 0, its FOV +0x80 (degrees, clamped); else with +0x1b84 set the view is +0x90."
+    confidence: confirmed
+    sources: [ghidra, research]

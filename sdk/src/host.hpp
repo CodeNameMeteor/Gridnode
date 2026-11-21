@@ -62,6 +62,12 @@ bool isClientThread();
 // creators that appeared since (called about once a second).
 int onCreated(const std::string& owner, const std::string& className, gn_created_fn fn, void* user);
 void refreshCreators();
+bool spawnHookIn();      // the creation function's detour (entities the creator slots miss), in on first use
+uint64_t spawnCaught();  // entities passed on by it so far (the slots missed them)
+void spawnDispatch(bool on); // whether it passes them on (console "census dispatch on|off")
+bool spawnDispatching();
+void censusSpawn(void* entity, const reflect::Type* t, bool poolSaw); // census.cpp, from the creation hook
+void censusPoolOnly(const reflect::Type* t);                          // census.cpp, a creation outside it
 size_t boundCreatorCount();
 // Wraps every entity class's deleting destructor (vtable +0x38) so a destroyed entity is marked
 // dead at once (inspector::alive is false from then on). Once, at startup.
@@ -237,6 +243,10 @@ void bodiesStart();
 void physicsStaleNote();     // a server entity was destroyed: queries wait for the next physics flush
 bool physicsQueriesSafe();   // false until then (a second at most)
 int boxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out, const void* caller);
+int shapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out,
+             const void* caller); // API 40: a box, sphere or capsule made by the game's physics factory
+std::string shapeCommand(const std::string& rest); // the console's "shape"
+std::string censusCommand(const std::string& rest); // the console's "census" (census.cpp)
 int boxMove(uint32_t box, const gn_transform* at);
 int boxRemove(uint32_t box);
 int boxState(uint32_t box);
@@ -317,7 +327,9 @@ int tuningSet(const char* name, float value);
 int gameStateGet(gn_game_state* out);
 int timeOfDaySet(float seconds);
 int timeOfDayHold(const void* caller, float seconds);            // API 28: < 0 releases
-void timeOfDayTick();                                             // server and client post-update: puts a held clock back
+void timeOfDayTick();                                             // server post-update: the clock's own hold byte and the time
+int timeOfDayRate(const void* caller, float scale);               // API 42: the clock's rate scale held (< 0 gives it back)
+void timeOfDayReleaseAll();                                       // GridNode's unload: hold and rate given back at the next server ticks
 void forgetTimeOfDay(const CodeRange& r);
 int visualEnvGet(uint32_t offset, void* out, uint32_t size);                 // API 29
 int visualEnvSet(const void* caller, uint32_t offset, const void* data, uint32_t size);
@@ -364,6 +376,68 @@ int onData(const std::string& mod, gn_data_fn fn, void* user);
 void forgetData(const CodeRange& r);
 void dataRelease(); // GridNode's unload: the game's listener out
 std::string dataCommand(const std::string& rest); // the console's "data"
+// Runs fn on the server (or client) thread for the console's commands: at once when called there; from the other
+// realm's thread it is queued and its text goes to the console window and the log when it runs (the caller gets
+// a "queued" line: waiting would block the game); from any other thread it waits up to 2 s.
+std::string runOnRealmAndWait(bool serverRealm, std::function<std::string()> fn);
+// Sending engine messages (messages.cpp, API 40).
+int messageInit(const char* type, void* out, uint32_t size);
+int messageSend(int manager, const void* message);
+std::string msgCommand(const std::string& rest); // the console's "msg"
+// API 41. Static model group members (static_groups.cpp): the group's realm thread.
+int staticMemberSet(void* group, uint32_t member, uint32_t copy, uint32_t what, int value);
+// The fall threshold and kill volumes (gamerules.cpp): owner = the caller's return address.
+int fallThresholdSet(const void* caller, float metres);
+void rulesClientTick(); // client thread: Faith's highest point in a fall (fall damage hold)
+void killVolumesServerTick(); // server thread: kill volumes switched off out of the game's list, and back
+int killVolumeSet(const void* caller, void* volume, int enabled);
+void forgetRules(const CodeRange& r);
+void rulesRelease(); // GridNode's unload: the game's values back
+std::string fallCommand(const std::string& rest);       // the console's "fall"
+std::string killVolumeCommand(const std::string& rest); // the console's "killvol"
+// Effects (effects.cpp): the client thread.
+int effectSpawn(const void* caller, const void* blueprint, const gn_transform* at, uint32_t* handle);
+int effectMove(uint32_t handle, const gn_transform* at);
+int effectStop(uint32_t handle);
+int effectAlive(uint32_t handle);
+void forgetEffects(const CodeRange& r, bool all); // a mod's (all: every one) stopped on the client thread
+std::string effectCommand(const std::string& rest); // the console's "effect"
+// The game's debug renderer (debugdraw.cpp, experimental).
+void debugDrawFrame();   // render thread, each frame (Present)
+int debugLine(const float* a, const float* b, uint32_t abgr); // any thread: a world-space line for the next frame
+int debugLineEx(const float* a, const float* b, uint32_t abgr, uint32_t flags); // API 42: with the command's flags (0x2 no cull, 0x4 depth test, 0x8 depth write)
+void debugDrawRelease(); // GridNode's unload
+std::string debugRenderCommand(const std::string& rest); // the console's "debugrender"
+// An asset by GUID (assets.cpp).
+void* assetFindGuid(const uint8_t* guid, uint32_t* group);
+int assetGroupOf(uintptr_t obj); // the loaded resource group holding obj, or -1
+void effectsClientTick();       // effects.cpp: stops GridNode's effects whose blueprint's group is going
+std::string assetGuidCommand(const std::string& rest); // the console's "assetguid"
+// Shape queries (world.cpp): the server thread; how many hits, or -GN_ERR_*.
+int shapeCast(uint32_t shape, const float size[3], const gn_transform* from, const float to[3], const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+              uint32_t maxHits);
+int closestPoints(uint32_t shape, const float size[3], const gn_transform* at, float maxDistance, const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+                  uint32_t maxHits);
+// Contact events (contacts.cpp): the entity's realm thread.
+int contactWatch(const std::string& mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle);
+int contactUnwatch(uint32_t handle);
+void contactsBodyGoing(uintptr_t rigid); // a RigidBody GridNode removes (its realm thread): its watches out first
+void forgetContacts(const CodeRange& r); // a mod's watches (by their callback), detached at the realms' next ticks
+void contactsRelease();  // GridNode's unload: detached on the realm threads (the ticks after)
+bool contactsReleased(); // all out of Havok's lists
+std::string contactCommand(const std::string& rest); // the console's "contact"
+uintptr_t shapeRigidBody(uint32_t handle); // bodies.cpp: a factory-made shape's RigidBody, or 0 (client thread)
+std::string shapeQueryCommand(const std::string& rest); // the console's "squery"
+std::string memberCommand(const std::string& rest);     // the console's "member"
+// An entity's connected properties (properties.cpp, API 40): the entity's realm thread only.
+int propertyGet(void* entity, const char* name, void* out, uint32_t size, const gn_type** type);
+int propertySet(void* entity, const char* name, const void* value, uint32_t size);
+std::string propCommand(const std::string& rest); // the console's "prop"
+int propertyWatch(const std::string& mod, void* entity, const char* name, gn_property_fn fn, void* user, uint32_t* handle);
+int propertyUnwatch(uint32_t handle);
+void forgetProperties(const CodeRange& r); // a mod's watches, detached at its realms' next ticks
+void propertiesRelease();                  // GridNode's unload: every watch detached at the next ticks
+bool propertiesReleased();                 // all detached
 
 // Bundles loaded at runtime and prefabs spawned from them (bundles.cpp, API 38). caller: the mod's code,
 // for forgetBundles when it unloads.
@@ -419,6 +493,7 @@ void dashesReleaseIds(); // unload, a few ticks later: our data out of the game'
 namespace layouts {
 void start(const std::wstring& gridnodeDir);
 void onLevel(const std::string& level); // GridNode's thread, when a level starts
+std::string memberPick(); // server thread: the static model group copy ahead of Faith (the console's "member pick")
 void serverTick();
 void clientTick();
 void draw(bool* open); // render thread
@@ -578,11 +653,34 @@ namespace inspector {
 void start();
 void draw(bool* open);
 void drawConsole(bool* open); // the console window (render thread)
+void consolePrint(const std::string& text); // adds lines to the console window (any thread)
 std::vector<std::pair<uintptr_t, const reflect::Type*>> tracked(); // entities GridNode saw created, not yet found dead
 std::vector<std::pair<uintptr_t, const reflect::Type*>> trackedOf(const reflect::Type* base); // the same, only that class and its subclasses (no full copy)
 bool alive(uintptr_t entity, const reflect::Type* type); // still that entity: not found dead since, and still of that type
 void noteCreated(uintptr_t entity); // GridNode made it: tracked from now on, even if the creator hook missed it
 void markDead(uintptr_t entity); // GridNode is destroying it: alive() is false from now on (until a new entity is made there)
 } // namespace inspector
+
+// Entities (world.cpp, API 42).
+bool entityGoing(uintptr_t entity); // queued for destroy or being destroyed (flags +0x18: 0x400, 0x2000000)
+int entityDestroy(void* entity);    // the game's own destroy request; the entity's realm thread
+// The game's own ways (actions.cpp, API 42).
+int uiPauseRequest(const void* caller, int on, int full); // any thread; applied at the next client tick
+int characterLook(const void* caller, void* character, int ghost, int mask); // client thread; -1 leaves one as it is; both -1: given back
+int spawnerSpawn(void* spawner);                          // server thread
+int cameraOverride(const void* caller, const gn_transform* view, float fovDegrees); // any thread; null view: given back
+int cameraFovHold(const void* caller, float fovDegrees);  // any thread; <= 0 gives it back
+void actionsClientTick();
+void forgetActions(const CodeRange& r);
+void actionsRelease();
+bool actionsReleased();
+std::string pauseCommand(const std::string& rest);
+std::string lookCommand(const std::string& rest);
+std::string spawnCommand(const std::string& rest);
+std::string destroyCommand(const std::string& rest);
+std::string gcamCommand(const std::string& rest);
+std::string threadsCommand(); // ticks.cpp
+// Messages (messages.cpp, API 42).
+int messageQueue(int manager, const void* message, float delay);
 
 } // namespace gn::host

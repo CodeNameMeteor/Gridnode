@@ -340,6 +340,11 @@ GN_NOINLINE int apiTimeOfDayHold(float seconds) { return timeOfDayHold(GN_CALLER
 GN_NOINLINE int apiStreamingFocusAdd(const float pos[3], uint32_t* handle) { return layouts::streamingFocusAdd(GN_CALLER, pos, handle); }
 GN_NOINLINE int apiVisualEnvSet(uint32_t offset, const void* data, uint32_t size) { return visualEnvSet(GN_CALLER, offset, data, size); }
 GN_NOINLINE int apiCameraFovSet(float degrees) { return layouts::cameraFovSet(GN_CALLER, degrees); }
+GN_NOINLINE int apiTimeOfDayRate(float scale) { return timeOfDayRate(GN_CALLER, scale); }
+GN_NOINLINE int apiUiPauseRequest(int on, int full) { return uiPauseRequest(GN_CALLER, on, full); }
+GN_NOINLINE int apiCharacterLook(void* character, int ghost, int mask) { return characterLook(GN_CALLER, character, ghost, mask); }
+GN_NOINLINE int apiCameraOverride(const gn_transform* view, float fov) { return cameraOverride(GN_CALLER, view, fov); }
+GN_NOINLINE int apiCameraFovHold(float fov) { return cameraFovHold(GN_CALLER, fov); }
 GN_NOINLINE int apiBundleLoad(const char* name, uint32_t* handle) { return bundleLoad(GN_CALLER, name, handle); }
 GN_NOINLINE int apiPrefabSpawn(const char* asset, const gn_transform* at, uint32_t bundle, uint32_t* handle) {
     return prefabSpawn(GN_CALLER, asset, at, bundle, handle);
@@ -418,6 +423,12 @@ GN_NOINLINE int apiViewGetEx(gn_view* out, uint32_t size) {
 GN_NOINLINE int apiSetGravity(int realm, const float* g) { return physicsSetGravity(realm, g, GN_CALLER); }
 GN_NOINLINE int apiSettingAdd(const char* mod, const gn_setting* s) { return settingAdd(mod, s, GN_CALLER); }
 GN_NOINLINE int apiBoxAdd(const char* mod, const gn_transform* at, const float* half, uint32_t* out) { return boxAdd(mod, at, half, out, GN_CALLER); }
+GN_NOINLINE int apiFallThresholdSet(float metres) { return fallThresholdSet(GN_CALLER, metres); }
+GN_NOINLINE int apiKillVolumeSet(void* volume, int enabled) { return killVolumeSet(GN_CALLER, volume, enabled); }
+GN_NOINLINE int apiEffectSpawn(const void* blueprint, const gn_transform* at, uint32_t* handle) { return effectSpawn(GN_CALLER, blueprint, at, handle); }
+GN_NOINLINE int apiShapeAdd(const char* mod, uint32_t shape, const gn_transform* at, const float* size, uint32_t motion, float mass, uint32_t* out) {
+    return shapeAdd(mod, shape, at, size, motion, mass, out, GN_CALLER);
+}
 GN_NOINLINE int apiSoundPlay(const char* mod, const char* path, const char* event, const float* pos, uint32_t* out) {
     return soundPlay(mod, path, event, pos, out, GN_CALLER);
 }
@@ -665,6 +676,39 @@ const gn_api* api() {
         a.prefab_spawn_m = mPrefabSpawn;
         a.data_of_class = dataOfClass;
         a.on_data = [](const char* mod, gn_data_fn fn, void* user) { return onData(mod ? mod : "?", fn, user); };
+        a.property_get = propertyGet;
+        a.property_set = propertySet;
+        a.property_watch = [](const char* mod, void* entity, const char* name, gn_property_fn fn, void* user, uint32_t* handle) {
+            return propertyWatch(mod ? mod : "?", entity, name, fn, user, handle);
+        };
+        a.property_unwatch = propertyUnwatch;
+        a.message_init = messageInit;
+        a.message_send = messageSend;
+        a.shape_add = apiShapeAdd;
+        a.static_member_set = staticMemberSet;
+        a.fall_threshold_set = apiFallThresholdSet;
+        a.kill_volume_set = apiKillVolumeSet;
+        a.effect_spawn = apiEffectSpawn;
+        a.effect_move = effectMove;
+        a.effect_stop = effectStop;
+        a.effect_alive = effectAlive;
+        a.asset_find_guid = [](const uint8_t* guid, uint32_t* group) { return assetFindGuid(guid, group); };
+        a.shape_cast = shapeCast;
+        a.closest_points = closestPoints;
+        a.contact_watch = [](const char* mod, void* entity, uint32_t body, uint32_t types, gn_contact_fn fn, void* user, uint32_t* handle) {
+            return contactWatch(mod ? mod : "?", entity, body, types, fn, user, handle);
+        };
+        a.contact_unwatch = contactUnwatch;
+        a.debug_line = debugLine;
+        a.entity_destroy = entityDestroy;
+        a.time_of_day_rate = apiTimeOfDayRate;
+        a.debug_line_ex = debugLineEx;
+        a.ui_pause_request = apiUiPauseRequest;
+        a.character_look = apiCharacterLook;
+        a.spawner_spawn = spawnerSpawn;
+        a.camera_override = apiCameraOverride;
+        a.camera_fov_hold = apiCameraFovHold;
+        a.message_queue = messageQueue;
         a.ui_type_view = [](const char* mod, const char* cls, gn_type_view_fn fn, void* user) { return ui::typeView(mod ? mod : "?", cls, fn, user); };
         a.visual_env_get = visualEnvGet;
         a.visual_env_set = apiVisualEnvSet;

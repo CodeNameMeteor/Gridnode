@@ -8,7 +8,9 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -185,20 +187,25 @@ void* physicsWorldCreate(void* world, void* desc) {
     return g_physicsWorldCreate(world, desc);
 }
 
-void physicsStart() {
+// The fallback: the description, as each world is made (a function detour).
+void physicsDetour(const char* why) {
     if (!build::codeMatches("PhysicsWorld_create")) {
-        GN_LOG("physics: the world set-up does not look as expected; worlds keep the game's room for bodies");
+        GN_LOG("physics: %s, and the world set-up does not look as expected; worlds keep the game's room for bodies", why);
         return;
     }
-    void* original = nullptr;
-    if (hookFunction("GridNode", e::function::PhysicsWorld_create, reinterpret_cast<void*>(&physicsWorldCreate), &original) != GN_OK) {
-        GN_LOG("physics: could not hook the world set-up; worlds keep the game's room for bodies");
+    // The variable itself: the hook table rewrites it when a mod's hook below ours goes (never a local copy).
+    if (hookFunction("GridNode", e::function::PhysicsWorld_create, reinterpret_cast<void*>(&physicsWorldCreate), reinterpret_cast<void**>(&g_physicsWorldCreate)) != GN_OK) {
+        GN_LOG("physics: %s, and the world set-up could not be hooked; worlds keep the game's room for bodies", why);
         return;
     }
-    g_physicsWorldCreate = reinterpret_cast<PhysicsWorldCreateFn>(original);
-    // Worlds made before this (GridNode injected into a running level) keep their size until the next level.
-    GN_LOG("physics: new worlds get room for %u bodies (the next level load, if one is running)", kPhysicsBodies + 1);
+    GN_LOG("physics: %s: new worlds get room for %u bodies through a detour on the world set-up (the next level load)", why, kPhysicsBodies + 1);
 }
+
+// The room comes from the "Physics" settings (PhysicsManager vf6 0x1434f3050 copies their +0x20 / +0x24 into each
+// world's description; PhysicsSettings_BodyCapacity). Raising the settings instead of this detour was tried
+// (api41t, game test 2026-11-14): the game sets the body count back during each level load, before the worlds are
+// made, so the first world after it kept 16,384. The detour stays.
+void physicsStart() { physicsDetour("worlds made from now on (the next level load, if one is running)"); }
 } // namespace
 
 // Quitting during a Dash crashed the game in its own mission clean-up: FUN_1439e08f0 looks the mission
@@ -224,6 +231,13 @@ void worldStart() {
     bodiesStart();
 }
 
+// Queued for destroy (EntityOwner_removeEntity sets 0x400) or its destroy entered (0x2000000): what GridNode must not
+// start anything on (entity +0x18, block B of 2026-11-15, checked in Ghidra 2026-11-20).
+bool entityGoing(uintptr_t entity) {
+    const uint32_t f = mem::readOr<uint32_t>(entity + 0x18, e::constant::EntityFlag_Destroyed);
+    return (f & (e::constant::EntityFlag_DestroyQueued | e::constant::EntityFlag_Destroyed)) != 0;
+}
+
 int characterDespawn(void* entity) {
     const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
     if (!p || !kindOf(entity, "ServerCharacterEntity")) return GN_ERR_ARGUMENT;
@@ -235,6 +249,28 @@ int characterDespawn(void* entity) {
     // As the spawner's Unspawn passes it: [character +0x28], whose first field is the owner that
     // queues the destruction (its vtable +0x10, in the game's code).
     const uintptr_t ref = mem::readOr<uintptr_t>(p + 0x28);
+    const uintptr_t owner = ref ? mem::readOr<uintptr_t>(ref) : 0;
+    const uintptr_t vt = owner ? mem::readOr<uintptr_t>(owner) : 0;
+    if (!vt || !mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) return GN_ERR_UNAVAILABLE;
+    reinterpret_cast<void (*)(uintptr_t, uintptr_t)>(mem::rva(e::function::Entity_requestDestroy))(p, ref);
+    return GN_OK;
+}
+
+// Any entity, either realm (API 42): the game's own destroy request, as characterDespawn above (deinit now, freed by the
+// world's next Level_update; GameWorld_drainDestroyQueue). Not Faith (either realm), not a safe spawn (her
+// PamServerCharacterSpawnEntity kind), not one already going. The entity's realm thread.
+int entityDestroy(void* entity) {
+    const uintptr_t p = reinterpret_cast<uintptr_t>(entity);
+    if (!p || !kindOf(entity, "Entity")) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), p);
+    if (!inspector::alive(p, t)) return GN_ERR_ARGUMENT;
+    if (entityGoing(p)) return GN_OK; // already queued: the game's request would return at once too
+    const bool server = (mem::readOr<uint32_t>(p + 0x18) & e::constant::EntityFlag_Server) != 0;
+    if (server ? !isServerThread() : !isClientThread()) return GN_ERR_THREAD;
+    if (entity == localServerCharacter() || entity == localClientCharacter()) return GN_ERR_ARGUMENT;
+    if (kindOf(entity, "PamServerCharacterSpawnEntity")) return GN_ERR_ARGUMENT; // Faith's safe spawn is one
+    if (!build::codeMatches("Entity_requestDestroy")) return GN_ERR_UNAVAILABLE;
+    const uintptr_t ref = mem::readOr<uintptr_t>(p + 0x28); // the entity's bus; its first field is the owner
     const uintptr_t owner = ref ? mem::readOr<uintptr_t>(ref) : 0;
     const uintptr_t vt = owner ? mem::readOr<uintptr_t>(owner) : 0;
     if (!vt || !mem::inImage(mem::readOr<uintptr_t>(vt + 0x10))) return GN_ERR_UNAVAILABLE;
@@ -536,6 +572,24 @@ uintptr_t serverPhysics(uintptr_t world) {
 }
 } // namespace
 
+namespace {
+// Bodies queued for destroy (PhysicsOwner_queueDestroy: flag 0x10, the id in +0x1c8..+0x1d0) stay in the Havok world
+// until the next step frees them, while their RigidBody is being torn down: a query that hits one makes the game's
+// hit collector call into it (block O, checked in Ghidra 2026-11-20). Queries wait while any is queued; the step
+// empties the queue, so this normally passes at the server's post-update.
+bool physicsDestroyPending(uintptr_t phys) {
+    namespace c = e::constant;
+    const uintptr_t owner = mem::readOr<uintptr_t>(phys + c::Physics_Owner);
+    if (!owner) return false;
+    const uintptr_t b = mem::readOr<uintptr_t>(owner + c::PhysicsOwner_DestroyQueueBegin);
+    const uintptr_t en = mem::readOr<uintptr_t>(owner + c::PhysicsOwner_DestroyQueueEnd);
+    if (b == en) return false;
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1) < 5) GN_LOG("world: a physics query waits: %llu bodies queued for destroy", static_cast<unsigned long long>((en - b) / 2));
+    return true;
+}
+} // namespace
+
 int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* out) {
     if (!from || !to || !finite(from, 3) || !finite(to, 3) || !std::isfinite(radius) || radius < 0.f || radius > 100.f)
         return GN_ERR_ARGUMENT;
@@ -550,6 +604,7 @@ int raycast(const float from[3], const float to[3], float radius, gn_ray_hit* ou
     const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
     const uintptr_t phys = world ? serverPhysics(world) : 0;
     if (!phys) return GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
     RayQuery q;
     RayResult r;
     memcpy(q.from, from, 12);
@@ -622,6 +677,7 @@ int raycastObject(const float from[3], const float to[3], gn_ray_hit* out, uintp
     const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
     const uintptr_t phys = world ? serverPhysics(world) : 0;
     if (!phys) return GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
     PhysRayInput in;
     in.ignoreBegin = in.ignoreEnd = in.ignoreInline;
     in.ignoreCapacityEnd = in.ignoreInline + 12;
@@ -753,6 +809,197 @@ int rayObject(const float from[3], const float to[3], const uint32_t* ignore, ui
 int apiRaycastObject(const float from[3], const float to[3], gn_ray_hit_ex* out) { return rayObject(from, to, nullptr, 0, out); }
 int apiRaycastFiltered(const float from[3], const float to[3], const uint32_t* ignore, uint32_t count, gn_ray_hit_ex* out) {
     return rayObject(from, to, ignore, count, out);
+}
+
+// ---- shape queries (API 41) ---------------------------------------------------------------------------
+// A sphere or capsule cast through the server's world (PhysicsManager_castShape), or the closest points between
+// one placed in it and the bodies around (PhysicsManager_getClosestPoints); both read in Ghidra 2026-11-14 (Gemini's
+// answer B, offsets checked in the disassembly). The query shares the ray input's first 0x60 bytes (wants, filter,
+// skipped bodies); its shape is a holder made from the engine's global arena as the game's own queries make theirs
+// (ShapeHolder_makeSphere / _makeCapsule) and freed after. Hits go into an inline vector as large as maxHits, so the
+// game never grows it.
+namespace {
+struct alignas(16) ShapeQuery {
+    uint32_t wants = 2;
+    uint32_t pad0 = 0;
+    uint32_t filter = 9;
+    uint32_t pad1 = 0;
+    uint32_t* ignoreBegin = nullptr;
+    uint32_t* ignoreEnd = nullptr;
+    uint32_t* ignoreCapacityEnd = nullptr;
+    uint64_t pad2 = 0;
+    uint32_t ignoreInline[12] = {};
+    void* holder = nullptr;        // +0x60
+    uint64_t pad3 = 0;
+    float rows[3][4] = {};         // +0x70: rotation (cast) or the transform's rows (closest points)
+    float from[4] = {0, 0, 0, 1};  // +0xa0: start (cast) or position (closest points)
+    float to[4] = {0, 0, 0, 0};    // +0xb0: end (cast); [0] the distance (closest points)
+    uint8_t flag = 0;              // +0xc0 (cast)
+    uint8_t pad4[0x3f] = {};
+};
+static_assert(offsetof(ShapeQuery, holder) == 0x60 && offsetof(ShapeQuery, rows) == 0x70 && offsetof(ShapeQuery, from) == 0xa0 &&
+                  offsetof(ShapeQuery, to) == 0xb0 && offsetof(ShapeQuery, flag) == 0xc0,
+              "shape query layout");
+struct alignas(16) ClosestHit {
+    uint32_t body;
+    uint32_t pad0;
+    uint32_t material, part, bone, pad1;
+    uint64_t pad2;
+    float pointA[4]; // +0x20
+    float pointB[4]; // +0x30: on the hit body
+    float normal[4]; // +0x40
+    float distance;  // +0x50
+    uint32_t pad3[3];
+};
+static_assert(sizeof(ClosestHit) == 0x60, "closest points hit");
+constexpr uint32_t kMaxShapeHits = 32;
+
+// The game's vector: {begin, end, capacity end, allocator, inline begin} then the inline storage.
+template <class Hit> struct HitVector {
+    Hit* begin;
+    Hit* end;
+    Hit* cap;
+    void* allocator = nullptr;
+    Hit* inl;
+    alignas(16) Hit storage[kMaxShapeHits];
+    explicit HitVector(uint32_t n) : begin(storage), end(storage), cap(storage + n), inl(storage) {}
+};
+
+void* makeHolder(uintptr_t phys, uint32_t shape, const float* size, const gn_transform& at) {
+    void* arena = reinterpret_cast<void*>(mem::rva(e::global::GlobalArena));
+    if (shape == 2) {
+        using Fn = void* (*)(uintptr_t, void*, float, uint8_t);
+        return reinterpret_cast<Fn>(mem::rva(e::function::ShapeHolder_makeSphere))(phys, arena, size[0], 0);
+    }
+    // A capsule along the transform's first row, centred: the points are local to the query's rotation.
+    alignas(16) float a[4] = {size[1] * 0.5f, 0.f, 0.f, 0.f}, b[4] = {-size[1] * 0.5f, 0.f, 0.f, 0.f};
+    (void)at;
+    using Fn = void* (*)(uintptr_t, void*, const float*, const float*, float, uint8_t);
+    return reinterpret_cast<Fn>(mem::rva(e::function::ShapeHolder_makeCapsule))(phys, arena, a, b, size[0], 0);
+}
+
+void freeHolder(void* holder) {
+    if (!holder) return;
+    const uintptr_t vt = mem::readOr<uintptr_t>(reinterpret_cast<uintptr_t>(holder));
+    const uintptr_t dtor = vt ? mem::readOr<uintptr_t>(vt) : 0;
+    if (mem::inImage(dtor)) reinterpret_cast<void (*)(void*, uint32_t)>(dtor)(holder, 0); // releases its shape
+    reinterpret_cast<void (*)(void*)>(mem::rva(e::function::Heap_free))(holder);
+}
+
+int shapeQuery(bool cast, uint32_t shape, const float* size, const gn_transform* at, const float* to, float distance, const uint32_t* ignore,
+               uint32_t ignoreCount, gn_shape_hit* hits, uint32_t maxHits) {
+    if (!size || !at || (cast && !to) || (shape != 2 && shape != 3) || ignoreCount > 12 || (ignoreCount && !ignore) || (maxHits && !hits))
+        return -GN_ERR_ARGUMENT;
+    if (!finite(at->right, 3) || !finite(at->up, 3) || !finite(at->forward, 3) || !finite(at->trans, 3) || (cast && !finite(to, 3))) return -GN_ERR_ARGUMENT;
+    if (!(size[0] >= 0.01f && size[0] <= 100.f) || (shape == 3 && !(size[1] >= 0.f && size[1] <= 1000.f)) || !(distance >= 0.f && distance <= 1000.f))
+        return -GN_ERR_ARGUMENT;
+    if (!isServerThread()) return -GN_ERR_THREAD;
+    if (!physicsQueriesSafe()) return -GN_ERR_UNAVAILABLE;
+    const uintptr_t world = mem::readOr<uintptr_t>(mem::rva(e::global::ServerGameWorld));
+    const uintptr_t phys = world ? serverPhysics(world) : 0;
+    if (!phys) return -GN_ERR_UNAVAILABLE;
+    if (physicsDestroyPending(phys)) return -GN_ERR_UNAVAILABLE; // bodies queued for destroy are still in the Havok world
+    const uint32_t n = std::min<uint32_t>(std::max<uint32_t>(maxHits, 1u), kMaxShapeHits);
+    ShapeQuery q;
+    q.filter = cast ? 9u : 0x15u; // as the game's own: a sweep's filter 9, the closest point queries' 0x15
+    q.ignoreBegin = q.ignoreEnd = q.ignoreInline;
+    q.ignoreCapacityEnd = q.ignoreInline + 12;
+    for (uint32_t i = 0; i < ignoreCount; ++i) *q.ignoreEnd++ = ignore[i];
+    // Unit rows (the closest point query orthonormalises its own; the cast takes them as they are).
+    const float* rows[3] = {at->right, at->up, at->forward};
+    for (int r = 0; r < 3; ++r) {
+        const float len = std::sqrt(rows[r][0] * rows[r][0] + rows[r][1] * rows[r][1] + rows[r][2] * rows[r][2]);
+        if (len < 1e-6f) return -GN_ERR_ARGUMENT;
+        for (int k = 0; k < 3; ++k) q.rows[r][k] = rows[r][k] / len;
+    }
+    memcpy(q.from, at->trans, 12);
+    if (cast) memcpy(q.to, to, 12);
+    else q.to[0] = distance;
+    q.holder = makeHolder(phys, shape, size, *at);
+    if (!q.holder) return -GN_ERR_UNAVAILABLE;
+    const uintptr_t owner = mem::readOr<uintptr_t>(phys + e::constant::Physics_Owner);
+    const uintptr_t table = owner ? mem::readOr<uintptr_t>(owner + e::constant::PhysicsOwner_Objects) : 0;
+    auto objectOf = [&](uint32_t body) -> void* {
+        return table && body != 0xffffffffu ? reinterpret_cast<void*>(mem::readOr<uintptr_t>(table + (body & 0xffffu) * 8)) : nullptr;
+    };
+    using QueryFn = int32_t (*)(uintptr_t, const ShapeQuery*, void*, uint32_t);
+    int32_t got = 0;
+    if (cast) {
+        auto v = std::make_unique<HitVector<PhysRayHit>>(n);
+        got = reinterpret_cast<QueryFn>(mem::rva(e::function::PhysicsManager_castShape))(phys, &q, v.get(), n);
+        const float d[3] = {to[0] - at->trans[0], to[1] - at->trans[1], to[2] - at->trans[2]};
+        const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        got = std::min<int32_t>(got, static_cast<int32_t>(v->end - v->begin));
+        for (int32_t i = 0; i < got && static_cast<uint32_t>(i) < maxHits; ++i) {
+            const PhysRayHit& h = v->begin[i];
+            gn_shape_hit& o = hits[i];
+            o.body = h.body, o.part = h.part, o.physics_object = objectOf(h.body);
+            memcpy(o.hit.position, h.position, 12);
+            memcpy(o.hit.normal, h.normal, 12);
+            o.hit.fraction = h.fraction;
+            o.hit.distance = h.fraction * len;
+        }
+        freeHolder(q.holder);
+        if (v->begin != v->storage) GN_LOG("world: a shape cast's hits outgrew their storage (not expected)");
+    } else {
+        auto v = std::make_unique<HitVector<ClosestHit>>(n);
+        got = reinterpret_cast<QueryFn>(mem::rva(e::function::PhysicsManager_getClosestPoints))(phys, &q, v.get(), n);
+        got = std::min<int32_t>(got, static_cast<int32_t>(v->end - v->begin));
+        for (int32_t i = 0; i < got && static_cast<uint32_t>(i) < maxHits; ++i) {
+            const ClosestHit& h = v->begin[i];
+            gn_shape_hit& o = hits[i];
+            o.body = h.body, o.part = h.part, o.physics_object = objectOf(h.body);
+            memcpy(o.hit.position, h.pointB, 12);
+            memcpy(o.hit.normal, h.normal, 12);
+            o.hit.distance = h.distance;
+            o.hit.fraction = 0.f;
+        }
+        freeHolder(q.holder);
+        if (v->begin != v->storage) GN_LOG("world: closest points outgrew their storage (not expected)");
+    }
+    return got;
+}
+} // namespace
+
+int shapeCast(uint32_t shape, const float size[3], const gn_transform* from, const float to[3], const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+              uint32_t maxHits) {
+    return shapeQuery(true, shape, size, from, to, 0.f, ignore, ignoreCount, hits, maxHits);
+}
+
+int closestPoints(uint32_t shape, const float size[3], const gn_transform* at, float maxDistance, const uint32_t* ignore, uint32_t ignoreCount, gn_shape_hit* hits,
+                  uint32_t maxHits) {
+    return shapeQuery(false, shape, size, at, nullptr, maxDistance, ignore, ignoreCount, hits, maxHits);
+}
+
+// "squery cast R" casts a sphere of radius R 10 m along Faith's view (her server character's facing);
+// "squery near R": the bodies within 1 m of a sphere of radius R at her middle. Server thread.
+std::string shapeQueryCommand(const std::string& rest) {
+    char word[8] = {};
+    float r = 0.5f;
+    if (sscanf(rest.c_str(), " %7s %f", word, &r) < 1 || (_stricmp(word, "cast") && _stricmp(word, "near")))
+        return "squery cast R | squery near R (a sphere of radius R from Faith)";
+    const bool cast = !_stricmp(word, "cast");
+    return runOnRealmAndWait(true, [cast, r]() -> std::string {
+        void* faith = localServerCharacter();
+        alignas(16) gn_transform at{};
+        if (!faith || !entityTransform(faith, at)) return "squery: no Faith on the server";
+        for (int i = 0; i < 3; ++i) at.trans[i] += at.up[i] * 1.0f;
+        const float size[3] = {r, 0.f, 0.f};
+        float to[3];
+        for (int i = 0; i < 3; ++i) to[i] = at.trans[i] + at.forward[i] * 10.f;
+        gn_shape_hit hits[8] = {};
+        const int n = cast ? shapeCast(2, size, &at, to, nullptr, 0, hits, 8) : closestPoints(2, size, &at, 1.f, nullptr, 0, hits, 8);
+        if (n < 0) return "squery: error " + std::to_string(-n);
+        std::string out = "squery: " + std::to_string(n) + " hit(s)";
+        char b[200];
+        for (int i = 0; i < n; ++i) {
+            snprintf(b, sizeof(b), "\n  body %x part %d at (%.2f, %.2f, %.2f) normal (%.2f, %.2f, %.2f) %s %.2f", hits[i].body, static_cast<int>(hits[i].part),
+                     hits[i].hit.position[0], hits[i].hit.position[1], hits[i].hit.position[2], hits[i].hit.normal[0], hits[i].hit.normal[1], hits[i].hit.normal[2],
+                     cast ? "distance" : "apart", hits[i].hit.distance);
+            out += b;
+        }
+        return out; // logged by runOnRealmAndWait (queued from the console)
+    });
 }
 
 int apiEntityBodies(void* entity, uint32_t* ids, int max) {

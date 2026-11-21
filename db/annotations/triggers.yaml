@@ -1,7 +1,27 @@
 # Area triggers: their geometry cache and the shapes in it (docs/research/trigger-volumes.md).
 defaults: { confidence: inferred, sources: [ghidra] }
 
+globals:
+  - name: KillVolumeManager
+    va: 0x14257a8a0
+    type: "void*"
+    note: "The server's kill volume manager (0xb0 bytes, vtable 0x141c50668: an updater in server pass 1, made by 0x14396cc00 the first time a volume is enabled). Its volumes at +0x28..+0x30 (16-byte entries {volume, u16 period, u16 counter}); queued adds (+1) and removes (-1) at +0x48..+0x50, {volume, u16 period, u16, i32 op}, applied by 0x1431738f0 at the start of KillVolumeManager_update. No lock: the server thread only. Gemini block Q, read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+
 functions:
+  - name: EntityUpdateList_add
+    va: 0x143174420
+    signature: "void(void* list, void* entity, u16 period)"
+    note: "Queues entity into an updater's entity list (+0x48: op +1) unless it is in it (+0x28) or already queued in. A kill volume is added with period 1 (0x14396cc00, from PamServerKillVolumeEntity init and its Enabled property turning on). Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: EntityUpdateList_remove
+    va: 0x143174d30
+    signature: "void(void* list, void* entity)"
+    note: "Queues entity's removal (+0x48: op -1) when it is in the list or queued in; nothing otherwise. Applied at the next update (swap-remove). The kill volume's Enabled property turning off and its deinit call it. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
   - name: KillVolume_testCharacter
     va: 0x143970d30
     signature: "bool(void* killVolume, void* character)"
@@ -13,6 +33,18 @@ functions:
       Research_Ground_Level_2026-11-01 section 9). Checked in Ghidra 2026-11-04.
     confidence: confirmed
     sources: [research, ghidra]
+  - name: KillVolumeManager_update
+    va: 0x143972370
+    signature: "void(void* manager)"
+    note: >-
+      The server's kill volume pass, run by the update manager each frame: for each volume in its list
+      (+0x28..+0x30, 16-byte entries {volume, u16 period, u16 counter}) whose data flags (+0x18) have bit 3,
+      every period-th frame it tests the local player's character (data +0x60) and/or every
+      PamServerCharacterEntity (data +0x61) with KillVolume_testCharacter, and kills one inside through the
+      character's vtable +0x370 with the damage type at *(data+0x28)+0x18. The fall recording of 2026-11-14
+      (Faith killed in the city) has this frame under the kill. Read in Ghidra 2026-11-14.
+    confidence: confirmed
+    sources: [ghidra, recording]
   - name: areaTriggerGeometry_contains
     va: 0x14330d320
     signature: "bool(void* cache, void* dataAndField, void* busInterface, const f32* position)"
@@ -70,6 +102,7 @@ functions:
     note: "An outline in x / z (Points +0x18, 0x10 apart, count at -4), crossing test; a VolumeVectorShapeData with Height (+0x28) > 0 also bounds y."
 
 constants:
+  - { name: KillVolume_EnabledByGame, value: 0x62, confidence: inferred, sources: [research, ghidra], note: "u8 on PamServerKillVolumeEntity: its Enabled property (id 0x31fb3b9f) as the entity last applied it (init vf15 0x143971260, changes vf2 0x1439726c0 with 0x28a000): set, the volume is in the manager's list. Read in Ghidra 2026-11-14 (KillVolumeManager_update and the list functions; vf15 / vf2 per Gemini block Q)." }
   - { name: PamServerAreaTriggerEntity_Geometry, value: 0x1b8, confidence: confirmed, sources: [ghidra, research], note: "The geometry cache tested each tick (drawn in game 2026-11-01). ServerAreaTriggerEntity keeps it at +0x1a8." }
   - { name: ServerAreaTriggerEntity_Geometry, value: 0x1a8, sources: [ghidra], note: "From its vf25 (0x1433c8230); none live in the city to check." }
   - { name: Entity_BusInterface, value: 0x20, confidence: confirmed, sources: [ghidra, research], note: "An entity's +0x20 is its bus's interface, the bus + 8 (EntityBus_fireEvent's bus is 8 bytes before it; confirmed by reading the event connections, 2026-11-01)." }

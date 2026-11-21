@@ -3,6 +3,383 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)
+
+The research of 2026-11-15 (blocks A-Z on the PC, `scratch\unverified\`) checked in Ghidra and taken:
+[research/engine-2026-11-15.md](research/engine-2026-11-15.md) has the verdicts and faults; the plan is
+`scratch\unverified\blocks-2026-11-15-plan.md`. Annotations added (entity flags, updaters, destroy queue, physics
+destroy queue, camera override, ToD clock, recording format, debug render state, spawner fields; fingerprints read
+from the Ghidra program, `required: false`).
+
+- **Safety:** physics queries wait while bodies are queued for destroy (world.cpp); `prop`, `member`, `contact`
+  refuse an entity being destroyed (`entityGoing`); the time of day is no longer written from the client tick;
+  console `threads` counts how often the two realms' ticks overlap (job mode, block X).
+- **The game's own ways:** `time_of_day_hold` through the clock's hold byte (server tick; client by replication),
+  `time_of_day_rate`; `entity_destroy`; `ui_pause_request`; `debug_line_ex` (depth); `character_look`;
+  `spawner_spawn`; `camera_override` / `camera_fov_hold` (experimental; `camera_set` untouched); `message_queue`;
+  `property_set` writes strings and object references; `prop` names timeline pins by track (`trackN`).
+- **Tools:** `tools/replay/replay_format.py` reads and writes the game's v5 recordings (own round trip tested only).
+- **Not done:** pass ticks (no way found to take an updater out of a pass), pose override, zone holds, photo mode
+  (phase 4: research). No change needed: events from any thread (event_send already posts), mixer unload (the patch
+  removal pauses every thread), the localizer race (the game's UI makes the first call), game console commands
+  (already run trusted).
+- **Open:** manager `+0x80`: MECMP and the layout editor read it as the live FOV; block P says it is the override's
+  FOV. Kept as it was; `gcam` will show which.
+
+### API 42's test (developer build; swap in `gridnode-api42a.dll`; console in the GridNode window)
+
+1. Load the city. Log: no new errors. Console `threads` after a minute: send the line (overlaps > 0 means the two
+   ticks do run at once).
+2. `pause full`: the world stops, no menu opens, the mouse still moves the camera? (report). `pause off`: it runs.
+   `pause on`: nothing should stop. `pause off`.
+3. A mod or the trainer holding the time of day (World tab "Look" or `time_of_day_hold`): the sky stays still for a
+   minute with no flicker; release: time moves again from where it was. Then hold it and do a full unload: time moves.
+4. `debugrender on`, `debugrender test`: the cage at Faith, over walls. `debugrender depth`: walk so a wall is
+   between the camera and the cage: hidden behind it now. Screenshot both.
+5. Inspector: a prop or KSEC address. `destroy ADDRESS`: it goes (a KSEC disappears); `destroy` on Faith's address:
+   refused (1).
+6. A ServerCharacterSpawnEntity (Volumes tab or inspector, e.g. a KSEC spawner): `spawn ADDRESS`: one spawns within a
+   second, or "refused (5)" if it is disabled.
+7. Faith's client character address (the log names it): `look ADDR ghost 1`: she is drawn as a ghost (blue
+   projection) in third person / mirrors; `look ADDR off`: back. Same on a KSEC.
+8. `gcam fov 30`: the view zooms in; `gcam fov off`: back. `gcam here`: the view freezes where it is while Faith
+   moves (or nothing changes: report which); `gcam off`.
+9. `prop ADDRESS` on a TimelineEntity: the ids show `=trackN(...)`; `prop ADDRESS track0` reads that pin.
+10. A property that is a string or an object on some entity, if `prop` lists one: `prop ADDR NAME text` / an address.
+11. `squery cast 0.5` while streaming (run fast across districts): no crash; the log may say "a physics query
+    waits".
+12. Full unload: "gridnode.dll is being freed", no "FOV node or pause requests" line.
+Send: console output of each step, what you saw, `gridnode.log`, screenshots for 4 and 7.
+
+## Where things stand (2026-11-14, evening)
+
+- 2026-11-14 late night: the game's line renderer was tried against ours (same look, less clear): ours stays the
+  default. `assets layout-fbmod` started (placed prefabs and blockers into the zone layers; untested in game).
+
+- 2026-11-14 night: Gemini blocks J-N checked and taken (fall damage detour, input properties, effect notes, body
+  teardown, impulse flag; api41r, game-tested 19:30-19:48). Then api41t (creation hook, fewer detours, debug renderer).
+- `main`: PR #16 (custom dashes) merged. PR #17 `gn/audit-findings` (API 39, data registry; game-tested) open for the
+  user to merge.
+- Branch `gn/entity-properties` (from `gn/audit-findings`): API 40 (cf0be17, committed, untested in game: properties,
+  messages, physics shapes, the creation census; its 22-step test below) and API 41 on top (committed 2026-11-14 evening,
+  game-tested in part with `gridnode-api41a`..`i`: static model group members, the fall threshold and kill volumes,
+  effects, assets by GUID, shape queries, contact events, visual environment holds on the render thread). Working:
+  `member`, `killvol off`, `squery cast`, `effect`, `assetguid`, `contact shape`. Open: `fall` (see "Fall deaths"),
+  the dynamic shape, contact impulse events, the shape remove teardown. The api41i test (prop "not set yet", a
+  recording of the death with `killvol off`) and the api41k test (editor after a late inject, unload in the
+  background) are waiting.
+- Research of 2026-11-14 written up: `research/gemini-2026-11-14.md` (Gemini's blocks A-H) and
+  `research/modder-notes-2026-11-14.md` (another modder's notes; what was taken and the rest for later).
+- API 40 test, first results (2026-11-14): `prop` and `msg` froze the game 2 s and said "did not tick": the console runs
+  its commands on the client thread, and the 2 s wait for a realm was a wait on itself (fixed: run at once on that
+  thread, queued with the result printed later from the other realm's). Shapes: box, sphere, capsule, remove and
+  checkpoint fine; `dynamic 50` hung in the air (now keeps the factory's dynamic layer, and logs its Havok body).
+  Census: 104,738 entities in a level reload, 48 not seen by the creator pool (ClientAIActionStationBase 46,
+  SkyCelestialMultiComponent 2): the creation hook sees more than the pool, so it can replace it (pool kept as fallback).
+- Second run (2026-11-14, 14:30): console commands no longer freeze; `killvol off` works; `squery cast` gives sensible
+  hits (4.6 m to a wall ahead). `fall 50`: she died, but the fall was about 90 m (y 59 to -32), past 50 (a log line now
+  says when the hold is written into an asset). Crash at unload while tabbed out: GridNode's kill volume hook kept a
+  local copy of its "original", which was the trainer's hook; the trainer unloaded first and the hook called its freed
+  code. Fixed in all four places GridNode hooked a function that way (kill volumes, census, physics flush, world
+  set-up): the hook table now gets the variable itself. Added `member pick` and `contact shape N`.
+- Third run (2026-11-14, 14:47): `member pick` / `member ... off` worked. `contact shape 1` logged activated and
+  deactivated (no impulses yet). `fall 50` never wrote its hold: the fall check is not reached through its vtable
+  slot, so it is now a function detour. `data EffectBlueprint` gives 0 (effects are not in the data registry): `effect
+  list [TEXT]` collects the blueprints the level's EffectEntities point to. `assetguid` found nothing for a Frosty GUID
+  (unknown whether it was loaded or which GUID Frosty shows): `data CLASS` now prints each object's own GUID to test
+  it with. `prop` on a TimelineEntity and a DelayEntity: "connected: none" (not yet known if right). An unload while
+  the game was not ticking took ~8 s and kept GridNode in memory (a contact watch and a message listener left in).
+- Fourth run (2026-11-14, 15:00): the fall detour on 0x142ce8200 went in but never ran during a ~100 m fall: that
+  processor is not what kills Faith (the "proven" claim in ct-research does not hold here); a Recorder capture of a
+  fall death will show which ANT value does. `effect list` found nothing through EffectEntities (nothing points from
+  them to their blueprint): now a memory scan for EffectBlueprint's vtable. `assetguid` did not find Faith's blueprint
+  by its own instance GUID through Compartment_findByGuid: now a walk of the compartments' partitions (partition and
+  instance GUIDs). `prop` listings now say what the bus template holds under the entity's key.
+- Fifth run (2026-11-14, 15:10): `effect list` found 197 blueprints (FX/Ambient/Smoke/..., FX/Weapons/...);
+  `assetguid` found Faith's blueprint by its instance GUID (group 3): the partition walk works. `effect 0x...` was refused
+  (5): the level came from the bus interface minus 8, whose first word is a vtable; now the entity's +0x28 bus as the
+  game's own call passes it, and each refusal logs why. The fall recording (20261114-151300-fall-recording) shows the
+  death came from a kill volume (OnTookDamage under the kill volume update 0x143972397 -> 0x14392334c, same tick as
+  ServerPlayerChangedCharacter), not a fall rule: both fall tests landed in a street (y 3).
+- Sixth run (2026-11-14, 15:26): `effect 0x...` spawned smoke (works). A crash ~20 s later on the client thread in the
+  effect update (FUN_1430fa0fb reading memory next to that blueprint) after jumping off a building: the blueprint's
+  bundle most likely streamed out under the looping effect; effects now remember their blueprint's resource group and
+  stop when it goes. `prop` on two TimelineEntities: 1 property each in the bus template under the entity's key, with ids
+  (02add2f4, 350f21ea) that hash no field name of the whole dump: a timeline's track properties. `prop ADDRESS 0xID` now
+  reads (and sets, watches) such properties through the template's slot.
+- Learned: the cast's hit record is the ray hit's (normal +0x20, position +0x30; Gemini had them swapped); the
+  messages `UIHudToggleMapZoomMessage` and three others have no listener in the game, so the API 40 test's step 8 shows
+  nothing in game; `PhysicsCreationInfo +0x10` is the realm (A), so the dynamic shape is made as a server body in the
+  client world (API 40 step 15/16: watch removal); `RigidBody_destroy` frees nothing (A): `shape remove` likely leaks.
+
+### The test waiting (developer build; inject, load the city, GridNode console)
+
+Properties (`prop`):
+1. Inspector: addresses of a TimelineEntity, a DelayEntity or CompareBoolEntity, a trigger or barrier, Faith (the log's
+   client character). `prop ADDR` each: `prop: <class>, data <data class> ...; connected:` then `Field = Type value`
+   lines, or "on no bus list" / "none".
+2. A connected Boolean with a visible effect (`Enabled` near Faith): `prop ADDR Enabled false` logs `prop: Enabled of
+   ... set to false` and the thing reacts; `true` puts it back.
+3. A connected Float32: set, read back.
+4. `prop watch ADDR NAME`: `watching ... (watch 1)`; changes by `prop` and by the level itself log
+   `prop: NAME of ... changed`.
+5. Watch something, stream its district out or reload the checkpoint: no crash, no more lines from it.
+6. Watch one, full unload: `unload: done; gridnode.dll is being freed`, no "property watch could not be taken out";
+   move around after.
+7. `prop 0 Foo`: an error, no crash.
+Messages (`msg`):
+8. Minimap open, `msg UIHudToggleMapZoomMessage`: `sent`, a log line, the map zoom toggles (a guess); again: back.
+9. The inspector's message monitor shows it.
+10. `msg NotAType`: "not a message type".
+11. Main menu, no level: `msg UIHudToggleMapZoomMessage client`: "not sent (5)" or "did not tick", no crash.
+Shapes (`shape`), in an open area of the city with barriers around:
+12. `shape box 1 1 1`: log `shape 1: made as a game physics object`; an invisible solid 2 m cube 3 m ahead, 1 m up.
+13. `shape sphere 1`: round, you slide off it. 14. `shape capsule 0.5 3`: a 3 m capsule across the view.
+15. `shape box 0.4 0.4 0.4 dynamic 50`: falls and can be pushed (hanging in the air = made keyframed: report it).
+16. `shape remove`: all gone. 17. `box_backend 1` then a box the old way: a box now, not a sphere.
+18. Checkpoint reload: the console's shapes are made again; full unload clean.
+Census (`census`):
+19. `census on`, teleport far or start a mission. 20. `census`: calls, made, "not seen by GridNode's creator hooks",
+   the 15 classes most missed. 21. `census reset`, checkpoint reload, `census` again. 22. Full unload clean.
+Send: console output of each step, what each write / shape did in game, `gridnode.log`, crash notes.
+
+### API 41's test (after API 40's; same developer build, `gridnode-api41.dll` swapped in)
+
+Visual environment:
+1. A mod or the trainer's World tab "Look" holding a value (sun colour, vignette): the log says `visual environment: holds
+   are written on the render thread`; the value stays with no flicker while you turn the camera and run.
+Static model groups (`member`), near a prop that is part of a group (the inspector shows ClientStaticModelGroupEntity):
+2. `member CLIENT_GROUP_ADDRESS 0 0 hide`: one prop disappears, collision stays (walk into it); `show` brings it back.
+3. `member CLIENT_GROUP_ADDRESS 0 0 off`: gone and you walk through it; `on` back. Then the same on the server group:
+   no visible change (AI collision only), no crash. A member or copy past the end: `error 4` (not found), no crash.
+4. Layout editor: make a group prop standalone and move it: the log says `group copy ... switched off on the server: 0`
+   and `... on the client: 0`; the original spot is empty (no copy 15 km down). Unload the layout: the prop is back.
+Fall and kill volumes:
+5. `fall 50`, jump from 20-30 m: you live (stumble or roll). `fall off`, same jump: you die as usual.
+6. `killvol off`, walk into a street kill floor: nothing happens; `killvol on`: it kills again. `killvol off ADDRESS`
+   on one PamServerKillVolumeEntity (Volumes tab): only that one is off.
+Effects:
+7. Find an effect: `gridnode.py assets list` or the inspector (an `EffectBlueprint` path), then `effect PATH`: `spawned
+   (handle N)`, and something plays 3 m ahead; `effect stop` stops it. A non-effect path: `not an EffectBlueprint`.
+Assets by GUID:
+8. `assetguid GUID` for an asset you know (Frosty shows GUIDs): the log line `assets: by GUID: group N gave ...: a data
+   object` or `a partition`; the console names its class. Send that line (it says what the game's lookup returns).
+Shape queries (server thread):
+9. Facing a wall 5 m away: `squery cast 0.5`: one or more hits, the first about 4.5 m away, a normal pointing at you.
+10. Standing against a wall: `squery near 0.5`: the wall (and the ground) with a distance under 1.
+Contact events:
+11. Find a dynamic body (a ragdoll part or a `shape box 0.4 0.4 0.4 dynamic 50` is client-side; the server needs one: any
+    ServerPhysicsEntity that falls): `contact ADDRESS`: `watching body ...`; push or drop it: `contact: bodies ... impulse`
+    and `activated` / `deactivated` lines. A static prop: likely no lines (report).
+12. Full unload after 5, 6, 7 and 11: `fall threshold back`, no "contact watch could not be taken out", gridnode.dll freed.
+Send: console output of each step, what you saw, `gridnode.log`, crash notes.
+
+### Fall deaths (2026-11-14, evening; api41i)
+
+`fall 50` does nothing in the city: ANT's fall check (RayCastCollisionProcessor_update) never runs for Faith. The fall
+recording (15:13) shows what killed her there: a kill volume (KillVolumeManager_update 0x143972370 ->
+KillVolume_testCharacter -> the character's vtable +0x370, the server kill). The later death with `killvol off` has no
+recording yet, so its path is unknown; likely a hard landing. PamServerDamageInfo is built in only three places (the
+kill above, the network damage handler 0x1439242f0, PamAIGroup); the client's PamClientDamageInfo in six (fields,
+radial, hits), none a landing. Next: a recording of that death (recording started just before the jump), then follow
+its stack as above. api41i also shows unset properties as "(not set yet)" (slot +0x1c bit 0x20) and logs `killvol`.
+
+### Layout editor and unload fixes (2026-11-14, evening; api41j, api41k; untested)
+
+- The editor could not move group props after GridNode was injected into a level already loaded: group buses were
+  only recorded when a group was created ("make standalone: ... server bus 0, client bus 0"), so no prop could be
+  made standalone. `busOf` now falls back to the group's own bus (entity +0x20, the pointer the creation info carried
+  and Entity_dtor releases; Ghidra 2026-11-14).
+- An unload while the game was not ticking (window in the background, a pause menu) left GridNode in memory and
+  gridnode.dll locked (a message listener comes out only on its realm's thread). The unload now waits up to 60 s for
+  the game to run again before giving up ("unload: waiting up to 60 s ...").
+- Test: inject into a running city, move a group prop (two presses: standalone, then move); unload with the game in
+  the background, bring it back within 60 s, check the log says "gridnode.dll is being freed" and the file can be
+  deleted; inject and unload again.
+
+### Fewer detours, the creation hook, the game's debug renderer (2026-11-14, late; api41t / api41u)
+
+- **on_created** also through the creation function (entityCreator_spawnEntityWithContext, a detour put in with the
+  first listener): an entity it made that no creator slot passed on goes to the listeners there (the census's 48
+  missed). The pool stays: block C lists creations outside that function. `census` now counts both ways ("missed by
+  the slots", "outside the creation function"); if the second stays 0 in a few runs, the pool (1,092 slot hooks) can go.
+  Game test (20:17, a checkpoint reload): 135,257 made, 27,563 missed by the slots (mostly components: Part, StaticModel
+  Physics / Health, PlayerTag; half the static models), 0 outside. But the pool cannot simply go: the hook passes ci on
+  after the call, when a creator in mode 2 has put ci's transform back (the layout editor matches models by it). The
+  same test ran at ~110 fps instead of 165; a second run (20:27, api41u) was fine: `sample` showed GridNode at about 3%
+  of the render thread, the game's threads mostly waiting. Not reproduced (`census dispatch off` stays for comparing).
+- **Physics room through the Physics settings: tried and dropped** (game test 20:16): PhysicsManager vf6 (0x1434f3050)
+  copies settings +0x20 / +0x24 (BodyBufferCapacity, MotionBufferCapacity) into each world's description, but the game
+  sets the body count back to 16,384 during each level load, before the worlds are made. The detour stays (api41u).
+- **The flush detour stays.** A PhysicsManager vtable copy can only wrap the whole step (vf2), but bodies.cpp must act
+  between the deferred free (0x1434f4c80, where donor records die) and the collide step of the same step (block N).
+  Gemini block O asks for a listener list there (owner +0x1a8) that could replace it.
+- **Fall damage** through PamClientHumanHealthComponent's slot 41 (a pointer swap) instead of a function detour.
+- **The game's debug renderer** (debugdraw.cpp, experimental): `debugrender on` makes DebugRender2 as the game would
+  (Impl, vtable, registerGlobal, inline mode) on the render thread (in the test it was already there: the game's own); `debugrender test` draws a cage around Faith with
+  3D lines (game-tested 20:18: the cage shows); `debug_line` (API 41) for mods. No text (the font index buffer is the legacy renderer's). Open: whether
+  the game registers the "DebugRender" settings, its shaders' parameters and the depth state.
+- `prop unwatch WATCH`.
+- Research: `scratch\gemini-questions-2026-11-14d.md`; O, P, Q answered (`research/gemini-2026-11-14.md`, not checked
+  yet): an empty listener vector inside the deferred free (could replace the flush detour), update passes (ticks without
+  hooks), kill volumes by the game's own add / remove. R not answered.
+- Layout to `.fbmod`: not started (scope in the reply of 2026-11-14 late).
+
+### How a real map mod adds to the city (2026-11-14, night)
+
+TheNollz's Map Expansion 0.8 (`.fbmod`, FROSTY v5, read with `assets fbmod-info --extract`; the reader now passes the
+icon and screenshots through as they are): 57 EBX, all replacing existing assets, none added to bundles, no res or
+chunks. 51 are the city's zone layers (`levels/sp/sp_maincity/centralcityprops_zs_zs_NNN/layer0_..._layer`, a few
+CentralCityBuildings and Downtown layers): each layer's WorldPartData `Objects` gets new instances: placed prefabs
+(SpatialPrefabReferenceObjectData: Blueprint import, BlueprintTransform in world space; 1,606 across the mod), effects
+(EffectReferenceObjectData), barriers (PamOBBCollisionEntityData + RigidBodyData), magropes, climb splines, light probes
+and reflection volumes. Two `overridenassets/<guid>_subworlddata` change zone streaming; three climb pipe prefabs are
+edited. So the `.fbmod` export's first step is the same: put each placed prefab, blocker and magrope into the layer of
+the zone it stands in, as instances of the game's own data types, with the prefab as an import.
+
+### Layout to Frosty mod (2026-11-14, night; untested with the game's files)
+
+`gridnode.py assets layout-fbmod LAYOUT.yaml --data DIR` (`tools/assets/gridnode_assets/layoutmod.py`) writes a layout
+as a `.fbmod` the way Map Expansion does it: each placed prefab and blocker goes into the WorldPartData `Objects` of the
+zone layer it stands in (the smallest layer box holding it, else the layer with the nearest object; `--layer` forces
+one), as a copy of a reference object or barrier already in some layer (its type copied into the file if missing). A
+prefab the zone does not load gets its bundle and that bundle's parents added to the zone's `PreloadedBundleNames`
+in the level file that streams it in. Each edited file is read back before it goes in; the YAML is kept in
+`bin/assets/layout-fbmod/<title>/`. The layer index is cached by SHA-1 in `bin/assets/index/`.
+
+Done: PlacedPrefab, PlacedBlocker. Not yet: moves and copies of the level's objects, magropes and barrier copies,
+custom dashes, prefabs needing res or chunks of their own. Tested only on Map Expansion's layers (a prefab and a
+blocker added, read back the same) and made-up files (`tests/test_layoutmod.py`); not on the install, not in game.
+
+### The game's debug switches (2026-11-14, night; api41w, untested)
+
+- Game test (20:41): `killvol` through the game's list works (all six steps). Moving on to the debug renderer and
+  `.fbmod` export (user).
+- Inspector, Settings tab, **Debug switches**: every Boolean field named Draw* / Debug* / Show* (or containing Debug)
+  in the settings objects the game registered, with a tick each (the exe names some 200: DrawDebugGBuffer,
+  DrawRunnersVisionDebug, ShowTriggerDebugText, DrawDebugVolumes, DrawDebugEntities, DrawDebugRayCastCollision,
+  DrawDebugGroundHeight, ...). Game test (20:50): none did anything. The names come from the type metadata; the shipped
+  exe has only 10 callers of the legacy DebugRenderer_getContext and 12 of DebugRender2_getThreadContext (frame timing
+  graphs, the streaming memory graph, the system info and console overlays, an fps graph gated by a settings byte +0x3a /
+  +0x3d, a GPU graph +0x39): the code behind the other switches was left out of the build. The value of the debug
+  renderer is GridNode's own drawing through it (`debug_line`: 3D lines in the game's renderer).
+- Layout editor, Camera: **Draw lines with the game's debug renderer (experimental)**: every line3d (outlines, volumes,
+  barriers, magropes, dash parts, handles) goes through `debug_line` instead of ImGui's overlay; labels stay on the
+  overlay. Game test (20:58): looks the same as the overlay (not hidden behind walls), a little more jagged. Neither
+  easier for GridNode nor faster, so the overlay stays the default (user); the switch and `debug_line` stay as options
+  (`debug_line` is the simpler call for a mod: world coordinates, any thread, no view or projection).
+
+### Gemini O-Q (2026-11-14, night; api41v, game-tested 20:41)
+
+- **Q taken:** `kill_volume_set` / `killvol` no longer detour KillVolume_testCharacter: a volume switched off is queued
+  out of the kill volume manager's list with the game's own remove (EntityUpdateList_remove 0x143174d30; checked in
+  Ghidra with the manager's update, the list functions and the volume's Enabled handler vf2), on the server tick, and
+  added back (EntityUpdateList_add) when switched on if the level still has it on (+0x62). "All off" also takes out
+  volumes that stream in later. Unload puts them back in the ticks before GridNode goes.
+- **O not taken:** the freed-body listener vector (owner +0x1a8) is empty and could hold a listener of ours, but it
+  is called only when bodies are freed, inside the free loop under the owner's lock. bodies.cpp needs a safe point
+  after every flush (it makes, moves and destroys boxes there), so the flush detour stays.
+- **P not taken:** the two ticks are already vtable slot swaps (ServerGameWorld / ClientGameWorld postUpdate), no
+  code patched; an Updater of GridNode's would be another object in the game's lists for the same result. Kept in the
+  research notes for mods that want a pass of their own.
+- Code patches GridNode itself makes now: the creation function, the physics flush, the world set-up, the mission
+  clean-up call (plus mods' own).
+
+### Gemini J-L taken (2026-11-14, night; api41m, untested)
+
+- **Fall damage** (block J, checked in Ghidra): no C++ compares a fall height; Faith's graph runs an ANT
+  DamageProcessorAsset that hands a record to `ClientHealth_applyAntDamage` (0x1439196b0; record +0x28's value 1 =
+  PamDamageType_Fall). `fall_threshold_set` now detours that function (the RayCast detour is gone) and spares Faith's
+  fall damage when her drop (GridNode measures it each client tick: her highest point since she last stood 30 ticks on
+  the ground) is under the held distance. It can spare falls, never make a short one hurt. `fall log` logs every fall
+  damage (amount, whose component, the drop). Unknown: whether a very long fall kills through this damage at all.
+- **Input properties** (block K, checked): an entity reads connected inputs (Delay, StartTime, ...) through the
+  template's input connections (`InputConnection_findSourceSlot` 0x142a42d70) from the source's slot, not a slot of its
+  own: why the DelayEntity said "connected: none". `prop` now finds inputs (get, set, watch act on the source's slot,
+  so every entity connected to that source gets a write) and lists `inputs (connected into it)`.
+- **Effects** (block L, checked): the manager stops a level's effects when the sublevel is destroyed
+  (0x14329af20), but a bundle unload stops nothing, so GridNode's own stop on the blueprint's group stays.
+  `EffectManager_spawn`'s arguments annotated (float[3] velocity, byte apply it, position only with flags & 4).
+- Game test (api41m, 19:30): `fall 50` spared Faith's fall damage (10000, lethal) from 23-24 m drops and passed it from
+  172 m; `killvol off` works. The game's long "uncontrollable fall" death still kills (not fall damage; not followed).
+  `prop` said "on no bus list" for a DelayEntity and a CompareBoolEntity: the data was looked up in the bus's peer
+  array; now the entity's own +0x28 (Entity's constructor 0x143160100), the peer array as fallback (api41o).
+- Game test (api41o, 19:35): `shape remove` frees bodies now (shape 2 got shape 1's freed id 1000849; 30 made and
+  removed, no crash; a watched shape removed cleanly). The dynamic shape is active (flag 8), in the world, inverse
+  mass 1/50, yet velocity 0 and the same height after 3 s, then sleeps: something stops it, not activation.
+  Dropped (user, 2026-11-14): no game object needs it; dynamic shapes stay documented as not falling, the check removed.
+- Game test (api41q, 19:42): `prop` finds data now; a TimelineEntity listed `PlaybackRate` as an input from another
+  entity's output. Writes failed only on the name: ids are the hash of the exact field name (`Playbackrate` missed)
+  and a bare `af350988` was read as a name. api41r: names match in any case, eight hex digits are an id, and an
+  unconnected field answers with its data's value (read only). `squery near`, `member` on/off, `msg NotAType` fine.
+- Game test (api41r, 19:48): `prop` works: an unconnected DelayEntity `Delay` reads its data (0.1); a TimelineEntity's
+  `playbackrate 10` / `1` wrote its input's source, a watch attached, and `af350988` read it back as 4 a moment later:
+  the source entity (2d9d5c3f0, output c32c52a0) writes its own value again, so a write lasts until its next update.
+  The watch logged no change when it went back to 4: that source writes its value without the listener list (a watch
+  misses such changes; not followed further).
+- **Physics** (blocks M, N, checked; api41n, untested): `shape remove` now ends with `RigidBody_destroyDeferred`
+  (RigidBody_destroy alone freed nothing: the bodies leaked); contact watches on a removed shape go first.
+  `contact_watch` sets Havok's contact impulse flag (hknpBody +0x58 bit 0x80) on a watched body: without it no
+  impulse events come. The client world does step its own bodies; a dynamic shape now logs its Havok state 1 s and
+  3 s after it is made (active flag 8, in the world, motion, inverse mass, velocity, height) and is woken if added but
+  asleep (that check was removed again: see the game test above).
+
+### Still to implement
+
+Research of 2026-11-14 is all in (blocks A-N, `research/gemini-2026-11-14.md`). Done since: shape queries, contact
+events (with the impulse flag), body teardown, input properties, unconnected fields read, fall damage, effects.
+Dropped: dynamic shapes (user, 2026-11-14: nothing in the game needs one).
+
+- **Layout to Frosty mod:** moves, copies, magropes, dashes (see "Layout to Frosty mod"); first the user's test.
+- **Creator pool out** once the census shows nothing made outside the creation function (the hook is in since api41t).
+- **Properties:** strings and object references writable (block D: copy into the slot's arena; never assign the same
+  object at reference count 1). Optional: hold a value against its source rewriting it (by user request only).
+- **Messages:** queued (delayed) sending through the game's allocator (block G: poolAlloc on the arena 0x1423606d0,
+  no string or array fields).
+- **Second report, checked but not taken:** update-pass registration (block E: hookless ticks; block P asks the
+  rest), freeze-world / override camera (block F: a photo mode for the trainer). The physics flush detour: no vtable
+  copy can replace it (api41t); block O may give another way.
+- **Not checked at all:** the rest of the second report (TypeInfo hash maps, SettingsManager_getByType, camera
+  callback list +0x1b90 (block H: FOV override), the WeakPtr trees, DX11 swap chain, VFS, synthetic input,
+  SubLevelManager states, the visual environment state stack): hypotheses until read in Ghidra.
+- **First audit, from the 2026-11-13 handover plan:** time scale notes (GameTimeSettings +0x48, SlowMotionEntity
+  only), DebugRender2 and time-of-day claim-lab experiments.
+- **Not followed:** the game's uncontrollable-fall death (not fall damage; needs research if wanted).
+- **Tests waiting:** the layout editor's group prop after a late inject, and the unload with the game in the
+  background (api41k).
+- Doc follow-up from PR #16: `layout-editor.md` and `research/custom-dashes.md` still call star times, the second start
+  box and unload untested; they were game-tested 2026-11-13.
+
+## Audit findings, part 2: entity properties (2026-11-13 night, branch gn/entity-properties, untested in game)
+
+- API 40 (`sdk/src/properties.cpp`): `property_get` / `property_set` by the data's field name (or the id as hex:
+  djb2-xor, matched against the game's constants for `ItemName` and `Team`). Entity -> its bus interface (+0x20)
+  -> its index among the bus's peers -> its data in the template's id list; then `EntityBus_findProperty`
+  (0x1431462a0) with the field's TypeInfo (a null one would crash: the lookup makes missing values), and
+  `PropertyValue_set` (0x142a464e0) to write. Realm thread only. Strings and object references read-only.
+  Console `prop ADDRESS [NAME [VALUE]]` (runs on the entity's realm, waits 2 s). entity.yaml: both checked.
+- Watch (`property_watch` / `_unwatch`): the game's listener list on the slot; detach 0x142a41440 found (Gemini's
+  second answer, checked in Ghidra: careless, so GridNode checks its entry is there first). Detached when the entity
+  is about to be destroyed (GridNode's destructor listener, bus still alive), by unwatch or the mod's unload (on the
+  realm thread, slot looked up again), and at GridNode's unload before its tick wait (queued deliveries drain);
+  a watch left attached keeps gridnode.dll in memory. Console `prop watch ADDRESS NAME`.
+- Sending messages (`message_init`, `message_send`, messages.cpp): a copy of the type's static instance is a default
+  message (header in place: checked in a dump), sent with MessageManager_executeMessage (synchronous, never frees it;
+  the game sends stack messages). No queued sending (the pump frees through the type's allocator). Console `msg TYPE
+  [core|client|server]`. messages.yaml: execute and queue checked (queue takes a float delay).
+- Physics shapes (`shape_add`, bodies.cpp): box / sphere / capsule, static / keyframed / dynamic, through the game's
+  factory with a barrier's steps. Found on the way: `PhysicsBoxDesc_vtable` was 0x141b41a00, the SPHERE description
+  (slot 0 returns 2; the factory: 1 box, 2 sphere, 3 capsule, 7 shape), so `box_backend(1)` boxes were spheres. Now
+  0x141afb4b8 (PamOBBCollision_enable's). The native path also skipped two steps the barrier takes before enabling
+  (PhysicsManager_dispatchBodyMethod258 with its +0x94 flag bytes, PhysicsManager_initBodyEntity) and used layer 1
+  instead of the RigidBodyData's +0x1c: all as the barrier now. Capsule: GridNode's own description vtable (none found
+  in the game). Dynamic sets the creation info's +0x10 (else the factory makes it keyframed). Console `shape`.
+- Creation census (console `census on` / `census` / `census reset`, census.cpp): an opt-in detour on
+  entityCreator_spawnEntityWithContext (0x143167120, now inferred) counting what it makes and how many of those the
+  creator pool did not see. Its numbers decide whether it replaces the pool. Off unless asked.
+- Unconnected fields (no slot): the entity reads its data (often through a reader that points into it); a slot added
+  after spawn is never looked at again (Gemini; not checked). Not offered: writing shared data affects every instance.
+
 ## Audit findings, part 1: the data registry (2026-11-13 night, branch gn/audit-findings, game-tested)
 
 - The second Gemini report (offset-free hooking) checked in Ghidra: `docs/research/engine-audit-2026-11-13.md`

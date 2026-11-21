@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -27,6 +28,7 @@
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/mod_call.hpp"
+#include "gridnode/reflect/layout.hpp"
 #include "host.hpp"
 
 namespace gn::host {
@@ -285,6 +287,97 @@ void messageTap(MessageRecorder rec) {
     if (rec && available())
         for (const auto& kv : catalogue().categoryName) want(kv.first); // every category, from the next tick
     g_tap = rec;
+}
+
+// ---- sending -----------------------------------------------------------------------------------------
+// A message type's static instance (reflection) is a default message: vtable, category, type id and
+// realm 0xff already in place (read in a dump, 2026-11-13). A copy, with the mod's fields set, is sent
+// with MessageManager_executeMessage, which runs the listeners now and never frees the message (the game
+// sends stack messages the same way). Queued sending (message_queue, API 42) copies it into the game's arena.
+int messageInit(const char* type, void* out, uint32_t size) {
+    if (!type || !out) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().find(type);
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance) return GN_ERR_NOT_FOUND;
+    if (size < t->size || t->size < e::st::Message::off::category + 12) return GN_ERR_ARGUMENT;
+    std::memset(out, 0, size);
+    return mem::read(static_cast<uintptr_t>(t->staticInstance), out, t->size) ? GN_OK : GN_ERR_UNAVAILABLE;
+}
+
+int messageSend(int manager, const void* message) {
+    if (!message || manager < 0 || manager > 2) return GN_ERR_ARGUMENT;
+    // Its vtable must be a message type's (a copy from message_init): the dispatch reads its header.
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(message));
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance) return GN_ERR_ARGUMENT;
+    if (manager == 1 && !isClientThread()) return GN_ERR_THREAD;
+    if (manager == 2 && !isServerThread()) return GN_ERR_THREAD;
+    if (manager == 0 && !isClientThread() && !isServerThread()) return GN_ERR_THREAD;
+    if (!available()) return GN_ERR_UNAVAILABLE;
+    const uintptr_t handle = managerHandle(manager);
+    if (!handle || !mem::readOr<uintptr_t>(handle)) return GN_ERR_UNAVAILABLE; // no level for that realm
+    using ExecFn = void (*)(uintptr_t, const void*);
+    reinterpret_cast<ExecFn>(mem::rva(e::function::MessageManager_executeMessage))(handle, message);
+    return GN_OK;
+}
+
+namespace {
+// Only fields that own no memory: enums, Boolean..SHA1 (type codes 10..22), value types made of those (nested a few deep).
+bool ownsNothing(const reflect::Type* t, int depth) {
+    if (!t || depth > 4) return false;
+    for (const reflect::Field& f : t->fields) {
+        const uint32_t code = gn::layout::typeCode(f.flags);
+        if (code == 8 || (code >= 10 && code <= 22)) continue;
+        if (code == 2 && ownsNothing(registry().byTi(f.typeTi), depth + 1)) continue;
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+// Queued (API 42): delivered at the manager's next pump at least `delay` seconds on, then freed by the pump through the
+// message's deleting destructor (MessageManagerImpl_pumpQueue; a message type's deleting destructor frees through the
+// engine's page table, so it must live in a game arena: the copy is made in the engine's default arena 0x1423606d0,
+// checked in Ghidra 2026-11-20). Fields that own memory (strings, arrays, references) would be freed or released by
+// that destructor as well; types with any such field are refused. Any thread: the queue has its own lock.
+int messageQueue(int manager, const void* message, float delay) {
+    if (!message || manager < 0 || manager > 2 || !std::isfinite(delay) || delay < 0.f || delay > 3600.f) return GN_ERR_ARGUMENT;
+    const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), reinterpret_cast<uintptr_t>(message));
+    if (!t || t->category != reflect::Category::ValueType || !t->staticInstance || !t->size || t->size > 4096) return GN_ERR_ARGUMENT;
+    if (!ownsNothing(t, 0)) return GN_ERR_ARGUMENT;
+    if (!available()) return GN_ERR_UNAVAILABLE;
+    static const bool ok = [] {
+        const bool b = build::codeMatches("MessageManager_queueMessage") && build::codeMatches("Arena_allocAligned");
+        if (!b) GN_LOG("messages: the queue or the arena allocator does not look as expected; message_queue is off");
+        return b;
+    }();
+    if (!ok) return GN_ERR_UNAVAILABLE;
+    const uintptr_t handle = managerHandle(manager);
+    if (!handle || !mem::readOr<uintptr_t>(handle)) return GN_ERR_UNAVAILABLE;
+    using AllocFn = void* (*)(void*, uint64_t, uint64_t);
+    void* copy = reinterpret_cast<AllocFn>(mem::rva(e::function::Arena_allocAligned))(reinterpret_cast<void*>(mem::rva(e::global::GlobalArena)), t->size, 16);
+    if (!copy) return GN_ERR_UNAVAILABLE;
+    std::memcpy(copy, message, t->size);
+    using QueueFn = void (*)(uintptr_t, void*, float);
+    reinterpret_cast<QueueFn>(mem::rva(e::function::MessageManager_queueMessage))(handle, copy, delay);
+    return GN_OK;
+}
+
+// The console's "msg TYPE [core|client|server]": sends a default message of that type (its static
+// instance) on the realm's thread, to see who reacts (the inspector's message monitor shows it).
+std::string msgCommand(const std::string& rest) {
+    char type[160] = {}, which[16] = "client";
+    if (sscanf(rest.c_str(), "%159s %15s", type, which) < 1) return "msg TYPE [core|client|server]: sends a default message of that type";
+    const int manager = !_stricmp(which, "core") ? 0 : !_stricmp(which, "server") ? 2 : 1;
+    const std::string typeS = type;
+    return "msg: " + runOnRealmAndWait(manager != 1, [typeS, manager]() -> std::string {
+        const reflect::Type* t = registry().find(typeS);
+        if (!t || !t->size || t->size > 4096) return typeS + ": not a message type";
+        std::vector<uint64_t> buf((t->size + 7) / 8 + 1);
+        int r = messageInit(typeS.c_str(), buf.data(), static_cast<uint32_t>(buf.size() * 8));
+        if (r == GN_OK) r = messageSend(manager, buf.data());
+        if (r != GN_OK) return typeS + ": not sent (" + std::to_string(r) + ")";
+        GN_LOG("msg: %s sent to the %s message manager", typeS.c_str(), manager == 0 ? "core" : manager == 1 ? "client" : "server");
+        return typeS + " sent";
+    });
 }
 
 bool messagesAvailable() { return available(); }

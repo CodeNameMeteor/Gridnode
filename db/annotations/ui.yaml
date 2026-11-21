@@ -214,9 +214,9 @@ functions:
   - name: UIPauseController_request
     va: 0x143b16210
     signature: "void(UIPauseController* controller, i8 on, i8 full)"
-    confidence: hypothesis
-    sources: [ghidra]
-    note: "Increments (on != 0) or decrements (on == 0) pauseRequestsA (+0x08). If full != 0, likewise increments or decrements pauseRequestsB (+0x0c). Called exclusively by PamClientUIPauseEntity."
+    confidence: confirmed
+    sources: [ghidra, research]
+    note: "Increments (on != 0) or decrements (on == 0) pauseRequestsA (+0x08). If full != 0, likewise increments or decrements pauseRequestsB (+0x0c). The game's only callers are PamClientUIPauseEntity's (activate 0x143b404af, deactivate 0x143b4194f, destructor 0x143b38a17), with full = its data's +0x18 == 0. Decompiled 2026-11-20."
   - name: UIPauseController_isPaused
     va: 0x143b12830
     signature: "bool(UIPauseController* controller)"

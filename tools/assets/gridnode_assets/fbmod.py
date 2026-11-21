@@ -85,6 +85,8 @@ class Mod:
         """A resource's asset, decompressed."""
         if r.index < 0:
             return b""
+        if r.type == EMBEDDED:  # Frosty keeps the icon and screenshots as they are (PNG), not in payload blocks
+            return bytes(self.data[r.index])
         return store.decompress_payload(self.data[r.index], r.name)
 
 

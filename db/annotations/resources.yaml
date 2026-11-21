@@ -628,11 +628,16 @@ functions:
     note: "Named in Ghidra as domain_lookupRecordByKey; signature from the decompiler (2026-10-30), the name is not checked yet."
     confidence: hypothesis
     sources: [ghidra]
-  - name: manifest_findEntryByKey16_local
+  - name: Compartment_findByGuid
     va: 0x142aeb5e0
-    signature: "i64(void*, void*)"
-    note: "Named in Ghidra as manifest_findEntryByKey16_local; signature from the decompiler (2026-10-30), the name is not checked yet."
-    confidence: hypothesis
+    signature: "i64(void* compartment, const u8* guid)"
+    note: >-
+      A compartment's lookup by a 16-byte GUID (its vtable 0x141a0e718, slot +0x28; +0x20 is the recursive one):
+      under the compartment's lock (+0xc0, as Partition_findByName), a hash map at +0x130 (buckets) / +0x138
+      (count), hash = u32[0] + u16[2] + u16[3]; a hit returns the node's value + 8, a miss asks each compartment
+      in +0xa0..+0xa8. Was manifest_findEntryByKey16_local. Read in Ghidra 2026-11-14 (a modder's notes call it
+      assetFindByGuid); what the returned object is was not read. In game (2026-11-14) it did not find Faith's PamCharacterBlueprint by its instance GUID: asset_find_guid walks the partitions instead.
+    confidence: inferred
     sources: [ghidra]
   - name: manifest_findEntryByKey16_recursive
     va: 0x142aeb710
