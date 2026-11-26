@@ -7,8 +7,8 @@ Update at the end of each session. Keep it short. The full handover for a new ag
 
 - CI: ruff F401 in `tools/replay/replay_format.py` (unused `field`).
 - MECMP injected after GridNode stayed inactive: its build check found the MEC trainer's hook in
-  `PamServerCharacterSpawnEntity::spawn`. The trainer now hooks it the first time No KSEC goes on. MECMP's check also
-  reads the world ticks GridNode always hooks, so that order still needs a change in MECMP; MECMP first works.
+  `PamServerCharacterSpawnEntity::spawn`. The trainer now hooks it the first time No KSEC goes on. MECMP's tick hook
+  also refused the world tick GridNode always hooks: MECMP#122 (branch fix/chain-foreign-hooks) chains over both.
 - The menu key is read with `GetAsyncKeyState` too when GridNode's window procedure does not get it (another overlay's
   set over it, e.g. MECMP starting after GridNode); 150 ms grace so both paths never toggle.
 - Special K: not looked into yet (waiting for `SpecialK64.log` and `gridnode.log`).
