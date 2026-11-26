@@ -616,6 +616,7 @@ struct Settings {
     bool console = true;  // the console window
     bool devInfo = true;  // the World / Hooks sections and Dear ImGui metrics
     bool gridnodeWindow = true; // the GridNode window in the menu ([ui] gridnode_window=0: only mods' windows)
+    std::wstring iniPath;       // gridnode.ini: the menu key changed in game is written there
 };
 bool install(const Settings& s);
 int onUi(const std::string& mod, gn_ui_fn fn, void* user);

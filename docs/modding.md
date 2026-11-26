@@ -627,7 +627,8 @@ gridnode_window=1 ; 0: the menu shows only the mods' windows
 inspector=1      ; the inspector (tracks every entity the game creates)
 ```
 
-MECMP also opens its menu with INSERT: if you run both, give GridNode another `menu_key`.
+MECMP also opens its menu with INSERT: if you run both, give GridNode another key. In game: Ctrl+Shift+G opens
+GridNode's menu alone, and **Menu key: Change** there writes the new `menu_key` to `gridnode.ini`.
 
 **A mod's own key and only its window (API 27).** `gn::ui::setMenuOpen(open)` (Rust `ui_menu_set`)
 opens or closes the overlay as the menu key does, so a mod can open its window with its own hotkey:

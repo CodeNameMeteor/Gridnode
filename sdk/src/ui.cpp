@@ -281,6 +281,13 @@ std::atomic<int> g_releaseState{0}; // a full unload (release()): 0 running, 1 w
 // the render thread then sees the key go down with no matching message and opens the menu itself.
 std::atomic<ULONGLONG> g_menuKeyAt{0};
 
+// The menu key, changed in game from the GridNode window (written to gridnode.ini): two tools on the same key
+// could otherwise only be told apart by editing the file. Rebinding: the next key that goes down is the new one.
+// Suppress: the key just picked opens nothing until it is let go.
+std::atomic<int> g_menuKey{VK_INSERT};
+std::atomic<bool> g_menuRebinding{false};
+std::atomic<bool> g_menuKeySuppress{false};
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     // Left in place by a window procedure set over it: the overlay is gone, the game gets everything.
     if (g_releaseState.load() >= 2) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
@@ -289,8 +296,12 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     const bool keyUp = msg == WM_KEYUP || msg == WM_SYSKEYUP;
     if (keyUp && g_ready) queueImGui(hwnd, msg, w, l);
     const bool keyDown = msg == WM_KEYDOWN || (msg == WM_SYSKEYDOWN && w == VK_F10);
+    if (g_menuKeySuppress.load() && static_cast<int>(w) == g_menuKey.load()) {
+        if (keyDown) return 0;                         // the key just chosen: not a menu toggle yet
+        if (keyUp) g_menuKeySuppress = false;
+    }
     // The menu key (not when it would type into a text box of the menu).
-    if (keyDown && g_settings.menuKey && static_cast<int>(w) == g_settings.menuKey && !(l & (1 << 30)) && g_ready &&
+    if (keyDown && !g_menuRebinding.load() && g_menuKey.load() && static_cast<int>(w) == g_menuKey.load() && !(l & (1 << 30)) && g_ready &&
         !(g_open.load() && g_typing.load() && typesCharacter(static_cast<int>(w)))) {
         g_menuKeyAt = GetTickCount64();
         toggleMenu();
@@ -438,7 +449,7 @@ bool init(IDXGISwapChain* sc) {
     RECT rc{};
     GetClientRect(g_window, &rc);
     GN_LOG("ui: overlay ready (%ldx%ld, Dear ImGui %s). %s", rc.right - rc.left, rc.bottom - rc.top, IMGUI_VERSION,
-           g_settings.menuKey ? ("Press " + keyName(g_settings.menuKey) + " in game for the GridNode menu.").c_str()
+           g_menuKey.load() ? ("Press " + keyName(g_menuKey.load()) + " (or Ctrl+Shift+G) in game for the GridNode menu.").c_str()
                               : "No menu key (menu_key=NONE): mods open the menu.");
     return true;
 }
@@ -452,12 +463,81 @@ bool g_showRecorder = false;
 bool g_showTracer = false;
 bool g_showFieldDiff = false;
 
+// ---- the menu key, changed in game -----------------------------------------------------------
+bool g_menuDownAtStart[256] = {}; // render thread: keys held when the wait began count once let go and pressed again
+std::string g_menuKeyNote;        // render thread: what the last change did (shown under the button)
+
+bool menuBindable(int vk) { // not the left and right mouse buttons (they click the menu), not a modifier alone
+    return vk >= 0x04 && vk <= 0xFE && vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU && !(vk >= 0xA0 && vk <= 0xA5);
+}
+
+void startMenuRebind() {
+    for (int vk = 0; vk < 256; ++vk) g_menuDownAtStart[vk] = menuBindable(vk) && (GetAsyncKeyState(vk) & 0x8000) != 0;
+    g_menuKeyNote.clear();
+    g_menuRebinding = true;
+}
+
+void setMenuKey(int vk) { // render thread
+    g_menuKey = vk;
+    g_menuKeySuppress = true;
+    const std::string name = keyName(vk);
+    bool saved = false;
+    if (!g_settings.iniPath.empty()) {
+        const std::wstring wname(name.begin(), name.end()); // key names are ASCII
+        saved = WritePrivateProfileStringW(L"ui", L"menu_key", wname.c_str(), g_settings.iniPath.c_str()) != 0;
+    }
+    std::string clash;
+    for (const auto& [rvk, what] : reservedKeys())
+        if (rvk == vk && what != "the menu") clash += (clash.empty() ? "" : ", ") + what;
+    g_menuKeyNote = saved ? "Saved to gridnode.ini." : "Could not write gridnode.ini: this key lasts until the game closes.";
+    if (!clash.empty()) g_menuKeyNote += " Also used by " + clash + ".";
+    GN_LOG("ui: the menu key is now %s (%s)%s%s", name.c_str(), saved ? "saved to gridnode.ini" : "gridnode.ini not written",
+           clash.empty() ? "" : "; also used by ", clash.c_str());
+}
+
+// While choosing: the first key that goes down (Esc keeps the old key, Backspace puts back INSERT).
+void menuRebindFrame() { // render thread
+    if (!g_menuRebinding.load()) return;
+    for (int vk = 0x04; vk <= 0xFE; ++vk) {
+        if (!menuBindable(vk)) continue;
+        const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+        if (g_menuDownAtStart[vk]) {
+            g_menuDownAtStart[vk] = down;
+            continue;
+        }
+        if (!down) continue;
+        if (vk == VK_ESCAPE) g_menuKeyNote = "Unchanged.";
+        else setMenuKey(vk == VK_BACK ? VK_INSERT : vk);
+        g_menuRebinding = false;
+        return;
+    }
+}
+
+void drawMenuKey() {
+    const int key = g_menuKey.load();
+    if (g_menuRebinding.load()) {
+        ImGui::TextColored(ImVec4(1.f, 0.75f, 0.3f, 1.f), "Press the new menu key (Esc: keep %s, Backspace: INSERT)",
+                           key ? keyName(key).c_str() : "none");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Cancel###menukeycancel")) g_menuRebinding = false, g_menuKeyNote = "Unchanged.";
+    } else {
+        ImGui::Text("Menu key: %s", key ? keyName(key).c_str() : "none (mods open the menu)");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Change###menukey")) startMenuRebind();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The key that opens and closes this menu. Pick one no other tool uses (MECMP's menu, an overlay):\n"
+                              "with the same key, both menus open together. Ctrl+Shift+G always opens this menu alone.\n"
+                              "Saved to gridnode.ini ([ui] menu_key).");
+    }
+    if (!g_menuKeyNote.empty()) ImGui::TextDisabled("%s", g_menuKeyNote.c_str());
+}
+
 void drawMain() {
     ImGui::SetNextWindowPos(ImVec2(30, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 22, 0), ImGuiCond_FirstUseEver);
     if (g_justOpened.exchange(false)) ImGui::SetNextWindowFocus();
     if (ImGui::Begin("GridNode " GRIDNODE_VERSION_STRING "###gridnode")) {
-        if (g_settings.menuKey) ImGui::TextDisabled("%s closes this menu", keyName(g_settings.menuKey).c_str());
+        drawMenuKey();
         const std::string level = levelName();
         ImGui::Text("Level: %s", level.empty() ? "(none)" : level.c_str());
         ImGui::Text("%.0f fps", ImGui::GetIO().Framerate);
@@ -779,12 +859,25 @@ void pollMenuKey() { // render thread
     static bool wasDown = false;
     static ULONGLONG pendingAt = 0;
     static bool said = false;
-    const int key = g_settings.menuKey;
+    const int key = g_menuKey.load();
     if (!key || !gameFocused()) {
         wasDown = false, pendingAt = 0;
         return;
     }
+    // Ctrl+Shift+G always opens or closes GridNode's menu alone: with another tool on the same key (both menus
+    // open, and the other one's may take the mouse), it reaches the menu key's Change button.
+    {
+        static bool chordWas = true; // held when the game starts: nothing until let go
+        const bool chord = (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState(VK_SHIFT) & 0x8000) && (GetAsyncKeyState('G') & 0x8000);
+        if (chord && !chordWas && !g_menuRebinding.load() && !(g_open.load() && g_typing.load())) toggleMenu();
+        chordWas = chord;
+    }
     const bool down = (GetAsyncKeyState(key) & 0x8000) != 0;
+    if (g_menuRebinding.load() || g_menuKeySuppress.load()) {
+        if (!down) g_menuKeySuppress = false; // let go (its key-up message may not reach GridNode's window procedure)
+        wasDown = down, pendingAt = 0;
+        return;
+    }
     const ULONGLONG now = GetTickCount64();
     if (down && !wasDown && !(g_open.load() && g_typing.load() && typesCharacter(key))) pendingAt = now;
     wasDown = down;
@@ -802,7 +895,7 @@ void pollMenuKey() { // render thread
                                reinterpret_cast<LPCSTR>(proc), &m))
             GetModuleFileNameA(m, other, MAX_PATH);
         GN_LOG("ui: %s did not reach GridNode's window procedure (the game window's procedure is now %s's); "
-               "GridNode reads the key itself. If it opens another tool's menu too, set menu_key in gridnode.ini",
+               "GridNode reads the key itself. If it opens another tool's menu too, change it in the GridNode window (Menu key)",
                keyName(key).c_str(), other);
     }
     toggleMenu();
@@ -830,6 +923,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui_ImplWin32_NewFrame();
         if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
+        menuRebindFrame();
         pollMenuKey();
         const bool open = g_open.load();
         {
@@ -933,7 +1027,7 @@ std::string keyName(int vk) {
 
 std::vector<std::pair<int, std::string>> reservedKeys() {
     std::vector<std::pair<int, std::string>> r;
-    if (g_settings.menuKey) r.push_back({g_settings.menuKey, "the menu"});
+    if (g_menuKey.load()) r.push_back({g_menuKey.load(), "the menu"});
     if (g_settings.recorder)
         r.push_back({VK_F8, "Recorder: record / pause"}), r.push_back({VK_HOME, "Recorder: marker"}),
             r.push_back({VK_END, "Recorder: save the last seconds"});
@@ -1062,6 +1156,7 @@ int onUi(const std::string& mod, gn_ui_fn fn, void* user) {
 
 bool install(const Settings& s) {
     g_settings = s;
+    g_menuKey = s.menuKey;
     if (!s.enabled) {
         GN_LOG("ui: disabled in gridnode.ini");
         return false;

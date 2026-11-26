@@ -11,6 +11,8 @@ Update at the end of each session. Keep it short. The full handover for a new ag
   also refused the world tick GridNode always hooks: MECMP#122 (branch fix/chain-foreign-hooks) chains over both.
 - The menu key is read with `GetAsyncKeyState` too when GridNode's window procedure does not get it (another overlay's
   set over it, e.g. MECMP starting after GridNode); 150 ms grace so both paths never toggle.
+- The menu key can be changed in game (GridNode window, Menu key: Change; written to `gridnode.ini`), and
+  Ctrl+Shift+G always opens GridNode's menu alone (two tools on one key could not be told apart before).
 - Special K: not looked into yet (waiting for `SpecialK64.log` and `gridnode.log`).
 
 ## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)
