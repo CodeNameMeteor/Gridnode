@@ -13,6 +13,12 @@ Update at the end of each session. Keep it short. The full handover for a new ag
   set over it, e.g. MECMP starting after GridNode); 150 ms grace so both paths never toggle.
 - The menu key can be changed in game (GridNode window, Menu key: Change; written to `gridnode.ini`), and
   Ctrl+Shift+G always opens GridNode's menu alone (two tools on one key could not be told apart before).
+- mec-trainer 1.11.0: **Landing prediction** (Settings tab, HUD; `examples/mec-trainer/landing.cpp`): while Faith is in
+  the air, the arc, a ring where she lands and its coordinates, from any height (user's ask: "skydiving", speedrun
+  setups). The game's own prediction only looks a moment ahead, so the trainer simulates the arc: velocity from her
+  last 0.1 s of server positions, gravity and top fall speed measured from her own falls (saved in `mec-trainer.ini`),
+  a 0.2 m sphere swept along it with `gn::raycast` (server tick, 10 a second, at most 400 casts). After landing, a dot
+  shows where she really came down and how far from the ring. Untested in game.
 - Special K: not looked into yet (waiting for `SpecialK64.log` and `gridnode.log`).
 
 ## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)

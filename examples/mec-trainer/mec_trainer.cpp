@@ -48,6 +48,7 @@
 
 #include "gridnode/engine.hpp"
 #include "gridnode/ui.hpp"
+#include "landing.hpp"
 #include "volumes.hpp"
 
 namespace {
@@ -870,6 +871,7 @@ void serverTick(float dt) {
     alertsTick(dt, g_freeRoam);
     ksecTick(dt);
     arrivalServer();
+    landing::serverTick(faith, dt);
     gn::Vec3 p;
     if (!faith || !gn::positionOf(faith, p)) return;
     gn::RayHit hit;
@@ -945,6 +947,7 @@ void clientTick(float dt) {
     gn::Movement m{};
     const bool have = faith && gn::positionOf(faith, p) && gn::movement(m);
     g_haveFaith = have;
+    if (have) landing::clientTick(m, g_noclipActive || gn::freecamOn());
     static bool havePrev = false;
     if (!have) {
         g_havePrevY = false;
@@ -1566,6 +1569,7 @@ void settingsTab() {
         ImGui::SetTooltip("In the middle of the screen: the time to the landing (the game's prediction) as a bar running\n"
                           "down to the jump window (green: jump now, red: a soft landing, no bhop), and after each wall\n"
                           "run jump's landing whether your own jump was on time, early or late. Wall run jumps only.");
+    landing::options();
     ImGui::SeparatorText("Unload");
     if (ImGui::Button("Unload the trainer")) gn::unloadSelf(); // everything it changed goes back (GN_MOD_UNLOAD)
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Puts back what it changed and unloads it; GridNode's Mods list loads it again.");
@@ -1600,12 +1604,14 @@ const FloatSetting kFloats[] = {{"bhop.press_below", &g_bhopPredictBelow},
 void loadSettings() {
     for (const BoolSetting& s : kBools) *s.v = gn::config::getBool(s.key, s.v->load());
     for (const FloatSetting& s : kFloats) *s.v = gn::config::getFloat(s.key, s.v->load());
+    landing::loadSettings();
 }
 
 // After the window: GridNode keeps the values and writes the file only when one changed.
 void saveSettings() {
     for (const BoolSetting& s : kBools) gn::config::setBool(s.key, s.v->load());
     for (const FloatSetting& s : kFloats) gn::config::setFloat(s.key, s.v->load());
+    landing::saveSettings();
 }
 
 void window() {
@@ -1697,6 +1703,7 @@ void hud(bool menuOpen) {
             ImGui::Text("Pos (%.1f, %.1f, %.1f)", g_px.load(), g_py.load(), g_pz.load());
             ImGui::Text("Speed %.1f m/s   State %d", g_hSpeed.load(), g_state.load());
             if (g_chain || g_bestChain) ImGui::Text("Bhop chain %d   best %d", g_chain.load(), g_bestChain.load());
+            landing::hudLines();
             if (menuOpen) {
                 ImGui::TextDisabled("drag to move");
                 if (!place) {
@@ -1720,6 +1727,7 @@ void hud(bool menuOpen) {
         if (g_infRuns) on += "InfRuns  ";
         if (g_freezeTime) on += "FrozenTime  ";
         if (volumes::anyShown()) on += "Volumes  ";
+        if (landing::shown()) on += "Landing  ";
         if (g_bhopAuto) on += "AutoBhop  ";
         else if (g_bhopArmed) on += "BhopArmed  ";
         if (!on.empty())
@@ -1730,7 +1738,7 @@ void hud(bool menuOpen) {
 
 } // namespace
 
-GN_MOD_INFO("mec-trainer", "MEC trainer", "1.10.3", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes");
+GN_MOD_INFO("mec-trainer", "MEC trainer", "1.11.0", "GridNode", "Practice tools: god mode, noclip, saved positions, bunny hops, free camera, trigger volumes, landing prediction");
 
 namespace {
 int trainerGodMode() { return g_god ? 1 : 0; } // offered to other mods as mec-trainer.godMode (int(void))
@@ -1740,6 +1748,7 @@ GN_MOD("mec-trainer") {
     gn::exportFn("godMode", &trainerGodMode);
     if (!gn::ui::onDraw([](bool menuOpen) {
             volumes::draw();
+            landing::draw();
             freecamKeys();
             hud(menuOpen);
             if (menuOpen) window();
