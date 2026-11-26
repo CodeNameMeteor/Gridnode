@@ -288,9 +288,15 @@ functions:
     va: 0x143167120
     signature: "void*(EntityCreationInfo* ci, void* propertyContext)"
     note: >-
-      Pure research (to be confirmed in game). Core entity instantiation engine called by entityCreator_spawnIntoBus and ClientEntity_spawnIntoBus.
-      Resolves creator via ci->data vtable slot +0x28 (vtable[5]), applies ci->transform and propertyContext transforms, and calls creator vtable slot +8.
-    confidence: hypothesis
+      Where entities made from data are created: blueprint contents (0x143361260), entityCreator_spawnIntoBus,
+      ClientEntity_spawnIntoBus and five more call it (18 call sites). creator = (*(ci + 0xd0))->vtable +0x28(data,
+      *(u32*)(ci + 0x20)); 0 -> returns 0; else creator->vtable +8(creator, ci), whose entity it returns. The
+      creator's u32 at +0x28 is a mode (1: skips the data when its property says so; 2: composes the data's
+      transform into ci +0x40 for the call and puts it back; 3: skips when data +0x60 is set). ci +0xd0 the data,
+      ci +0x40 a 4x4 transform (the placement before the data's own). Not every entity comes through here:
+      ServerPlaceHolderEntity is built inline in 0x143361260. Prologue position independent (push x4, push r14,
+      lea rbp, sub rsp). Checked in Ghidra 2026-11-13 (audit, entity-props C1 to C11).
+    confidence: inferred
     sources: [ghidra, research]
   - name: fb_Blueprint_instantiateImpl
     va: 0x14335e400
@@ -598,6 +604,12 @@ globals:
     va: 0x1425476c0
     type: bool
     note: "Read by Blueprint_instantiate and entityCreator_spawnIntoBus, written by 0x14335e810 / 0x14335ea10. Named g_entitySpawningEnabled in the user's Ghidra."
+  - name: ServerSpawnEntityUpdater
+    va: 0x142548128
+    type: "void*"
+    note: "The updater ServerSpawnEntity vf2 (0x14338dbe0) adds a spawner to (EntityUpdater_add) when AutoSpawn or Spawn asks for one; its update spawns once spawner +0xf0 <= 0 while +0x108 bit 0x8 is set."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 constants:
   - { name: StaticModelEntityData_Size, value: 0xe0, confidence: hypothesis, sources: [research, gridnode], note: "Size in bytes of StaticModelEntityData." }
@@ -608,3 +620,7 @@ constants:
   - { name: MeshAsset_Size, value: 0x78, confidence: hypothesis, sources: [research, gridnode], note: "Size in bytes of MeshAsset / RigidMeshAsset." }
   - { name: MeshAsset_Name, value: 0x10, confidence: hypothesis, sources: [research, gridnode], note: "CString path at Asset +0x10." }
   - { name: MeshAsset_Materials, value: 0x60, confidence: hypothesis, sources: [research, gridnode], note: "MeshMaterial* array at +0x60." }
+  - { name: Spawner_Delay, value: 0xf0, note: "f32 seconds before the next spawn; counts down while +0x108 bit 0x8 is set (block G, 2026-11-20)." }
+  - { name: Spawner_SpawnCount, value: 0xf4, note: "i32 spawned so far (against MaxCount); also the bus id of a spawn made with bus id -1." }
+  - { name: Spawner_StateFlags, value: 0x108, note: "u8: 0x8 a spawn is wanted (Spawn event, AutoSpawn, Enable); cleared when nothing is left to do." }
+  - { name: Spawner_Enabled, value: 0x2a4, note: "u8: createCharacter refuses a new character while 0." }

@@ -87,6 +87,15 @@ structs:
       - { offset: 0x18, name: skip, type: u8, note: "Non-zero: do nothing." }
 
 hooks:
+  - name: ClientHumanHealth_applyAntDamageSlot
+    kind: vtable-slot
+    vtable: 0x141c3d198
+    offset: 0x148
+    original: 0x1439196b0
+    signature: "void(void* clientHealthComponent, const void* antDamage)"
+    note: "PamClientHumanHealthComponent's slot 41 (ClientHealth_applyAntDamage): how the player's animation-graph damage reaches it (the AI component's own slot calls the function directly). The fall damage hold swaps this slot. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
   - name: PamClientCharacterEntity_factory
     kind: creator-slot
     slot: 0x141c3cd80
@@ -104,6 +113,21 @@ functions:
       Fast travel reaches it from ServerEventSync_onReachedClient (seen in a recording, 2026-10-20).
     confidence: inferred
     sources: [ghidra, recording]
+  - name: ClientHealth_applyAntDamage
+    va: 0x1439196b0
+    signature: "void(void* clientHealthComponent, const void* antDamage)"
+    note: >-
+      Damage from a character's animation graph (an ANT DamageProcessorAsset, update 0x142f26cc0, through
+      DamageFeature's handler) into a PamClientDamageInfo (built by 0x14390c370) sent on with 0x1434d94e0 (client
+      to server, then the server health component). The record: +0x00 f32 amount, +0x04 i32 heart amount, +0x08
+      byte allow last chance, +0x0c the attacker's id, +0x10 vec4 direction, +0x20 byte, +0x28 the damage type value
+      (an enum asset whose +0x1c is the value: 1 gives PamDamageType_Fall 0x68, 0 PamDamageType_Unkown 100, others
+      Melee 0x66), +0x30, +0x38 and +0x40 more enum values (+0x1c each). PamClientHumanHealthComponent's vtable
+      (0x141c3d198) slot 41 (+0x148) and PamClientHealthComponent's (0x141c3c5d0) hold it; PamClientAIHealthComponent's calls it. No fall height is compared in
+      C++: the graph decides when and how much. Gemini block J, checked in Ghidra 2026-11-14. GridNode's fall damage
+      hold swaps the human component's slot (ClientHealth_applyAntDamageSlot).
+    confidence: inferred
+    sources: [research, ghidra]
   - name: LocalClientCharacter
     va: 0x1439655f0
     signature: "PamClientCharacterEntity*()"
@@ -161,6 +185,24 @@ functions:
     note: "Named in Ghidra as HealthComponent_connectIsImmortal; checked in the decompiler (2026-10-30): binds the property IsImmortal (hash 0xa1b7b692, checked) as a bool at +0x88."
     confidence: inferred
     sources: [ghidra]
+  - name: CharacterView_isThirdPerson
+    va: 0x143912b50
+    signature: "u8(void* clientCharacter)"
+    note: "0 first person, 1 third person: the camera override (0x142401cb8) first, then the local player's view state, then character +0x1d8's vtable +0x78 (0x14390ed90: 0 only for the local human player)."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: PamClientCharacterEntity_initLooks
+    va: 0x143916b40
+    signature: "void(void* self, void* initInfo)"
+    note: "vf65: copies the data's +0xe8 to +0x334 (ghost shader) and +0xe9 to +0x335."
+    confidence: confirmed
+    sources: [ghidra, research]
+  - name: PamClientCharacterEntityRenderer_buildPrims
+    va: 0x143947e10
+    signature: "void(void* self, void* ctx)"
+    note: "Vtable 0x141c484b8 +0x70, every frame: each mesh instance's +0x100 = character +0x334 (the draw at +0x80, 0x14394a720, binds the ghost projection shader then); +0x335 set forces the view mask 0x80. A change shows on the next frame."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 constants:
   - { name: ClientCharacter_ViewModeInterface, value: 0x1d8, note: "Embedded interface whose getViewMode (slot 0x141c3cc68 -> 0x14390ed90, int(iface)) picks the body mesh: 1 = third-person body with head (MECMP)." }
@@ -168,3 +210,5 @@ constants:
   - { name: ClientCharacter_GetViewMode, value: 0x14390ed90 }
   - { name: PlayerBlueprint, value: "Characters/FaithCharacter" }
   - { name: GhostBlueprint, value: "Characters/Projection/ProjectionCharacter" }
+  - { name: PamClientCharacter_GhostShader, value: 0x334, note: "u8: drawn with Shaders/SpecialUseCase/GhostProjectionVSFAsset (read every frame by PamClientCharacterEntityRenderer_buildPrims)." }
+  - { name: PamClientCharacter_GhostMask, value: 0x335, note: "u8: non-zero forces the render view mask 0x80." }

@@ -50,6 +50,12 @@ globals:
     va: 0x1423dd0b8
     type: "void*"
     note: ANT asset database, created after AntSettings by 0x142fbe900. Movement tuning assets hang off it.
+  - name: TimeOfDayClockUpdaters
+    va: 0x142598ac0
+    type: "void*[2]"
+    note: "One TimeOfDayClockUpdater per realm (index = entity flags & 1), made by TimeOfDayClockEntity_ctor 0x143bc3be0; +0x28 = the clock entity it ticks, set by the clock's Enable event (0x143bc4b60). [1] +0x28 is the ServerTimeOfDayClockEntity."
+    confidence: confirmed
+    sources: [ghidra, research]
 
 structs:
   - name: InputDevices
@@ -98,7 +104,8 @@ constants:
   - { name: VisualEnv_C, value: 0x1c0 }
   - { name: VisualEnv_D, value: 0x30 }
   - { name: VisualEnv_State, value: 0x85470, note: "The current visual environment state in the manager. Blocks in it (from the cinematic tools; untested here): outdoor light +0x000, tonemap +0x1d0, colour correction +0x330, sky and clouds +0x390, wind +0x6e0, depth of field +0xa50, vignette +0xac0, film grain +0xb00." }
-  - { name: VisualEnv_StateSize, value: 0xb30, note: "Our bound for visual_env_set: the end of the film grain block (0xb00 + 0x30)." }
+  - { name: VisualEnv_StateSize, value: 0x1bf0, note: "The state's size: WorldRenderer_renderView hands wr + 0x85470 and wr + 0x87060 (0x1bf0 further) to the render code, and the per-view state at 0x88c50 follows (Ghidra 2026-11-14). visual_env_set's bound since API 41 (0xb30 before)." }
+  - { name: VisualEnv_Future, value: 0x87060, confidence: inferred, sources: [ghidra, research], note: "The second copy of the state in the world renderer, given to Enlighten's update by WorldRenderer_renderView (Ghidra 2026-11-14; a modder's notes call it the future state). Holds are written into both." }
   - { name: Timeline_SetTime, value: 0x143691120, note: "void(TimelineEntity*, f32 time, bool force): force writes the time and updates what the timeline drives at once (checked in Ghidra 2026-11-06: current time +0x98, +0x60 an external time connection, which makes it return unless forced)." }
   - { name: Timeline_Time, value: 0x98, note: "f32 current time in a TimelineEntity (vtable 0x141beab28)." }
   - { name: SharedContent_Manager, value: 0x28 }
@@ -110,3 +117,6 @@ constants:
   - { name: AnimatableOwner_Animatable, value: 0x128 }
   - { name: Animatable_Pose, value: 0x30 }
   - { name: Pose_Position, value: 0x50 }
+  - { name: TimeOfDayUpdater_Clock, value: 0x28 }
+  - { name: Clock_Hold, value: 0xf8, note: "u8 on ServerTimeOfDayClockEntity: non-zero stops vf23 (0x143bc78e0) moving +0x30; what the level's ServerTimeOfDayClockControllerEntity sets on its Pause event 0x0dd8ddf7 (0 on 0xc44b5c3c, SetTime 0xa4259012 writes +0x30). The server marks the clock's net state dirty every tick, so the client copy follows." }
+  - { name: Clock_RateScale, value: 0xec, note: "f32 on ServerTimeOfDayClockEntity: TimeScaleMultiplier from the controller; scales the rate (0x143bc4cb0)." }

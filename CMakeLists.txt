@@ -185,6 +185,14 @@ add_library(gridnode SHARED
   sdk/src/assets.cpp
   sdk/src/bundles.cpp
   sdk/src/data_registry.cpp
+  sdk/src/properties.cpp
+  sdk/src/census.cpp
+  sdk/src/static_groups.cpp
+  sdk/src/gamerules.cpp
+  sdk/src/effects.cpp
+  sdk/src/actions.cpp
+  sdk/src/debugdraw.cpp
+  sdk/src/contacts.cpp
   sdk/src/dashes.cpp
   sdk/src/layouts.cpp
   $<IF:$<BOOL:${GRIDNODE_PLAYER_BUILD}>,sdk/src/recorder_stub.cpp,sdk/src/recorder.cpp>
@@ -233,7 +241,7 @@ if(GRIDNODE_BUILD_EXAMPLES)
   target_include_directories(probe PRIVATE sdk/include)
   set_target_properties(probe PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods
                                          RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods)
-  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp examples/mec-trainer/volumes.cpp)
+  add_library(mec_trainer SHARED examples/mec-trainer/mec_trainer.cpp examples/mec-trainer/volumes.cpp examples/mec-trainer/landing.cpp)
   target_include_directories(mec_trainer PRIVATE sdk/include)
   target_link_libraries(mec_trainer PRIVATE gn_imgui gn_engine)
   set_target_properties(mec_trainer PROPERTIES PREFIX "" LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/mods

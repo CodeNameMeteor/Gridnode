@@ -15,6 +15,7 @@
                                                every type instances are of, in every EBX: how many, in how
                                                many files, examples, its fields (a catalogue to plan from)
   assets fbmod-info FILE.fbmod [--data DIR] [--extract DIR]
+  assets layout-fbmod LAYOUT.yaml --data DIR [--layer NAME] [--title T] [--out F]   a layout as a Frosty mod
                                                a Frosty mod: details, what it changes, in which bundles
   assets fbmod-build SPEC.yaml [--out FILE.fbmod] [--data DIR] [--dump JSON]
                                                a Frosty mod (version 5) from EBX / YAML files (SPEC: below)
@@ -332,6 +333,57 @@ def cmd_fbmod_build(a) -> int:
     return 0
 
 
+def cmd_layout_fbmod(a) -> int:
+    from . import fbmod, layoutmod
+    level, edits = layoutmod.load_layout(a.layout)
+    index = layoutmod.LevelIndex(_store(a), level, os.path.join(OUT, "index"))
+    print(f"layout-fbmod: {level}: {len(index.layers)} zone layers, {len(index.refs)} sublevel references")
+    edited, rep = layoutmod.export(index, edits, a.layer or "")
+    for kind, name, layer in rep.placed:
+        print(f"  placed {kind} {name} in {layer}")
+    for zone, bundles, f in rep.preloads:
+        print(f"  {zone} now preloads {', '.join(bundles)} ({f})")
+    for kind, n in sorted(rep.skipped.items()):
+        print(f"  not exported yet: {n} {kind} edit(s)")
+    for p in rep.problems:
+        print(f"  problem: {p}", file=sys.stderr)
+    if not rep.placed:
+        print("layout-fbmod: nothing to export", file=sys.stderr)
+        return 1
+    title = a.title or "GridNode layout " + os.path.splitext(os.path.basename(a.layout))[0]
+    m = fbmod.new_mod(title, a.author or "", "Levels", "1.0",
+                      f"Made by GridNode from the layout {os.path.basename(a.layout)} ({len(rep.placed)} objects).")
+    dump = _dump(a)
+    yaml_dir = os.path.join(OUT, "layout-fbmod", "".join(c if c.isalnum() or c in " -_" else "_" for c in title))
+    errors = 0
+    for name, x in edited.items():
+        x.runs = ebx.runs_of(x.instances)
+        data = ebx.write(x)
+        back = ebx.read(data)  # what Frosty will hand the game: it must read back
+        if len(back.instances) != len(x.instances):
+            print(f"error: {name}: written with {len(x.instances)} instances, read back with {len(back.instances)}", file=sys.stderr)
+            errors += 1
+        if dump is not None:
+            errs, _ = ebx.check_types(back, dump)
+            for e in errs:
+                print(f"error: {name}: {e}", file=sys.stderr)
+            errors += len(errs)
+        path = os.path.join(yaml_dir, name.replace("/", os.sep) + ".yaml")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(ebx.to_yaml(back))
+        fbmod.add_ebx(m, name, data)
+    if errors:
+        print(f"layout-fbmod: {errors} error(s): not written", file=sys.stderr)
+        return 1
+    out = a.out or os.path.join(OUT, "mods", "".join(c if c.isalnum() or c in " -_" else "_" for c in title) + ".fbmod")
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(fbmod.write(m))
+    print(f"layout-fbmod: {len(edited)} file(s) changed -> {out} (the changed files as YAML in {yaml_dir})")
+    return 0
+
+
 _PRIMS = {1: "DbObject", 6: "String", 7: "CString", 9: "FileRef", 10: "Boolean", 11: "Int8", 12: "Uint8", 13: "Int16",
           14: "Uint16", 15: "Int32", 16: "Uint32", 17: "Int64", 18: "Uint64", 19: "Float32", 20: "Float64", 21: "Guid",
           22: "SHA1", 23: "ResourceRef", 25: "TypeRef", 26: "BoxedValueRef"}
@@ -605,6 +657,14 @@ def main(argv: list[str]) -> int:
     fb.add_argument("--out")
     fb.add_argument("--data", help="the game's Data folder: warns about assets in no bundle")
     fb.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
+    lf = sub.add_parser("layout-fbmod", help="a layout editor layout as a Frosty mod (placed prefabs and blockers)")
+    lf.add_argument("layout", help="the layout file (bin/layouts/<level>/<name>.yaml)")
+    lf.add_argument("--layer", help="put everything in this zone layer (default: the layer each object stands in)")
+    lf.add_argument("--title", help="the mod's title")
+    lf.add_argument("--author", help="the mod's author")
+    lf.add_argument("--out", help="the .fbmod to write (default bin/assets/mods/<title>.fbmod)")
+    lf.add_argument("--data")
+    lf.add_argument("--dump", help="the reflected dump (default: db/reflected/gridnode-reflected.json when there)")
     bu = sub.add_parser("ebx-build", help="a YAML file written as EBX, into bin/assets/built")
     bu.add_argument("file")
     bu.add_argument("--out")
@@ -613,7 +673,8 @@ def main(argv: list[str]) -> int:
     try:
         return {"check": cmd_check, "list": cmd_list, "extract": cmd_extract, "ebx": cmd_ebx,
                 "ebx-check": cmd_ebx_check, "ebx-build": cmd_ebx_build,
-                "deps": cmd_deps, "used-by": cmd_used_by, "bundle-parents": cmd_bundle_parents, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build}[a.cmd](a)
+                "deps": cmd_deps, "used-by": cmd_used_by, "bundle-parents": cmd_bundle_parents, "usage": cmd_usage, "fbmod-info": cmd_fbmod_info, "fbmod-build": cmd_fbmod_build,
+                "layout-fbmod": cmd_layout_fbmod}[a.cmd](a)
     except (StoreError, ebx.EbxError, ValueError) as e:
         print(f"assets: {e}", file=sys.stderr)
         return 1

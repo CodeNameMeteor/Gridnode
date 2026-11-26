@@ -27,6 +27,10 @@ look, and left-click objects to pick them along the cursor.
 
 The keys listed on screen (top left) are the ones that work while the camera flies.
 
+**Draw lines with the game's debug renderer** (under Camera, experimental) draws the editor's lines (outlines,
+volumes, barriers, dash parts) through the game's own debug renderer instead of GridNode's overlay, so the world in
+front of them can hide them. Labels stay on the overlay.
+
 ## Picking and the outline
 
 Click, or press **R**, to pick what the crosshair points at. The selection gets an outline: a box
@@ -205,6 +209,10 @@ A layout is a file, `layouts/<level>/<name>.yaml` next to gridnode.dll. The edit
 deletes and unloads them; **Unload** puts the level back as the game has it. With *Load the last
 used layout when a level starts* on, the layout you last used for a level comes back when it
 loads.
+
+To play a layout without GridNode, make it a Frosty mod (experimental, placed prefabs and blockers only):
+`python tools/gen/gridnode.py assets layout-fbmod layouts/<level>/<name>.yaml --data "<game>/Data"`, then
+install the `.fbmod` from `bin/assets/mods/` with Frosty's Mod Manager. See [tools](tools.md).
 
 ## Keys
 

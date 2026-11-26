@@ -2,6 +2,12 @@
 # Names from the user's Ghidra project (GridNodeSync, 2026-10-20): hypotheses until checked.
 defaults: { confidence: hypothesis, sources: [ghidra] }
 globals:
+  - name: EffectManager
+    va: 0x142416160
+    type: "void*"
+    confidence: inferred
+    sources: [ghidra, research]
+    note: "The client's effect manager: a command queue (lock-free blocks at +0x10, counter +0x118, handle counter +0x4950) taken by its update. The game's callers pass it to EffectManager_spawn / _move / _stop (Ghidra 2026-11-14; a modder's notes, section 26)."
   - name: g_visualEnvironmentManager
     va: 0x142568cd8
     type: "void*"
@@ -85,7 +91,55 @@ globals:
     note: "The TypeInfo SettingsManager_getByType takes for DebugRenderSettings (Enable +0x28, DrawStatsEnable +0x29). 0x1427b1a90 is the type's member data, not its TypeInfo."
     confidence: confirmed
     sources: [reflected]
+  - name: DebugRender2_global
+    va: 0x1423745e0
+    type: "void*"
+    note: "The game's DebugRender2 (a 0x28 wrapper: +0 the Impl, +8 the \"DebugRender\" settings, +0x20 a flip index), set by DebugRender2_registerGlobal; null in the shipped game (its creation is gated off). Producers draw through DebugRender2_getThreadContext as soon as it is set, and RenderEngine_renderDebugOverlay (0x1435785c0) flips and draws it each frame. Audit 2026-11-13 (debugrender-verified), read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRenderer_fontIndexBuffer
+    va: 0x142563a20
+    type: "void*"
+    note: "Made only by the legacy DebugRenderer's constructor (0x14356c560); DebugRender2's text batches (Font2D) read it: null with the debug renderer off, so no text then. Audit 2026-11-13; not read here."
+    confidence: hypothesis
+    sources: [research]
 functions:
+  - name: SettingsManager_findByName
+    va: 0x142ab2120
+    signature: "void*(void* settingsManager, const i8* name)"
+    note: "A settings object by its registered name (\"Physics\", \"DebugRender\"): under the manager's lock (+0x40), a hash lookup in +0x70; null when none. PhysicsManager vf6 and DebugRender2Impl_ctor call it. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [ghidra]
+  - name: DebugRender2Impl_ctor
+    va: 0x143566a00
+    signature: "void*(void* impl)"
+    note: "Constructs the 0xa0-byte DebugRender2 Impl (base vtable 0x141bc3dd0; the creator then sets DebugRender2Impl_vtable): a lock at +0x10, three vectors on the global arena, +8 the \"DebugRender\" settings (SettingsManager_findByName, referenced). Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_registerGlobal
+    va: 0x142aa87c0
+    signature: "void(void* impl)"
+    note: "poolAllocs the 0x28 wrapper on the global arena, fills it (+0 impl, +8 the \"DebugRender\" settings, +0x20 0) and stores it in DebugRender2_global. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_getThreadContext
+    va: 0x142aa8790
+    signature: "void*()"
+    note: "0 while DebugRender2_global is null; else this thread's recorder (TLS +0x278, made the first time: 0x98 bytes, DebugRender2Recorder_ctor). Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_allocVertices
+    va: 0x142aae2d0
+    signature: "void*(void* ctx, i32 primType, u32 count)"
+    note: "count 0x20-byte vertices ({f32 x, y, z, u32 abgr at +0xc, uv +0x10}) in the recorder's staging buffer for a primitive type (0 Tri3D, 1 Line3D: 2 vertices a line, 2 Tri2D, 3 Line2D, 4 Font2D); more than the staging holds gets its own command. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: DebugRender2_flushThread
+    va: 0x142aaa8f0
+    signature: "void(void* ctx, u32 a, u64 b)"
+    note: "Publishes this thread's recorder (staging, then its blocks through the allocator at ctx +0x18) to the Impl; the game calls it with (ctx, 0, 0) at its flush points. Read in Ghidra 2026-11-14."
+    confidence: inferred
+    sources: [research, ghidra]
   - name: VisualEnvironmentManager_update
     va: 0x143705b30
     signature: "void(void* manager, void* updateContext)"
@@ -110,6 +164,62 @@ functions:
     confidence: inferred
     sources: [ghidra]
     note: "Hashes a mesh asset (asset - 0x10, when its +10 u16 has 0x100; else null) with the quantised position, rotation and scale; the 16 bytes go in a group member's render update at +0x78. See docs/research/render-objects.md."
+  - name: EffectManager_spawn
+    va: 0x14329b860
+    signature: "u32(void* manager, void* effectBlueprint, const LinearTransform* at, void* level, u32 flags, const f32* position, const f32* velocity3, u8 applyVelocity)"
+    note: >-
+      Queues an effect (an EffectBlueprint asset) and returns its handle (0: refused: a NaN in the transform,
+      no blueprint, or the level's +0x30 bit 0 set: a sublevel being torn down, set by 0x14316c0b0). level:
+      EntityBus_getLevel(an entity's bus); the manager stops an effect when its level goes (below). With the
+      level's +0x9c set (1 from the SubLevel constructor 0x1431704a0 until its teardown 0x143174620) or flags & 2,
+      the blueprint's value from 0x143292ab0 must be 0 or the spawn is refused. position (vec4) replaces the
+      transform's translation only with flags & 4. velocity3 (three floats) goes to the command's +0x50 and
+      applyVelocity to +0x72; flags bit 0 to +0x70, bit 3 to +0x71. Gemini (block L, its chain not checked):
+      velocity3 is the emitters' initial velocity (emitter +0x120) and applyVelocity sets emitter +0x1e5 bit 0
+      (use it, else zero). Read in Ghidra 2026-11-14; callers 0x143185490, 0x142d592c0.
+    confidence: inferred
+  - name: EffectManager_onSubLevelDestroyed
+    va: 0x14329af20
+    signature: "void(void* manager, void* level)"
+    note: >-
+      The effect manager's answer to fb::SubLevelDestroyedMessage (its handler 0x14329a530, this adjusted by
+      -0x4b10): stops and frees every effect whose level (+0x1a8) is that level or null (0x1432915b0), and
+      drops queued spawns for it. A bundle unload (BundleManagerBundleUnloadMessage) stops nothing here: it only
+      reaches the emitter manager's 0x1430f9660 (not read). The per-blueprint buckets (+0x4878) hold a reference on
+      the blueprint (bucket +8, released when the bucket empties). Gemini block L, read in Ghidra 2026-11-14.
+    confidence: inferred
+    sources: [research, ghidra]
+  - name: EffectManager_move
+    va: 0x14329f9a0
+    signature: "void(void* manager, u32 handle, const LinearTransform* at)"
+    note: "Queues a new transform for a live effect (handle 0: nothing). Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: EffectManager_stop
+    va: 0x1432a2080
+    signature: "void(void* manager, u32 handle)"
+    note: "Queues the effect's stop (handle 0: nothing). Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: EffectManager_isDone
+    va: 0x1432973f0
+    signature: "bool(void* manager, u32 handle)"
+    note: "True for handle 0, a handle not yet issued (>= +0x4954), or one no longer in the live tree (+0x4918); the game drops its effects when it says so. Read in Ghidra 2026-11-14."
+    confidence: inferred
+  - name: ClientStaticModelGroupEntity_propertyChanged
+    va: 0x14318dc70
+    signature: "void(void* group, const void* change)"
+    note: >-
+      The client group's vtable slot 2 (0x141afbe90 + 0x10). Besides the transform (0xe790f446) it takes a
+      member copy's packed property: hash & 3 = 0 Enabled (false: render object and collision out,
+      0x1431856e0; true: made again), 1 ObjectVariation (0x14318fb30), 2 Visible (render object only,
+      0x14318f730); (hash >> 2) & 0x7ff = member index + 1 (not checked against the count here);
+      (hash >> 13) & 0x7ff = the copy. The value is a bool behind change+8. Read in Ghidra 2026-11-14
+      (a modder's notes, section 23). GridNode's static_member_set (API 41) calls it.
+    confidence: confirmed
+  - name: ServerStaticModelGroupEntity_propertyChanged
+    va: 0x1433e6430
+    signature: "void(void* group, const void* change)"
+    note: "The server group's vtable slot 2 (0x141b5e3a0 + 0x10): the same packing; only Enabled (kind 0) does anything, for a member index below its member count (+0x98..+0xa0, 0xb8 each). Read in Ghidra 2026-11-14."
+    confidence: confirmed
   - name: ClientStaticModelGroup_makeMemberObject
     va: 0x143185940
     signature: "void(void* block, void* group, void* a3, u32 copy, void* a5)"
@@ -623,7 +733,15 @@ functions:
     note: "The calling thread's debug renderer context (cached in TLS +0x270, made by the renderer's vtable +0xe0 on first use); returns the context's +0x80. Gives the shared null renderer when debug rendering is off or the thread is not the one it expects."
     confidence: inferred
     sources: [ghidra, user]
+  - name: DebugRender2_flushStaging
+    va: 0x142aaa9a0
+    signature: "void(void* ctx)"
+    note: "Turns the recorder's staged vertices (+0x4c count, +0x50 primitive type, +0x58 buffer) into a command (0x142aa9c80); the command's flags byte is copied from **(ctx + 0x10) when it is made. DebugRenderer_drawBatches2 reads it: bit 0x2 no culling, 0x4 depth test, 0x8 depth write (with 0x4)."
+    confidence: confirmed
+    sources: [ghidra, research]
 constants:
+  - { name: DebugRender2Impl_vtable, value: 0x141bc3f68, confidence: inferred, sources: [research, ghidra], note: "Set on the Impl after DebugRender2Impl_ctor by the game's creator (7 slots: +0x20 drawFrame 0x14356dab0, +0x30 drawBatches 0x14356e530). Audit 2026-11-13." }
+  - { name: DebugRenderSettings_InlineMode, value: 0x1c, confidence: inferred, sources: [research], note: "i32 in the DebugRender settings: -1 (default) expands text and spheres in a job, 0 in drawFrame itself. Enable +0x28 (default 1), DrawStats +0x29. Audit 2026-11-13." }
   - { name: MeshEntity_Transform, value: 0x10, confidence: inferred, sources: [ghidra], note: "Render object world transform (four float4 rows); RenderObject_buildUpdate copies it." }
   - { name: MeshEntity_Mesh, value: 0x60, confidence: inferred, sources: [ghidra], note: "**(object + 0x60) + 0x20: the mesh's local box (min xyz, pad, max xyz)." }
   - { name: ClientStaticModel_vf_bounds, value: 0xb8, confidence: inferred, sources: [ghidra] }
@@ -634,12 +752,13 @@ constants:
   - { name: GroupMemberBlock_RenderObjects, value: 0xc8, confidence: inferred, sources: [research], note: "Per-copy render objects (or null: asked from the physics component)." }
   - { name: GroupMemberBlock_Physics, value: 0x20, confidence: inferred, sources: [research] }
   - { name: PhysicsComponent_vf_renderObjectOfPart, value: 0x210, confidence: inferred, sources: [research], note: "(component, firstPart) -> the copy's render object." }
+  - { name: DebugRender2Recorder_State, value: 0x10, confidence: confirmed, sources: [ghidra], note: "u8* : the state byte each new command copies as its flags (DebugRender2_flushStaging; 0x142aa9c80 copies **(ctx + 0x10) into the command's +0x04). Read in Ghidra 2026-11-20." }
 structs:
   - name: WorldRenderer
     size: 0x3c2000
     opaque: true
     members:
-      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0xb30 bytes)." }
+      - { offset: 0x85470, name: visualEnvironmentState, type: "VisualEnvironmentState*", note: "Active visual environment state buffer (0x1bf0 bytes; a second copy follows at 0x87060)." }
   - name: VisualEnvironmentState
     size: 0xb30
     members:
@@ -730,7 +849,8 @@ hooks:
     slot: 0x141bfaca8
     original: 0x14373e5d0
     signature: "void(void* worldRenderer, void* context)"
-    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to shader constants upload. Hook point for overriding visual environment state without flicker."
+    note: "Per-frame view rendering routine on the render thread (slot 21). Passes worldRenderer + 0x85470 (VisualEnvironmentState) to the constant upload (0x1436fab20, 0x1436f80c0) and wr + 0x87060 (the second copy) to Enlighten's update and 0x1436fad40. Slot and function read in Ghidra 2026-11-14; GridNode writes the visual environment holds here (API 41)."
+    confidence: confirmed
 classes:
   - name: ClientStaticModelGroupEntity
     vtable: 0x141afbe90

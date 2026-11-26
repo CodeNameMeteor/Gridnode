@@ -601,11 +601,63 @@ void typesTab() {
     ImGui::EndChild();
 }
 
+// The game's own debug views (2026-11-14): its settings types name some 200 Boolean switches Draw*, Debug*, Show*
+// (DrawDebugGBuffer, DrawRunnersVisionDebug, ShowTriggerDebugText, ...), but the shipped exe kept only about twenty
+// functions that draw through either debug renderer (frame timing and streaming graphs, the system info and console
+// overlays, a few panels): game test 2026-11-14, not one switch did anything. Kept for finding the few that remain.
+// A tick writes the byte, as the settings view does.
+void debugSwitches(const std::vector<SettingsEntry>& list, const char* filter) {
+    static bool onlyOn = false;
+    ImGui::Checkbox("only the ones on", &onlyOn);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(the game's Draw / Debug / Show switches: almost all do nothing in the shipped game, their code was left out)");
+    if (!ImGui::BeginChild("switches", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        ImGui::EndChild();
+        return;
+    }
+    int shown = 0;
+    for (const SettingsEntry& e : list) {
+        for (const reflect::Type* t = e.type; t; t = registry().super(t))
+            for (const reflect::Field& f : t->fields) {
+                const std::string& n = f.name;
+                if (n.rfind("Draw", 0) != 0 && n.rfind("Debug", 0) != 0 && n.rfind("Show", 0) != 0 && n.find("Debug") == std::string::npos) continue;
+                const reflect::Type* ft = registry().byTi(static_cast<uintptr_t>(f.typeTi));
+                if (!ft || ft->name != "Boolean") continue;
+                const std::string full = e.type->name + "." + n;
+                if (*filter && !ciContains(full, filter)) continue;
+                const uintptr_t at = e.object + f.offset;
+                bool v = mem::readOr<uint8_t>(at) != 0;
+                if (onlyOn && !v) continue;
+                ImGui::PushID(static_cast<int>(at & 0x7fffffff));
+                if (e.online) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.65f, 0.3f, 1.f));
+                if (ImGui::Checkbox(full.c_str(), &v)) {
+                    mem::write<uint8_t>(at, v ? 1 : 0);
+                    GN_LOG("inspector: %s set to %s", full.c_str(), v ? "true" : "false");
+                }
+                if (e.online) {
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Online: %s", e.online);
+                }
+                ImGui::PopID();
+                ++shown;
+            }
+    }
+    if (!shown) ImGui::TextDisabled("none (with this filter)");
+    ImGui::EndChild();
+}
+
 void settingsTab() {
     static char filter[96] = "";
+    static bool switches = false;
+    ImGui::Checkbox("Debug switches", &switches);
+    ImGui::SameLine();
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##sf", "filter settings", filter, sizeof(filter));
+    ImGui::InputTextWithHint("##sf", switches ? "filter switches" : "filter settings", filter, sizeof(filter));
     const std::vector<SettingsEntry> list = settingsList();
+    if (switches) {
+        debugSwitches(list, filter);
+        return;
+    }
     if (list.empty()) {
         ImGui::TextDisabled("No settings objects found (not registered yet, or the settings manager is unreadable).");
         return;
@@ -1357,5 +1409,7 @@ void draw(bool* open) {
     }
     ImGui::End();
 }
+
+void consolePrint(const std::string& text) { conPrint(text); }
 
 } // namespace gn::host::inspector

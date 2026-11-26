@@ -4,6 +4,7 @@
 // class (API 39 data_of_class; the trainer's jump tuning) and adds one listener, only once a mod asks
 // for on_data, so mods hear about data coming and going without a hook.
 
+#include <cctype>
 #include <windows.h>
 
 #include <algorithm>
@@ -208,22 +209,53 @@ std::string dataCommand(const std::string& rest) {
         if (r != GN_OK) g_logging = false;
         return r == GN_OK ? "data: logging each bundle's data to gridnode.log (load a level, or move to stream districts)" : "data: could not listen (" + std::to_string(r) + ")";
     }
-    const reflect::Type* cls = registry().find(arg);
-    if (!cls) return "data: no class named " + arg;
+    // "data CLASS [TEXT]": with each object's asset Name (its path, for an asset: what assetFind and the console's
+    // effect take), only those whose Name contains TEXT when given.
+    const size_t sp = arg.find(' ');
+    const std::string clsName = arg.substr(0, sp);
+    std::string filter = sp == std::string::npos ? std::string() : arg.substr(arg.find_first_not_of(' ', sp));
+    for (char& ch : filter) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    const reflect::Type* cls = registry().find(clsName);
+    if (!cls) return "data: no class named " + clsName;
+    auto nameOf = [](uintptr_t obj) -> std::string {
+        const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
+        reflect::FieldInfo fi;
+        if (!t || !registry().findField(t, "Name", fi) || !fi.type || fi.type->name != "CString") return {};
+        std::string s;
+        const uintptr_t p = mem::readOr<uintptr_t>(obj + fi.field->offset);
+        return p && mem::readCString(p, s, 260) ? s : std::string();
+    };
     std::string out;
     size_t shown = 0;
+    const size_t limit = filter.empty() ? 10 : 30;
     const size_t n = dataEach(cls, true, [&](uintptr_t obj) {
         const reflect::Type* t = registry().typeOf(mem::ProcessMemory(), obj);
-        snprintf(b, sizeof(b), "\n  %p %s", reinterpret_cast<void*>(obj), t ? t->name.c_str() : "?");
+        const std::string name = nameOf(obj);
+        if (!filter.empty()) {
+            std::string low = name;
+            for (char& ch : low) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+            if (low.find(filter) == std::string::npos) return true;
+        }
+        // The instance's GUID sits 16 bytes before it when its flags (+0x0a) have 0x100 (Partition_findByGuid).
+        std::string guid;
+        uint8_t g[16];
+        if ((mem::readOr<uint16_t>(obj + 0x0a) & 0x100) && mem::read(obj - 0x10, g, 16)) {
+            char gb[40];
+            snprintf(gb, sizeof(gb), " {%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x}", g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8],
+                     g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+            guid = gb;
+        }
+        snprintf(b, sizeof(b), "\n  %p %s %s%s", reinterpret_cast<void*>(obj), t ? t->name.c_str() : "?", name.c_str(), guid.c_str());
         out += b;
-        return ++shown < 10;
+        return ++shown < limit;
     });
     snprintf(b, sizeof(b), "data: %s%s", cls->name.c_str(), cls->classId ? "" : " is not a class (never in the registry)");
     std::string head = b;
     if (!cls->classId) return head;
     // dataEach stopped counting at the tenth: count them all.
     const size_t all = n < 10 ? n : dataEach(cls, true, [](uintptr_t) { return true; });
-    snprintf(b, sizeof(b), ": %llu loaded (with subclasses)%s", static_cast<unsigned long long>(all), all > shown ? "; the first 10:" : "");
+    snprintf(b, sizeof(b), ": %llu loaded (with subclasses)%s", static_cast<unsigned long long>(all),
+             !filter.empty() ? (shown ? "; those whose name has the text (30 at most):" : "; none whose name has the text") : all > shown ? "; the first 10:" : "");
     return head + b + out;
 }
 

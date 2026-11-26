@@ -226,3 +226,9 @@ functions:
     note: "Writes the localised text of a string id (the UI's lookup; 0 and an empty string when there is no localiser). MECMP passes a pointer to a null pointer as args and has used it for dash and time trial names since October. Checked in Ghidra 2026-11-06: forwards to the localiser's vtable +0xd8."
     confidence: inferred
     sources: [ghidra]
+  - name: Server_runsInlineCheck
+    va: 0x143343430
+    signature: "u8(void* server)"
+    note: "1 when server +0x64 is 0: updateGameFrame (0x142a2dbcc) then submits serverJob / serverProcAsyncRays to the job scheduler and, when 0x142fbc450 says so, runs ClientWorld_tickFrame without waiting for them: the client and server ticks can overlap (block X, 2026-11-20). 0: the server tick runs inline before the client's."
+    confidence: confirmed
+    sources: [ghidra, research]

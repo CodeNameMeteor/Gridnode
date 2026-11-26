@@ -13,6 +13,12 @@
 // The engine binds creators to their classes when a realm's entity system starts
 // (EntityCreators_bindRealm, 0x143161af0), which can be after GridNode has started, so listeners
 // are kept and attached again (refreshCreators) as creators appear.
+//
+// The pool misses some (a creator bound after the last refresh, a slot that could not be hooked: the census
+// of 2026-11-14 found 48 of 104,738 in a level reload). So the game's creation function for entities made from
+// data (entityCreator_spawnEntityWithContext) is detoured too: an entity it made that no pool slot passed on
+// goes to the listeners from there, after the call. The pool stays: some creations do not go through that
+// function (block C of 2026-11-14). The census counts both gaps, to decide later whether the pool can go.
 
 #include <windows.h>
 
@@ -27,6 +33,8 @@
 #include <utility>
 #include <vector>
 
+#include "gridnode/build.hpp"
+#include "gridnode/engine.hpp"
 #include "gridnode/log.hpp"
 #include "gridnode/mem.hpp"
 #include "gridnode/mod_call.hpp"
@@ -35,6 +43,7 @@
 namespace gn::host {
 namespace {
 
+namespace e = gn::engine;
 using FactoryFn = void* (*)(void* creator, void* ci, void* a3, void* a4);
 
 struct Listener {
@@ -60,12 +69,19 @@ size_t g_used = 0;
 std::vector<std::unique_ptr<Listener>> g_listeners;
 std::shared_mutex g_lock; // listeners are read on game threads, changed from GridNode/mod threads
 
+// What the pool passed on last on this thread (the creation detour compares it with what its call made), and
+// how deep this thread is in that detour (0: a creation the detour does not see).
+thread_local uintptr_t t_poolSaw = 0;
+thread_local int t_spawnDepth = 0;
+
 template <size_t I> void* factoryDetour(void* creator, void* ci, void* a3, void* a4) {
     SlotState& s = g_slots[I];
     void* entity = reinterpret_cast<FactoryFn>(s.original)(creator, ci, a3, a4);
     if (!entity) return entity;
+    t_poolSaw = reinterpret_cast<uintptr_t>(entity);
     const reflect::Type* t = registry().typeOfLive(entity); // just made by the game
     if (!t) return entity;
+    if (t_spawnDepth == 0) censusPoolOnly(t);
     // The listeners to call, copied under the lock and called after it is released: a listener may
     // register another (on_created takes the lock exclusively) or create an entity of a hooked class.
     struct Call {
@@ -105,6 +121,56 @@ template <size_t... I> constexpr std::array<FactoryFn, sizeof...(I)> makeDetours
     return {&factoryDetour<I>...};
 }
 const std::array<FactoryFn, kPool> g_detours = makeDetours(std::make_index_sequence<kPool>{});
+
+// Every listener whose class the entity is, as a pool slot would call them (an entity the pool did not see).
+void dispatchAll(void* entity, void* ci, const reflect::Type* t) {
+    struct Call {
+        gn_created_fn fn;
+        void* user;
+        const Listener* l;
+    };
+    std::array<Call, 64> calls;
+    size_t n = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_lock);
+        for (const auto& l : g_listeners)
+            if (l && n < calls.size() && registry().isKindOf(t, l->type)) calls[n++] = {l->fn, l->user, l.get()};
+    }
+    for (size_t i = 0; i < n; ++i) {
+        try {
+            modcall::Scope scope(calls[i].fn);
+            calls[i].fn(entity, ci, calls[i].user);
+        } catch (...) {
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1) < 10) GN_LOG("%s: on_created(%s) listener threw; ignored", calls[i].l->owner.c_str(), calls[i].l->className.c_str());
+        }
+    }
+}
+
+using SpawnFn = void* (*)(void* ci, void* ctx);
+SpawnFn g_spawnOrig = nullptr; // written by the hook table
+std::atomic<int> g_spawnHooked{0}; // 0 not tried, 1 in, -1 failed
+std::atomic<uint64_t> g_spawnCaught{0};
+std::atomic<bool> g_spawnDispatch{true}; // "census dispatch off": the hook only counts (a frame-rate comparison)
+
+void* spawnDetour(void* ci, void* ctx) {
+    const uintptr_t prev = t_poolSaw;
+    t_poolSaw = 0;
+    ++t_spawnDepth;
+    void* entity = g_spawnOrig(ci, ctx);
+    --t_spawnDepth;
+    const bool poolSaw = entity && t_poolSaw == reinterpret_cast<uintptr_t>(entity);
+    t_poolSaw = prev;
+    if (entity && !unloaded())
+        guardHook("the creation hook", [&] {
+            const reflect::Type* t = registry().typeOfLive(entity);
+            censusSpawn(entity, t, poolSaw);
+            if (poolSaw || !t || !g_spawnDispatch.load(std::memory_order_relaxed)) return;
+            g_spawnCaught.fetch_add(1, std::memory_order_relaxed);
+            dispatchAll(entity, ci, t);
+        });
+    return entity;
+}
 
 const std::vector<reflect::Region>& regions() {
     static const std::vector<reflect::Region> r = mem::imageSectionRegions();
@@ -171,10 +237,31 @@ size_t attach(Listener& l, const std::vector<uint64_t>& creators) {
 
 } // namespace
 
+bool spawnHookIn() {
+    int st = g_spawnHooked.load();
+    if (st) return st > 0;
+    if (!build::codeMatches("entityCreator_spawnEntityWithContext")) {
+        GN_LOG("on_created: the creation function does not look as expected; only the creator slots are watched");
+        g_spawnHooked = -1;
+        return false;
+    }
+    // The variable itself: the hook table rewrites it when a hook below ours goes (never a local copy).
+    const int r = hookFunction("GridNode", e::function::entityCreator_spawnEntityWithContext, reinterpret_cast<void*>(&spawnDetour),
+                               reinterpret_cast<void**>(&g_spawnOrig));
+    g_spawnHooked = r == GN_OK ? 1 : -1;
+    if (r != GN_OK) GN_LOG("on_created: the creation function could not be hooked (%d); only the creator slots are watched", r);
+    return r == GN_OK;
+}
+
+uint64_t spawnCaught() { return g_spawnCaught.load(std::memory_order_relaxed); }
+void spawnDispatch(bool on) { g_spawnDispatch = on; }
+bool spawnDispatching() { return g_spawnDispatch.load(); }
+
 int onCreated(const std::string& owner, const std::string& className, gn_created_fn fn, void* user) {
     if (!fn) return GN_ERR_ARGUMENT;
     const reflect::Type* type = registry().find(className);
     if (!type || type->category != reflect::Category::Class) return GN_ERR_NOT_FOUND;
+    spawnHookIn();
     const std::vector<uint64_t> creators = creatorsFor(type); // read without holding the lock
     std::unique_lock<std::shared_mutex> lock(g_lock);
     g_listeners.push_back(std::make_unique<Listener>(Listener{owner, className, type, fn, user, {}}));

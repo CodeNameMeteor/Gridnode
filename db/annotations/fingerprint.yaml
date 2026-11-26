@@ -77,6 +77,15 @@ fingerprint:
     - { at: hkTransform_fromQuat, bytes: "48 83 EC 18 0F 28 15 65 3E 04 FE 0F 29 34 24 0F", required: false, note: "Optional: only collision boxes depend on it." }
     - { at: SoundSystem_createVoice, bytes: "48 8B 0D D1 FA 3F FF E9 74 69 03 00", required: false, note: "Optional: only mods' sounds depend on it." }
     - { at: Entity_requestDestroy, bytes: "8B 41 18 49 89 D0 48 89 CA C1 E8 0A A8 01", required: false, note: "Optional: only character_despawn depends on it." }
+    # Bytes read from the Ghidra program (the user's Scylla dump) on 2026-11-20; check with gridnode.py fingerprint on a fresh dump.
+    - { at: UIPauseController_request, bytes: "84 D2 74 06 FF 41 08 EB 04 91 FF 49 08 45 84 C0", required: false, note: "Optional: only ui_pause_request depends on it." }
+    - { at: ClientCameraViewManager_setOverride, bytes: "0F 28 02 0F B6 44 24 28 0F 29 41 40 0F 28 4A 10", required: false, note: "Optional: only camera_backend 1 depends on it." }
+    - { at: DebugRender2_flushStaging, bytes: "48 89 74 24 10 57 48 83 EC 20 8B 71 4C 48 89 CF", required: false, note: "Optional: only debug_line_ex flags depend on it." }
+    - { at: EntityUpdater_add, bytes: "53 48 83 EC 30 4C 8B 49 30 48 8B 41 28 45 31 C0", required: false, note: "Optional: only spawner_spawn depends on it." }
+    - { at: MessageManager_queueMessage, bytes: "48 8B 09 E9", required: false, note: "Optional: only message_queue depends on it." }
+    - { at: Arena_allocAligned, bytes: "8B 41 08 49 89 D2 FF C8 83 F8 0A 77", required: false, note: "Optional: only message_queue depends on it." }
+    - { at: ClientHealth_applyAntDamage, bytes: "55 56 57 41 56 41 57 48 8D AC 24 70 FF FF FF 48", required: false, note: "Optional: only fall_threshold_set depends on it." }
+    - { at: entityCreator_spawnEntityWithContext, bytes: "55 53 56 57 41 56 48 8D 6C 24 A0 48 81 EC 60 01", required: false, note: "Optional: on_created then sees only the creator slots (some creations missed)." }
     - { at: KillVolume_testCharacter, bytes: "53 48 81 EC B0 00 00 00 48 8B 02 F3 0F 10 05 99", required: false, note: "Optional: only the trainer's kill volumes off depends on it." }
     - { at: hknpWorld_setBodyVelocity, bytes: "48 89 6C 24 18 48 89 74 24 20 89 54 24 10 57 48", required: false, note: "Optional: only body_set_velocity / body_push depend on it." }
     - { at: ProgressionManager_setFlag, bytes: "44 88 4C 24 20 44 89 44 24 18 48 89 54 24 10 48", required: false, note: "Optional: only progress_set depends on it." }

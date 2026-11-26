@@ -97,6 +97,7 @@ Settings readSettings(const std::wstring& dir) {
     s.ui.console = tool(L"tools", L"console");
     s.ui.devInfo = tool(L"tools", L"dev_info");
     s.ui.gridnodeWindow = GetPrivateProfileIntW(L"ui", L"gridnode_window", 1, ini.c_str()) != 0;
+    s.ui.iniPath = ini;
     GetPrivateProfileStringW(L"ui", L"menu_key", L"INSERT", buf, MAX_PATH, ini.c_str());
     if (_wcsicmp(buf, L"NONE") == 0) { // only mods open the menu (gn_api ui_menu_set), with their own keys
         s.ui.menuKey = 0;
