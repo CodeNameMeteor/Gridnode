@@ -42,7 +42,8 @@ is in `gridnode.prev.log`.
 
 | Problem | What to do |
 |---|---|
-| INSERT does nothing | Another tool (MECMP, an overlay) may use it: set `menu_key` in `gridnode.ini` ([Writing a mod](modding.md#ui-dear-imgui)). With `menu_key=NONE`, only a mod's own key opens the menu. |
+| INSERT does nothing | Another tool (MECMP, an overlay) may use it: set `menu_key` in `gridnode.ini` ([Writing a mod](modding.md#ui-dear-imgui)). With `menu_key=NONE`, only a mod's own key opens the menu. Since 2026-11-26 GridNode also reads the key itself when another tool's window procedure keeps it away (the log says `did not reach GridNode's window procedure` once). |
+| MECMP stays inactive with GridNode | MECMP's build check reads game slots GridNode hooks (the game world ticks) and stops when another module is in them. Inject MECMP first, then GridNode: GridNode chains onto MECMP's hooks. The MEC trainer's No KSEC hooks one more such slot, the first time it goes on. |
 | The menu shows no GridNode window | `gridnode_window=0` in `gridnode.ini`: the mods' windows only. |
 | Keys stop working after reloading mods | Look for lines about hotkeys in the log and send it; unloading and loading the mod from the Mods list puts its keys back. |
 | A Dash or time trial time is not uploaded | The MEC trainer blocks uploads while it is loaded ([GridNode and online play](online.md)). |

@@ -26,7 +26,7 @@ import argparse
 import math
 import struct
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
 VERSION = 5

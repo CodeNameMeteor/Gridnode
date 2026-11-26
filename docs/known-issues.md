@@ -9,6 +9,10 @@ something goes wrong; report anything not listed here with `gridnode.log`.
   or an updated one may differ) and says so in its log.
 - **One player:** the API and the trainer assume the local player (single player). MECMP, the
   multiplayer mod, is a separate project.
+- **With MECMP:** inject MECMP first, then GridNode. The other way round MECMP's build check finds GridNode's
+  hooks and MECMP stays inactive (to change in MECMP: take another module's code in a slot as its hook, as
+  GridNode does). Both overlays use their own menus; give them different keys.
+- **With Special K:** reported not to work together (2026-11-26); not yet looked into (logs wanted).
 
 ## GridNode
 

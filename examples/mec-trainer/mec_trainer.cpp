@@ -321,6 +321,7 @@ std::atomic<int> g_ksecBlocked{0}, g_ksecRemoved{0};
 using SpawnFn = void* (*)(void* spawner, void* info);
 SpawnFn g_spawnOrig = nullptr;
 bool g_spawnHooked = false;
+bool g_spawnHookTried = false;
 
 std::string assetName(void* asset) {
     void* name = nullptr;
@@ -373,10 +374,20 @@ void* spawnDetour(void* spawner, void* info) {
     return g_spawnOrig(spawner, info);
 }
 
+// Hooked the first time No KSEC goes on, not at load: MECMP's build check reads this slot and stays
+// inactive when it finds another module's code there (MECMP injected after GridNode, 2026-11-26).
+// Hooks stay until the mod is unloaded, so the slot stays hooked after No KSEC goes off again.
 void hookSpawns() {
+    if (g_spawnHookTried) return;
+    g_spawnHookTried = true;
     namespace k = gn::engine::cls::PamServerCharacterSpawnEntity;
     g_spawnHooked = gn::hookSlot(k::vtable + k::vf::spawn, k::va::spawn, &spawnDetour, &g_spawnOrig);
     if (!g_spawnHooked) gn::log("no free-roam KSEC: the spawner's spawn could not be hooked; not available");
+}
+
+void setNoKsec(bool on) {
+    if (on) hookSpawns();
+    g_noKsec = on && g_spawnHooked;
 }
 
 // Server tick, once a second while on: KSEC already in the city go (a mission's are left).
@@ -1285,12 +1296,14 @@ void worldTab() {
         ImGui::SameLine();
         ImGui::TextDisabled("(%d nearby)", g_barriersDisabled.load());
     }
-    if (g_spawnHooked) {
+    if (g_spawnHooked || !g_spawnHookTried) {
         v = g_noKsec;
-        if (ImGui::Checkbox("No KSEC (free roam)", &v)) g_noKsec = v;
+        if (ImGui::Checkbox("No KSEC (free roam)", &v)) setNoKsec(v);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("KSEC and the hunter drone are not spawned in the city, and KSEC out there are taken away. Runners and the\n"
-                              "story's people stay. Not during missions: a mission's KSEC are left alone.");
+                              "story's people stay. Not during missions: a mission's KSEC are left alone.\n"
+                              "The first time this goes on, the spawners' spawn is hooked until the trainer unloads; MECMP injected\n"
+                              "after that stays inactive (its build check reads that slot).");
         if (g_noKsec) {
             ImGui::SameLine();
             ImGui::TextDisabled("(%d stopped, %d taken away, %d drone calls stopped)", g_ksecBlocked.load(), g_ksecRemoved.load(), g_dronesStopped.load());
@@ -1733,10 +1746,10 @@ GN_MOD("mec-trainer") {
         }))
         gn::log("no overlay: hotkeys only");
     loadSettings();
+    if (g_noKsec) setNoKsec(true); // saved on: hooked now (otherwise on first use)
     volumes::loadSettings();
     blockUploads();
     hookKillVolumes();
-    hookSpawns();
     hookDrone();
     gn::onLevel([](const char*, bool) { volumes::levelChanged(); });
     // Run on the client thread, as the old key loop did.

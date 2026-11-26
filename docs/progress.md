@@ -3,6 +3,16 @@
 Update at the end of each session. Keep it short. The full handover for a new agent is
 [handover.md](handover.md).
 
+## 2026-11-26: CI lint, MECMP together, menu key (built, untested in game)
+
+- CI: ruff F401 in `tools/replay/replay_format.py` (unused `field`).
+- MECMP injected after GridNode stayed inactive: its build check found the MEC trainer's hook in
+  `PamServerCharacterSpawnEntity::spawn`. The trainer now hooks it the first time No KSEC goes on. MECMP's check also
+  reads the world ticks GridNode always hooks, so that order still needs a change in MECMP; MECMP first works.
+- The menu key is read with `GetAsyncKeyState` too when GridNode's window procedure does not get it (another overlay's
+  set over it, e.g. MECMP starting after GridNode); 150 ms grace so both paths never toggle.
+- Special K: not looked into yet (waiting for `SpecialK64.log` and `gridnode.log`).
+
 ## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)
 
 The research of 2026-11-15 (blocks A-Z on the PC, `scratch\unverified\`) checked in Ghidra and taken:

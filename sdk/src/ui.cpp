@@ -276,6 +276,11 @@ int rawKeyEvent(LPARAM l) {
 
 std::atomic<int> g_releaseState{0}; // a full unload (release()): 0 running, 1 wanted, 2 under way, 3 done
 
+// When GridNode's window procedure last took the menu key (window thread). Another overlay's window
+// procedure set over GridNode's (MECMP's, when it starts after GridNode) can keep the key from it:
+// the render thread then sees the key go down with no matching message and opens the menu itself.
+std::atomic<ULONGLONG> g_menuKeyAt{0};
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     // Left in place by a window procedure set over it: the overlay is gone, the game gets everything.
     if (g_releaseState.load() >= 2) return CallWindowProcW(g_origWndProc, hwnd, msg, w, l);
@@ -287,6 +292,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     // The menu key (not when it would type into a text box of the menu).
     if (keyDown && g_settings.menuKey && static_cast<int>(w) == g_settings.menuKey && !(l & (1 << 30)) && g_ready &&
         !(g_open.load() && g_typing.load() && typesCharacter(static_cast<int>(w)))) {
+        g_menuKeyAt = GetTickCount64();
         toggleMenu();
         return 0;
     }
@@ -766,6 +772,42 @@ void perfFrame(int bucket, double all, double layoutsUs, double hold, double mod
     g_perfWindow = now;
 }
 
+// The menu key when GridNode's window procedure did not get it (see g_menuKeyAt). A press is acted on
+// only if, 150 ms after the render thread saw it, the window procedure has not taken it: the message
+// can reach the window thread a little after the key state changes, and both must not toggle.
+void pollMenuKey() { // render thread
+    static bool wasDown = false;
+    static ULONGLONG pendingAt = 0;
+    static bool said = false;
+    const int key = g_settings.menuKey;
+    if (!key || !gameFocused()) {
+        wasDown = false, pendingAt = 0;
+        return;
+    }
+    const bool down = (GetAsyncKeyState(key) & 0x8000) != 0;
+    const ULONGLONG now = GetTickCount64();
+    if (down && !wasDown && !(g_open.load() && g_typing.load() && typesCharacter(key))) pendingAt = now;
+    wasDown = down;
+    if (!pendingAt || now - pendingAt < 150) return;
+    const bool windowGotIt = g_menuKeyAt.load() + 100 >= pendingAt;
+    pendingAt = 0;
+    if (windowGotIt) return;
+    if (!said) {
+        said = true;
+        char other[MAX_PATH] = "another module";
+        HMODULE m = nullptr;
+        const LONG_PTR proc = GetWindowLongPtrW(g_window, GWLP_WNDPROC);
+        if (proc != reinterpret_cast<LONG_PTR>(&wndProc) &&
+            GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(proc), &m))
+            GetModuleFileNameA(m, other, MAX_PATH);
+        GN_LOG("ui: %s did not reach GridNode's window procedure (the game window's procedure is now %s's); "
+               "GridNode reads the key itself. If it opens another tool's menu too, set menu_key in gridnode.ini",
+               keyName(key).c_str(), other);
+    }
+    toggleMenu();
+}
+
 HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags) {
     if (g_releaseState.load() != 0) {
         if (int wanted = 1; g_releaseState.compare_exchange_strong(wanted, 2)) {
@@ -788,6 +830,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         ImGui_ImplWin32_NewFrame();
         if ((g_open || g_capture) && g_rawMouse) applyRawMouse(); // after the backend's own cursor read, so ours wins
         ImGui::NewFrame();
+        pollMenuKey();
         const bool open = g_open.load();
         {
             ImGuiErrorRecoveryState state;
