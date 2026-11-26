@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -17,7 +18,7 @@ namespace landing {
 namespace {
 
 // Options (mods/mec-trainer.ini, landing.*).
-std::atomic<bool> g_on{false}, g_arc{true}, g_ring{true}, g_coords{true}, g_hud{true};
+std::atomic<bool> g_on{false}, g_arc{true}, g_ring{true}, g_coords{true}, g_hud{true}, g_jumpArc{true};
 std::atomic<float> g_ringRadius{1.f};
 
 // Her fall, measured: gravity (m/s², negative) and top fall speed (m/s, negative; 0 = not seen yet). Saved so
@@ -29,6 +30,21 @@ std::atomic<bool> g_gravityMeasured{false};
 // From the client tick.
 std::atomic<bool> g_inAir{false}, g_flying{false};
 std::atomic<float> g_lastGroundY{0.f};
+std::atomic<int> g_state{0};
+std::atomic<float> g_camX{0.f}, g_camZ{1.f}; // the camera's forward, flattened
+
+// What a jump does from a hold (a ledge, a pipe, standing still): learnt from her own jumps, per movement state,
+// because the game's animation decides the launch (no fixed number to read). Kept in two frames, the camera's
+// (where you look) and her body's (where she faces); the one whose jumps agree better is used. (Server thread,
+// saved as landing.jump.<state>.)
+struct Launch {
+    float cam[3] = {}, body[3] = {}; // forward, up, right (m/s) in each frame
+    float camVar = 0.f, bodyVar = 0.f;
+    int n = 0;
+    bool useBody() const { return n >= 2 && bodyVar < camVar * 0.7f; }
+};
+std::mutex g_jumpM;
+std::map<int, Launch> g_jumps; // (g_jumpM)
 
 struct Sample {
     double t; // game seconds (the server tick's dt summed: follows the game's time scale, as her physics does)
@@ -48,10 +64,14 @@ struct Prediction {
     bool landed = false;
     gn::Vec3 landedAt{};
     ULONGLONG landedMs = 0;
+    bool jumpRef = false;   // she jumped from a hold with a jump arc showing: where its ring was
+    gn::Vec3 jumpAt{};
 };
 
 std::mutex g_m;
 Prediction g_pred; // (g_m)
+Prediction g_jump; // (g_m) where she lands if she jumps now (valid only while she holds still in a learnt state)
+int g_jumpState = 0; // (g_m)
 
 // Server thread only.
 std::deque<Sample> g_samples;
@@ -59,6 +79,19 @@ double g_time = 0.0;
 double g_airSince = -1.0;
 int g_tick = 0;
 bool g_wasInAir = false;
+// A jump being learnt: the state she left and her frames at that moment; measured 0.15 s later.
+struct Pending {
+    bool on = false;
+    int state = 0;
+    double t = 0.0;
+    float camF[2] = {}, bodyF[2] = {};
+};
+Pending g_pending;
+bool g_haveTakeoffJump = false; // the jump arc's landing when she left the hold (server thread)
+gn::Vec3 g_takeoffJump{};
+int g_prevState = 0;
+bool g_prevStill = false, g_prevInAir = false; // a hold counts while the game has her in the air (a ledge, a pipe), not standing
+float g_prevCam[2] = {0.f, 1.f}, g_prevBody[2] = {0.f, 1.f};
 
 gn::Vec3 add(const gn::Vec3& a, const gn::Vec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 gn::Vec3 scale(const gn::Vec3& a, float s) { return {a.x * s, a.y * s, a.z * s}; }
@@ -67,6 +100,32 @@ gn::Vec3 cross(const gn::Vec3& a, const gn::Vec3& b) { return {a.y * b.z - a.z *
 gn::Vec3 normalize(const gn::Vec3& a) {
     const float l = length(a);
     return l > 1e-6f ? scale(a, 1.f / l) : gn::Vec3{0.f, 1.f, 0.f};
+}
+
+// A flat forward (x, z) and its right; local (forward, up, right) to world and back. Which side "right" is does
+// not matter: the same formula goes both ways.
+void flat(float x, float z, float out[2]) {
+    const float l = std::sqrt(x * x + z * z);
+    out[0] = l > 1e-4f ? x / l : 0.f, out[1] = l > 1e-4f ? z / l : 1.f;
+}
+void toLocal(const gn::Vec3& v, const float f[2], float out[3]) {
+    out[0] = v.x * f[0] + v.z * f[1], out[1] = v.y, out[2] = v.x * f[1] - v.z * f[0];
+}
+gn::Vec3 toWorld(const float l[3], const float f[2]) {
+    return {l[0] * f[0] + l[2] * f[1], l[1], l[0] * f[1] - l[2] * f[0]};
+}
+void learn(Launch& j, const float cam[3], const float body[3]) {
+    auto dev = [](const float* a, const float* b) {
+        return (a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]);
+    };
+    if (j.n == 0) {
+        std::copy(cam, cam + 3, j.cam), std::copy(body, body + 3, j.body);
+    } else {
+        j.camVar = j.n == 1 ? dev(cam, j.cam) : j.camVar * 0.7f + dev(cam, j.cam) * 0.3f;
+        j.bodyVar = j.n == 1 ? dev(body, j.body) : j.bodyVar * 0.7f + dev(body, j.body) * 0.3f;
+        for (int i = 0; i < 3; ++i) j.cam[i] = j.cam[i] * 0.7f + cam[i] * 0.3f, j.body[i] = j.body[i] * 0.7f + body[i] * 0.3f;
+    }
+    ++j.n;
 }
 
 // Her velocity now: from the sample about 0.1 s back to the newest (her position moves in physics steps that do not
@@ -200,6 +259,16 @@ void loadSettings() {
     if (g < -3.f && g > -60.f) g_gravity = g, g_gravityMeasured = true;
     const float top = gn::config::getFloat("landing.top_fall", 0.f);
     if (top < -15.f && top > -500.f) g_topFall = top;
+    g_jumpArc = gn::config::getBool("landing.jump_arc", g_jumpArc);
+    std::lock_guard<std::mutex> lock(g_jumpM);
+    for (int st = 0; st < 64; ++st) {
+        const std::string key = "landing.jump." + std::to_string(st);
+        const std::string v = gn::config::get(key.c_str());
+        Launch j;
+        if (!v.empty() && sscanf(v.c_str(), "%d %f %f %f %f %f %f %f %f", &j.n, &j.cam[0], &j.cam[1], &j.cam[2], &j.body[0], &j.body[1],
+                                 &j.body[2], &j.camVar, &j.bodyVar) == 9 && j.n > 0)
+            g_jumps[st] = j;
+    }
 }
 
 void saveSettings() {
@@ -211,20 +280,31 @@ void saveSettings() {
     gn::config::setFloat("landing.ring_m", g_ringRadius);
     if (g_gravityMeasured) gn::config::setFloat("landing.gravity", g_gravity);
     if (g_topFall.load() < 0.f) gn::config::setFloat("landing.top_fall", g_topFall);
+    gn::config::setBool("landing.jump_arc", g_jumpArc);
+    std::lock_guard<std::mutex> lock(g_jumpM);
+    for (const auto& [st, j] : g_jumps) {
+        char b[160];
+        snprintf(b, sizeof(b), "%d %.3f %.3f %.3f %.3f %.3f %.3f %.4f %.4f", j.n, j.cam[0], j.cam[1], j.cam[2], j.body[0], j.body[1], j.body[2],
+                 j.camVar, j.bodyVar);
+        gn::config::setString(("landing.jump." + std::to_string(st)).c_str(), b);
+    }
 }
 
 void clientTick(const gn::Movement& m, bool flying) {
     g_inAir = m.on_ground != 0; // 1 while she is in the air (the field's name is historical)
     g_flying = flying;
     g_lastGroundY = m.last_ground_y;
+    g_state = m.state;
+    g_camX = m.camera_forward[0], g_camZ = m.camera_forward[2];
 }
 
 void serverTick(void* faith, float dt) {
     gn::Vec3 p;
     if (!g_on || g_flying || !faith || !gn::positionOf(faith, p)) {
         g_samples.clear(), g_airSince = -1.0, g_wasInAir = false;
+        g_pending.on = false;
         std::lock_guard<std::mutex> lock(g_m);
-        g_pred.valid = false;
+        g_pred.valid = false, g_jump.valid = false;
         return;
     }
     g_time += std::max(dt, 0.f);
@@ -239,13 +319,69 @@ void serverTick(void* faith, float dt) {
         g_airSince = -1.0;
         std::lock_guard<std::mutex> lock(g_m);
         g_pred.landed = true, g_pred.landedAt = p, g_pred.landedMs = GetTickCount64();
+        g_pred.jumpRef = g_haveTakeoffJump, g_pred.jumpAt = g_takeoffJump;
+        if (g_haveTakeoffJump && !g_pred.hit) g_pred.valid = true, g_pred.arc.clear(); // a short jump: no fall arc was made
+        g_haveTakeoffJump = false;
     }
     g_wasInAir = inAir;
-    if (!inAir) return;
-    measure();
+    if (inAir) measure();
+
+    // Jumps from a hold: when she leaves a state she was holding still in, what she does 0.15 s later is that state's
+    // jump, if it is one (going up, or off sideways fast; letting go or climbing up is not).
+    gn::Vec3 v{};
+    const bool haveV = velocity(v);
+    const bool still = haveV && length(v) < 1.5f;
+    const int state = g_state.load();
+    float cam[2], body[2] = {0.f, 1.f};
+    flat(g_camX, g_camZ, cam);
+    if (gn::Transform t; gn::transformOf(faith, t)) flat(t.forward[0], t.forward[2], body);
+    if (state != g_prevState && g_prevStill && g_prevInAir) {
+        g_pending.on = true, g_pending.state = g_prevState, g_pending.t = g_time;
+        {
+            std::lock_guard<std::mutex> lock(g_m);
+            g_haveTakeoffJump = g_jump.valid && g_jump.hit;
+            if (g_haveTakeoffJump) g_takeoffJump = g_jump.at;
+        }
+        std::copy(g_prevCam, g_prevCam + 2, g_pending.camF), std::copy(g_prevBody, g_prevBody + 2, g_pending.bodyF);
+    }
+    if (g_pending.on && g_time - g_pending.t >= 0.15) {
+        g_pending.on = false;
+        if (inAir && haveV && g_time - g_pending.t < 0.4) {
+            gn::Vec3 take = v;
+            take.y -= g_gravity.load() * static_cast<float>(g_time - g_pending.t); // back to the moment she left
+            if (take.y > 1.5f || std::sqrt(take.x * take.x + take.z * take.z) > 2.f) {
+                float lc[3], lb[3];
+                toLocal(take, g_pending.camF, lc), toLocal(take, g_pending.bodyF, lb);
+                std::lock_guard<std::mutex> lock(g_jumpM);
+                Launch& j = g_jumps[g_pending.state];
+                learn(j, lc, lb);
+                gn::log("landing: jump from state %d learnt (%d so far): %.1f m/s up, %.1f m/s off", g_pending.state, j.n, take.y,
+                        std::sqrt(take.x * take.x + take.z * take.z));
+            }
+        }
+    }
+    g_prevState = state, g_prevStill = still, g_prevInAir = inAir;
+    std::copy(cam, cam + 2, g_prevCam), std::copy(body, body + 2, g_prevBody);
+
     if (++g_tick % 3) return; // ten arcs a second is enough to follow her; each is up to 400 ray casts
-    gn::Vec3 v;
-    if (!velocity(v)) return;
+    // If she jumps now: while she holds still in a state with a learnt jump.
+    {
+        Launch j;
+        bool have = false;
+        if (g_jumpArc && still && inAir) {
+            std::lock_guard<std::mutex> lock(g_jumpM);
+            if (auto it = g_jumps.find(state); it != g_jumps.end()) j = it->second, have = true;
+        }
+        Prediction jp;
+        if (have) {
+            predict(p, j.useBody() ? toWorld(j.body, body) : toWorld(j.cam, cam), jp);
+            jp.valid = true, jp.fromY = p.y;
+        }
+        std::lock_guard<std::mutex> lock(g_m);
+        g_jump = std::move(jp);
+        g_jumpState = state;
+    }
+    if (!inAir || !haveV) return;
     Prediction next;
     predict(p, v, next);
     next.valid = true;
@@ -257,18 +393,43 @@ void serverTick(void* faith, float dt) {
 
 void draw() {
     if (!g_on) return;
-    Prediction p;
+    Prediction p, jp;
     {
         std::lock_guard<std::mutex> lock(g_m);
-        if (!g_pred.valid) return;
-        if (g_pred.landed && GetTickCount64() - g_pred.landedMs > 4000) {
-            g_pred.valid = false;
-            return;
-        }
+        jp = g_jump;
+        if (g_pred.valid && g_pred.landed && GetTickCount64() - g_pred.landedMs > 4000) g_pred.valid = false;
         p = g_pred;
     }
+    if (!p.valid && !jp.valid) return;
     gn::ui::View view;
     if (!gn::ui::view(view)) return;
+    if (jp.valid) { // if she jumps now: yellow, dashed
+        const ImU32 jc = IM_COL32(255, 220, 40, 255);
+        if (g_arc)
+            for (size_t i = 1; i < jp.arc.size(); ++i)
+                if (i % 2) gn::ui::line3d(view, jp.arc[i - 1], jp.arc[i], IM_COL32(255, 220, 40, 210), 2.f);
+        if (jp.hit) {
+            if (g_ring) ring(view, jp.at, jp.normal, g_ringRadius, jc);
+            if (g_coords) {
+                char a[96], b[96];
+                snprintf(a, sizeof(a), "if you jump: %.1f, %.1f, %.1f", jp.at.x, jp.at.y, jp.at.z);
+                snprintf(b, sizeof(b), "%.1f s   %.1f m down%s", jp.seconds, jp.fromY - jp.at.y, jp.normal.y > 0.7f ? "" : "   (a wall)");
+                const char* lines[] = {a, b};
+                label(view, jp.at, lines, 2, jc);
+            }
+        }
+    }
+    if (!p.valid) return;
+    if (p.landed && p.jumpRef) { // she jumped from a hold: how close the jump arc was
+        if (g_ring) ring(view, p.jumpAt, {0.f, 1.f, 0.f}, g_ringRadius, IM_COL32(255, 220, 40, 255));
+        gn::ui::marker(view, p.landedAt, IM_COL32(255, 255, 255, 255), 5.f);
+        const float dx = p.landedAt.x - p.jumpAt.x, dz = p.landedAt.z - p.jumpAt.z;
+        char b[96];
+        snprintf(b, sizeof(b), "landed %.2f m from the jump prediction", std::sqrt(dx * dx + dz * dz));
+        const char* lines[] = {b};
+        label(view, p.jumpAt, lines, 1, IM_COL32(255, 255, 255, 230));
+    }
+    if (p.landed && !p.hit) return;
     const bool ground = p.hit && p.normal.y > 0.7f;
     const ImU32 col = !p.hit ? IM_COL32(200, 200, 200, 200) : ground ? IM_COL32(60, 230, 120, 255) : IM_COL32(255, 160, 40, 255);
     if (g_arc && !p.landed)
@@ -298,6 +459,9 @@ void hudLines() {
     Prediction p;
     {
         std::lock_guard<std::mutex> lock(g_m);
+        if (g_jump.valid && g_jump.hit)
+            ImGui::TextColored(ImVec4(1.f, 0.86f, 0.16f, 1.f), "If you jump: (%.1f, %.1f, %.1f) in %.1f s, %.1f m down", g_jump.at.x, g_jump.at.y,
+                               g_jump.at.z, g_jump.seconds, g_jump.fromY - g_jump.at.y);
         if (!g_pred.valid || g_pred.landed) return;
         p.hit = g_pred.hit, p.at = g_pred.at, p.normal = g_pred.normal, p.seconds = g_pred.seconds, p.impact = g_pred.impact;
         p.fromY = g_pred.fromY, p.lastGroundY = g_pred.lastGroundY;
@@ -335,6 +499,27 @@ void options() {
     float r = g_ringRadius;
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
     if (ImGui::SliderFloat("Ring size (m)", &r, 0.2f, 5.f, "%.1f")) g_ringRadius = r;
+    v = g_jumpArc;
+    if (ImGui::Checkbox("If I jump (learnt)", &v)) g_jumpArc = v;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Holding still on a ledge, a pipe or a beam: a yellow dashed arc and ring for where a jump from there lands.\n"
+                          "The game's animation decides a jump, so the trainer learns each kind of hold from your own jumps: jump\n"
+                          "off one once (looking where you want to go) and from then on it shows. More jumps make it more exact.");
+    {
+        std::string learnt;
+        std::lock_guard<std::mutex> lock(g_jumpM);
+        for (const auto& [st, j] : g_jumps)
+            learnt += (learnt.empty() ? "" : ", ") + std::to_string(st) + " (" + std::to_string(j.n) + (j.useBody() ? ", body" : "") + ")";
+        ImGui::SameLine();
+        ImGui::TextDisabled("learnt: %s", learnt.empty() ? "none yet" : learnt.c_str());
+        if (!learnt.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Forget jumps")) {
+                for (const auto& [st, j] : g_jumps) gn::config::setString(("landing.jump." + std::to_string(st)).c_str(), "");
+                g_jumps.clear();
+            }
+        }
+    }
     const float top = g_topFall.load();
     ImGui::TextDisabled("Gravity %.2f m/s2 (%s), top fall speed %s", -g_gravity.load(), g_gravityMeasured ? "measured" : "default until she falls",
                         top < 0.f ? (std::to_string(static_cast<int>(-top)) + " m/s").c_str() : "not seen yet");

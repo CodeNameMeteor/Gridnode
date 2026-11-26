@@ -18,7 +18,11 @@ Update at the end of each session. Keep it short. The full handover for a new ag
   setups). The game's own prediction only looks a moment ahead, so the trainer simulates the arc: velocity from her
   last 0.1 s of server positions, gravity and top fall speed measured from her own falls (saved in `mec-trainer.ini`),
   a 0.2 m sphere swept along it with `gn::raycast` (server tick, 10 a second, at most 400 casts). After landing, a dot
-  shows where she really came down and how far from the ring. Untested in game.
+  shows where she really came down and how far from the ring. **If I jump (learnt):** holding still on a ledge or pipe
+  (in the air to the game), a yellow dashed arc and ring for a jump from there. A jump's launch is the animation's, so
+  it is learnt per movement state from her own jumps (0.15 s after leaving a still hold, if she went up or off fast),
+  in the camera's frame and her body's; the frame whose jumps agree better is used. Saved as `landing.jump.<state>`.
+  Untested in game.
 - Special K: not looked into yet (waiting for `SpecialK64.log` and `gridnode.log`).
 
 ## API 42 (2026-11-20, built, untested in game: `gridnode-api42a.dll`)
